@@ -6,6 +6,7 @@ services:
 env:
   global:
     - DEP_VERSION=0.4.1
+    - LATEST_TAG=0.1.0-beta
   matrix:
     - GOOS=linux GOARCH=amd64
     - GOOS=linux GOARCH=arm

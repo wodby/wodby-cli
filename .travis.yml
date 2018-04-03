@@ -1,4 +1,4 @@
-language: bash
+language: go
 
 services:
   - docker
@@ -13,6 +13,7 @@ env:
 
 script:
   - set -e
+  - dep ensure
   - make
   - make test
 

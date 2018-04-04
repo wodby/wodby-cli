@@ -75,7 +75,7 @@ var Cmd = &cobra.Command{
 				}
 
 				image := fmt.Sprintf("%s:%s", service.CI.Build.Image, config.Metadata.Number)
-				fmt.Print(fmt.Sprintf("Building %s image", service.Name))
+				fmt.Print(fmt.Sprintf("Building %s image...", service.Name))
 				err := client.Build(service.CI.Build.Dockerfile, image, context)
 				if err != nil {
 					return err

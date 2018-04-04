@@ -8,11 +8,11 @@ env:
     - DEP_VERSION=0.4.1
     - TAG=latest
   matrix:
-    - GOOS=linux GOARCH=amd64
-    - GOOS=linux GOARCH=arm
-    - GOOS=linux GOARCH=arm64
-    - GOOS=darwin GOARCH=amd64
-    - GOOS=windows GOARCH=amd64
+    - GIMME_OS=linux GIMME_ARCH=amd64
+    - GIMME_OS=linux GIMME_ARCH=arm
+    - GIMME_OS=linux GIMME_ARCH=arm64
+    - GIMME_OS=darwin GIMME_ARCH=amd64
+    - GIMME_OS=windows GIMME_ARCH=amd64
 
 before_install:
   - curl -L -s https://github.com/golang/dep/releases/download/v${DEP_VERSION}/dep-linux-amd64 -o $GOPATH/bin/dep
@@ -23,11 +23,12 @@ script:
   - dep ensure
   - make
   - make test
-  - make package
 
 after_success:
   - . "${TRAVIS_BUILD_DIR}/release"
 
+before_deploy:
+  - make package
 deploy:
   provider: releases
   api_key: $GITHUB_ACCESS_TOKEN

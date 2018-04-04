@@ -28,7 +28,7 @@ default: build
 .PHONY: build test push shell package release
 
 build:
-	@CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) \
+	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) \
 		go build -ldflags $(LD_FLAGS) -o bin/$(GOOS)-$(GOARCH)/$(APP) $(PKG)/cmd/$(APP)
 
     ifeq ($(LINUX_AMD64),1)

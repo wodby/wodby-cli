@@ -6,16 +6,18 @@ This project provides a unified command line interface to [wodby.com](https://wo
 
 Fetch the [latest release](https://github.com/wodby/wodby-cli/releases) for your platform:
 
-#### Linux
+#### Linux (amd64)
 
 ```bash
-wget -qO- https://github.com/wodby/wodby-cli/releases/download/0.1.0-alpha/wodby-linux-amd64.tar.gz | sudo tar xz -C /usr/local/bin
+export WODBY_CLI_LATEST_URL=$(curl -s https://api.github.com/repos/wodby/wodby-cli/releases/latest | grep linux-amd64 | grep browser_download_url | cut -d '"' -f 4)
+wget -qO- "${WODBY_CLI_LATEST_URL}" | sudo tar xz -C /usr/local/bin
 ```
 
 #### macOS
 
 ```bash
-wget -qO- https://github.com/wodby/wodby-cli/releases/download/0.1.0-alpha/wodby-darwin-amd64.tar.gz | tar xz -C /usr/local/bin
+export WODBY_CLI_LATEST_URL=$(curl -s https://api.github.com/repos/wodby/wodby-cli/releases/latest | grep darwin-amd64 | grep browser_download_url | cut -d '"' -f 4)
+wget -qO- "${WODBY_CLI_LATEST_URL}" | tar xz -C /usr/local/bin
 ```
 
 ## Usage

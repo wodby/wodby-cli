@@ -20,6 +20,8 @@ before_install:
 
 script:
   - set -e
+  - ls -la
+  - ls -la bin
   - dep ensure
   - make
   - make test

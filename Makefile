@@ -12,6 +12,7 @@ GOARCH ?= amd64
 ifneq ($(VERSION),)
     TAG = $(VERSION)
 else
+    VERSION = dev
     TAG = latest
 endif
 

@@ -59,7 +59,7 @@ type BuildConfig struct {
 					Username string `json,mapstructure:"username"`
 					Password string `json,mapstructure:"password"`
 				} `json,mapstructure:"auth"`
-			} `json,mapstructure:"release"`
+			} `json,mapstructure:"release.sh"`
 		} `json,mapstructure:"ci,omitempty"`
 	} `json,mapstructure:"services"`
 	Init *struct {

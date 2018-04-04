@@ -14,7 +14,7 @@ var ciConfig = viper.New()
 
 // Cmd represents the deploy command
 var Cmd = &cobra.Command{
-	Use:   "release",
+	Use:   "release.sh",
 	Short: "Push images",
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		ciConfig.SetConfigFile(path.Join("/tmp/.wodby-ci.json"))

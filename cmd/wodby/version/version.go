@@ -12,6 +12,6 @@ var Cmd = &cobra.Command{
 	Use:   "version",
 	Short: "Shows Wodby CLI version",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println(version.RELEASE)
+		fmt.Println(version.VERSION)
 	},
 }

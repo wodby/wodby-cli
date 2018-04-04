@@ -2,10 +2,6 @@
 
 This project provides a unified command line interface to [wodby.com](https://wodby.com).
 
-## Features
-
-* Build and deploy docker images to Wodby Cloud from local environment or CI services.
-
 ## Install
 
 Fetch the [latest release](https://github.com/wodby/wodby-cli/releases) for your platform:
@@ -38,17 +34,23 @@ The current output of `wodby` is as follows:
 CLI client for Wodby
 
 Usage:
-  wodby [command]
+    wodby [command]
 
 Available Commands:
-  deploy-build Deploy build to Wodby
-  help         Help about any command
-  version      Shows Wodby CLI version
+    ci
+        init WODBY_INSTANCE_UUID
+        run COMMAND
+        build SERVICE/IMAGE
+        release
+        deploy
+    help         Help about any command
+    version      Shows Wodby CLI version
 
 Flags:
       --api-key string      API key
       --api-prefix string   API prefix (default "api/v2")
       --api-proto string    API protocol (default "https")
+      --dind                Docker in docker mode (for init)
   -h, --help                help for wodby
   -v, --verbose             Verbose output
 

@@ -23,12 +23,11 @@ script:
   - dep ensure
   - make
   - make test
+  - make package
 
 after_success:
   - . "${TRAVIS_BUILD_DIR}/release"
 
-before_deploy:
-  - make package
 deploy:
   provider: releases
   api_key: $GITHUB_ACCESS_TOKEN

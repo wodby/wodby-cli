@@ -28,7 +28,9 @@ after_success:
   - . "${TRAVIS_BUILD_DIR}/release"
 
 before_deploy:
+  - ls -la bin
   - make package
+  - ls -la bin
 deploy:
   provider: releases
   api_key: $GITHUB_ACCESS_TOKEN

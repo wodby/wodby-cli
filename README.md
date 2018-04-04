@@ -9,17 +9,13 @@ Fetch the [latest release](https://github.com/wodby/wodby-cli/releases) for your
 #### Linux
 
 ```bash
-curl -L https://github.com/wodby/wodby-cli/releases/download/$(curl -s https://api.github.com/repos/wodby/wodby-cli/releases/latest | grep tag_name | cut -d '"' -f 4)/wodby-linux-amd64.tar.gz | tar xvz
-chmod +x wodby
-sudo mv wodby /usr/local/bin/wodby
+wget -qO- https://github.com/wodby/wodby-cli/releases/download/0.1.0-alpha/wodby-linux-amd64.tar.gz | sudo tar xz -C /usr/local/bin
 ```
 
 #### macOS
 
 ```bash
-curl -L https://github.com/wodby/wodby-cli/releases/download/$(curl -s https://api.github.com/repos/wodby/wodby-cli/releases/latest | grep tag_name | cut -d '"' -f 4)/wodby-darwin-amd64.tar.gz | tar xvz
-chmod +x wodby
-sudo mv wodby /usr/local/bin/wodby
+wget -qO- https://github.com/wodby/wodby-cli/releases/download/0.1.0-alpha/wodby-darwin-amd64.tar.gz | tar xz -C /usr/local/bin
 ```
 
 ## Usage

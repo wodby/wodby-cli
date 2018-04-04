@@ -36,6 +36,6 @@ deploy:
   skip_cleanup: true
   file_glob: true
   file:
-    - "bin/wodby-${GOOS}-${GOARCH}.tar.gz"
+    - bin/wodby-*.tar.gz
   on:
     tags: true

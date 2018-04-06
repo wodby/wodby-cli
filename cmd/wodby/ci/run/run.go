@@ -13,23 +13,22 @@ import (
 	"github.com/pkg/errors"
 )
 
-type commandParams struct {
-	Service    string
-	Image      string
-	Volumes    []string
-	Env        []string
-	User       string
-	Entrypoint string
+type options struct {
+	service    string
+	image      string
+	volumes    []string
+	env        []string
+	user       string
+	entrypoint string
 }
 
-var params commandParams
-
+var opts options
 var ciConfig = viper.New()
 
-// Cmd represents the deploy command
 var Cmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run container",
+	Args: cobra.MinimumNArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		ciConfig.SetConfigFile(path.Join(os.Getenv("HOME"), ".wodby-ci.json"))
 
@@ -50,30 +49,30 @@ var Cmd = &cobra.Command{
 
 		client := docker.NewClient()
 
-		if params.Service != "" {
+		if opts.service != "" {
 			for _, service := range config.Stack.Services {
-				if service.Name == params.Service {
-					params.Image = service.Image
+				if service.Name == opts.service {
+					opts.image = service.Image
 				}
 			}
-		} else if params.Image == "" {
+		} else if opts.image == "" {
 			for _, service := range config.Stack.Services {
 				if service.Name == config.Stack.Default {
-					params.Image = service.Image
+					opts.image = service.Image
 				}
 			}
 		}
 
-		if params.Image == "" {
+		if opts.image == "" {
 			return errors.New("image or service must be specified")
 		}
 
 		runConfig := docker.RunConfig{
-			Image:      params.Image,
-			Volumes:    params.Volumes,
-			Env:        params.Env,
-			User:       params.User,
-			Entrypoint: params.Entrypoint,
+			Image:      opts.image,
+			Volumes:    opts.volumes,
+			Env:        opts.env,
+			User:       opts.user,
+			Entrypoint: opts.entrypoint,
 		}
 
 		if config.DataContainer != "" {
@@ -93,10 +92,10 @@ var Cmd = &cobra.Command{
 }
 
 func init() {
-	Cmd.Flags().StringVar(&params.Entrypoint, "entrypoint", "", "Entrypoint")
-	Cmd.Flags().StringVarP(&params.Service, "service", "s", "", "Service")
-	Cmd.Flags().StringVarP(&params.Image, "image", "i", "", "Image")
-	Cmd.Flags().StringSliceVarP(&params.Volumes, "volume", "v", []string{}, "Volumes")
-	Cmd.Flags().StringSliceVarP(&params.Env, "env", "e", []string{}, "Environment variables")
-	Cmd.Flags().StringVarP(&params.User, "user", "u", "", "User")
+	Cmd.Flags().StringVar(&opts.entrypoint, "entrypoint", "", "entrypoint")
+	Cmd.Flags().StringVarP(&opts.service, "service", "s", "", "service")
+	Cmd.Flags().StringVarP(&opts.image, "image", "i", "", "image")
+	Cmd.Flags().StringSliceVarP(&opts.volumes, "volume", "v", []string{}, "volumes")
+	Cmd.Flags().StringSliceVarP(&opts.env, "env", "e", []string{}, "Environment variables")
+	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "user")
 }

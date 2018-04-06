@@ -4,36 +4,40 @@ import (
 	"log"
 	"os"
 	"path"
+	"fmt"
 
 	"github.com/wodby/wodby-cli/pkg/api"
 	"github.com/wodby/wodby-cli/pkg/config"
+	"github.com/wodby/wodby-cli/pkg/types"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
-	"fmt"
+
+	"github.com/pkg/errors"
 )
 
-type commandParams struct {
-	UUID       string
-	Context    string
-	Number     string
-	URL        string
-	Comment    string
-	PostDeploy bool
-	Wait       bool
+type options struct {
+	uuid       string
+	context    string
+	number     string
+	url        string
+	comment    string
+	tag        string
+	postDeploy bool
+	services   []string
 }
 
-var params commandParams
-
+var opts options
 var postDeployFlag *pflag.Flag
-
 var ciConfig = viper.New()
 
-// Cmd represents the deploy command
 var Cmd = &cobra.Command{
-	Use:   "deploy",
+	Use:   "deploy [service...]",
 	Short: "Deploy build to Wodby",
 	PreRunE: func(cmd *cobra.Command, args []string) error {
+		opts.services = args
+
 		ciConfig.SetConfigFile(path.Join("/tmp/.wodby-ci.json"))
 
 		err := ciConfig.ReadInConfig()
@@ -41,7 +45,7 @@ var Cmd = &cobra.Command{
 			return err
 		}
 
-		params.UUID = ciConfig.GetString("uuid")
+		opts.uuid = ciConfig.GetString("uuid")
 
 		return nil
 	},
@@ -59,58 +63,100 @@ var Cmd = &cobra.Command{
 			return err
 		}
 
-		apiConfig := &api.Config{
-			Key:    ciConfig.GetString("api.key"),
-			Scheme: ciConfig.GetString("api.proto"),
-			Host:   ciConfig.GetString("api.host"),
-			Prefix: ciConfig.GetString("api.prefix"),
-		}
-		client := api.NewClient(logger, apiConfig)
+		var services []types.Service
+		autoDeploy := len(opts.services) == 0
 
-		var postDeploy *bool
-		if postDeployFlag != nil && postDeployFlag.Changed {
-			postDeploy = &params.PostDeploy
-		}
+		// Validating services for deploy.
+		if autoDeploy {
+			if config.Stack.Custom {
+				return errors.New("You must specify at least one service for deployment. Auto deploy is not available for custom stacks")
+			} else {
+				fmt.Println("Releasing predefined services")
+			}
+		} else if !config.Stack.Custom && !config.Stack.Fork {
+			return errors.New("Deploying specific services is not allowed for managed stacks")
+		} else {
+			fmt.Println("Validating services")
 
-		if params.Number != "" {
-			config.Metadata.Number = params.Number
-		}
-		if params.URL != "" {
-			config.Metadata.URL = params.URL
-		}
-		if params.Comment != "" {
-			config.Metadata.Comment = params.Comment
-		}
+			for _, svc := range opts.services {
+				service, err := config.FindService(svc)
 
-		payload := &api.DeployBuildPayload{
-			Tag:        config.Metadata.Number,
-			PostDeploy: postDeploy,
-			Metadata:   config.Metadata,
+				if err != nil {
+					return err
+				} else {
+					services = append(services, service)
+				}
+			}
 		}
 
-		fmt.Print(fmt.Sprintf("Deploying new build #%s to instance %s...", config.Metadata.Number, config.UUID))
-		result, err := client.DeployBuild(params.UUID, payload)
-		if err != nil {
-			return err
-		}
+		// Deploying services.
+		if len(services) != 0 || autoDeploy {
+			apiConfig := &api.Config{
+				Key:    ciConfig.GetString("api.key"),
+				Scheme: ciConfig.GetString("api.proto"),
+				Host:   ciConfig.GetString("api.host"),
+				Prefix: ciConfig.GetString("api.prefix"),
+			}
+			client := api.NewClient(logger, apiConfig)
 
-		if params.Wait {
-			err := client.WaitTask(result.Task.UUID)
+			var postDeploy *bool
+			if postDeployFlag != nil && postDeployFlag.Changed {
+				postDeploy = &opts.postDeploy
+			}
+
+			if opts.number != "" {
+				config.Metadata.Number = opts.number
+			}
+			if opts.url != "" {
+				config.Metadata.URL = opts.url
+			}
+			if opts.comment != "" {
+				config.Metadata.Comment = opts.comment
+			}
+
+			payload := &api.DeployBuildPayload{
+				Number:     config.Metadata.Number,
+				PostDeploy: postDeploy,
+				Metadata:   config.Metadata,
+			}
+
+			servicesTags := make(map[string]string)
+
+			if !autoDeploy {
+				for _, service := range services {
+					if opts.tag != "" {
+						servicesTags[service.Name] = opts.tag
+					} else {
+						servicesTags[service.Name] = config.Metadata.Number
+					}
+				}
+
+				payload.ServicesTags = servicesTags
+			}
+
+			fmt.Print(fmt.Sprintf("Deploying build #%s to %s...", config.Metadata.Number, config.Stack.Instance.Title))
+			result, err := client.DeployBuild(opts.uuid, payload)
 			if err != nil {
 				return err
 			}
+
+			err = client.WaitTask(result.Task.UUID)
+			if err != nil {
+				return err
+			}
+
+			fmt.Println(" DONE")
 		}
-		fmt.Println(" DONE")
 
 		return nil
 	},
 }
 
 func init() {
-	Cmd.Flags().StringVar(&params.Number, "build-number", "", "Build Number")
-	Cmd.Flags().StringVar(&params.URL, "build-url", "", "Build URL")
-	Cmd.Flags().StringVar(&params.Comment, "comment", "", "Arbitrary message")
-	Cmd.Flags().BoolVarP(&params.Wait, "wait", "w", false, "Wait task")
-	Cmd.Flags().BoolVar(&params.PostDeploy, "post-deploy", false, "Run post deployment scripts")
+	Cmd.Flags().StringVar(&opts.number, "build-number", "", "Build number")
+	Cmd.Flags().StringVar(&opts.url, "build-url", "", "Build url")
+	Cmd.Flags().StringVar(&opts.comment, "comment", "", "Arbitrary message")
+	Cmd.Flags().StringVar(&opts.tag, "image-tag", "", "Image tag when deploying from personal container registry")
+	Cmd.Flags().BoolVar(&opts.postDeploy, "post-deploy", false, "Run post deployment scripts")
 	postDeployFlag = Cmd.Flags().Lookup("post-deploy")
 }

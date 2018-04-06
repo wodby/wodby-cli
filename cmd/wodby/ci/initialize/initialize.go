@@ -22,43 +22,33 @@ import (
 	"strings"
 )
 
-type commandParams struct {
-	UUID    string
-	Context string
-	DinD    bool
-	Volumes []string
-	Env     []string
-	User    string
+type options struct {
+	uuid    string
+	context string
+	dind    bool
 }
 
-var params commandParams
+var opts options
 
-// Cmd represents the deploy command
 var Cmd = &cobra.Command{
-	Use:   "init [instance UUID]",
+	Use:   "init INSTANCE_UUID",
 	Short: "Initialize config for CI process",
-	Args: func(cmd *cobra.Command, args []string) error {
-		if len(args) != 1 {
-			return errors.Errorf("accepts %d arg(s), received %d", 1, len(args))
-		}
-
-		return nil
-	},
+	Args: cobra.ExactArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		if viper.GetString("api_key") == "" {
 			return errors.New("api-key flag is required")
 		}
 
-		params.UUID = args[0]
+		opts.uuid = args[0]
 
 		var err error
-		if params.Context != "" {
-			params.Context, err = filepath.Abs(params.Context)
+		if opts.context != "" {
+			opts.context, err = filepath.Abs(opts.context)
 			if err != nil {
 				return err
 			}
 		} else {
-			params.Context, err = os.Getwd()
+			opts.context, err = os.Getwd()
 			if err != nil {
 				return err
 			}
@@ -81,9 +71,9 @@ var Cmd = &cobra.Command{
 		}
 		client := api.NewClient(logger, apiConfig)
 
-		fmt.Print(fmt.Sprintf("Requesting build info for instance %s...", params.UUID))
+		fmt.Print(fmt.Sprintf("Requesting build info for instance %s...", opts.uuid))
 
-		stack, err := client.GetBuildConfig(params.UUID)
+		stack, err := client.GetBuildConfig(opts.uuid)
 		if err != nil {
 			return err
 		}
@@ -92,19 +82,19 @@ var Cmd = &cobra.Command{
 
 		config := config.Config{
 			API:      apiConfig,
-			UUID:     params.UUID,
-			Context:  params.Context,
+			UUID:     opts.uuid,
+			Context:  opts.context,
 			Stack:    stack,
 			Metadata: types.NewBuildMetadata(),
 		}
 
-		fmt.Println(fmt.Sprintf("Configuring build for instance \"%s\":", config.Stack.Instance.Title))
+		fmt.Println(fmt.Sprintf("Preparing build for instance \"%s\"", config.Stack.Instance.Title))
 
 		dind := false
-		if params.DinD {
+		if opts.dind {
 			dind = true
 		} else if config.Metadata.Provider == types.CircleCIName {
-			source, err := ioutil.ReadFile(filepath.Join(params.Context, ".circleci/config.yml"))
+			source, err := ioutil.ReadFile(filepath.Join(opts.context, ".circleci/config.yml"))
 			if err != nil {
 				return err
 			}
@@ -145,16 +135,8 @@ var Cmd = &cobra.Command{
 				if service.Name == config.Stack.Init.Service {
 					fmt.Println(fmt.Sprintf("Initializing service %s", service.Name))
 
-					user := service.CI.Build.User
-					if params.User != "" {
-						user = params.User
-					}
-
 					runConfig := docker.RunConfig{
 						Image:   service.Image,
-						Volumes: params.Volumes,
-						Env:     params.Env,
-						User:    user,
 					}
 
 					for envName, envVal := range config.Stack.Init.Environment {
@@ -192,9 +174,6 @@ var Cmd = &cobra.Command{
 }
 
 func init() {
-	Cmd.Flags().StringVarP(&params.Context, "context", "c", "", "Build context (default: current directory)")
-	Cmd.Flags().BoolVar(&params.DinD, "dind", false, "Use data container for sharing files between commands")
-	Cmd.Flags().StringSliceVarP(&params.Volumes, "volume", "v", []string{}, "Volumes")
-	Cmd.Flags().StringSliceVarP(&params.Env, "env", "e", []string{}, "Environment variables")
-	Cmd.Flags().StringVarP(&params.User, "user", "u", "", "User")
+	Cmd.Flags().StringVarP(&opts.context, "context", "c", "", "Build context (default: current directory)")
+	Cmd.Flags().BoolVar(&opts.dind, "dind", false, "Use data container for sharing files between commands")
 }

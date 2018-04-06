@@ -8,9 +8,10 @@ import (
 
 // DeployBuildPayload is the deploy build action payload.
 type DeployBuildPayload struct {
-	Tag        string               `json:"tag"`
-	Metadata   *types.BuildMetadata `json:"info"`
-	PostDeploy *bool                `json:"post_deployment,omitempty"`
+	Number       string               `json:"number"`
+	Metadata     *types.BuildMetadata `json:"info"`
+	PostDeploy   *bool                `json:"post_deployment,omitempty"`
+	ServicesTags map[string]string    `json:"services_tags"`
 }
 
 // NewGetBuildConfigRequest makes new build config request.

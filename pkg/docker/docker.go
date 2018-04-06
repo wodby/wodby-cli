@@ -35,25 +35,43 @@ func (c *Client) Login(host string, username string, password string) error {
 }
 
 // Build builds docker image.
-func (c *Client) Build(dockerfile string, image string, context string) error {
-	cmd := exec.Command("docker", "build", "-t", image, "-f", "-", context)
-	cmd.Stdin = strings.NewReader(dockerfile)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return errors.New(string(out))
+func (c *Client) Build(dockerfile string, image string, context string, buildArgs map[string]string) error {
+	args := []string{
+		"build",
+		"-t",
+		image,
+		"-f",
+		"-",
+		context,
 	}
 
-	return nil
+	if len(buildArgs) != 0 {
+		for name, value := range buildArgs {
+			args = append(args, "--build-arg")
+			args = append(args, fmt.Sprintf("%s=%s", name, value))
+		}
+	}
+
+	cmd := exec.Command("docker", args...)
+	cmd.Stdin = strings.NewReader(dockerfile)
+
+	return cmdStartVerbose(cmd)
 }
 
 // Push pushes docker image.
 func (c *Client) Push(image string) error {
-	out, err := exec.Command("docker", "push", image).CombinedOutput()
+	cmd := exec.Command("docker", "push", image)
+
+	return cmdStartVerbose(cmd)
+}
+
+func (c *Client) GetDefaultImageUser(image string) (string, error) {
+	out, err := exec.Command("docker","image", "inspect", image, "-f", "{{.ContainerConfig.User}}").CombinedOutput()
 	if err != nil {
-		return errors.New(string(out))
+		return "", errors.New(string(out))
 	}
 
-	return nil
+	return string(out), nil
 }
 
 // Run runs docker container.
@@ -82,6 +100,15 @@ func (c *Client) Run(args []string, config RunConfig) error {
 	// Show run command progress.
 	cmd := exec.Command("docker", command...)
 
+	return cmdStartVerbose(cmd)
+}
+
+// NewClient creates new docker client.
+func NewClient() *Client {
+	return &Client{}
+}
+
+func cmdStartVerbose(cmd *exec.Cmd) error {
 	var stdoutBuf, stderrBuf bytes.Buffer
 	stdoutIn, _ := cmd.StdoutPipe()
 	stderrIn, _ := cmd.StderrPipe()
@@ -113,9 +140,4 @@ func (c *Client) Run(args []string, config RunConfig) error {
 	}
 
 	return nil
-}
-
-// NewClient creates new docker client.
-func NewClient() *Client {
-	return &Client{}
 }

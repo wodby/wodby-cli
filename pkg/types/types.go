@@ -42,26 +42,21 @@ type Task struct {
 	Status string
 }
 
+type Service struct {
+	Name  string `json,mapstructure:"name"`
+	Image string `json,mapstructure:"image"`
+	CI *struct {
+		Build struct {
+			Image      string `json,mapstructure:"image"`
+			Dockerfile string `json,mapstructure:"dockerfile"`
+			User       string `json,mapstructure:"user"`
+		} `json,mapstructure:"build"`
+	} `json,mapstructure:"ci,omitempty"`
+}
+
 // BuildConfig is the build config response type.
 type BuildConfig struct {
-	Services []struct {
-		Name  string `json,mapstructure:"name"`
-		Image string `json,mapstructure:"image"`
-		CI *struct {
-			Build struct {
-				Image      string `json,mapstructure:"image"`
-				Dockerfile string `json,mapstructure:"dockerfile"`
-				User       string `json,mapstructure:"user"`
-			} `json,mapstructure:"build"`
-			Release struct {
-				Host string `json,mapstructure:"host"`
-				Auth struct {
-					Username string `json,mapstructure:"username"`
-					Password string `json,mapstructure:"password"`
-				} `json,mapstructure:"auth"`
-			} `json,mapstructure:"release.sh"`
-		} `json,mapstructure:"ci,omitempty"`
-	} `json,mapstructure:"services"`
+	Services []Service `json,mapstructure:"services"`
 	Init *struct {
 		Service     string                 `json,mapstructure:"service"`
 		Command     string                 `json,mapstructure:"command"`
@@ -71,6 +66,15 @@ type BuildConfig struct {
 		Title     	string `json,mapstructure:"title"`
 	} `json,mapstructure:"instance,omitempty"`
 	Default string `json,mapstructure:"default"`
+	Registry struct {
+		Host string `json,mapstructure:"host"`
+		Auth struct {
+			Username string `json,mapstructure:"username"`
+			Password string `json,mapstructure:"password"`
+		} `json,mapstructure:"auth"`
+	} `json,mapstructure:"registry"`
+	Custom bool `json,mapstructure:"custom"`
+	Fork bool `json,mapstructure:"fork"`
 }
 
 type BuildMetadata struct {

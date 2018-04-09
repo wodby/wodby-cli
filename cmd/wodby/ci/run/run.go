@@ -22,16 +22,16 @@ type options struct {
 }
 
 var opts options
-var ciConfig = viper.New()
+var v = viper.New()
 
 var Cmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run container",
 	Args: cobra.MinimumNArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
-		ciConfig.SetConfigFile(path.Join( "/tmp/.wodby-ci.json"))
+		v.SetConfigFile(path.Join( "/tmp/.wodby-ci.json"))
 
-		err := ciConfig.ReadInConfig()
+		err := v.ReadInConfig()
 		if err != nil {
 			return err
 		}
@@ -41,12 +41,10 @@ var Cmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		config := new(config.Config)
 
-		err := ciConfig.Unmarshal(config)
+		err := v.Unmarshal(config)
 		if err != nil {
 			return err
 		}
-
-		client := docker.NewClient()
 
 		if opts.service != "" {
 			for _, service := range config.Stack.Services {
@@ -74,20 +72,21 @@ var Cmd = &cobra.Command{
 			Entrypoint: opts.entrypoint,
 		}
 
-		if config.DataContainer != "" {
-			runConfig.VolumesFrom = []string{config.DataContainer}
-		} else {
-			runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:/mnt/codebase", config.Context))
-		}
-		runConfig.WorkDir = "/mnt/codebase"
-
-		err = client.Run(args, runConfig)
-		if err != nil {
-			return err
-		}
-
-		return nil
+		return Run(args, config, runConfig)
 	},
+}
+
+func Run(args []string, config *config.Config, runConfig docker.RunConfig) error {
+	dockerClient := docker.NewClient()
+
+	if config.DataContainer != "" {
+		runConfig.VolumesFrom = []string{config.DataContainer}
+	} else {
+		runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:/mnt/codebase", config.Context))
+	}
+	runConfig.WorkDir = "/mnt/codebase"
+
+	return dockerClient.Run(args, runConfig)
 }
 
 func init() {

@@ -30,7 +30,7 @@ type options struct {
 
 var opts options
 var postDeployFlag *pflag.Flag
-var ciConfig = viper.New()
+var v = viper.New()
 
 var Cmd = &cobra.Command{
 	Use:   "deploy [service...]",
@@ -38,14 +38,14 @@ var Cmd = &cobra.Command{
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		opts.services = args
 
-		ciConfig.SetConfigFile(path.Join("/tmp/.wodby-ci.json"))
+		v.SetConfigFile(path.Join("/tmp/.wodby-ci.json"))
 
-		err := ciConfig.ReadInConfig()
+		err := v.ReadInConfig()
 		if err != nil {
 			return err
 		}
 
-		opts.uuid = ciConfig.GetString("uuid")
+		opts.uuid = v.GetString("uuid")
 
 		return nil
 	},
@@ -58,7 +58,7 @@ var Cmd = &cobra.Command{
 
 		config := new(config.Config)
 
-		err := ciConfig.Unmarshal(config)
+		err := v.Unmarshal(config)
 		if err != nil {
 			return err
 		}
@@ -92,12 +92,12 @@ var Cmd = &cobra.Command{
 		// Deploying services.
 		if len(services) != 0 || autoDeploy {
 			apiConfig := &api.Config{
-				Key:    ciConfig.GetString("api.key"),
-				Scheme: ciConfig.GetString("api.proto"),
-				Host:   ciConfig.GetString("api.host"),
-				Prefix: ciConfig.GetString("api.prefix"),
+				Key:    v.GetString("api.key"),
+				Scheme: v.GetString("api.proto"),
+				Host:   v.GetString("api.host"),
+				Prefix: v.GetString("api.prefix"),
 			}
-			client := api.NewClient(logger, apiConfig)
+			docker := api.NewClient(logger, apiConfig)
 
 			var postDeploy *bool
 			if postDeployFlag != nil && postDeployFlag.Changed {
@@ -135,12 +135,12 @@ var Cmd = &cobra.Command{
 			}
 
 			fmt.Print(fmt.Sprintf("Deploying build #%s to %s...", config.Metadata.Number, config.Stack.Instance.Title))
-			result, err := client.DeployBuild(opts.uuid, payload)
+			result, err := docker.DeployBuild(opts.uuid, payload)
 			if err != nil {
 				return err
 			}
 
-			err = client.WaitTask(result.Task.UUID)
+			err = docker.WaitTask(result.Task.UUID)
 			if err != nil {
 				return err
 			}

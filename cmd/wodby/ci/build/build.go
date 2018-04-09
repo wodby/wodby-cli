@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"fmt"
 	"io/ioutil"
-	"strings"
 	"html/template"
 	"bytes"
 
@@ -40,7 +39,7 @@ ARG COPY_FROM
 ARG COPY_TO
 COPY --chown={{.User}}:{{.User}} ${COPY_FROM} ${COPY_TO}`
 
-var ciConfig = viper.New()
+var v = viper.New()
 
 // Cmd represents the deploy command
 var Cmd = &cobra.Command{
@@ -49,9 +48,9 @@ var Cmd = &cobra.Command{
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		opts.services = args
 
-		ciConfig.SetConfigFile(path.Join("/tmp/.wodby-ci.json"))
+		v.SetConfigFile(path.Join("/tmp/.wodby-ci.json"))
 
-		err := ciConfig.ReadInConfig()
+		err := v.ReadInConfig()
 		if err != nil {
 			return err
 		}
@@ -61,12 +60,12 @@ var Cmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		config := new(config.Config)
 
-		err := ciConfig.Unmarshal(config)
+		err := v.Unmarshal(config)
 		if err != nil {
 			return err
 		}
 
-		var services []types.Service
+		var services map[string]types.Service
 		var dockerfile string
 		buildArgs := make(map[string]string)
 		autoBuild := len(opts.services) == 0
@@ -90,7 +89,7 @@ var Cmd = &cobra.Command{
 				if err != nil {
 					return err
 				} else {
-					services = append(services, service)
+					services[service.Name] = service
 				}
 			}
 		}
@@ -106,13 +105,13 @@ var Cmd = &cobra.Command{
 				}
 			}
 
-			client := docker.NewClient()
+			docker := docker.NewClient()
 
 			var context string
 			if config.DataContainer != "" {
 				context = fmt.Sprintf("/tmp/wodby-build-%s", config.DataContainer)
 			} else {
-				context = ciConfig.GetString("context")
+				context = v.GetString("context")
 			}
 
 			if _, err := os.Stat(context + ".dockerignore"); os.IsNotExist(err) {
@@ -150,12 +149,10 @@ var Cmd = &cobra.Command{
 						buildArgs["COPY_TO"] = opts.to
 
 						// Define and set default user in dockerfile.
-						defaultUser, err := client.GetDefaultImageUser(service.Image)
+						defaultUser, err := docker.GetDefaultImageUser(service.Image)
 
 						if err != nil {
 							return err
-						} else if defaultUser == "" {
-							defaultUser = "root"
 						}
 
 						t, err := template.New("Dockerfile").Parse(Dockerfile)
@@ -163,7 +160,7 @@ var Cmd = &cobra.Command{
 							return err
 						}
 
-						data := struct{User string}{User: strings.TrimSuffix(defaultUser, "\n")}
+						data := struct{User string}{User: defaultUser}
 						var tpl bytes.Buffer
 
 						if err := t.Execute(&tpl, data); err != nil {
@@ -183,7 +180,7 @@ var Cmd = &cobra.Command{
 					image := fmt.Sprintf("%s:%s", service.CI.Build.Image, config.Metadata.Number)
 
 					fmt.Println(fmt.Sprintf("Building %s image...", service.Name))
-					err := client.Build(dockerfile, image, context, buildArgs)
+					err := docker.Build(dockerfile, image, context, buildArgs)
 
 					if err != nil {
 						return err

@@ -66,12 +66,22 @@ func (c *Client) Push(image string) error {
 }
 
 func (c *Client) GetDefaultImageUser(image string) (string, error) {
+	var defaultUser string
+
 	out, err := exec.Command("docker","image", "inspect", image, "-f", "{{.ContainerConfig.User}}").CombinedOutput()
 	if err != nil {
 		return "", errors.New(string(out))
 	}
 
-	return string(out), nil
+	defaultUser = string(out)
+
+	if defaultUser == "" {
+		defaultUser = "root"
+	} else {
+		defaultUser = strings.TrimSuffix(defaultUser, "\n")
+	}
+
+	return defaultUser, nil
 }
 
 // Run runs docker container.

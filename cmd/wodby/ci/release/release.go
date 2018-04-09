@@ -14,7 +14,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-var ciConfig = viper.New()
+var v = viper.New()
 
 type options struct {
 	services []string
@@ -22,16 +22,15 @@ type options struct {
 
 var opts options
 
-// Cmd represents the deploy command
 var Cmd = &cobra.Command{
 	Use:   "release [service...]",
 	Short: "Push images",
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		opts.services = args
 
-		ciConfig.SetConfigFile(path.Join("/tmp/.wodby-ci.json"))
+		v.SetConfigFile(path.Join("/tmp/.wodby-ci.json"))
 
-		err := ciConfig.ReadInConfig()
+		err := v.ReadInConfig()
 		if err != nil {
 			return err
 		}
@@ -41,12 +40,12 @@ var Cmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		config := new(config.Config)
 
-		err := ciConfig.Unmarshal(config)
+		err := v.Unmarshal(config)
 		if err != nil {
 			return err
 		}
 
-		var services []types.Service
+		var services map[string]types.Service
 		autoRelease := len(opts.services) == 0
 
 		// Validating services for release.
@@ -68,7 +67,7 @@ var Cmd = &cobra.Command{
 				if err != nil {
 					return err
 				} else {
-					services = append(services, service)
+					services[service.Name] = service
 				}
 			}
 		}
@@ -77,10 +76,10 @@ var Cmd = &cobra.Command{
 		if len(services) != 0 {
 			imagesMap := make(map[string]bool)
 
-			client := docker.NewClient()
+			docker := docker.NewClient()
 			registry := config.Stack.Registry
 
-			err = client.Login(registry.Host, registry.Auth.Username, registry.Auth.Password)
+			err = docker.Login(registry.Host, registry.Auth.Username, registry.Auth.Password)
 			if err != nil {
 				return err
 			}
@@ -98,7 +97,7 @@ var Cmd = &cobra.Command{
 
 					fmt.Println(fmt.Sprintf("Releasing %s image...", service.Name))
 
-					err = client.Push(image)
+					err = docker.Push(image)
 					if err != nil {
 						return err
 					}

@@ -20,12 +20,14 @@ import (
 	"gopkg.in/yaml.v2"
 	"github.com/wodby/wodby-cli/pkg/types"
 	"strings"
+	"github.com/wodby/wodby-cli/cmd/wodby/ci/run"
 )
 
 type options struct {
-	uuid    string
-	context string
-	dind    bool
+	uuid    	string
+	context 	string
+	dind    	bool
+	skipPermFix bool
 }
 
 var opts options
@@ -128,37 +130,6 @@ var Cmd = &cobra.Command{
 			}
 		}
 
-		dockerClient := docker.NewClient()
-
-		if config.Stack.Init != nil {
-			for _, service := range config.Stack.Services {
-				if service.Name == config.Stack.Init.Service {
-					fmt.Println(fmt.Sprintf("Initializing service %s", service.Name))
-
-					runConfig := docker.RunConfig{
-						Image:   service.Image,
-					}
-
-					for envName, envVal := range config.Stack.Init.Environment {
-						runConfig.Env = append(runConfig.Env, fmt.Sprintf("%s=%s", envName, envVal))
-					}
-
-					if config.DataContainer != "" {
-						runConfig.VolumesFrom = []string{config.DataContainer}
-						runConfig.WorkDir = "/mnt/codebase"
-					} else {
-						runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:/mnt/codebase", config.Context))
-					}
-
-					err := dockerClient.Run(strings.Split(config.Stack.Init.Command, " "), runConfig)
-					if err != nil {
-						return err
-					}
-					break
-				}
-			}
-		}
-
 		content, err := json.MarshalIndent(config, "", "    ")
 		if err != nil {
 			return err
@@ -169,6 +140,58 @@ var Cmd = &cobra.Command{
 			return err
 		}
 
+		// Fixing permissions for managed stacks.
+		if !config.Stack.Custom && !opts.skipPermFix {
+			dockerClient := docker.NewClient()
+			service := config.Stack.Services[config.Stack.Default]
+			defaultUser, err := dockerClient.GetDefaultImageUser(service.Image)
+
+			if err != nil {
+				return err
+			}
+
+			if defaultUser != "root" {
+				fmt.Print("Fixing codebase permissions...")
+
+				runConfig := docker.RunConfig{
+					Image:      service.Image,
+					User:       "root",
+				}
+
+				args := []string{"chown", "-R", fmt.Sprintf("%s:%s", defaultUser, defaultUser), "."}
+				err = run.Run(args, &config, runConfig)
+
+				if err != nil {
+					return err
+				}
+
+				fmt.Println("DONE")
+			}
+		}
+
+		// Initializing managed stack services.
+		if config.Stack.Init != nil {
+			service := config.Stack.Services[config.Stack.Init.Service]
+
+			fmt.Print(fmt.Sprintf("Initializing service %s...", service.Name))
+
+			runConfig := docker.RunConfig{
+				Image:   service.Image,
+			}
+
+			for envName, envVal := range config.Stack.Init.Environment {
+				runConfig.Env = append(runConfig.Env, fmt.Sprintf("%s=%s", envName, envVal))
+			}
+
+			err := run.Run(strings.Split(config.Stack.Init.Command, " "), &config, runConfig)
+
+			if err != nil {
+				return err
+			}
+
+			fmt.Println("DONE")
+		}
+
 		return nil
 	},
 }
@@ -176,4 +199,5 @@ var Cmd = &cobra.Command{
 func init() {
 	Cmd.Flags().StringVarP(&opts.context, "context", "c", "", "Build context (default: current directory)")
 	Cmd.Flags().BoolVar(&opts.dind, "dind", false, "Use data container for sharing files between commands")
+	Cmd.Flags().BoolVar(&opts.skipPermFix, "skip-permissions-fix", false, "Skip permissions fix for codebase. May shorten init time")
 }

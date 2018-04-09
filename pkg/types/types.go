@@ -56,7 +56,7 @@ type Service struct {
 
 // BuildConfig is the build config response type.
 type BuildConfig struct {
-	Services []Service `json,mapstructure:"services"`
+	Services map[string]Service `json,mapstructure:"services"`
 	Init *struct {
 		Service     string                 `json,mapstructure:"service"`
 		Command     string                 `json,mapstructure:"command"`

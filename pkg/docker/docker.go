@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"bytes"
+	"github.com/docker/docker/distribution"
 )
 
 // Client is docker client representation.
@@ -58,19 +59,30 @@ func (c *Client) Build(dockerfile string, image string, context string, buildArg
 	return cmdStartVerbose(cmd)
 }
 
-// Push pushes docker image.
 func (c *Client) Push(image string) error {
 	cmd := exec.Command("docker", "push", image)
 
 	return cmdStartVerbose(cmd)
 }
 
+func (c *Client) Pull(image string) error {
+	cmd := exec.Command("docker", "pull", image)
+
+	return cmdStartVerbose(cmd)
+}
+
 func (c *Client) GetDefaultImageUser(image string) (string, error) {
-	var defaultUser string
+	defaultUser := ""
+
+	err := c.Pull(image)
+
+	if err != nil {
+		return defaultUser, err
+	}
 
 	out, err := exec.Command("docker","image", "inspect", image, "-f", "{{.ContainerConfig.User}}").CombinedOutput()
 	if err != nil {
-		return "", errors.New(string(out))
+		return defaultUser, errors.New(string(out))
 	}
 
 	defaultUser = string(out)

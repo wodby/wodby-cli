@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"bytes"
-	"github.com/docker/docker/distribution"
 )
 
 // Client is docker client representation.

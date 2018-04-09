@@ -30,7 +30,7 @@ var Cmd = &cobra.Command{
 	Short: "Run container",
 	Args: cobra.MinimumNArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
-		ciConfig.SetConfigFile(path.Join(os.Getenv("HOME"), ".wodby-ci.json"))
+		ciConfig.SetConfigFile(path.Join( "/tmp/.wodby-ci.json"))
 
 		err := ciConfig.ReadInConfig()
 		if err != nil {

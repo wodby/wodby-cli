@@ -1,7 +1,6 @@
 package run
 
 import (
-	"os"
 	"path"
 
 	"fmt"

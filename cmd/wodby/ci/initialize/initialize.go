@@ -91,8 +91,8 @@ var Cmd = &cobra.Command{
 		}
 
 		fmt.Println(fmt.Sprintf("Preparing build for instance \"%s\"", config.Stack.Instance.Title))
-
 		dind := false
+
 		if opts.dind {
 			dind = true
 		} else if config.Metadata.Provider == types.CircleCIName {
@@ -110,12 +110,10 @@ var Cmd = &cobra.Command{
 			if cfg.Jobs.Build.Docker != nil {
 				dind = true
 			}
-		} else if config.Metadata.Provider == types.CodeshipProCIName {
-			dind = true
 		}
 
 		if dind {
-			fmt.Println("Using docker in docker build schema")
+			fmt.Print("Using docker in docker build schema. Creating data container...")
 
 			config.DataContainer = uuid.New()
 
@@ -128,6 +126,8 @@ var Cmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
+
+			fmt.Println("DONE")
 		}
 
 		content, err := json.MarshalIndent(config, "", "    ")
@@ -154,12 +154,12 @@ var Cmd = &cobra.Command{
 				fmt.Print("Fixing codebase permissions...")
 
 				runConfig := docker.RunConfig{
-					Image:      service.Image,
-					User:       "root",
+					Image: service.Image,
+					User:  "root",
 				}
 
 				args := []string{"chown", "-R", fmt.Sprintf("%s:%s", defaultUser, defaultUser), "."}
-				err = run.Run(args, &config, runConfig)
+				err = run.Run(args, runConfig)
 
 				if err != nil {
 					return err
@@ -183,7 +183,7 @@ var Cmd = &cobra.Command{
 				runConfig.Env = append(runConfig.Env, fmt.Sprintf("%s=%s", envName, envVal))
 			}
 
-			err := run.Run(strings.Split(config.Stack.Init.Command, " "), &config, runConfig)
+			err := run.Run(strings.Split(config.Stack.Init.Command, " "), runConfig)
 
 			if err != nil {
 				return err

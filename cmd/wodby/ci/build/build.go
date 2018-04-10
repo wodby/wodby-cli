@@ -144,7 +144,7 @@ var Cmd = &cobra.Command{
 
 						dockerfile = string(d)
 
-					} else if opts.from != "" && opts.to != "" {
+					} else {
 						buildArgs["COPY_FROM"] = opts.from
 						buildArgs["COPY_TO"] = opts.to
 
@@ -168,9 +168,6 @@ var Cmd = &cobra.Command{
 						}
 
 						dockerfile = tpl.String()
-
-					} else {
-						return errors.New("Missing mandatory flags for service build: --dockerfile or --from --to")
 					}
 				}
 
@@ -197,7 +194,7 @@ var Cmd = &cobra.Command{
 
 func init() {
 	Cmd.Flags().BoolVar(&opts.fixPermissions, "fix-permissions", false, "Fix ownership of copied codebase to image default user")
-	Cmd.Flags().StringVarP(&opts.from, "from", "f", ".", "relative path to codebase")
-	Cmd.Flags().StringVarP(&opts.to, "to", "t", "", "codebase destination path in container")
+	Cmd.Flags().StringVarP(&opts.from, "from", "f", ".", "Relative path to codebase")
+	Cmd.Flags().StringVarP(&opts.to, "to", "t", ".", "Codebase destination path in container")
 	Cmd.Flags().StringVarP(&opts.dockerfile, "dockerfile", "d", "", "relative path to dockerfile")
 }

@@ -84,12 +84,10 @@ func (c *Client) GetDefaultImageUser(image string) (string, error) {
 		return defaultUser, errors.New(string(out))
 	}
 
-	defaultUser = string(out)
+	defaultUser = strings.TrimSuffix(string(out), "\n")
 
 	if defaultUser == "" {
 		defaultUser = "root"
-	} else {
-		defaultUser = strings.TrimSuffix(defaultUser, "\n")
 	}
 
 	return defaultUser, nil

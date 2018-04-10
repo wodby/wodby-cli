@@ -65,9 +65,7 @@ var Cmd = &cobra.Command{
 			return err
 		}
 
-		var services map[string]types.Service
-		var dockerfile string
-		buildArgs := make(map[string]string)
+		services := make(map[string]types.Service)
 		autoBuild := len(opts.services) == 0
 
 		// Validating services.
@@ -84,108 +82,122 @@ var Cmd = &cobra.Command{
 			fmt.Println("Validating services")
 
 			for _, svc := range opts.services {
-				service, err := config.FindService(svc)
+				if svc[len(svc)-1] == '-' {
+					matchingServices, err := config.FindServicesByPrefix(svc)
 
-				if err != nil {
-					return err
+					if err != nil {
+						return err
+					}
+
+					for _, matchingSvc := range matchingServices {
+						fmt.Printf("Found matching service %s\n", matchingSvc.Name)
+						services[matchingSvc.Name] = matchingSvc
+					}
 				} else {
+					service, err := config.FindService(svc)
+
+					if err != nil {
+						return err
+					}
+
 					services[service.Name] = service
 				}
 			}
 		}
 
-		// Building services.
-		if len(services) != 0 {
-			if config.DataContainer != "" {
-				from := fmt.Sprintf("%s:/mnt/codebase", config.DataContainer)
-				to := fmt.Sprintf("/tmp/wodby-build-%s", config.DataContainer)
-				_, err := exec.Command("docker", "cp", from, to).CombinedOutput()
-				if err != nil {
-					return err
-				}
+		if len(services) == 0 {
+			errors.New("No valid services have been found for build")
+		}
+		if config.DataContainer != "" {
+			from := fmt.Sprintf("%s:/mnt/codebase", config.DataContainer)
+			to := fmt.Sprintf("/tmp/wodby-build-%s", config.DataContainer)
+			_, err := exec.Command("dockerClient", "cp", from, to).CombinedOutput()
+			if err != nil {
+				return err
 			}
+		}
 
-			docker := docker.NewClient()
+		var context string
+		if config.DataContainer != "" {
+			context = fmt.Sprintf("/tmp/wodby-build-%s", config.DataContainer)
+		} else {
+			context = v.GetString("context")
+		}
 
-			var context string
-			if config.DataContainer != "" {
-				context = fmt.Sprintf("/tmp/wodby-build-%s", config.DataContainer)
+		if _, err := os.Stat(context + ".dockerignore"); os.IsNotExist(err) {
+			err = ioutil.WriteFile(path.Join(context + ".dockerignore"), []byte(Dockerignore), 0600)
+			if err != nil {
+				return err
+			}
+		}
+
+		var dockerfile string
+		buildArgs := make(map[string]string)
+		imagesMap := make(map[string]bool)
+
+		dockerClient := docker.NewClient()
+
+		// Building images.
+		for _, service := range services {
+			// Auto build for managed stacks.
+			if autoBuild {
+				if service.CI == nil {
+					continue
+				}
+
+				dockerfile = service.CI.Build.Dockerfile
+			// Configurable build for custom stacks.
 			} else {
-				context = v.GetString("context")
-			}
+				buildArgs["WODBY_BASE_IMAGE"] = service.Image
 
-			if _, err := os.Stat(context + ".dockerignore"); os.IsNotExist(err) {
-				err = ioutil.WriteFile(path.Join(context + ".dockerignore"), []byte(Dockerignore), 0600)
-				if err != nil {
-					return err
-				}
-			}
-
-			imagesMap := make(map[string]bool)
-
-			for _, service := range services {
-				// Auto build for managed stacks.
-				if autoBuild {
-					if service.CI == nil {
-						continue
-					}
-
-					dockerfile = service.CI.Build.Dockerfile
-				// Configurable build for custom stacks.
-				} else {
-					buildArgs["WODBY_BASE_IMAGE"] = service.Image
-
-					if opts.dockerfile != "" {
-						d, err := ioutil.ReadFile(context + "/" + opts.dockerfile)
-
-						if err != nil {
-							return err
-						}
-
-						dockerfile = string(d)
-
-					} else {
-						buildArgs["COPY_FROM"] = opts.from
-						buildArgs["COPY_TO"] = opts.to
-
-						// Define and set default user in dockerfile.
-						defaultUser, err := docker.GetDefaultImageUser(service.Image)
-
-						if err != nil {
-							return err
-						}
-
-						t, err := template.New("Dockerfile").Parse(Dockerfile)
-						if err != nil {
-							return err
-						}
-
-						data := struct{User string}{User: defaultUser}
-						var tpl bytes.Buffer
-
-						if err := t.Execute(&tpl, data); err != nil {
-							return err
-						}
-
-						dockerfile = tpl.String()
-					}
-				}
-
-				// Make sure image hasn't been built already.
-				if _, ok := imagesMap[service.CI.Build.Image]; !ok {
-					imagesMap[service.CI.Build.Image] = true
-					image := fmt.Sprintf("%s:%s", service.CI.Build.Image, config.Metadata.Number)
-
-					fmt.Println(fmt.Sprintf("Building %s image...", service.Name))
-					err := docker.Build(dockerfile, image, context, buildArgs)
+				if opts.dockerfile != "" {
+					d, err := ioutil.ReadFile(context + "/" + opts.dockerfile)
 
 					if err != nil {
 						return err
 					}
+
+					dockerfile = string(d)
+
+				} else {
+					buildArgs["COPY_FROM"] = opts.from
+					buildArgs["COPY_TO"] = opts.to
+
+					// Define and set default user in dockerfile.
+					defaultUser, err := dockerClient.GetDefaultImageUser(service.Image)
+
+					if err != nil {
+						return err
+					}
+
+					t, err := template.New("Dockerfile").Parse(Dockerfile)
+					if err != nil {
+						return err
+					}
+
+					data := struct{User string}{User: defaultUser}
+					var tpl bytes.Buffer
+
+					if err := t.Execute(&tpl, data); err != nil {
+						return err
+					}
+
+					dockerfile = tpl.String()
 				}
 			}
-		} else {
-			errors.New("No valid services have been found for build")
+
+			// Make sure image hasn't been built already.
+			if _, ok := imagesMap[service.CI.Build.Image]; !ok {
+				imagesMap[service.CI.Build.Image] = true
+				image := fmt.Sprintf("%s:%s", service.CI.Build.Image, config.Metadata.Number)
+
+				fmt.Printf("Building %s image...", service.Name)
+				err := dockerClient.Build(dockerfile, image, context, buildArgs)
+
+				if err != nil {
+					return err
+				}
+			}
 		}
 
 		return nil

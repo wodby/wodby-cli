@@ -45,7 +45,7 @@ var Cmd = &cobra.Command{
 			return err
 		}
 
-		var services map[string]types.Service
+		services := make(map[string]types.Service)
 		autoRelease := len(opts.services) == 0
 
 		// Validating services for release.
@@ -62,12 +62,25 @@ var Cmd = &cobra.Command{
 			fmt.Println("Validating services")
 
 			for _, svc := range opts.services {
-				service, err := config.FindService(svc)
+				if svc[len(svc)-1] == '-' {
+					matchingServices, err := config.FindServicesByPrefix(svc)
 
-				if err != nil {
-					return err
+					if err != nil {
+						return err
+					}
+
+					for _, matchingSvc := range matchingServices {
+						fmt.Printf("Found matching service %s\n", matchingSvc.Name)
+						services[matchingSvc.Name] = matchingSvc
+					}
 				} else {
-					services[service.Name] = service
+					service, err := config.FindService(svc)
+
+					if err != nil {
+						return err
+					} else {
+						services[service.Name] = service
+					}
 				}
 			}
 		}
@@ -95,7 +108,7 @@ var Cmd = &cobra.Command{
 					imagesMap[service.CI.Build.Image] = true
 					image := fmt.Sprintf("%s:%s", service.CI.Build.Image, config.Metadata.Number)
 
-					fmt.Println(fmt.Sprintf("Releasing %s image...", service.Name))
+					fmt.Printf("Pushing %s image...", service.Name)
 
 					err = docker.Push(image)
 					if err != nil {

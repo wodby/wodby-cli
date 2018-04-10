@@ -4,6 +4,8 @@ import (
 	"github.com/wodby/wodby-cli/pkg/api"
 	"github.com/wodby/wodby-cli/pkg/types"
 	"github.com/pkg/errors"
+	"fmt"
+	"strings"
 )
 
 type Config struct {
@@ -23,4 +25,20 @@ func (config *Config) FindService(serviceName string) (types.Service, error) {
 	}
 
 	return types.Service{}, errors.New("Service not found")
+}
+
+func (config *Config) FindServicesByPrefix(prefix string) ([]types.Service, error) {
+	var services []types.Service
+
+	for _, service := range config.Stack.Services {
+		if strings.HasPrefix(service.Name, prefix) {
+			services = append(services, service)
+		}
+	}
+
+	if len(services) == 0 {
+		return services, errors.New(fmt.Sprintf("No matching services found with prefix %s", prefix))
+	}
+
+	return services, nil
 }

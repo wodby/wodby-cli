@@ -73,7 +73,7 @@ var Cmd = &cobra.Command{
 		}
 		client := api.NewClient(logger, apiConfig)
 
-		fmt.Print(fmt.Sprintf("Requesting build info for instance %s...", opts.uuid))
+		fmt.Printf("Requesting build info for instance %s...", opts.uuid)
 
 		stack, err := client.GetBuildConfig(opts.uuid)
 		if err != nil {
@@ -90,7 +90,6 @@ var Cmd = &cobra.Command{
 			Metadata: types.NewBuildMetadata(),
 		}
 
-		fmt.Println(fmt.Sprintf("Preparing build for instance \"%s\"", config.Stack.Instance.Title))
 		dind := false
 
 		if opts.dind {
@@ -173,7 +172,7 @@ var Cmd = &cobra.Command{
 		if config.Stack.Init != nil {
 			service := config.Stack.Services[config.Stack.Init.Service]
 
-			fmt.Print(fmt.Sprintf("Initializing service %s...", service.Name))
+			fmt.Printf("Initializing service %s...", service.Name)
 
 			runConfig := docker.RunConfig{
 				Image:   service.Image,

@@ -20,7 +20,6 @@ import (
 	"gopkg.in/yaml.v2"
 	"github.com/wodby/wodby-cli/pkg/types"
 	"strings"
-	"github.com/wodby/wodby-cli/cmd/wodby/ci/run"
 )
 
 type options struct {

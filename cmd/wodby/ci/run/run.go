@@ -13,7 +13,7 @@ import (
 )
 
 type options struct {
-	service    string
+	services   []string
 	image      string
 	volumes    []string
 	env        []string
@@ -46,33 +46,55 @@ var Cmd = &cobra.Command{
 			return err
 		}
 
-		if opts.service != "" {
-			for _, service := range config.Stack.Services {
-				if service.Name == opts.service {
-					opts.image = service.Image
+		var images []string
+
+		if len(opts.services) != 0 {
+			for _, svc := range opts.services {
+				// Find services by prefix.
+				if svc[len(svc)-1] == '-' {
+					matchingServices, err := config.FindServicesByPrefix(svc)
+
+					if err != nil {
+						return err
+					}
+
+					for _, service := range matchingServices {
+						fmt.Printf("Found matching svc %s\n", service.Name)
+						images = append(images, service.Image)
+					}
+				} else {
+					service, err := config.FindService(svc)
+
+					if err != nil {
+						return err
+					}
+
+					images = append(images, service.Image)
 				}
 			}
 		} else if opts.image == "" {
-			for _, service := range config.Stack.Services {
-				if service.Name == config.Stack.Default {
-					opts.image = service.Image
-				}
+			images = append(images, config.Stack.Services[config.Stack.Default].Image)
+		} else {
+			images = append(images, opts.image)
+		}
+
+		if len(images) == 0 {
+			return errors.New("No valid images found for this run")
+		}
+
+		for _, image := range images {
+			runConfig := docker.RunConfig{
+				Image:      image,
+				Volumes:    opts.volumes,
+				Env:        opts.env,
+				User:       opts.user,
+				Entrypoint: opts.entrypoint,
 			}
+
+			return Run(args, runConfig)
 		}
 
-		if opts.image == "" {
-			return errors.New("image or service must be specified")
-		}
-
-		runConfig := docker.RunConfig{
-			Image:      opts.image,
-			Volumes:    opts.volumes,
-			Env:        opts.env,
-			User:       opts.user,
-			Entrypoint: opts.entrypoint,
-		}
-
-		return Run(args, runConfig)
+		return nil
 	},
 }
 
@@ -97,10 +119,10 @@ func Run(args []string, runConfig docker.RunConfig) error {
 }
 
 func init() {
-	Cmd.Flags().StringVar(&opts.entrypoint, "entrypoint", "", "entrypoint")
-	Cmd.Flags().StringVarP(&opts.service, "service", "s", "", "service")
-	Cmd.Flags().StringVarP(&opts.image, "image", "i", "", "image")
-	Cmd.Flags().StringSliceVarP(&opts.volumes, "volume", "v", []string{}, "volumes")
+	Cmd.Flags().StringVar(&opts.entrypoint, "entrypoint", "", "Entrypoint")
+	Cmd.Flags().StringSliceVarP(&opts.services, "services", "s", []string{}, "Service")
+	Cmd.Flags().StringVarP(&opts.image, "image", "i", "", "Image")
+	Cmd.Flags().StringSliceVarP(&opts.volumes, "volume", "v", []string{}, "Volumes")
 	Cmd.Flags().StringSliceVarP(&opts.env, "env", "e", []string{}, "Environment variables")
-	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "user")
+	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "User")
 }

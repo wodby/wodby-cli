@@ -79,6 +79,7 @@ var Cmd = &cobra.Command{
 			fmt.Println("Validating services")
 
 			for _, svc := range opts.services {
+				// Find services by prefix.
 				if svc[len(svc)-1] == '-' {
 					matchingServices, err := config.FindServicesByPrefix(svc)
 
@@ -86,9 +87,9 @@ var Cmd = &cobra.Command{
 						return err
 					}
 
-					for _, matchingSvc := range matchingServices {
-						fmt.Printf("Found matching service %s\n", matchingSvc.Name)
-						services[matchingSvc.Name] = matchingSvc
+					for _, service := range matchingServices {
+						fmt.Printf("Found matching service %s\n", service.Name)
+						services[service.Name] = service
 					}
 				} else {
 					service, err := config.FindService(svc)

@@ -19,6 +19,7 @@ type options struct {
 	env        []string
 	user       string
 	entrypoint string
+	path	   string
 }
 
 var opts options
@@ -89,6 +90,7 @@ var Cmd = &cobra.Command{
 				Env:        opts.env,
 				User:       opts.user,
 				Entrypoint: opts.entrypoint,
+				Path: 		opts.path,
 			}
 
 			return Run(args, runConfig)
@@ -113,7 +115,7 @@ func Run(args []string, runConfig docker.RunConfig) error {
 	} else {
 		runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:/mnt/codebase", cfg.Context))
 	}
-	runConfig.WorkDir = "/mnt/codebase"
+	runConfig.WorkDir = "/mnt/codebase/" + runConfig.Path
 
 	return dockerClient.Run(args, runConfig)
 }
@@ -125,4 +127,5 @@ func init() {
 	Cmd.Flags().StringSliceVarP(&opts.volumes, "volume", "v", []string{}, "Volumes")
 	Cmd.Flags().StringSliceVarP(&opts.env, "env", "e", []string{}, "Environment variables")
 	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "User")
+	Cmd.Flags().StringVarP(&opts.path, "path", "p", "", "Working dir (relative path)")
 }

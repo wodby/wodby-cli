@@ -116,7 +116,7 @@ var Cmd = &cobra.Command{
 
 			config.DataContainer = uuid.New()
 
-			_, err := exec.Command("docker", "create", "--volume=/mnt/codebase", fmt.Sprintf("--name=%s", config.DataContainer), config.Stack.Default, "/bin/true").CombinedOutput()
+			_, err := exec.Command("docker", "create", "--volume=/mnt/codebase", fmt.Sprintf("--name=%s", config.DataContainer), "wodby/alpine:3.7-2.0.0", "/bin/true").CombinedOutput()
 			if err != nil {
 				return err
 			}

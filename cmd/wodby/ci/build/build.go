@@ -109,10 +109,13 @@ var Cmd = &cobra.Command{
 		if len(services) == 0 {
 			errors.New("No valid services have been found for build")
 		}
+
 		if config.DataContainer != "" {
+			fmt.Println("Synchronizing data container")
+
 			from := fmt.Sprintf("%s:/mnt/codebase", config.DataContainer)
 			to := fmt.Sprintf("/tmp/wodby-build-%s", config.DataContainer)
-			_, err := exec.Command("dockerClient", "cp", from, to).CombinedOutput()
+			_, err := exec.Command("docker", "cp", from, to).CombinedOutput()
 			if err != nil {
 				return err
 			}

@@ -22,7 +22,6 @@ type RunConfig struct {
 	User        string
 	WorkDir     string
 	Entrypoint  string
-	Path	    string
 }
 
 // Login authorizes in the registry.

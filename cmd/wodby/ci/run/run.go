@@ -90,34 +90,26 @@ var Cmd = &cobra.Command{
 				Env:        opts.env,
 				User:       opts.user,
 				Entrypoint: opts.entrypoint,
-				Path: 		opts.path,
 			}
 
-			return Run(args, runConfig)
+			dockerClient := docker.NewClient()
+
+			if config.DataContainer != "" {
+				runConfig.VolumesFrom = []string{config.DataContainer}
+			} else {
+				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:/mnt/codebase", config.Context))
+			}
+			runConfig.WorkDir = "/mnt/codebase/" + opts.path
+
+			err := dockerClient.Run(args, runConfig)
+
+			if err != nil {
+				return err
+			}
 		}
 
 		return nil
 	},
-}
-
-func Run(args []string, runConfig docker.RunConfig) error {
-	cfg := new(config.Config)
-
-	err := v.Unmarshal(cfg)
-	if err != nil {
-		return err
-	}
-
-	dockerClient := docker.NewClient()
-
-	if cfg.DataContainer != "" {
-		runConfig.VolumesFrom = []string{cfg.DataContainer}
-	} else {
-		runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:/mnt/codebase", cfg.Context))
-	}
-	runConfig.WorkDir = "/mnt/codebase/" + runConfig.Path
-
-	return dockerClient.Run(args, runConfig)
 }
 
 func init() {

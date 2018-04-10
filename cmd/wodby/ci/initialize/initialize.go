@@ -139,9 +139,10 @@ var Cmd = &cobra.Command{
 			return err
 		}
 
+		dockerClient := docker.NewClient()
+
 		// Fixing permissions for managed stacks.
 		if !config.Stack.Custom && !opts.skipPermFix {
-			dockerClient := docker.NewClient()
 			service := config.Stack.Services[config.Stack.Default]
 			defaultUser, err := dockerClient.GetDefaultImageUser(service.Image)
 
@@ -157,8 +158,15 @@ var Cmd = &cobra.Command{
 					User:  "root",
 				}
 
+				if config.DataContainer != "" {
+					runConfig.VolumesFrom = []string{config.DataContainer}
+				} else {
+					runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:/mnt/codebase", config.Context))
+				}
+				runConfig.WorkDir = "/mnt/codebase/"
+
 				args := []string{"chown", "-R", fmt.Sprintf("%s:%s", defaultUser, defaultUser), "."}
-				err = run.Run(args, runConfig)
+				err := dockerClient.Run(args, runConfig)
 
 				if err != nil {
 					return err
@@ -182,7 +190,14 @@ var Cmd = &cobra.Command{
 				runConfig.Env = append(runConfig.Env, fmt.Sprintf("%s=%s", envName, envVal))
 			}
 
-			err := run.Run(strings.Split(config.Stack.Init.Command, " "), runConfig)
+			if config.DataContainer != "" {
+				runConfig.VolumesFrom = []string{config.DataContainer}
+			} else {
+				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:/mnt/codebase", config.Context))
+			}
+			runConfig.WorkDir = "/mnt/codebase/"
+
+			err := dockerClient.Run(strings.Split(config.Stack.Init.Command, " "), runConfig)
 
 			if err != nil {
 				return err

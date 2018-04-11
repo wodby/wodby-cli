@@ -33,11 +33,17 @@ const Dockerignore = `.git
 .gitignore
 .dockerignore`
 
-const Dockerfile = `ARG WODBY_BASE_IMAGE
+const DockerfilePermFix = `ARG WODBY_BASE_IMAGE
 FROM ${WODBY_BASE_IMAGE}
 ARG COPY_FROM
 ARG COPY_TO
 COPY --chown={{.User}}:{{.User}} ${COPY_FROM} ${COPY_TO}`
+
+const Dockerfile = `ARG WODBY_BASE_IMAGE
+FROM ${WODBY_BASE_IMAGE}
+ARG COPY_FROM
+ARG COPY_TO
+COPY ${COPY_FROM} ${COPY_TO}`
 
 var v = viper.New()
 
@@ -167,26 +173,30 @@ var Cmd = &cobra.Command{
 					buildArgs["COPY_FROM"] = opts.from
 					buildArgs["COPY_TO"] = opts.to
 
-					// Define and set default user in dockerfile.
-					defaultUser, err := dockerClient.GetDefaultImageUser(service.Image)
+					if opts.fixPermissions {
+						// Define and set default user in dockerfile.
+						defaultUser, err := dockerClient.GetDefaultImageUser(service.Image)
 
-					if err != nil {
-						return err
+						if err != nil {
+							return err
+						}
+
+						t, err := template.New("Dockerfile").Parse(DockerfilePermFix)
+						if err != nil {
+							return err
+						}
+
+						data := struct{User string}{User: defaultUser}
+						var tpl bytes.Buffer
+
+						if err := t.Execute(&tpl, data); err != nil {
+							return err
+						}
+
+						dockerfile = tpl.String()
+					} else {
+						dockerfile = Dockerfile
 					}
-
-					t, err := template.New("Dockerfile").Parse(Dockerfile)
-					if err != nil {
-						return err
-					}
-
-					data := struct{User string}{User: defaultUser}
-					var tpl bytes.Buffer
-
-					if err := t.Execute(&tpl, data); err != nil {
-						return err
-					}
-
-					dockerfile = tpl.String()
 				}
 			}
 

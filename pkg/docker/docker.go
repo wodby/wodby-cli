@@ -35,22 +35,22 @@ func (c *Client) Login(host string, username string, password string) error {
 }
 
 // Build builds docker image.
-func (c *Client) Build(dockerfile string, image string, context string, buildArgs map[string]string) error {
-	args := []string{
-		"build",
-		"-t",
-		image,
-		"-f",
-		"-",
-		context,
+func (c *Client) Build(dockerfile string, tags []string, context string, buildArgs map[string]string) error {
+	args := []string{"build"}
+
+	for _, tag := range tags {
+		args = append(args, "-t", tag)
 	}
+
+	args = append(args, "-f", "-", context)
 
 	if len(buildArgs) != 0 {
 		for name, value := range buildArgs {
-			args = append(args, "--build-arg")
-			args = append(args, fmt.Sprintf("%s=%s", name, value))
+			args = append(args, "--build-arg", fmt.Sprintf("%s=%s", name, value))
 		}
 	}
+
+	fmt.Printf("BUILD COMMAND: docker %s\n", strings.Join(args, " "))
 
 	cmd := exec.Command("docker", args...)
 	cmd.Stdin = strings.NewReader(dockerfile)
@@ -115,6 +115,8 @@ func (c *Client) Run(args []string, config RunConfig) error {
 		command = append(command, fmt.Sprintf("--entrypoint=%s", config.Entrypoint))
 	}
 	command = append(append(command, config.Image), args...)
+
+	fmt.Printf("RUN COMMAND: docker %s\n", strings.Join(command, " "))
 
 	// Show run command progress.
 	cmd := exec.Command("docker", command...)

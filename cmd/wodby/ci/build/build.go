@@ -17,6 +17,8 @@ import (
 	"github.com/wodby/wodby-cli/pkg/types"
 
 	"github.com/pkg/errors"
+	"reflect"
+	"strings"
 )
 
 type options struct {
@@ -25,6 +27,13 @@ type options struct {
 	to         		string
 	dockerfile 		string
 	services 		[]string
+}
+
+type imageBuild struct {
+	dockerfile 		string
+	buildArgs  		map[string]string
+	tags			[]string
+	serviceNames   	[]string
 }
 
 var opts options
@@ -141,14 +150,15 @@ var Cmd = &cobra.Command{
 			}
 		}
 
-		var dockerfile string
-		buildArgs := make(map[string]string)
-		imagesMap := make(map[string]bool)
-
 		dockerClient := docker.NewClient()
 
-		// Building images.
+		var dockerfile string
+		imageBuilds := make(map[string]*imageBuild)
+
+		// Prepare image builds.
 		for _, service := range services {
+			buildArgs := make(map[string]string)
+
 			// Auto build for managed stacks.
 			if autoBuild {
 				if service.CI == nil {
@@ -200,17 +210,33 @@ var Cmd = &cobra.Command{
 				}
 			}
 
-			// Make sure image hasn't been built already.
-			if _, ok := imagesMap[service.CI.Build.Image]; !ok {
-				imagesMap[service.CI.Build.Image] = true
-				image := fmt.Sprintf("%s:%s", service.CI.Build.Image, config.Metadata.Number)
+			tag := fmt.Sprintf("%s:%s", service.CI.Build.Image, config.Metadata.Number)
 
-				fmt.Printf("Building %s image...", service.Name)
-				err := dockerClient.Build(dockerfile, image, context, buildArgs)
-
-				if err != nil {
-					return err
+			// Group equal builds in one build with multiple tags.
+			if build, ok := imageBuilds[service.Image]; ok {
+				if build.dockerfile == dockerfile && reflect.DeepEqual(build.buildArgs, buildArgs) {
+					imageBuilds[service.Image].tags = append(imageBuilds[service.Image].tags, tag)
+					imageBuilds[service.Image].serviceNames = append(imageBuilds[service.Image].serviceNames, service.Name)
 				}
+			} else {
+				build := &imageBuild{
+					dockerfile: dockerfile,
+					buildArgs: buildArgs,
+					tags: []string{tag},
+					serviceNames: []string{service.Name},
+				}
+
+				imageBuilds[service.Image] = build
+			}
+		}
+
+		// Building images.
+		for _, build := range imageBuilds {
+			fmt.Printf("Building image for service(s) %s...\n", strings.Join(build.serviceNames, ", "))
+			err := dockerClient.Build(build.dockerfile, build.tags, context, build.buildArgs)
+
+			if err != nil {
+				return err
 			}
 		}
 

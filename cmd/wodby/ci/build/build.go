@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"html/template"
 	"bytes"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -17,15 +18,13 @@ import (
 	"github.com/wodby/wodby-cli/pkg/types"
 
 	"github.com/pkg/errors"
-	"reflect"
-	"strings"
 )
 
 type options struct {
-	fixPermissions	bool
 	from       		string
 	to         		string
 	dockerfile 		string
+	tag 			string
 	services 		[]string
 }
 
@@ -81,18 +80,10 @@ var Cmd = &cobra.Command{
 		}
 
 		services := make(map[string]types.Service)
-		autoBuild := len(opts.services) == 0
 
-		// Validating services.
-		if autoBuild {
-			if config.Stack.Custom {
-				return errors.New("You must specify at least one service for build. Auto build is not available for custom stacks")
-			} else {
-				fmt.Println("Building predefined services")
-				services = config.Stack.Services
-			}
-		} else if !config.Stack.Custom && !config.Stack.Fork {
-			return errors.New("Building specific services is not allowed for managed stacks")
+		if len(opts.services) == 0 {
+			fmt.Println("Building all services")
+			services = config.Stack.Services
 		} else {
 			fmt.Println("Validating services")
 
@@ -158,66 +149,64 @@ var Cmd = &cobra.Command{
 		// Prepare image builds.
 		for _, service := range services {
 			buildArgs := make(map[string]string)
+			buildArgs["WODBY_BASE_IMAGE"] = service.Image
 
-			// Auto build for managed stacks.
-			if autoBuild {
-				if service.CI == nil {
-					continue
+			if opts.dockerfile != "" {
+				d, err := ioutil.ReadFile(context + "/" + opts.dockerfile)
+
+				if err != nil {
+					return err
 				}
 
-				dockerfile = service.CI.Build.Dockerfile
-			// Configurable build for custom stacks.
+				dockerfile = string(d)
+
 			} else {
-				buildArgs["WODBY_BASE_IMAGE"] = service.Image
+				buildArgs["COPY_FROM"] = opts.from
+				buildArgs["COPY_TO"] = opts.to
 
-				if opts.dockerfile != "" {
-					d, err := ioutil.ReadFile(context + "/" + opts.dockerfile)
+				// Define and set default user in dockerfile.
+				defaultUser, err := dockerClient.GetDefaultImageUser(service.Image)
 
-					if err != nil {
-						return err
-					}
-
-					dockerfile = string(d)
-
-				} else {
-					buildArgs["COPY_FROM"] = opts.from
-					buildArgs["COPY_TO"] = opts.to
-
-					if opts.fixPermissions {
-						// Define and set default user in dockerfile.
-						defaultUser, err := dockerClient.GetDefaultImageUser(service.Image)
-
-						if err != nil {
-							return err
-						}
-
-						t, err := template.New("Dockerfile").Parse(DockerfilePermFix)
-						if err != nil {
-							return err
-						}
-
-						data := struct{User string}{User: defaultUser}
-						var tpl bytes.Buffer
-
-						if err := t.Execute(&tpl, data); err != nil {
-							return err
-						}
-
-						dockerfile = tpl.String()
-					} else {
-						dockerfile = Dockerfile
-					}
+				if err != nil {
+					return err
 				}
+
+				t, err := template.New("Dockerfile").Parse(DockerfilePermFix)
+				if err != nil {
+					return err
+				}
+
+				data := struct{User string}{User: defaultUser}
+				var tpl bytes.Buffer
+
+				if err := t.Execute(&tpl, data); err != nil {
+					return err
+				}
+
+				dockerfile = tpl.String()
 			}
 
-			tag := fmt.Sprintf("%s:%s", service.CI.Build.Image, config.Metadata.Number)
+			var tag string
+
+			// Allow specifying tags for custom stacks.
+			if opts.tag != "" {
+				if config.Stack.Custom {
+					return errors.New("Specifying tags not allowed for managed stacks")
+				}
+
+				if strings.Contains(opts.tag, ":") {
+					tag = opts.tag
+				} else {
+					tag = fmt.Sprintf("%s:%s", opts.tag, config.Metadata.Number)
+				}
+			} else {
+				tag = fmt.Sprintf("%s:%s", service.Slug, config.Metadata.Number)
+			}
 
 			// Group equal builds in one build with multiple tags.
-			if build, ok := imageBuilds[service.Image]; ok {
-				if build.dockerfile == dockerfile && reflect.DeepEqual(build.buildArgs, buildArgs) {
-					imageBuilds[service.Image].tags = append(imageBuilds[service.Image].tags, tag)
-					imageBuilds[service.Image].serviceNames = append(imageBuilds[service.Image].serviceNames, service.Name)
-				}
+			if _, ok := imageBuilds[service.Image]; ok {
+				imageBuilds[service.Image].tags = append(imageBuilds[service.Image].tags, tag)
+				imageBuilds[service.Image].serviceNames = append(imageBuilds[service.Image].serviceNames, service.Name)
 			} else {
 				build := &imageBuild{
 					dockerfile: dockerfile,
@@ -245,8 +234,8 @@ var Cmd = &cobra.Command{
 }
 
 func init() {
-	Cmd.Flags().BoolVar(&opts.fixPermissions, "fix-permissions", false, "Fix ownership of copied codebase to image default user")
-	Cmd.Flags().StringVarP(&opts.from, "from", "f", ".", "Relative path to codebase")
-	Cmd.Flags().StringVarP(&opts.to, "to", "t", ".", "Codebase destination path in container")
-	Cmd.Flags().StringVarP(&opts.dockerfile, "dockerfile", "d", "", "relative path to dockerfile")
+	Cmd.Flags().StringVar(&opts.from, "from", ".", "Relative path to codebase")
+	Cmd.Flags().StringVar(&opts.to, "to", ".", "Codebase destination path in container")
+	Cmd.Flags().StringVarP(&opts.dockerfile, "dockerfile", "f", "", "Relative path to dockerfile")
+	Cmd.Flags().StringVarP(&opts.tag, "tag", "t", "", "Name and optionally a tag in the 'name:tag' format. Use if you want to use custom docker registry")
 }

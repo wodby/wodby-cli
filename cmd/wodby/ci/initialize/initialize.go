@@ -27,6 +27,7 @@ type options struct {
 	context 	string
 	dind    	bool
 	skipPermFix bool
+	buildNumber string
 }
 
 var opts options
@@ -86,7 +87,7 @@ var Cmd = &cobra.Command{
 			UUID:     opts.uuid,
 			Context:  opts.context,
 			Stack:    stack,
-			Metadata: types.NewBuildMetadata(),
+			Metadata: types.NewBuildMetadata(opts.buildNumber),
 		}
 
 		dind := false
@@ -141,7 +142,7 @@ var Cmd = &cobra.Command{
 		dockerClient := docker.NewClient()
 
 		// Fixing permissions for managed stacks.
-		if !config.Stack.Custom && !opts.skipPermFix {
+		if !opts.skipPermFix {
 			service := config.Stack.Services[config.Stack.Default]
 			defaultUser, err := dockerClient.GetDefaultImageUser(service.Image)
 
@@ -212,5 +213,6 @@ var Cmd = &cobra.Command{
 func init() {
 	Cmd.Flags().StringVarP(&opts.context, "context", "c", "", "Build context (default: current directory)")
 	Cmd.Flags().BoolVar(&opts.dind, "dind", false, "Use data container for sharing files between commands")
-	Cmd.Flags().BoolVar(&opts.skipPermFix, "skip-permissions-fix", false, "Skip permissions fix for codebase. May shorten init time")
+	Cmd.Flags().BoolVar(&opts.skipPermFix, "skip-permissions-fix", false, "Skip permissions fix for managed stacks")
+	Cmd.Flags().StringVarP(&opts.buildNumber, "build-num", "n", "","Custom build number (used if failed to identify automatically)")
 }

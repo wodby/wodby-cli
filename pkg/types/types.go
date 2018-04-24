@@ -45,13 +45,7 @@ type Task struct {
 type Service struct {
 	Name  string `json,mapstructure:"name"`
 	Image string `json,mapstructure:"image"`
-	CI *struct {
-		Build struct {
-			Image      string `json,mapstructure:"image"`
-			Dockerfile string `json,mapstructure:"dockerfile"`
-			User       string `json,mapstructure:"user"`
-		} `json,mapstructure:"build"`
-	} `json,mapstructure:"ci,omitempty"`
+	Slug  string `json,mapstructure:"slug"`
 }
 
 // BuildConfig is the build config response type.
@@ -62,9 +56,7 @@ type BuildConfig struct {
 		Command     string                 `json,mapstructure:"command"`
 		Environment map[string]interface{} `json,mapstructure:"environment"`
 	} `json,mapstructure:"init,omitempty"`
-	Instance *struct {
-		Title     	string `json,mapstructure:"title"`
-	} `json,mapstructure:"instance,omitempty"`
+	Title 	string `json,mapstructure:"title"`
 	Default string `json,mapstructure:"default"`
 	Registry struct {
 		Host string `json,mapstructure:"host"`
@@ -74,7 +66,6 @@ type BuildConfig struct {
 		} `json,mapstructure:"auth"`
 	} `json,mapstructure:"registry"`
 	Custom bool `json,mapstructure:"custom"`
-	Fork bool `json,mapstructure:"fork"`
 }
 
 type BuildMetadata struct {
@@ -86,7 +77,7 @@ type BuildMetadata struct {
 	Comment  string `json,mapstructure:"comment"`
 }
 
-func NewBuildMetadata() *BuildMetadata {
+func NewBuildMetadata(buildNumber string) *BuildMetadata {
 	if os.Getenv("TRAVIS") != "" {
 		var url = "https://travis-ci.org/" + os.Getenv("TRAVIS_REPO_SLUG") + "/builds/" + os.Getenv("TRAVIS_BUILD_ID")
 
@@ -143,7 +134,11 @@ func NewBuildMetadata() *BuildMetadata {
 	}
 
 	if metadata.Number == "" {
-		metadata.Number = strconv.FormatInt(time.Now().Unix(), 10)
+		if buildNumber != "" {
+			metadata.Number = buildNumber
+		} else {
+			metadata.Number =  strconv.FormatInt(time.Now().Unix(), 10)
+		}
 	}
 
 	return metadata

@@ -3,6 +3,7 @@ package release
 import (
 	"path"
 	"fmt"
+	"strings"
 
 	"github.com/wodby/wodby-cli/pkg/docker"
 	"github.com/wodby/wodby-cli/pkg/config"
@@ -17,6 +18,7 @@ import (
 var v = viper.New()
 
 type options struct {
+	tag 	 string
 	services []string
 }
 
@@ -46,18 +48,10 @@ var Cmd = &cobra.Command{
 		}
 
 		services := make(map[string]types.Service)
-		autoRelease := len(opts.services) == 0
 
-		// Validating services for release.
-		if autoRelease {
-			if config.Stack.Custom {
-				return errors.New("You must specify at least one service for release. Auto release is not available for custom stacks")
-			} else {
-				fmt.Println("Releasing predefined services")
-				services = config.Stack.Services
-			}
-		} else if !config.Stack.Custom && !config.Stack.Fork {
-			return errors.New("Releasing specific services is not allowed for managed stacks")
+		if len(opts.services) == 0 {
+			fmt.Println("Releasing all services")
+			services = config.Stack.Services
 		} else {
 			fmt.Println("Validating services")
 
@@ -86,41 +80,56 @@ var Cmd = &cobra.Command{
 			}
 		}
 
+		if len(services) == 0 {
+			return errors.New("No valid services have been found for release")
+		}
+
 		// Releasing services.
-		if len(services) != 0 {
-			imagesMap := make(map[string]bool)
+		imagesMap := make(map[string]bool)
 
-			docker := docker.NewClient()
-			registry := config.Stack.Registry
+		docker := docker.NewClient()
+		registry := config.Stack.Registry
 
-			err = docker.Login(registry.Host, registry.Auth.Username, registry.Auth.Password)
-			if err != nil {
-				return err
-			}
+		err = docker.Login(registry.Host, registry.Auth.Username, registry.Auth.Password)
+		if err != nil {
+			return err
+		}
 
-			for _, service := range services {
-				// Auto release for managed stacks.
-				if autoRelease && service.CI == nil {
-					continue
-				}
+		for _, service := range services {
+			// Make sure image hasn't been pushed already.
+			if _, ok := imagesMap[service.Slug]; !ok {
+				imagesMap[service.Slug] = true
 
-				// Make sure image hasn't been pushed already.
-				if _, ok := imagesMap[service.CI.Build.Image]; !ok {
-					imagesMap[service.CI.Build.Image] = true
-					image := fmt.Sprintf("%s:%s", service.CI.Build.Image, config.Metadata.Number)
+				var tag string
 
-					fmt.Printf("Pushing %s image...", service.Name)
-
-					err = docker.Push(image)
-					if err != nil {
-						return err
+				// Allow specifying tags for custom stacks.
+				if opts.tag != "" {
+					if config.Stack.Custom {
+						return errors.New("Specifying tags not allowed for managed stacks")
 					}
+
+					if strings.Contains(opts.tag, ":") {
+						tag = opts.tag
+					} else {
+						tag = fmt.Sprintf("%s:%s", opts.tag, config.Metadata.Number)
+					}
+				} else {
+					tag = fmt.Sprintf("%s:%s", service.Slug, config.Metadata.Number)
+				}
+
+				fmt.Printf("Pushing %s image...", service.Name)
+
+				err = docker.Push(tag)
+				if err != nil {
+					return err
 				}
 			}
-		} else {
-			errors.New("No valid services have been found for release")
 		}
 
 		return nil
 	},
+}
+
+func init() {
+	Cmd.Flags().StringVarP(&opts.tag, "tag", "t", "", "Name and optionally a tag in the 'name:tag' format. Use if you want to use custom docker registry")
 }

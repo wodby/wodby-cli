@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"fmt"
+	"strings"
 
 	"github.com/wodby/wodby-cli/pkg/api"
 	"github.com/wodby/wodby-cli/pkg/config"
@@ -64,17 +65,10 @@ var Cmd = &cobra.Command{
 		}
 
 		services := make(map[string]types.Service)
-		autoDeploy := len(opts.services) == 0
 
-		// Validating services for deploy.
-		if autoDeploy {
-			if config.Stack.Custom {
-				return errors.New("You must specify at least one service for deployment. Auto deploy is not available for custom stacks")
-			} else {
-				fmt.Println("Releasing predefined services")
-			}
-		} else if !config.Stack.Custom && !config.Stack.Fork {
-			return errors.New("Deploying specific services is not allowed for managed stacks")
+		if len(opts.services) == 0 {
+			fmt.Println("Deploying all services")
+			services = config.Stack.Services
 		} else {
 			fmt.Println("Validating services")
 
@@ -103,64 +97,71 @@ var Cmd = &cobra.Command{
 			}
 		}
 
-		// Deploying services.
-		if len(services) != 0 || autoDeploy {
-			apiConfig := &api.Config{
-				Key:    v.GetString("api.key"),
-				Scheme: v.GetString("api.proto"),
-				Host:   v.GetString("api.host"),
-				Prefix: v.GetString("api.prefix"),
-			}
-			docker := api.NewClient(logger, apiConfig)
-
-			var postDeploy *bool
-			if postDeployFlag != nil && postDeployFlag.Changed {
-				postDeploy = &opts.postDeploy
-			}
-
-			if opts.number != "" {
-				config.Metadata.Number = opts.number
-			}
-			if opts.url != "" {
-				config.Metadata.URL = opts.url
-			}
-			if opts.comment != "" {
-				config.Metadata.Comment = opts.comment
-			}
-
-			payload := &api.DeployBuildPayload{
-				Number:     config.Metadata.Number,
-				PostDeploy: postDeploy,
-				Metadata:   config.Metadata,
-			}
-
-			servicesTags := make(map[string]string)
-
-			if !autoDeploy {
-				for _, service := range services {
-					if opts.tag != "" {
-						servicesTags[service.Name] = opts.tag
-					} else {
-						servicesTags[service.Name] = config.Metadata.Number
-					}
-				}
-
-				payload.ServicesTags = servicesTags
-			}
-
-			fmt.Printf("Deploying build #%s to %s...", config.Metadata.Number, config.Stack.Instance.Title)
-			result, err := docker.DeployBuild(opts.uuid, payload)
-			if err != nil {
-				return err
-			}
-
-			err = docker.WaitTask(result.Task.UUID)
-			if err != nil {
-				return err
-			}
-
-			fmt.Println(" DONE")
+		if len(services) == 0 {
+			return errors.New("No valid services have been found for deploy")
 		}
+
+		// Deploying services.
+		apiConfig := &api.Config{
+			Key:    v.GetString("api.key"),
+			Scheme: v.GetString("api.proto"),
+			Host:   v.GetString("api.host"),
+			Prefix: v.GetString("api.prefix"),
+		}
+		docker := api.NewClient(logger, apiConfig)
+
+		var postDeploy *bool
+		if postDeployFlag != nil && postDeployFlag.Changed {
+			postDeploy = &opts.postDeploy
+		}
+
+		if opts.number != "" {
+			config.Metadata.Number = opts.number
+		}
+		if opts.url != "" {
+			config.Metadata.URL = opts.url
+		}
+		if opts.comment != "" {
+			config.Metadata.Comment = opts.comment
+		}
+
+		payload := &api.DeployBuildPayload{
+			Number:     config.Metadata.Number,
+			PostDeploy: postDeploy,
+			Metadata:   config.Metadata,
+		}
+
+		var tag string
+
+		// Allow specifying tags for custom stacks.
+		if opts.tag != "" {
+			if config.Stack.Custom {
+				return errors.New("Specifying tags not allowed for managed stacks")
+			}
+
+			if strings.Contains(opts.tag, ":") {
+				tag = opts.tag
+			} else {
+				tag = fmt.Sprintf("%s:%s", opts.tag, config.Metadata.Number)
+			}
+
+			for _, service := range services {
+				payload.ServicesTags[service.Name] = tag
+			}
+		}
+
+		fmt.Printf("Deploying build #%s to %s...", config.Metadata.Number, config.Stack.Title)
+		result, err := docker.DeployBuild(opts.uuid, payload)
+		if err != nil {
+			return err
+		}
+
+		err = docker.WaitTask(result.Task.UUID)
+		if err != nil {
+			return err
+		}
+
+		fmt.Println(" DONE")
 
 		return nil
 	},
@@ -170,7 +171,7 @@ func init() {
 	Cmd.Flags().StringVar(&opts.number, "build-number", "", "Build number")
 	Cmd.Flags().StringVar(&opts.url, "build-url", "", "Build url")
 	Cmd.Flags().StringVar(&opts.comment, "comment", "", "Arbitrary message")
-	Cmd.Flags().StringVar(&opts.tag, "image-tag", "", "Image tag when deploying from personal container registry")
+	Cmd.Flags().StringVarP(&opts.tag, "tag", "t", "", "Name and optionally a tag in the 'name:tag' format. Use if you want to use custom docker registry")
 	Cmd.Flags().BoolVar(&opts.postDeploy, "post-deploy", false, "Run post deployment scripts")
 	postDeployFlag = Cmd.Flags().Lookup("post-deploy")
 }

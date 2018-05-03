@@ -1,4 +1,4 @@
-package init
+package initialize
 
 import (
 	"encoding/json"
@@ -34,7 +34,7 @@ var opts options
 
 var Cmd = &cobra.Command{
 	Use:   "init INSTANCE_UUID",
-	Short: "Init config for CI process",
+	Short: "Initialize config for CI process",
 	Args: cobra.ExactArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		if viper.GetString("api_key") == "" {

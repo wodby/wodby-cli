@@ -1,4 +1,4 @@
-package initialize
+package init
 
 import (
 	"encoding/json"
@@ -34,7 +34,7 @@ var opts options
 
 var Cmd = &cobra.Command{
 	Use:   "init INSTANCE_UUID",
-	Short: "Initialize config for CI process",
+	Short: "Init config for CI process",
 	Args: cobra.ExactArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		if viper.GetString("api_key") == "" {
@@ -142,7 +142,7 @@ var Cmd = &cobra.Command{
 		dockerClient := docker.NewClient()
 
 		// Fixing permissions for managed stacks.
-		if !opts.skipPermFix {
+		if !opts.skipPermFix && !config.Stack.Custom {
 			service := config.Stack.Services[config.Stack.Default]
 			defaultUser, err := dockerClient.GetDefaultImageUser(service.Image)
 

@@ -60,10 +60,8 @@ type BuildConfig struct {
 	Default string `json,mapstructure:"default"`
 	Registry struct {
 		Host string `json,mapstructure:"host"`
-		Auth struct {
-			Username string `json,mapstructure:"username"`
-			Password string `json,mapstructure:"password"`
-		} `json,mapstructure:"auth"`
+		Username string `json,mapstructure:"username"`
+		Password string `json,mapstructure:"password"`
 	} `json,mapstructure:"registry"`
 	Custom bool `json,mapstructure:"custom"`
 }

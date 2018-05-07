@@ -150,6 +150,6 @@ var Cmd = &cobra.Command{
 
 func init() {
 	Cmd.Flags().StringVarP(&opts.tag, "tag", "t", "", "Name and optionally a tag in the 'name:tag' format. Use if you want to use custom docker registry")
-	Cmd.Flags().StringVarP(&opts.latestBranch, "latest-branch", "t", "master", "Update latest tag when built from this branch")
-	Cmd.Flags().BoolVar(&opts.branchTag, "branch-tag",false, "Additionally push tag with the current git branch name")
+	Cmd.Flags().StringVarP(&opts.latestBranch, "latest-branch", "l", "master", "Update latest tag when built from this branch")
+	Cmd.Flags().BoolVarP(&opts.branchTag, "branch-tag","b", false, "Additionally push tag with the current git branch name")
 }

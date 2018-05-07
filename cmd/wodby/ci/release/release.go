@@ -128,14 +128,30 @@ var Cmd = &cobra.Command{
 
 				if config.Metadata.Branch != "" {
 					if config.Metadata.Branch == opts.latestBranch {
-						err = docker.Push(service.Slug + ":latest")
+						latestTag := fmt.Sprintf("%s:%s", service.Slug, "latest")
+						err = docker.Tag(tag, latestTag)
+
+						if err != nil {
+							return err
+						}
+
+						err = docker.Push(latestTag)
+
 						if err != nil {
 							return err
 						}
 					}
 
 					if opts.branchTag {
-						err = docker.Push(service.Slug + ":" + config.Metadata.Branch)
+						branchTag := fmt.Sprintf("%s:%s", service.Slug, config.Metadata.Branch)
+						err = docker.Tag(tag, branchTag)
+
+						if err != nil {
+							return err
+						}
+
+						err = docker.Push(branchTag)
+
 						if err != nil {
 							return err
 						}

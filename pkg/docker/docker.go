@@ -70,6 +70,12 @@ func (c *Client) Pull(image string) error {
 	return cmdStartVerbose(cmd)
 }
 
+func (c *Client) Tag(image string, tag string) error {
+	cmd := exec.Command("docker", "tag", image, tag)
+
+	return cmdStartVerbose(cmd)
+}
+
 func (c *Client) GetDefaultImageUser(image string) (string, error) {
 	defaultUser := ""
 

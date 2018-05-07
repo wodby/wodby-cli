@@ -18,8 +18,10 @@ import (
 var v = viper.New()
 
 type options struct {
-	tag 	 string
-	services []string
+	tag 	 		string
+	services 		[]string
+	latestBranch 	string
+	branchTag 		bool
 }
 
 var opts options
@@ -123,6 +125,22 @@ var Cmd = &cobra.Command{
 				if err != nil {
 					return err
 				}
+
+				if config.Metadata.Branch != "" {
+					if config.Metadata.Branch == opts.latestBranch {
+						err = docker.Push(service.Slug + ":latest")
+						if err != nil {
+							return err
+						}
+					}
+
+					if opts.branchTag {
+						err = docker.Push(service.Slug + ":" + config.Metadata.Branch)
+						if err != nil {
+							return err
+						}
+					}
+				}
 			}
 		}
 
@@ -132,4 +150,6 @@ var Cmd = &cobra.Command{
 
 func init() {
 	Cmd.Flags().StringVarP(&opts.tag, "tag", "t", "", "Name and optionally a tag in the 'name:tag' format. Use if you want to use custom docker registry")
+	Cmd.Flags().StringVarP(&opts.latestBranch, "latest-branch", "t", "master", "Update latest tag when built from this branch")
+	Cmd.Flags().BoolVar(&opts.branchTag, "branch-tag",false, "Additionally push tag with the current git branch name")
 }

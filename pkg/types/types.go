@@ -4,6 +4,10 @@ import (
 	"os"
 	"time"
 	"strconv"
+	"os/exec"
+	"fmt"
+	"github.com/pkg/errors"
+	"strings"
 )
 
 // Tasks' statuses.
@@ -73,65 +77,73 @@ type BuildMetadata struct {
 	Number   string `json,mapstructure:"build_number"`
 	URL      string `json,mapstructure:"build_url"`
 	Comment  string `json,mapstructure:"comment"`
+	Branch   string `json,mapstructure:"branch"`
 }
 
-func NewBuildMetadata(buildNumber string) *BuildMetadata {
-	if os.Getenv("TRAVIS") != "" {
-		var url = "https://travis-ci.org/" + os.Getenv("TRAVIS_REPO_SLUG") + "/builds/" + os.Getenv("TRAVIS_BUILD_ID")
+func NewBuildMetadata(buildNumber string) (*BuildMetadata, error) {
+	var metadata *BuildMetadata
 
-		return &BuildMetadata{
+	if os.Getenv("TRAVIS") != "" {
+		var url = fmt.Sprintf(
+			"https://travis-ci.org/%s/builds/%s",
+			os.Getenv("TRAVIS_REPO_SLUG"),
+			os.Getenv("TRAVIS_BUILD_ID"))
+
+		metadata = &BuildMetadata{
 			Known:    true,
 			Provider: TravisCIName,
 			URL:	  url,
 			Number:   os.Getenv("TRAVIS_BUILD_NUMBER"),
+			Branch:   os.Getenv("TRAVIS_BRANCH"),
 		}
 	} else if os.Getenv("CIRCLECI") != "" {
-		return &BuildMetadata{
+		metadata = &BuildMetadata{
 			Known:    true,
 			Provider: CircleCIName,
-			Number:   os.Getenv("CIRCLE_BUILD_NUM"),
 			URL:      os.Getenv("CIRCLE_BUILD_URL"),
+			Number:   os.Getenv("CIRCLE_BUILD_NUM"),
+			Branch:   os.Getenv("CIRCLE_BRANCH"),
 		}
 	} else if os.Getenv("BITBUCKET_BUILD_NUMBER") != "" {
-		var url = "https://bitbucket.org/" + os.Getenv("BITBUCKET_REPO_SLUG") + "/addon/pipelines/home#!/results/" + os.Getenv("BITBUCKET_BUILD_NUMBER")
+		var url = fmt.Sprintf(
+			"https://bitbucket.org/%s/addon/pipelines/home#!/results/%s",
+			os.Getenv("BITBUCKET_REPO_SLUG"),
+			os.Getenv("BITBUCKET_BUILD_NUMBER"))
 
-		return &BuildMetadata{
+		metadata = &BuildMetadata{
 			Known:    true,
 			Provider: BitbucketCIName,
-			Number:   os.Getenv("BITBUCKET_BUILD_NUMBER"),
 			URL:      url,
+			Number:   os.Getenv("BITBUCKET_BUILD_NUMBER"),
+			Branch:   os.Getenv("BITBUCKET_BRANCH"),
 		}
 	} else if os.Getenv("JENKINS_HOME") != "" {
-		return &BuildMetadata{
+		metadata = &BuildMetadata{
 			Known:    true,
 			Provider: JenkinsName,
-			Number:   os.Getenv("BUILD_NUMBER"),
 			URL:   	  os.Getenv("JOB_URL"),
+			Number:   os.Getenv("BUILD_NUMBER"),
+			Branch:   os.Getenv("GIT_BRANCH"),
 		}
-	}
+	} else {
+		metadata = &BuildMetadata{
+			Known: false,
+		}
 
-	//else if os.Getenv("CI_NAME") == "codeship" {
-		//if os.Getenv("CI_BUILD_ID") != "" {
-		//	return &BuildMetadata{
-		//		Known:    true,
-		//		Provider: CodeshipProCIName,
-		//		Number:   os.Getenv("CI_BUILD_ID"),
-		//	}
-		//} else {
-		//	return &BuildMetadata{
-		//		Known:    true,
-		//		Provider: CodeshipBasicCIName,
-		//		Number:   os.Getenv("CI_BUILD_NUMBER"),
-		//		URL:   	  os.Getenv("CI_BUILD_URL"),
-		//	}
-		//}
-	//}
+		out, err := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput()
 
-	metadata := &BuildMetadata{
-		Known: false,
-	}
+		if err != nil {
+			return nil, errors.New(string(out))
+		}
 
-	if metadata.Number == "" {
+		branch := strings.TrimSuffix(string(out), "\n")
+
+		if branch == "HEAD" {
+			branch = ""
+		}
+
+		metadata.Branch = branch
+
 		if buildNumber != "" {
 			metadata.Number = buildNumber
 		} else {
@@ -139,5 +151,5 @@ func NewBuildMetadata(buildNumber string) *BuildMetadata {
 		}
 	}
 
-	return metadata
+	return metadata, nil
 }

@@ -82,12 +82,18 @@ var Cmd = &cobra.Command{
 
 		fmt.Println(" DONE")
 
+		metadata, err := types.NewBuildMetadata(opts.buildNumber)
+
+		if err != nil {
+			return err
+		}
+
 		config := config.Config{
 			API:      apiConfig,
 			UUID:     opts.uuid,
 			Context:  opts.context,
 			Stack:    stack,
-			Metadata: types.NewBuildMetadata(opts.buildNumber),
+			Metadata: metadata,
 		}
 
 		dind := false

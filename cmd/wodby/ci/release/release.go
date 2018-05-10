@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/pkg/errors"
+	"regexp"
 )
 
 var v = viper.New()
@@ -126,9 +127,11 @@ var Cmd = &cobra.Command{
 					return err
 				}
 
+				r := regexp.MustCompile(":.+$")
+
 				if config.Metadata.Branch != "" {
 					if config.Metadata.Branch == opts.latestBranch {
-						latestTag := fmt.Sprintf("%s:%s", service.Slug, "latest")
+						latestTag := r.ReplaceAllString(tag, "latest")
 						err = docker.Tag(tag, latestTag)
 
 						if err != nil {
@@ -143,7 +146,7 @@ var Cmd = &cobra.Command{
 					}
 
 					if opts.branchTag {
-						branchTag := fmt.Sprintf("%s:%s", service.Slug, config.Metadata.Branch)
+						branchTag := r.ReplaceAllString(tag, config.Metadata.Branch)
 						err = docker.Tag(tag, branchTag)
 
 						if err != nil {

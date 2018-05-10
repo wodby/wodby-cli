@@ -133,16 +133,16 @@ func NewBuildMetadata(buildNumber string) (*BuildMetadata, error) {
 		out, err := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput()
 
 		if err != nil {
-			return nil, errors.New(string(out))
+			metadata.Branch = ""
+		} else {
+			branch := strings.TrimSuffix(string(out), "\n")
+
+			if branch == "HEAD" {
+				branch = ""
+			}
+
+			metadata.Branch = branch
 		}
-
-		branch := strings.TrimSuffix(string(out), "\n")
-
-		if branch == "HEAD" {
-			branch = ""
-		}
-
-		metadata.Branch = branch
 
 		if buildNumber != "" {
 			metadata.Number = buildNumber

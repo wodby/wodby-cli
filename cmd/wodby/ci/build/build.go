@@ -190,7 +190,7 @@ var Cmd = &cobra.Command{
 
 			// Allow specifying tags for custom stacks.
 			if opts.tag != "" {
-				if config.Stack.Custom {
+				if !config.Stack.Custom {
 					return errors.New("Specifying tags not allowed for managed stacks")
 				}
 

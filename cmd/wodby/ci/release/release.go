@@ -127,11 +127,11 @@ var Cmd = &cobra.Command{
 					return err
 				}
 
-				r := regexp.MustCompile(":(.+)$")
+				r := regexp.MustCompile(":.+$")
 
 				if config.Metadata.Branch != "" {
 					if config.Metadata.Branch == opts.latestBranch {
-						latestTag := r.ReplaceAllString(tag, "latest")
+						latestTag := r.ReplaceAllString(tag, ":latest")
 						err = docker.Tag(tag, latestTag)
 
 						if err != nil {
@@ -146,7 +146,7 @@ var Cmd = &cobra.Command{
 					}
 
 					if opts.branchTag {
-						branchTag := r.ReplaceAllString(tag, config.Metadata.Branch)
+						branchTag := r.ReplaceAllString(tag, ":" + config.Metadata.Branch)
 						err = docker.Tag(tag, branchTag)
 
 						if err != nil {

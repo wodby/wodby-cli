@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"os/exec"
 	"fmt"
-	"github.com/pkg/errors"
 	"strings"
 )
 

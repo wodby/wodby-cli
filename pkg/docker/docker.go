@@ -50,7 +50,7 @@ func (c *Client) Build(dockerfile string, tags []string, context string, buildAr
 		}
 	}
 
-	fmt.Printf("BUILD COMMAND: docker %s\n", strings.Join(args, " "))
+	fmt.Printf("Building:\n docker %s\n", strings.Join(args, " "))
 
 	cmd := exec.Command("docker", args...)
 	cmd.Stdin = strings.NewReader(dockerfile)
@@ -59,18 +59,21 @@ func (c *Client) Build(dockerfile string, tags []string, context string, buildAr
 }
 
 func (c *Client) Push(image string) error {
+	fmt.Printf("Pushing:\n docker push %s\n", image)
 	cmd := exec.Command("docker", "push", image)
 
 	return cmdStartVerbose(cmd)
 }
 
 func (c *Client) Pull(image string) error {
+	fmt.Printf("Pulling:\n docker pull %s\n", image)
 	cmd := exec.Command("docker", "pull", image)
 
 	return cmdStartVerbose(cmd)
 }
 
 func (c *Client) Tag(image string, tag string) error {
+	fmt.Printf("Tagging:\n docker tag %s %s\n", image, tag)
 	cmd := exec.Command("docker", "tag", image, tag)
 
 	return cmdStartVerbose(cmd)
@@ -122,7 +125,7 @@ func (c *Client) Run(args []string, config RunConfig) error {
 	}
 	command = append(append(command, config.Image), args...)
 
-	fmt.Printf("RUN COMMAND: docker %s\n", strings.Join(command, " "))
+	fmt.Printf("Running:\n docker %s\n", strings.Join(command, " "))
 
 	// Show run command progress.
 	cmd := exec.Command("docker", command...)

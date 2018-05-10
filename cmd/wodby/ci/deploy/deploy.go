@@ -125,12 +125,7 @@ var Cmd = &cobra.Command{
 			config.Metadata.Comment = opts.comment
 		}
 
-		payload := &api.DeployBuildPayload{
-			Number:     config.Metadata.Number,
-			PostDeploy: postDeploy,
-			Metadata:   config.Metadata,
-		}
-
+		servicesTags := make(map[string]string)
 		var tag string
 
 		// Allow specifying tags for custom stacks.
@@ -146,8 +141,15 @@ var Cmd = &cobra.Command{
 			}
 
 			for _, service := range services {
-				payload.ServicesTags[service.Name] = tag
+				servicesTags[service.Name] = tag
 			}
+		}
+
+		payload := &api.DeployBuildPayload{
+			Number:     config.Metadata.Number,
+			PostDeploy: postDeploy,
+			Metadata:   config.Metadata,
+			ServicesTags: servicesTags,
 		}
 
 		fmt.Printf("Deploying build #%s to %s...", config.Metadata.Number, config.Stack.Title)

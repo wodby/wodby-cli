@@ -127,7 +127,7 @@ var Cmd = &cobra.Command{
 					return err
 				}
 
-				r := regexp.MustCompile(":.+$")
+				r := regexp.MustCompile(":(.+)$")
 
 				if config.Metadata.Branch != "" {
 					if config.Metadata.Branch == opts.latestBranch {

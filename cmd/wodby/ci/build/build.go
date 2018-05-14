@@ -144,21 +144,15 @@ var Cmd = &cobra.Command{
 		)
 
 		imageBuilds := make(map[string]*imageBuild)
-		buildArgs := make(map[string]string)
-		buildArgs["COPY_FROM"] = opts.from
-		buildArgs["COPY_TO"] = opts.to
 
 		// Prepare image builds.
 		for _, service := range services {
+			buildArgs := make(map[string]string)
+			buildArgs["COPY_FROM"] = opts.from
+			buildArgs["COPY_TO"] = opts.to
 			buildArgs["WODBY_BASE_IMAGE"] = service.Image
 
-			// Define and set default user in dockerfile.
-			defaultUser, err := dockerClient.GetDefaultImageUser(service.Image)
-
-			if err != nil {
-				return err
-			}
-
+			// When user specified custom dockerfile template.
 			if opts.dockerfile != "" {
 				d, err := ioutil.ReadFile(context + "/" + opts.dockerfile)
 
@@ -169,6 +163,13 @@ var Cmd = &cobra.Command{
 				tpl = string(d)
 			} else {
 				tpl = DockerfileTpl
+			}
+
+			// Replace default image user in dockerfile template.
+			defaultUser, err := dockerClient.GetDefaultImageUser(service.Image)
+
+			if err != nil {
+				return err
 			}
 
 			t, err := template.New("Dockerfile").Parse(tpl)

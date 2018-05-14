@@ -41,17 +41,11 @@ const Dockerignore = `.git
 .gitignore
 .dockerignore`
 
-const DockerfilePermFix = `ARG WODBY_BASE_IMAGE
+const DockerfileTpl = `ARG WODBY_BASE_IMAGE
 FROM ${WODBY_BASE_IMAGE}
 ARG COPY_FROM
 ARG COPY_TO
-COPY --chown={{.User}}:{{.User}} ${COPY_FROM} ${COPY_TO}`
-
-const Dockerfile = `ARG WODBY_BASE_IMAGE
-FROM ${WODBY_BASE_IMAGE}
-ARG COPY_FROM
-ARG COPY_TO
-COPY ${COPY_FROM} ${COPY_TO}`
+COPY --chown={{.DefaultUser}}:{{.DefaultUser}} ${COPY_FROM} ${COPY_TO}`
 
 var v = viper.New()
 
@@ -143,13 +137,27 @@ var Cmd = &cobra.Command{
 
 		dockerClient := docker.NewClient()
 
-		var dockerfile string
+		var (
+			dockerfile string
+			tpl string
+			tag string
+		)
+
 		imageBuilds := make(map[string]*imageBuild)
+		buildArgs := make(map[string]string)
+		buildArgs["COPY_FROM"] = opts.from
+		buildArgs["COPY_TO"] = opts.to
 
 		// Prepare image builds.
 		for _, service := range services {
-			buildArgs := make(map[string]string)
 			buildArgs["WODBY_BASE_IMAGE"] = service.Image
+
+			// Define and set default user in dockerfile.
+			defaultUser, err := dockerClient.GetDefaultImageUser(service.Image)
+
+			if err != nil {
+				return err
+			}
 
 			if opts.dockerfile != "" {
 				d, err := ioutil.ReadFile(context + "/" + opts.dockerfile)
@@ -158,35 +166,24 @@ var Cmd = &cobra.Command{
 					return err
 				}
 
-				dockerfile = string(d)
-
+				tpl = string(d)
 			} else {
-				buildArgs["COPY_FROM"] = opts.from
-				buildArgs["COPY_TO"] = opts.to
-
-				// Define and set default user in dockerfile.
-				defaultUser, err := dockerClient.GetDefaultImageUser(service.Image)
-
-				if err != nil {
-					return err
-				}
-
-				t, err := template.New("Dockerfile").Parse(DockerfilePermFix)
-				if err != nil {
-					return err
-				}
-
-				data := struct{User string}{User: defaultUser}
-				var tpl bytes.Buffer
-
-				if err := t.Execute(&tpl, data); err != nil {
-					return err
-				}
-
-				dockerfile = tpl.String()
+				tpl = DockerfileTpl
 			}
 
-			var tag string
+			t, err := template.New("Dockerfile").Parse(tpl)
+			if err != nil {
+				return err
+			}
+
+			data := struct{DefaultUser string}{DefaultUser: defaultUser}
+			var tpl bytes.Buffer
+
+			if err := t.Execute(&tpl, data); err != nil {
+				return err
+			}
+
+			dockerfile = tpl.String()
 
 			// Allow specifying tags for custom stacks.
 			if opts.tag != "" {

@@ -193,7 +193,7 @@ var Cmd = &cobra.Command{
 			}
 
 			for envName, envVal := range config.Stack.Init.Environment {
-				runConfig.Env = append(runConfig.Env, fmt.Sprintf("%s=%s", envName, envVal))
+				runConfig.Env = append(runConfig.Env, fmt.Sprintf("%s='%s'", envName, envVal))
 			}
 
 			if config.DataContainer != "" {

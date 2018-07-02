@@ -79,7 +79,7 @@ func (c *Client) Tag(image string, tag string) error {
 	return cmdStartVerbose(cmd)
 }
 
-func (c *Client) GetDefaultImageUser(image string) (string, error) {
+func (c *Client) GetImageDefaultUser(image string) (string, error) {
 	defaultUser := ""
 
 	err := c.Pull(image)

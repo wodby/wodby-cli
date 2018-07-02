@@ -113,7 +113,7 @@ var Cmd = &cobra.Command{
 		if config.DataContainer != "" {
 			fmt.Println("Synchronizing data container")
 
-			from := fmt.Sprintf("%s:/mnt/codebase", config.DataContainer)
+			from := fmt.Sprintf("%s:/var/www/html", config.DataContainer)
 			to := fmt.Sprintf("/tmp/wodby-build-%s", config.DataContainer)
 			_, err := exec.Command("docker", "cp", from, to).CombinedOutput()
 			if err != nil {
@@ -166,7 +166,7 @@ var Cmd = &cobra.Command{
 			}
 
 			// Replace default image user in dockerfile template.
-			defaultUser, err := dockerClient.GetDefaultImageUser(service.Image)
+			defaultUser, err := dockerClient.GetImageDefaultUser(service.Image)
 
 			if err != nil {
 				return err

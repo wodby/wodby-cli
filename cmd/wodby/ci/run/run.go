@@ -97,9 +97,9 @@ var Cmd = &cobra.Command{
 			if config.DataContainer != "" {
 				runConfig.VolumesFrom = []string{config.DataContainer}
 			} else {
-				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:/mnt/codebase", config.Context))
+				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:/var/www/html", config.Context))
 			}
-			runConfig.WorkDir = "/mnt/codebase/" + opts.path
+			runConfig.WorkDir = "/var/www/html/" + opts.path
 
 			err := dockerClient.Run(args, runConfig)
 

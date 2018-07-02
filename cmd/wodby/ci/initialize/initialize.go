@@ -122,12 +122,12 @@ var Cmd = &cobra.Command{
 
 			config.DataContainer = uuid.New()
 
-			_, err := exec.Command("docker", "create", "--volume=/mnt/codebase", fmt.Sprintf("--name=%s", config.DataContainer), "wodby/alpine:3.7-2.0.0", "/bin/true").CombinedOutput()
+			_, err := exec.Command("docker", "create", "--volume=/var/www/html", fmt.Sprintf("--name=%s", config.DataContainer), "wodby/alpine:3.7-2.0.0", "/bin/true").CombinedOutput()
 			if err != nil {
 				return err
 			}
 
-			_, err = exec.Command("docker", "cp", fmt.Sprintf("%s/.", config.Context), fmt.Sprintf("%s:/mnt/codebase", config.DataContainer)).CombinedOutput()
+			_, err = exec.Command("docker", "cp", fmt.Sprintf("%s/.", config.Context), fmt.Sprintf("%s:/var/www/html", config.DataContainer)).CombinedOutput()
 			if err != nil {
 				return err
 			}
@@ -150,7 +150,7 @@ var Cmd = &cobra.Command{
 		// Fixing permissions for managed stacks.
 		if !opts.skipPermFix && !config.Stack.Custom {
 			service := config.Stack.Services[config.Stack.Default]
-			defaultUser, err := dockerClient.GetDefaultImageUser(service.Image)
+			defaultUser, err := dockerClient.GetImageDefaultUser(service.Image)
 
 			if err != nil {
 				return err
@@ -167,9 +167,9 @@ var Cmd = &cobra.Command{
 				if config.DataContainer != "" {
 					runConfig.VolumesFrom = []string{config.DataContainer}
 				} else {
-					runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:/mnt/codebase", config.Context))
+					runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:/var/www/html", config.Context))
 				}
-				runConfig.WorkDir = "/mnt/codebase/"
+				runConfig.WorkDir = "/var/www/html/"
 
 				args := []string{"chown", "-R", fmt.Sprintf("%s:%s", defaultUser, defaultUser), "."}
 				err := dockerClient.Run(args, runConfig)
@@ -199,9 +199,9 @@ var Cmd = &cobra.Command{
 			if config.DataContainer != "" {
 				runConfig.VolumesFrom = []string{config.DataContainer}
 			} else {
-				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:/mnt/codebase", config.Context))
+				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:/var/www/html", config.Context))
 			}
-			runConfig.WorkDir = "/mnt/codebase/"
+			runConfig.WorkDir = "/var/www/html/"
 
 			err := dockerClient.Run(strings.Split(config.Stack.Init.Command, " "), runConfig)
 

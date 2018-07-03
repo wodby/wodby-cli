@@ -24,6 +24,8 @@ endif
 
 LD_FLAGS = "-s -w -X $(PKG)/pkg/version.VERSION=$(VERSION)"
 
+ARTIFACT := bin/$(APP)-$(GOOS)-$(GOARCH).tar.gz
+
 default: build
 
 .PHONY: build test push shell package release
@@ -33,7 +35,7 @@ build:
 		go build -ldflags $(LD_FLAGS) -o bin/$(GOOS)-$(GOARCH)/$(APP) $(PKG)/cmd/$(APP)
 
     ifeq ($(LINUX_AMD64),1)
-	docker build -t $(REPO):$(TAG) ./
+		docker build -t $(REPO):$(TAG) ./
     endif
 
 test:
@@ -41,14 +43,16 @@ test:
 
 push:
     ifeq ($(LINUX_AMD64),1)
-	docker push $(REPO):$(TAG)
+		docker push $(REPO):$(TAG)
     endif
 
 shell:
 	docker run --rm --name $(NAME) $(PARAMS) -ti $(REPO):$(TAG) /bin/bash
 
 package:
-	tar czf bin/$(APP)-$(GOOS)-$(GOARCH).tar.gz bin/$(GOOS)-$(GOARCH)/wodby
-	rm -rf bin/$(GOOS)-$(GOARCH)
+    ifeq ("$(wildcard $(ARTIFACT))","")
+		tar czf $(ARTIFACT) bin/$(GOOS)-$(GOARCH)/wodby
+		rm -rf bin/$(GOOS)-$(GOARCH)
+    endif
 
 release: build push

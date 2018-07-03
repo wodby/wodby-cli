@@ -51,7 +51,7 @@ shell:
 
 package:
     ifeq ("$(wildcard $(ARTIFACT))","")
-		tar czf $(ARTIFACT) bin/$(GOOS)-$(GOARCH)/wodby
+		tar czf $(ARTIFACT) -C bin/$(GOOS)-$(GOARCH) wodby
 		rm -rf bin/$(GOOS)-$(GOARCH)
     endif
 

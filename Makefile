@@ -48,7 +48,8 @@ shell:
 	docker run --rm --name $(NAME) $(PARAMS) -ti $(REPO):$(TAG) /bin/bash
 
 package:
-	tar czf bin/$(APP)-$(GOOS)-$(GOARCH).tar.gz -C bin/$(GOOS)-$(GOARCH) wodby
-	rm bin/$(GOOS)-$(GOARCH)/wodby
+	cd bin
+	tar czf $(APP)-$(GOOS)-$(GOARCH).tar.gz $(GOOS)-$(GOARCH)/wodby
+	rm -rf $(GOOS)-$(GOARCH)
 
 release: build push

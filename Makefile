@@ -12,6 +12,8 @@ VERSION ?= dev
 
 ifneq ($(STABILITY_TAG),)
     override TAG := $(STABILITY_TAG)
+else
+    TAG = latest
 endif
 
 ifeq ($(GOOS),linux)

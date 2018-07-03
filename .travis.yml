@@ -7,7 +7,7 @@ env:
   global:
     - DEP_VERSION=0.4.1
     - VERSION="${TRAVIS_TAG}"
-    - TAG="${VERSION:-latest}"
+    - TAGS="${VERSION:-latest}"
   matrix:
     - GIMME_OS=linux GIMME_ARCH=amd64
     - GIMME_OS=linux GIMME_ARCH=arm
@@ -26,17 +26,27 @@ script:
   - make test
 
 after_success:
-  - ./release
+  - ./release.sh
 
 before_deploy:
   - make package
 deploy:
-  provider: releases
-  api_key: $GITHUB_ACCESS_TOKEN
-  overwrite: true
-  skip_cleanup: true
-  file_glob: true
-  file:
-    - bin/wodby-*.tar.gz
-  on:
-    tags: true
+  - provider: releases
+    api_key: $GITHUB_ACCESS_TOKEN
+    overwrite: true
+    skip_cleanup: true
+    file_glob: true
+    file:
+      - bin/wodby-*.tar.gz
+    on:
+      tags: true
+  - provider: releases
+    access_key_id: $AWS_ACCESS_KEY_ID
+    secret_access_key: $AWS_SECRET_ACCESS_KEY
+    bucket: wodby-releases
+    upload-dir: wodby-cli/latest
+    overwrite: true
+    skip_cleanup: true
+    local_dir: bin
+    on:
+      tags: true

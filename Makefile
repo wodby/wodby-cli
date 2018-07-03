@@ -8,18 +8,16 @@ NAME = wodby-cli
 
 GOOS ?= linux
 GOARCH ?= amd64
+VERSION ?= dev
 
-ifneq ($(VERSION),)
-    TAG = $(VERSION)
-else
-    VERSION = dev
-    TAG = latest
+ifneq ($(STABILITY_TAG),)
+    override TAG := $(STABILITY_TAG)
 endif
 
 ifeq ($(GOOS),linux)
-ifeq ($(GOARCH),amd64)
-    LINUX_AMD64 = 1
-endif
+    ifeq ($(GOARCH),amd64)
+        LINUX_AMD64 = 1
+    endif
 endif
 
 LD_FLAGS = "-s -w -X $(PKG)/pkg/version.VERSION=$(VERSION)"

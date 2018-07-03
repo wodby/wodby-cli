@@ -49,5 +49,6 @@ shell:
 
 package:
 	tar czf bin/$(APP)-$(GOOS)-$(GOARCH).tar.gz -C bin/$(GOOS)-$(GOARCH) wodby
+	rm bin/$(GOOS)-$(GOARCH)/wodby
 
 release: build push

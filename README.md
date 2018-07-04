@@ -1,5 +1,10 @@
 # Wodby CLI
 
+[![Build Status](https://travis-ci.org/wodby/wodby-cli.svg?branch=master)](https://travis-ci.org/wodby/wodby-cli)
+[![Docker Pulls](https://img.shields.io/docker/pulls/wodby/wodby-cli.svg)](https://hub.docker.com/r/wodby/wodby-cli)
+[![Docker Stars](https://img.shields.io/docker/stars/wodby/wodby-cli.svg)](https://hub.docker.com/r/wodby/wodby-cli)
+[![Docker Layers](https://images.microbadger.com/badges/image/wodby/wodby-cli.svg)](https://microbadger.com/images/wodby/wodby-cli)
+
 This project provides a unified command line interface to [wodby.com](https://wodby.com).
 
 ## Install

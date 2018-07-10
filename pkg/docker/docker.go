@@ -166,7 +166,7 @@ func cmdStartVerbose(cmd *exec.Cmd) error {
 		return err
 	}
 	if errStdout != nil || errStderr != nil {
-		return errors.New("failed to capture stdout or stderr\n")
+		//return errors.New("failed to capture stdout or stderr\n")
 	}
 
 	return nil

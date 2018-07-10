@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// Tasks' statuses.
+// Tasks" statuses.
 const (
 	TaskStatusDone     = "Done"
 	TaskStatusWaiting  = "Waiting"
@@ -75,8 +75,9 @@ type BuildMetadata struct {
 	Username string `json,mapstructure:"username"`
 	Number   string `json,mapstructure:"build_number"`
 	URL      string `json,mapstructure:"build_url"`
-	Comment  string `json,mapstructure:"comment"`
 	Branch   string `json,mapstructure:"branch"`
+	Commit   string `json,mapstructure:"commit"`
+	Message  string `json,mapstructure:"message"`
 }
 
 func NewBuildMetadata(buildNumber string) (*BuildMetadata, error) {
@@ -94,6 +95,8 @@ func NewBuildMetadata(buildNumber string) (*BuildMetadata, error) {
 			URL:	  url,
 			Number:   os.Getenv("TRAVIS_BUILD_NUMBER"),
 			Branch:   os.Getenv("TRAVIS_BRANCH"),
+			Commit:   os.Getenv("TRAVIS_COMMIT"),
+			Message:  os.Getenv("TRAVIS_COMMIT_MESSAGE"),
 		}
 	} else if os.Getenv("CIRCLECI") != "" {
 		metadata = &BuildMetadata{
@@ -102,7 +105,9 @@ func NewBuildMetadata(buildNumber string) (*BuildMetadata, error) {
 			URL:      os.Getenv("CIRCLE_BUILD_URL"),
 			Number:   os.Getenv("CIRCLE_BUILD_NUM"),
 			Branch:   os.Getenv("CIRCLE_BRANCH"),
+			Commit:   os.Getenv("CIRCLE_SHA1"),
 		}
+
 	} else if os.Getenv("BITBUCKET_BUILD_NUMBER") != "" {
 		var url = fmt.Sprintf(
 			"https://bitbucket.org/%s/addon/pipelines/home#!/results/%s",
@@ -115,6 +120,7 @@ func NewBuildMetadata(buildNumber string) (*BuildMetadata, error) {
 			URL:      url,
 			Number:   os.Getenv("BITBUCKET_BUILD_NUMBER"),
 			Branch:   os.Getenv("BITBUCKET_BRANCH"),
+			Commit:   os.Getenv("BITBUCKET_COMMIT"),
 		}
 	} else if os.Getenv("JENKINS_HOME") != "" {
 		metadata = &BuildMetadata{
@@ -123,6 +129,7 @@ func NewBuildMetadata(buildNumber string) (*BuildMetadata, error) {
 			URL:   	  os.Getenv("JOB_URL"),
 			Number:   os.Getenv("BUILD_NUMBER"),
 			Branch:   os.Getenv("GIT_BRANCH"),
+			Commit:   os.Getenv("GIT_COMMIT"),
 		}
 	} else {
 		metadata = &BuildMetadata{
@@ -147,6 +154,14 @@ func NewBuildMetadata(buildNumber string) (*BuildMetadata, error) {
 			metadata.Number = buildNumber
 		} else {
 			metadata.Number =  strconv.FormatInt(time.Now().Unix(), 10)
+		}
+	}
+
+	if metadata.Message == "" {
+		out, err := exec.Command("git", "log", "--format=oneline", "-n", "1", "$CIRCLE_SHA1").CombinedOutput()
+
+		if err != nil {
+			metadata.Message = string(out)
 		}
 	}
 

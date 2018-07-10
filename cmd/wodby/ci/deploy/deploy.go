@@ -23,7 +23,7 @@ type options struct {
 	context    string
 	number     string
 	url        string
-	comment    string
+	message    string
 	tag        string
 	postDeploy bool
 	services   []string
@@ -121,8 +121,8 @@ var Cmd = &cobra.Command{
 		if opts.url != "" {
 			config.Metadata.URL = opts.url
 		}
-		if opts.comment != "" {
-			config.Metadata.Comment = opts.comment
+		if opts.message != "" {
+			config.Metadata.Message = opts.message
 		}
 
 		servicesTags := make(map[string]string)
@@ -172,7 +172,7 @@ var Cmd = &cobra.Command{
 func init() {
 	Cmd.Flags().StringVar(&opts.number, "build-number", "", "Build number")
 	Cmd.Flags().StringVar(&opts.url, "build-url", "", "Build url")
-	Cmd.Flags().StringVar(&opts.comment, "comment", "", "Arbitrary message")
+	Cmd.Flags().StringVar(&opts.message, "message", "m", "Custom commit message")
 	Cmd.Flags().StringVarP(&opts.tag, "tag", "t", "", "Name and optionally a tag in the 'name:tag' format. Use if you want to use custom docker registry")
 	Cmd.Flags().BoolVar(&opts.postDeploy, "post-deploy", false, "Run post deployment scripts")
 	postDeployFlag = Cmd.Flags().Lookup("post-deploy")

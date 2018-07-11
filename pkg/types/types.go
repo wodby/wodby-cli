@@ -46,6 +46,12 @@ type Service struct {
 	Slug  string `json,mapstructure:"slug"`
 }
 
+type ErrorResponse struct {
+	Error struct {
+		Message string `json,mapstructure:"message"`
+	} `json,mapstructure:"error"`
+}
+
 // BuildConfig is the build config response type.
 type BuildConfig struct {
 	Services map[string]Service `json,mapstructure:"services"`

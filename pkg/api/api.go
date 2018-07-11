@@ -14,6 +14,7 @@ import (
 	"github.com/wodby/wodby-cli/pkg/request"
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
+	"github.com/wodby/wodby-cli/pkg/types"
 )
 
 // Client is Wodby API client.
@@ -61,10 +62,6 @@ func (c *Client) EncodePayload(payload interface{}) (io.Reader, error) {
 func (c *Client) DecodeResponse(resp *http.Response, result interface{}) error {
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return errors.New(resp.Status)
-	}
-
 	str, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return errors.New("response body reading failed")
@@ -72,6 +69,17 @@ func (c *Client) DecodeResponse(resp *http.Response, result interface{}) error {
 
 	if viper.GetBool("dump") {
 		fmt.Println(string(str))
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		errResp := new(types.ErrorResponse)
+		err = json.Unmarshal(str, errResp)
+
+		if err != nil {
+			return errors.New(resp.Status)
+		} else {
+			return errors.New(errResp.Error.Message)
+		}
 	}
 
 	err = json.Unmarshal(str, result)

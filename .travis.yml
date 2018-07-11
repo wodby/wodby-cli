@@ -44,6 +44,17 @@ deploy:
     access_key_id: $AWS_ACCESS_KEY_ID
     secret_access_key: $AWS_SECRET_ACCESS_KEY
     bucket: wodby-releases
+    upload-dir: wodby-cli/dev
+    overwrite: true
+    skip_cleanup: true
+    local_dir: bin
+    on:
+      tags: false
+
+  - provider: s3
+    access_key_id: $AWS_ACCESS_KEY_ID
+    secret_access_key: $AWS_SECRET_ACCESS_KEY
+    bucket: wodby-releases
     upload-dir: wodby-cli/${VERSION}
     overwrite: true
     skip_cleanup: true

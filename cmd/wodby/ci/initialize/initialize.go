@@ -87,7 +87,7 @@ var Cmd = &cobra.Command{
 
 		fmt.Println(" DONE")
 
-		metadata, err := types.NewBuildMetadata(opts.provider, opts.buildNumber, opts.url)
+		metadata, err := types.NewBuildMetadata(stack.Token, opts.provider, opts.buildNumber, opts.url)
 
 		if err != nil {
 			return err

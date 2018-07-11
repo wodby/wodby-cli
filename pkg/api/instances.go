@@ -12,6 +12,7 @@ type DeployBuildPayload struct {
 	Metadata     *types.BuildMetadata `json:"info"`
 	PostDeploy   *bool                `json:"post_deployment,omitempty"`
 	ServicesTags map[string]string    `json:"services_tags"`
+	Token 		 string				  `json:"token"`
 }
 
 // NewGetBuildConfigRequest makes new build config request.

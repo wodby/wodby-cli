@@ -13,12 +13,12 @@ type Config struct {
 	DataContainer string               `json,mapstructure:"data,omitempty"`
 	Context       string               `json,mapstructure:"context"`
 	API           *api.Config          `json,mapstructure:"api"`
-	Stack         *types.BuildConfig   `json,mapstructure:"stack"`
+	BuildConfig   *types.BuildConfig   `json,mapstructure:"config"`
 	Metadata      *types.BuildMetadata `json,mapstructure:"metadata"`
 }
 
 func (config *Config) FindService(serviceName string) (types.Service, error) {
-	for _, service := range config.Stack.Services {
+	for _, service := range config.BuildConfig.Services {
 		if service.Name == serviceName {
 			return service, nil
 		}
@@ -30,7 +30,7 @@ func (config *Config) FindService(serviceName string) (types.Service, error) {
 func (config *Config) FindServicesByPrefix(prefix string) ([]types.Service, error) {
 	var services []types.Service
 
-	for _, service := range config.Stack.Services {
+	for _, service := range config.BuildConfig.Services {
 		if strings.HasPrefix(service.Name, prefix) {
 			services = append(services, service)
 		}

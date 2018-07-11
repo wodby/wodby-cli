@@ -76,10 +76,9 @@ type BuildMetadata struct {
 	Message  string `json,mapstructure:"message"`
 	Tag	 	 string `json,mapstructure:"tag"`
 	Slug	 string `json,mapstructure:"slug"`
-	Token	 string `json,mapstructure:"token"`
 }
 
-func NewBuildMetadata(token string, provider string, buildNumber string, url string) (*BuildMetadata, error) {
+func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMetadata, error) {
 	var metadata *BuildMetadata
 
 	if os.Getenv("TRAVIS") != "" {
@@ -209,8 +208,6 @@ func NewBuildMetadata(token string, provider string, buildNumber string, url str
 	} else {
 		metadata.Email = string(out)
 	}
-
-	metadata.Token = token
 
 	return metadata, nil
 }

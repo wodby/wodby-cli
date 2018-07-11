@@ -80,25 +80,25 @@ var Cmd = &cobra.Command{
 
 		fmt.Printf("Requesting build info for instance %s...", opts.uuid)
 
-		stack, err := client.GetBuildConfig(opts.uuid)
+		buildConfig, err := client.GetBuildConfig(opts.uuid)
 		if err != nil {
 			return err
 		}
 
 		fmt.Println(" DONE")
 
-		metadata, err := types.NewBuildMetadata(stack.Token, opts.provider, opts.buildNumber, opts.url)
+		metadata, err := types.NewBuildMetadata(opts.provider, opts.buildNumber, opts.url)
 
 		if err != nil {
 			return err
 		}
 
 		config := config.Config{
-			API:      apiConfig,
-			UUID:     opts.uuid,
-			Context:  opts.context,
-			Stack:    stack,
-			Metadata: metadata,
+			API:         apiConfig,
+			UUID:        opts.uuid,
+			Context:     opts.context,
+			BuildConfig: buildConfig,
+			Metadata:    metadata,
 		}
 
 		dind := false
@@ -153,8 +153,8 @@ var Cmd = &cobra.Command{
 		dockerClient := docker.NewClient()
 
 		// Fixing permissions for managed stacks.
-		if !opts.skipPermFix && !config.Stack.Custom {
-			service := config.Stack.Services[config.Stack.Default]
+		if !opts.skipPermFix && !config.BuildConfig.Custom {
+			service := config.BuildConfig.Services[config.BuildConfig.Default]
 			defaultUser, err := dockerClient.GetImageDefaultUser(service.Image)
 
 			if err != nil {
@@ -188,8 +188,8 @@ var Cmd = &cobra.Command{
 		}
 
 		// Initializing managed stack services.
-		if config.Stack.Init != nil {
-			service := config.Stack.Services[config.Stack.Init.Service]
+		if config.BuildConfig.Init != nil {
+			service := config.BuildConfig.Services[config.BuildConfig.Init.Service]
 
 			fmt.Printf("Initializing service %s...", service.Name)
 
@@ -197,7 +197,7 @@ var Cmd = &cobra.Command{
 				Image: service.Image,
 			}
 
-			for envName, envVal := range config.Stack.Init.Environment {
+			for envName, envVal := range config.BuildConfig.Init.Environment {
 				runConfig.Env = append(runConfig.Env, fmt.Sprintf("%s=%s", envName, envVal))
 			}
 
@@ -208,7 +208,7 @@ var Cmd = &cobra.Command{
 			}
 			runConfig.WorkDir = "/var/www/html/"
 
-			err := dockerClient.Run(strings.Split(config.Stack.Init.Command, " "), runConfig)
+			err := dockerClient.Run(strings.Split(config.BuildConfig.Init.Command, " "), runConfig)
 
 			if err != nil {
 				return err

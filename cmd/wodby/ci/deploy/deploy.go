@@ -67,7 +67,7 @@ var Cmd = &cobra.Command{
 
 		if len(opts.services) == 0 {
 			fmt.Println("Deploying all services")
-			services = config.Stack.Services
+			services = config.BuildConfig.Services
 		} else {
 			fmt.Println("Validating services")
 
@@ -126,7 +126,7 @@ var Cmd = &cobra.Command{
 
 		// Allow specifying tags for custom stacks.
 		if opts.tag != "" {
-			if !config.Stack.Custom {
+			if !config.BuildConfig.Custom {
 				return errors.New("Specifying tags not allowed for managed stacks")
 			}
 
@@ -142,13 +142,14 @@ var Cmd = &cobra.Command{
 		}
 
 		payload := &api.DeployBuildPayload{
-			Number:     config.Metadata.Number,
-			PostDeploy: postDeploy,
-			Metadata:   config.Metadata,
+			Number:       config.Metadata.Number,
+			PostDeploy:   postDeploy,
+			Metadata:     config.Metadata,
 			ServicesTags: servicesTags,
+			Token:        config.BuildConfig.Token,
 		}
 
-		fmt.Printf("Deploying build #%s to %s...", config.Metadata.Number, config.Stack.Title)
+		fmt.Printf("Deploying build #%s to %s...", config.Metadata.Number, config.BuildConfig.Title)
 		result, err := docker.DeployBuild(opts.uuid, payload)
 		if err != nil {
 			return err

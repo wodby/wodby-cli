@@ -77,7 +77,7 @@ var Cmd = &cobra.Command{
 
 		if len(opts.services) == 0 {
 			fmt.Println("Building all services")
-			services = config.Stack.Services
+			services = config.BuildConfig.Services
 		} else {
 			fmt.Println("Validating services")
 
@@ -188,7 +188,7 @@ var Cmd = &cobra.Command{
 
 			// Allow specifying tags for custom stacks.
 			if opts.tag != "" {
-				if !config.Stack.Custom {
+				if !config.BuildConfig.Custom {
 					return errors.New("Specifying tags not allowed for managed stacks")
 				}
 

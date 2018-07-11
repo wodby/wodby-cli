@@ -74,7 +74,7 @@ var Cmd = &cobra.Command{
 				}
 			}
 		} else if opts.image == "" {
-			images = append(images, config.Stack.Services[config.Stack.Default].Image)
+			images = append(images, config.BuildConfig.Services[config.BuildConfig.Default].Image)
 		} else {
 			images = append(images, opts.image)
 		}

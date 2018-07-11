@@ -23,11 +23,16 @@ import (
 )
 
 type options struct {
-	uuid    	string
-	context 	string
-	dind    	bool
+	uuid        string
+	context     string
+	dind        bool
 	skipPermFix bool
 	buildNumber string
+	username    string
+	email       string
+	url         string
+	provider    string
+	message     string
 }
 
 var opts options
@@ -35,7 +40,7 @@ var opts options
 var Cmd = &cobra.Command{
 	Use:   "init INSTANCE_UUID",
 	Short: "Initialize config for CI process",
-	Args: cobra.ExactArgs(1),
+	Args:  cobra.ExactArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		if viper.GetString("api_key") == "" {
 			return errors.New("api-key flag is required")
@@ -82,7 +87,7 @@ var Cmd = &cobra.Command{
 
 		fmt.Println(" DONE")
 
-		metadata, err := types.NewBuildMetadata(opts.buildNumber)
+		metadata, err := types.NewBuildMetadata(opts.provider, opts.buildNumber, opts.url)
 
 		if err != nil {
 			return err
@@ -100,7 +105,7 @@ var Cmd = &cobra.Command{
 
 		if opts.dind {
 			dind = true
-		} else if config.Metadata.Provider == types.CircleCIName {
+		} else if config.Metadata.Provider == types.CircleCI {
 			source, err := ioutil.ReadFile(filepath.Join(opts.context, ".circleci/config.yml"))
 			if err != nil {
 				return err
@@ -189,7 +194,7 @@ var Cmd = &cobra.Command{
 			fmt.Printf("Initializing service %s...", service.Name)
 
 			runConfig := docker.RunConfig{
-				Image:   service.Image,
+				Image: service.Image,
 			}
 
 			for envName, envVal := range config.Stack.Init.Environment {
@@ -220,5 +225,7 @@ func init() {
 	Cmd.Flags().StringVarP(&opts.context, "context", "c", "", "Build context (default: current directory)")
 	Cmd.Flags().BoolVar(&opts.dind, "dind", false, "Use data container for sharing files between commands")
 	Cmd.Flags().BoolVar(&opts.skipPermFix, "skip-permissions-fix", false, "Skip permissions fix for managed stacks")
-	Cmd.Flags().StringVarP(&opts.buildNumber, "build-num", "n", "","Custom build number (used if failed to identify automatically)")
+	Cmd.Flags().StringVarP(&opts.buildNumber, "build-num", "n", "", "Custom build number (used if can't identify automatically)")
+	Cmd.Flags().StringVar(&opts.url, "url", "", "Custom build url (used if can't acquire automatically)")
+	Cmd.Flags().StringVar(&opts.provider, "provider", "p", "Custom build provider name (used if can't identify automatically)")
 }

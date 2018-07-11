@@ -12,21 +12,16 @@ import (
 // Tasks" statuses.
 const (
 	TaskStatusDone     = "Done"
-	TaskStatusWaiting  = "Waiting"
-	TaskStatusProgress = "In progress"
 	TaskStatusCanceled = "Canceled"
 	TaskStatusFailed   = "Failed"
 )
 
 // CI providers
 const (
-	TravisCIName        = "Travis CI"
-	CircleCIName        = "CircleCI"
-	BitbucketCIName     = "Bitbucket Pipelines"
-	CodeshipBasicCIName = "Codeship Basic"
-	CodeshipProCIName   = "Codeship Pro"
-	JenkinsName   		= "Jenkins"
-	GitLabCIName   		= "GitLab CI"
+	TravisCI           = "Travis CI"
+	CircleCI           = "CircleCI"
+	BitbucketPipelines = "Bitbucket Pipelines"
+	Jenkins            = "Jenkins"
 )
 
 type CircleCIConfig struct {
@@ -70,42 +65,48 @@ type BuildConfig struct {
 }
 
 type BuildMetadata struct {
-	Known    bool   `json,mapstructure:"known"`
 	Provider string `json,mapstructure:"provider"`
 	Username string `json,mapstructure:"username"`
+	Email	 string `json,mapstructure:"email"`
 	Number   string `json,mapstructure:"build_number"`
 	URL      string `json,mapstructure:"build_url"`
 	Branch   string `json,mapstructure:"branch"`
 	Commit   string `json,mapstructure:"commit"`
 	Message  string `json,mapstructure:"message"`
+	Tag	 	 string `json,mapstructure:"tag"`
+	Slug	 string `json,mapstructure:"slug"`
 }
 
-func NewBuildMetadata(buildNumber string) (*BuildMetadata, error) {
+func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMetadata, error) {
 	var metadata *BuildMetadata
 
 	if os.Getenv("TRAVIS") != "" {
+		// @todo identify whether it's .com or .org
+		// https://github.com/travis-ci/travis-ci/issues/8935
 		var url = fmt.Sprintf(
 			"https://travis-ci.org/%s/builds/%s",
 			os.Getenv("TRAVIS_REPO_SLUG"),
 			os.Getenv("TRAVIS_BUILD_ID"))
 
 		metadata = &BuildMetadata{
-			Known:    true,
-			Provider: TravisCIName,
-			URL:	  url,
+			Provider: TravisCI,
+			URL:      url,
 			Number:   os.Getenv("TRAVIS_BUILD_NUMBER"),
 			Branch:   os.Getenv("TRAVIS_BRANCH"),
 			Commit:   os.Getenv("TRAVIS_COMMIT"),
 			Message:  os.Getenv("TRAVIS_COMMIT_MESSAGE"),
+			Tag:      os.Getenv("TRAVIS_TAG"),
+			Slug:     os.Getenv("TRAVIS_REPO_SLUG"),
 		}
 	} else if os.Getenv("CIRCLECI") != "" {
 		metadata = &BuildMetadata{
-			Known:    true,
-			Provider: CircleCIName,
+			Provider: CircleCI,
 			URL:      os.Getenv("CIRCLE_BUILD_URL"),
 			Number:   os.Getenv("CIRCLE_BUILD_NUM"),
 			Branch:   os.Getenv("CIRCLE_BRANCH"),
 			Commit:   os.Getenv("CIRCLE_SHA1"),
+			Tag:      os.Getenv("CIRCLE_TAG"),
+			Slug:     os.Getenv("CIRCLE_PROJECT_REPONAME"),
 		}
 
 	} else if os.Getenv("BITBUCKET_BUILD_NUMBER") != "" {
@@ -115,54 +116,96 @@ func NewBuildMetadata(buildNumber string) (*BuildMetadata, error) {
 			os.Getenv("BITBUCKET_BUILD_NUMBER"))
 
 		metadata = &BuildMetadata{
-			Known:    true,
-			Provider: BitbucketCIName,
+			Provider: BitbucketPipelines,
 			URL:      url,
 			Number:   os.Getenv("BITBUCKET_BUILD_NUMBER"),
 			Branch:   os.Getenv("BITBUCKET_BRANCH"),
 			Commit:   os.Getenv("BITBUCKET_COMMIT"),
+			Tag:      os.Getenv("BITBUCKET_TAG"),
+			Slug:     os.Getenv("BITBUCKET_REPO_SLUG"),
 		}
+	// @todo acquire repo slug and git tag from Jenkins.
 	} else if os.Getenv("JENKINS_HOME") != "" {
 		metadata = &BuildMetadata{
-			Known:    true,
-			Provider: JenkinsName,
-			URL:   	  os.Getenv("JOB_URL"),
+			Provider: Jenkins,
+			URL:      os.Getenv("JOB_URL"),
 			Number:   os.Getenv("BUILD_NUMBER"),
 			Branch:   os.Getenv("GIT_BRANCH"),
 			Commit:   os.Getenv("GIT_COMMIT"),
 		}
 	} else {
-		metadata = &BuildMetadata{
-			Known: false,
+		metadata = &BuildMetadata{}
+
+		if provider != "" {
+			metadata.Provider = provider
+		} else {
+			metadata.Provider = "Unknown"
+		}
+
+		if url != "" {
+			metadata.URL = url
 		}
 
 		out, err := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput()
 
 		if err != nil {
-			metadata.Branch = ""
+			fmt.Println("Failed to acquire branch info")
 		} else {
 			branch := strings.TrimSuffix(string(out), "\n")
 
 			if branch == "HEAD" {
 				branch = ""
-			}
+				out, err = exec.Command("git", "describe", "--tags").CombinedOutput()
 
-			metadata.Branch = branch
+				if err != nil {
+					fmt.Println("Failed to acquire tag info")
+				} else {
+					metadata.Tag = strings.TrimSuffix(string(out), "\n")
+				}
+			} else {
+				metadata.Branch = branch
+			}
+		}
+
+		out, err = exec.Command("git", "rev-parse", "HEAD").CombinedOutput()
+
+		if err != nil {
+			fmt.Println("Failed to acquire commit info")
+		} else {
+			metadata.Commit = strings.TrimSuffix(string(out), "\n")
 		}
 
 		if buildNumber != "" {
 			metadata.Number = buildNumber
 		} else {
-			metadata.Number =  strconv.FormatInt(time.Now().Unix(), 10)
+			metadata.Number = strconv.FormatInt(time.Now().Unix(), 10)
 		}
 	}
 
-	if metadata.Message == "" {
-		out, err := exec.Command("git", "log", "--format=oneline", "-n", "1", "$CIRCLE_SHA1").CombinedOutput()
+	if metadata.Message == "" && metadata.Commit != "" {
+		out, err := exec.Command("git", "log", "--format=oneline", "-n", "1", metadata.Commit).CombinedOutput()
 
 		if err != nil {
+			fmt.Println("Failed to acquire commit message")
+		} else {
 			metadata.Message = string(out)
 		}
+	}
+
+	out, err := exec.Command("git", "log", "-1", metadata.Commit, "--pretty=\"%aN\"").CombinedOutput()
+
+	if err != nil {
+		fmt.Println("Failed to acquire commit author username")
+	} else {
+		metadata.Username = string(out)
+	}
+
+	out, err = exec.Command("git", "log", "-1", metadata.Commit, "--pretty=\"%cE\"").CombinedOutput()
+
+	if err != nil {
+		fmt.Println("Failed to acquire commit author email")
+	} else {
+		metadata.Email = string(out)
 	}
 
 	return metadata, nil

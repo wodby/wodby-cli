@@ -18,9 +18,9 @@ const (
 
 // CI providers
 const (
-	TravisCI           = "travis"
-	CircleCI           = "circle"
-	BitbucketPipelines = "bitbucket"
+	TravisCI           = "travisci"
+	CircleCI           = "circleci"
+	BitbucketPipelines = "bitbucket-pipelines"
 	Jenkins            = "jenkins"
 )
 

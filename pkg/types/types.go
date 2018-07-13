@@ -82,6 +82,7 @@ type BuildMetadata struct {
 	Message  string `json,mapstructure:"message"`
 	Tag	 	 string `json,mapstructure:"tag"`
 	Slug	 string `json,mapstructure:"slug"`
+	RepoURL	 string `json,mapstructure:"repo_url"`
 	Id	 	 string `json,mapstructure:"id"`
 }
 
@@ -109,6 +110,7 @@ func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMe
 			Commit:   os.Getenv("CIRCLE_SHA1"),
 			Tag:      os.Getenv("CIRCLE_TAG"),
 			Slug:     os.Getenv("CIRCLE_PROJECT_REPONAME"),
+			RepoURL:  os.Getenv("CIRCLE_REPOSITORY_URL"),
 		}
 
 	} else if os.Getenv("BITBUCKET_BUILD_NUMBER") != "" {
@@ -128,6 +130,7 @@ func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMe
 			Number:   os.Getenv("BUILD_NUMBER"),
 			Branch:   os.Getenv("GIT_BRANCH"),
 			Commit:   os.Getenv("GIT_COMMIT"),
+			RepoURL:  os.Getenv("GIT_URL"),
 		}
 	} else {
 		metadata = &BuildMetadata{}

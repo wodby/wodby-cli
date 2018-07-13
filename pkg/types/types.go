@@ -18,10 +18,10 @@ const (
 
 // CI providers
 const (
-	TravisCI           = "Travis CI"
-	CircleCI           = "CircleCI"
-	BitbucketPipelines = "Bitbucket Pipelines"
-	Jenkins            = "Jenkins"
+	TravisCI           = "travis"
+	CircleCI           = "circle"
+	BitbucketPipelines = "bitbucket"
+	Jenkins            = "jenkins"
 )
 
 type CircleCIConfig struct {

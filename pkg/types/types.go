@@ -88,13 +88,6 @@ func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMe
 	var metadata *BuildMetadata
 
 	if os.Getenv("TRAVIS") != "" {
-		// @todo identify whether it's .com or .org
-		// https://github.com/travis-ci/travis-ci/issues/8935
-		var url = fmt.Sprintf(
-			"https://travis-ci.org/%s/builds/%s",
-			os.Getenv("TRAVIS_REPO_SLUG"),
-			os.Getenv("TRAVIS_BUILD_ID"))
-
 		metadata = &BuildMetadata{
 			Provider: TravisCI,
 			URL:      url,
@@ -117,14 +110,8 @@ func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMe
 		}
 
 	} else if os.Getenv("BITBUCKET_BUILD_NUMBER") != "" {
-		var url = fmt.Sprintf(
-			"https://bitbucket.org/%s/addon/pipelines/home#!/results/%s",
-			os.Getenv("BITBUCKET_REPO_SLUG"),
-			os.Getenv("BITBUCKET_BUILD_NUMBER"))
-
 		metadata = &BuildMetadata{
 			Provider: BitbucketPipelines,
-			URL:      url,
 			Number:   os.Getenv("BITBUCKET_BUILD_NUMBER"),
 			Branch:   os.Getenv("BITBUCKET_BRANCH"),
 			Commit:   os.Getenv("BITBUCKET_COMMIT"),

@@ -90,7 +90,6 @@ func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMe
 	if os.Getenv("TRAVIS") != "" {
 		metadata = &BuildMetadata{
 			Provider: TravisCI,
-			URL:      url,
 			Number:   os.Getenv("TRAVIS_BUILD_NUMBER"),
 			Branch:   os.Getenv("TRAVIS_BRANCH"),
 			Commit:   os.Getenv("TRAVIS_COMMIT"),

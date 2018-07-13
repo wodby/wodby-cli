@@ -82,6 +82,7 @@ type BuildMetadata struct {
 	Message  string `json,mapstructure:"message"`
 	Tag	 	 string `json,mapstructure:"tag"`
 	Slug	 string `json,mapstructure:"slug"`
+	Id	 	 string `json,mapstructure:"id"`
 }
 
 func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMetadata, error) {
@@ -90,6 +91,8 @@ func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMe
 	if os.Getenv("TRAVIS") != "" {
 		metadata = &BuildMetadata{
 			Provider: TravisCI,
+			URL:      url,
+			Id:		  os.Getenv("TRAVIS_BUILD_ID"),
 			Number:   os.Getenv("TRAVIS_BUILD_NUMBER"),
 			Branch:   os.Getenv("TRAVIS_BRANCH"),
 			Commit:   os.Getenv("TRAVIS_COMMIT"),

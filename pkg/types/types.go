@@ -196,7 +196,7 @@ func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMe
 	if err != nil {
 		fmt.Println("Failed to acquire commit author username")
 	} else {
-		metadata.Username = string(out)
+		metadata.Username = strings.TrimSpace(string(out))
 	}
 
 	out, err = exec.Command("git", "log", "-1", metadata.Commit, "--pretty=%cE").CombinedOutput()
@@ -204,7 +204,7 @@ func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMe
 	if err != nil {
 		fmt.Println("Failed to acquire commit author email")
 	} else {
-		metadata.Email = string(out)
+		metadata.Email = strings.TrimSpace(string(out))
 	}
 
 	return metadata, nil

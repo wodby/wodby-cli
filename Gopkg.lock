@@ -2,6 +2,12 @@
 
 
 [[projects]]
+  name = "github.com/blang/semver"
+  packages = ["."]
+  revision = "2ee87856327ba09384cabd113bc6b5d174e9ec0f"
+  version = "v3.5.1"
+
+[[projects]]
   name = "github.com/fsnotify/fsnotify"
   packages = ["."]
   revision = "c2828203cd70a50dcccfb2761f8b1f8ceef9a8e9"
@@ -127,6 +133,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "f570b523fdb096677613b5f8ec1067691a5a2d557f08f05d2ed1658043264d88"
+  inputs-digest = "83dae322d2bdb675766c537f0df223722abdbca83c55a76161ea2980fd499d64"
   solver-name = "gps-cdcl"
   solver-version = 1

@@ -4,6 +4,8 @@ import (
 	"net/http"
 
 	"github.com/wodby/wodby-cli/pkg/types"
+	"github.com/pkg/errors"
+	"io/ioutil"
 )
 
 // DeployBuildPayload is the deploy build action payload.
@@ -18,6 +20,17 @@ type DeployBuildPayload struct {
 // NewGetBuildConfigRequest makes new build config request.
 func (c *Client) NewGetBuildConfigRequest(UUID string) (*http.Request, error) {
 	u := c.NewURL("/instances/%s/build-config", UUID)
+
+	req, err := http.NewRequest("GET", u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+func (c *Client) NewGetBuildLatestVerRequest() (*http.Request, error) {
+	u := c.NewURL("/get/version/cli")
 
 	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
@@ -46,6 +59,26 @@ func (c *Client) GetBuildConfig(UUID string) (*types.BuildConfig, error) {
 	}
 
 	return config, nil
+}
+
+// GetBuildConfig does build config request.
+func (c *Client) GetLatestVersion() (string, error) {
+	req, err := c.NewGetBuildLatestVerRequest()
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := c.Client.Do(req)
+	if err != nil {
+		return "", err
+	}
+
+	str, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", errors.New("response body reading failed")
+	}
+
+	return string(str), nil
 }
 
 // NewDeployBuildRequest makes new deploy build request.

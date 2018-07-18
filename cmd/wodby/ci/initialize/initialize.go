@@ -20,6 +20,8 @@ import (
 	"gopkg.in/yaml.v2"
 	"github.com/wodby/wodby-cli/pkg/types"
 	"strings"
+	"github.com/blang/semver"
+	"github.com/wodby/wodby-cli/pkg/version"
 )
 
 type options struct {
@@ -77,6 +79,23 @@ var Cmd = &cobra.Command{
 			Prefix: viper.GetString("api_prefix"),
 		}
 		client := api.NewClient(logger, apiConfig)
+
+		fmt.Println("Checking CLI version...")
+
+		if version.VERSION == "dev" {
+			fmt.Println("You're using a dev version of CLI, some things may be unstable. Skipping version check")
+		} else {
+			ver, err := client.GetLatestVersion()
+			if err != nil {
+				return err
+			}
+
+			v1, err := semver.Make(version.VERSION)
+			v2, err := semver.Make(ver)
+			if v1.Compare(v2) == -1 {
+				return fmt.Errorf("current version of CLI (%s) is outdated, minimum required is %s, please upgrade", v1.String(), v2.String())
+			}
+		}
 
 		fmt.Printf("Requesting build info for instance %s...", opts.uuid)
 

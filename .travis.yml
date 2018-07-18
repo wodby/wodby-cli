@@ -6,7 +6,7 @@ services:
 env:
   global:
     - DEP_VERSION=0.4.1
-    - VERSION="${TRAVIS_TAG}"
+    - VERSION="${TRAVIS_TAG:-dev}"
     - TAGS="${VERSION:-latest}"
   matrix:
     - GIMME_OS=linux GIMME_ARCH=amd64

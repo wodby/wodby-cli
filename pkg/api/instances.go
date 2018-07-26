@@ -10,11 +10,11 @@ import (
 
 // DeployBuildPayload is the deploy build action payload.
 type DeployBuildPayload struct {
-	Number       string               `json,mapstructure:"number"`
-	Metadata     *types.BuildMetadata `json,mapstructure:"info"`
-	PostDeploy   *bool                `json,mapstructure:"post_deployment,omitempty"`
-	ServicesTags map[string]string    `json,mapstructure:"services_tags"`
-	Token 		 string				  `json,mapstructure:"token"`
+	Number       string               `json:"number"`
+	Metadata     *types.BuildMetadata `json:"info"`
+	PostDeploy   *bool                `json:"post_deployment,omitempty"`
+	ServicesTags map[string]string    `json:"services_tags"`
+	Token 		 string				  `json:"token"`
 }
 
 // NewGetBuildConfigRequest makes new build config request.

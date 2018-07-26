@@ -50,7 +50,7 @@ func (c *Client) NewURL(format string, params ...interface{}) *url.URL {
 
 // EncodePayload encodes the payload.
 func (c *Client) EncodePayload(payload interface{}) (io.Reader, error) {
-	b, err := json.MarshalIndent(payload, "", "    ")
+	b, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}

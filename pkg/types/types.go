@@ -82,7 +82,7 @@ type BuildMetadata struct {
 	Message  string `json,mapstructure:"message"`
 	Tag	 	 string `json,mapstructure:"tag"`
 	Slug	 string `json,mapstructure:"slug"`
-	RepoURL	 string `json,mapstructure:"repourl"`
+	RepoURL	 string `json,mapstructure:"repo_url"`
 	Id	 	 string `json,mapstructure:"id"`
 }
 

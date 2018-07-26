@@ -72,18 +72,18 @@ type BuildConfig struct {
 }
 
 type BuildMetadata struct {
-	Provider string `json:"provider"`
-	Username string `json:"username"`
-	Email	 string `json:"email"`
-	Number   string `json:"build_number"`
-	URL      string `json:"build_url"`
-	Branch   string `json:"branch"`
-	Commit   string `json:"commit"`
-	Message  string `json:"message"`
-	Tag	 	 string `json:"tag"`
-	Slug	 string `json:"slug"`
-	RepoURL	 string `json:"repo_url"`
-	Id	 	 string `json:"id"`
+	Provider string `json,mapstructure:"provider"`
+	Username string `json,mapstructure:"username"`
+	Email	 string `json,mapstructure:"email"`
+	Number   string `json,mapstructure:"number"`
+	URL      string `json,mapstructure:"url"`
+	Branch   string `json,mapstructure:"branch"`
+	Commit   string `json,mapstructure:"commit"`
+	Message  string `json,mapstructure:"message"`
+	Tag	 	 string `json,mapstructure:"tag"`
+	Slug	 string `json,mapstructure:"slug"`
+	RepoURL	 string `json,mapstructure:"repourl"`
+	Id	 	 string `json,mapstructure:"id"`
 }
 
 func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMetadata, error) {

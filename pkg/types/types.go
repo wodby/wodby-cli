@@ -182,12 +182,12 @@ func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMe
 	}
 
 	if metadata.Message == "" && metadata.Commit != "" {
-		out, err := exec.Command("git", "log", "--format=oneline", "-n", "1", metadata.Commit).CombinedOutput()
+		out, err := exec.Command("git", "log", "--format=%B", "-n", "1", metadata.Commit).CombinedOutput()
 
 		if err != nil {
 			fmt.Println("Failed to acquire commit message")
 		} else {
-			metadata.Message = string(out)
+			metadata.Message = strings.TrimSuffix(string(out), "\n")
 		}
 	}
 

@@ -126,10 +126,6 @@ var Cmd = &cobra.Command{
 
 		// Allow specifying tags for custom stacks.
 		if opts.tag != "" {
-			if !config.BuildConfig.Custom {
-				return errors.New("Specifying tags not allowed for managed stacks")
-			}
-
 			if strings.Contains(opts.tag, ":") {
 				tag = opts.tag
 			} else {

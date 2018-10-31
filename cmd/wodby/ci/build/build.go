@@ -113,7 +113,7 @@ var Cmd = &cobra.Command{
 		if config.DataContainer != "" {
 			fmt.Println("Synchronizing data container")
 
-			from := fmt.Sprintf("%s:/var/www/html", config.DataContainer)
+			from := fmt.Sprintf("%s:%s", config.DataContainer, config.WorkingDir)
 			to := fmt.Sprintf("/tmp/wodby-build-%s", config.DataContainer)
 			_, err := exec.Command("docker", "cp", from, to).CombinedOutput()
 			if err != nil {

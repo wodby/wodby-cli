@@ -102,6 +102,29 @@ func (c *Client) GetImageDefaultUser(image string) (string, error) {
 	return defaultUser, nil
 }
 
+func (c *Client) GetImageWorkingDir(image string) (string, error) {
+	workingDir := ""
+
+	err := c.Pull(image)
+
+	if err != nil {
+		return workingDir, err
+	}
+
+	out, err := exec.Command("docker","image", "inspect", image, "-f", "{{.ContainerConfig.WorkingDir}}").CombinedOutput()
+	if err != nil {
+		return workingDir, errors.New(string(out))
+	}
+
+	workingDir = strings.TrimSuffix(string(out), "\n")
+
+	if workingDir == "" {
+		workingDir = "/"
+	}
+
+	return workingDir, nil
+}
+
 // Run runs docker container.
 func (c *Client) Run(args []string, config RunConfig) error {
 	command := []string{"run", "--rm"}

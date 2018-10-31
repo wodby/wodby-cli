@@ -94,14 +94,23 @@ var Cmd = &cobra.Command{
 
 			dockerClient := docker.NewClient()
 
+			workingDir, err := dockerClient.GetImageWorkingDir(image)
+
+			if err != nil {
+				return err
+			}
+
 			if config.DataContainer != "" {
 				runConfig.VolumesFrom = []string{config.DataContainer}
 			} else {
-				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:/var/www/html", config.Context))
+				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, workingDir))
 			}
-			runConfig.WorkDir = "/var/www/html/" + opts.path
 
-			err := dockerClient.Run(args, runConfig)
+			if opts.path != "" {
+				runConfig.WorkDir = fmt.Sprintf("%s/%s", workingDir, opts.path)
+			}
+
+			err = dockerClient.Run(args, runConfig)
 
 			if err != nil {
 				return err

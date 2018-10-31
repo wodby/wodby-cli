@@ -11,6 +11,7 @@ import (
 type Config struct {
 	UUID          string               `json,mapstructure:"instance"`
 	DataContainer string               `json,mapstructure:"data,omitempty"`
+	WorkingDir    string               `json,mapstructure:"dir,omitempty"`
 	Context       string               `json,mapstructure:"context"`
 	API           *api.Config          `json,mapstructure:"api"`
 	BuildConfig   *types.BuildConfig   `json,mapstructure:"config"`

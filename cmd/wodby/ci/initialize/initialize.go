@@ -141,17 +141,26 @@ var Cmd = &cobra.Command{
 			}
 		}
 
+		dockerClient := docker.NewClient()
+		defaultService := config.BuildConfig.Services[config.BuildConfig.Default]
+		config.WorkingDir, err = dockerClient.GetImageWorkingDir(defaultService.Image)
+
+		if err != nil {
+			return err
+		}
+
 		if dind {
 			fmt.Print("Using docker in docker build schema. Creating data container...")
 
 			config.DataContainer = uuid.New()
 
-			_, err := exec.Command("docker", "create", "--volume=/var/www/html", fmt.Sprintf("--name=%s", config.DataContainer), "wodby/alpine:3.7-2.0.0", "/bin/true").CombinedOutput()
+			// We use working dir of the default service for data container.
+			_, err := exec.Command("docker", "create",  fmt.Sprintf("--volume=%s", config.WorkingDir), fmt.Sprintf("--name=%s", config.DataContainer), "wodby/alpine:3.8-2.1.1", "/bin/true").CombinedOutput()
 			if err != nil {
 				return err
 			}
 
-			_, err = exec.Command("docker", "cp", fmt.Sprintf("%s/.", config.Context), fmt.Sprintf("%s:/var/www/html", config.DataContainer)).CombinedOutput()
+			_, err = exec.Command("docker", "cp", fmt.Sprintf("%s/.", config.Context), fmt.Sprintf("%s:%s", config.DataContainer, config.WorkingDir)).CombinedOutput()
 			if err != nil {
 				return err
 			}
@@ -169,12 +178,9 @@ var Cmd = &cobra.Command{
 			return err
 		}
 
-		dockerClient := docker.NewClient()
-
 		// Fixing permissions for managed stacks.
 		if !opts.skipPermFix && !config.BuildConfig.Custom {
-			service := config.BuildConfig.Services[config.BuildConfig.Default]
-			defaultUser, err := dockerClient.GetImageDefaultUser(service.Image)
+			defaultUser, err := dockerClient.GetImageDefaultUser(defaultService.Image)
 
 			if err != nil {
 				return err
@@ -184,16 +190,15 @@ var Cmd = &cobra.Command{
 				fmt.Print("Fixing codebase permissions...")
 
 				runConfig := docker.RunConfig{
-					Image: service.Image,
+					Image: defaultService.Image,
 					User:  "root",
 				}
 
 				if config.DataContainer != "" {
 					runConfig.VolumesFrom = []string{config.DataContainer}
 				} else {
-					runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:/var/www/html", config.Context))
+					runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, config.WorkingDir))
 				}
-				runConfig.WorkDir = "/var/www/html/"
 
 				args := []string{"chown", "-R", fmt.Sprintf("%s:%s", defaultUser, defaultUser), "."}
 				err := dockerClient.Run(args, runConfig)
@@ -209,6 +214,11 @@ var Cmd = &cobra.Command{
 		// Initializing managed stack services.
 		if config.BuildConfig.Init != nil {
 			service := config.BuildConfig.Services[config.BuildConfig.Init.Service]
+			workingDir, err := dockerClient.GetImageWorkingDir(service.Image)
+
+			if err != nil {
+				return err
+			}
 
 			fmt.Printf("Initializing service %s...", service.Name)
 
@@ -223,11 +233,10 @@ var Cmd = &cobra.Command{
 			if config.DataContainer != "" {
 				runConfig.VolumesFrom = []string{config.DataContainer}
 			} else {
-				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:/var/www/html", config.Context))
+				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, workingDir))
 			}
-			runConfig.WorkDir = "/var/www/html/"
 
-			err := dockerClient.Run(strings.Split(config.BuildConfig.Init.Command, " "), runConfig)
+			err = dockerClient.Run(strings.Split(config.BuildConfig.Init.Command, " "), runConfig)
 
 			if err != nil {
 				return err

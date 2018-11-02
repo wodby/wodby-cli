@@ -7,7 +7,8 @@ env:
   global:
     - DEP_VERSION=0.4.1
     - VERSION="${TRAVIS_TAG:-dev}"
-    - TAGS="${VERSION:-latest}"
+    # latest tab build only from stable, see release.sh
+    - TAGS="${VERSION}"
   matrix:
     - GIMME_OS=linux GIMME_ARCH=amd64
     - GIMME_OS=darwin GIMME_ARCH=amd64

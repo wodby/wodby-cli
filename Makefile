@@ -13,7 +13,7 @@ VERSION ?= dev
 ifneq ($(STABILITY_TAG),)
     override TAG := $(STABILITY_TAG)
 else
-    TAG = latest
+    TAG = dev
 endif
 
 ifeq ($(GOOS),linux)
@@ -35,8 +35,11 @@ build:
 		go build -ldflags $(LD_FLAGS) -o bin/$(GOOS)-$(GOARCH)/$(APP) $(PKG)/cmd/$(APP)
 
     ifeq ($(LINUX_AMD64),1)
-		docker build -t $(REPO):$(TAG) ./
+		make build-image
     endif
+
+build-image:
+	docker build -t $(REPO):$(TAG) ./
 
 test:
 	echo "OK"

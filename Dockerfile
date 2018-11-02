@@ -1,7 +1,7 @@
-FROM wodby/alpine:3.7-2.0.1
+FROM docker:18.06.1-ce-dind
 
 COPY ./bin/linux-amd64/wodby /usr/local/bin/wodby
 
-RUN apk add --update bash docker git
+RUN apk add --update bash git openssh-client
 
 CMD [ "wodby" ]

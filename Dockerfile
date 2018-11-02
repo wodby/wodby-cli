@@ -1,4 +1,4 @@
-FROM docker:18.06.1-ce-dind
+FROM docker:18.06.1-ce
 
 COPY ./bin/linux-amd64/wodby /usr/local/bin/wodby
 

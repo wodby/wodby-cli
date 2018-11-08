@@ -3,8 +3,8 @@ package api
 import (
 	"net/http"
 
-	"github.com/wodby/wodby-cli/pkg/types"
 	"github.com/pkg/errors"
+	"github.com/wodby/wodby-cli/pkg/types"
 	"io/ioutil"
 )
 

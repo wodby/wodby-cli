@@ -1,12 +1,12 @@
 package ci
 
 import (
+	"github.com/spf13/cobra"
 	"github.com/wodby/wodby-cli/cmd/wodby/ci/build"
 	"github.com/wodby/wodby-cli/cmd/wodby/ci/deploy"
 	"github.com/wodby/wodby-cli/cmd/wodby/ci/initialize"
 	"github.com/wodby/wodby-cli/cmd/wodby/ci/release"
 	"github.com/wodby/wodby-cli/cmd/wodby/ci/run"
-	"github.com/spf13/cobra"
 )
 
 // Cmd represents the ci command.

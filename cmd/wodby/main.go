@@ -1,12 +1,11 @@
 package main
 
 import (
-	"os"
-
-	"github.com/wodby/wodby-cli/cmd/wodby/ci"
-	"github.com/wodby/wodby-cli/cmd/wodby/version"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"github.com/wodby/wodby-cli/cmd/wodby/ci"
+	"github.com/wodby/wodby-cli/cmd/wodby/version"
+	"os"
 )
 
 // RootCmd represents the base command when called without any subcommands.

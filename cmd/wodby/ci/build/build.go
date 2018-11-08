@@ -1,20 +1,20 @@
 package build
 
 import (
-	"path"
+	"bytes"
+	"fmt"
+	"html/template"
+	"io/ioutil"
 	"os"
 	"os/exec"
-	"fmt"
-	"io/ioutil"
-	"html/template"
-	"bytes"
+	"path"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"github.com/wodby/wodby-cli/pkg/docker"
 	"github.com/wodby/wodby-cli/pkg/config"
+	"github.com/wodby/wodby-cli/pkg/docker"
 	"github.com/wodby/wodby-cli/pkg/types"
 
 	"github.com/pkg/errors"

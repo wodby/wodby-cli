@@ -1,12 +1,12 @@
 package release
 
 import (
-	"path"
 	"fmt"
+	"path"
 	"strings"
 
-	"github.com/wodby/wodby-cli/pkg/docker"
 	"github.com/wodby/wodby-cli/pkg/config"
+	"github.com/wodby/wodby-cli/pkg/docker"
 	"github.com/wodby/wodby-cli/pkg/types"
 
 	"github.com/spf13/cobra"

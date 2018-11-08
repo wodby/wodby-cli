@@ -3,12 +3,12 @@ package docker
 import (
 	"github.com/pkg/errors"
 
-	"github.com/wodby/wodby-cli/pkg/exec"
+	"bytes"
 	"fmt"
-	"strings"
+	"github.com/wodby/wodby-cli/pkg/exec"
 	"io"
 	"os"
-	"bytes"
+	"strings"
 )
 
 // Client is docker client representation.

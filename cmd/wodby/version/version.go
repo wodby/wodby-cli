@@ -3,8 +3,8 @@ package version
 import (
 	"fmt"
 
-	"github.com/wodby/wodby-cli/pkg/version"
 	"github.com/spf13/cobra"
+	"github.com/wodby/wodby-cli/pkg/version"
 )
 
 // Cmd represents the version command.

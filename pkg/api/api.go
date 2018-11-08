@@ -11,9 +11,9 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/wodby/wodby-cli/pkg/request"
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
+	"github.com/wodby/wodby-cli/pkg/request"
 	"github.com/wodby/wodby-cli/pkg/types"
 )
 

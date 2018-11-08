@@ -4,10 +4,10 @@ import (
 	"net/http"
 	"time"
 
+	"fmt"
+	"github.com/pkg/errors"
 	"github.com/wodby/wodby-cli/pkg/types"
 	"github.com/wodby/wodby-cli/pkg/utils"
-	"github.com/pkg/errors"
-	"fmt"
 )
 
 func (c *Client) NewGetTaskRequest(UUID string) (*http.Request, error) {

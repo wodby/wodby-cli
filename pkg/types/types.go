@@ -1,12 +1,12 @@
 package types
 
 import (
-	"os"
-	"time"
-	"strconv"
-	"os/exec"
 	"fmt"
+	"os"
+	"os/exec"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Tasks" statuses.

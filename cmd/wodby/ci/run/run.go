@@ -5,11 +5,11 @@ import (
 
 	"fmt"
 
-	"github.com/wodby/wodby-cli/pkg/docker"
-	"github.com/wodby/wodby-cli/pkg/config"
+	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"github.com/pkg/errors"
+	"github.com/wodby/wodby-cli/pkg/config"
+	"github.com/wodby/wodby-cli/pkg/docker"
 )
 
 type options struct {

@@ -1,10 +1,10 @@
 package deploy
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"path"
-	"fmt"
 	"strings"
 
 	"github.com/wodby/wodby-cli/pkg/api"
@@ -107,7 +107,7 @@ var Cmd = &cobra.Command{
 			Host:   v.GetString("api.host"),
 			Prefix: v.GetString("api.prefix"),
 		}
-		docker := api.NewClient(logger, apiConfig)
+		client := api.NewClient(logger, apiConfig)
 
 		var postDeploy *bool
 		if postDeployFlag != nil && postDeployFlag.Changed {
@@ -146,12 +146,12 @@ var Cmd = &cobra.Command{
 		}
 
 		fmt.Printf("Deploying build #%s to %s...", config.Metadata.Number, config.BuildConfig.Title)
-		result, err := docker.DeployBuild(opts.uuid, payload)
+		result, err := client.DeployBuild(opts.uuid, payload)
 		if err != nil {
 			return err
 		}
 
-		err = docker.WaitTask(result.Task.UUID)
+		err = client.WaitTask(result.Task.UUID)
 		if err != nil {
 			return err
 		}

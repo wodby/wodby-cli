@@ -1,75 +1,75 @@
 language: go
 
 services:
-  - docker
+- docker
 
 env:
   global:
-    - DEP_VERSION=0.4.1
-    - VERSION="${TRAVIS_TAG:-dev}"
-    # latest tab build only from stable, see release.sh
-    - TAGS="${VERSION}"
+  - DEP_VERSION=0.4.1
+  - VERSION="${TRAVIS_TAG:-dev}"
+  # latest tab build only from stable, see release.sh
+  - TAGS="${VERSION}"
   matrix:
-    - GIMME_OS=linux GIMME_ARCH=amd64
-    - GIMME_OS=darwin GIMME_ARCH=amd64
-    - GIMME_OS=windows GIMME_ARCH=amd64
+  - GIMME_OS=linux GIMME_ARCH=amd64
+  - GIMME_OS=darwin GIMME_ARCH=amd64
+  - GIMME_OS=windows GIMME_ARCH=amd64
 
 before_install:
-  - curl -L -s https://github.com/golang/dep/releases/download/v${DEP_VERSION}/dep-linux-amd64 -o $GOPATH/bin/dep
-  - chmod +x $GOPATH/bin/dep
+- curl -L -s https://github.com/golang/dep/releases/download/v${DEP_VERSION}/dep-linux-amd64 -o $GOPATH/bin/dep
+- chmod +x $GOPATH/bin/dep
 
 script:
-  - set -e
-  - dep ensure
-  - make
-  - make test
+- set -e
+- dep ensure
+- make
+- make test
 
 after_success:
-  - ./release.sh
+- ./release.sh
 
 before_deploy:
-  - make package
+- make package
 
 deploy:
-  - provider: releases
-    api_key: $GITHUB_ACCESS_TOKEN
-    overwrite: true
-    skip_cleanup: true
-    file_glob: true
-    file:
-      - bin/wodby-*.tar.gz
-    on:
-      tags: true
+- provider: releases
+  api_key: $GITHUB_ACCESS_TOKEN
+  overwrite: true
+  skip_cleanup: true
+  file_glob: true
+  file:
+  - bin/wodby-*.tar.gz
+  on:
+    tags: true
 
-  - provider: s3
-    access_key_id: $AWS_ACCESS_KEY_ID
-    secret_access_key: $AWS_SECRET_ACCESS_KEY
-    bucket: wodby-releases
-    upload-dir: wodby-cli/dev
-    overwrite: true
-    skip_cleanup: true
-    local_dir: bin
-    on:
-      tags: false
+- provider: s3
+  access_key_id: $AWS_ACCESS_KEY_ID
+  secret_access_key: $AWS_SECRET_ACCESS_KEY
+  bucket: wodby-releases
+  upload-dir: wodby-cli/dev
+  overwrite: true
+  skip_cleanup: true
+  local_dir: bin
+  on:
+    tags: false
 
-  - provider: s3
-    access_key_id: $AWS_ACCESS_KEY_ID
-    secret_access_key: $AWS_SECRET_ACCESS_KEY
-    bucket: wodby-releases
-    upload-dir: wodby-cli/${VERSION}
-    overwrite: true
-    skip_cleanup: true
-    local_dir: bin
-    on:
-      tags: true
+- provider: s3
+  access_key_id: $AWS_ACCESS_KEY_ID
+  secret_access_key: $AWS_SECRET_ACCESS_KEY
+  bucket: wodby-releases
+  upload-dir: wodby-cli/${VERSION}
+  overwrite: true
+  skip_cleanup: true
+  local_dir: bin
+  on:
+    tags: true
 
-  - provider: s3
-    access_key_id: $AWS_ACCESS_KEY_ID
-    secret_access_key: $AWS_SECRET_ACCESS_KEY
-    bucket: wodby-releases
-    upload-dir: wodby-cli/latest
-    overwrite: true
-    skip_cleanup: true
-    local_dir: bin
-    on:
-      tags: true
+- provider: s3
+  access_key_id: $AWS_ACCESS_KEY_ID
+  secret_access_key: $AWS_SECRET_ACCESS_KEY
+  bucket: wodby-releases
+  upload-dir: wodby-cli/latest
+  overwrite: true
+  skip_cleanup: true
+  local_dir: bin
+  on:
+    tags: true

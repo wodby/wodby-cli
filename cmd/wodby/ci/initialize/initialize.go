@@ -28,7 +28,6 @@ type options struct {
 	uuid        string
 	context     string
 	dind        bool
-	skipPermFix bool
 	buildNumber string
 	username    string
 	email       string
@@ -178,39 +177,6 @@ var Cmd = &cobra.Command{
 			return err
 		}
 
-		// Fixing permissions for managed stacks.
-		if !opts.skipPermFix && !config.BuildConfig.Custom {
-			defaultUser, err := dockerClient.GetImageDefaultUser(defaultService.Image)
-
-			if err != nil {
-				return err
-			}
-
-			if defaultUser != "root" {
-				fmt.Print("Fixing codebase permissions...")
-
-				runConfig := docker.RunConfig{
-					Image: defaultService.Image,
-					User:  "root",
-				}
-
-				if config.DataContainer != "" {
-					runConfig.VolumesFrom = []string{config.DataContainer}
-				} else {
-					runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, config.WorkingDir))
-				}
-
-				//args := []string{"chown", "-R", fmt.Sprintf("%s:%s", defaultUser, defaultUser), "."}
-				//err := dockerClient.Run(args, runConfig)
-				//
-				//if err != nil {
-				//	return err
-				//}
-
-				fmt.Println("DONE")
-			}
-		}
-
 		// Initializing managed stack services.
 		if config.BuildConfig.Init != nil {
 			service := config.BuildConfig.Services[config.BuildConfig.Init.Service]
@@ -252,7 +218,6 @@ var Cmd = &cobra.Command{
 func init() {
 	Cmd.Flags().StringVarP(&opts.context, "context", "c", "", "Build context (default: current directory)")
 	Cmd.Flags().BoolVar(&opts.dind, "dind", false, "Use data container for sharing files between commands")
-	Cmd.Flags().BoolVar(&opts.skipPermFix, "skip-permissions-fix", false, "Skip permissions fix for managed stacks")
 	Cmd.Flags().StringVarP(&opts.buildNumber, "build-num", "n", "", "Custom build number (used if can't identify automatically)")
 	Cmd.Flags().StringVar(&opts.url, "url", "", "Custom build url (used if can't acquire automatically)")
 	Cmd.Flags().StringVar(&opts.provider, "provider", "p", "Custom build provider name (used if can't identify automatically)")

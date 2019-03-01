@@ -72,19 +72,18 @@ type BuildConfig struct {
 }
 
 type BuildMetadata struct {
-	Provider   string `json,mapstructure:"provider"`
-	Username   string `json,mapstructure:"username"`
-	Email      string `json,mapstructure:"email"`
-	Number     string `json,mapstructure:"number"`
-	URL        string `json,mapstructure:"url"`
-	Branch     string `json,mapstructure:"branch"`
-	Commit     string `json,mapstructure:"commit"`
-	Message    string `json,mapstructure:"message"`
-	Tag        string `json,mapstructure:"tag"`
-	Slug       string `json,mapstructure:"slug"`
-	RepoURL    string `json,mapstructure:"repo_url"`
-	Id         string `json,mapstructure:"id"`
-	ProjectDir string `json,mapstructure:"project_dir"`
+	Provider string `json,mapstructure:"provider"`
+	Username string `json,mapstructure:"username"`
+	Email    string `json,mapstructure:"email"`
+	Number   string `json,mapstructure:"number"`
+	URL      string `json,mapstructure:"url"`
+	Branch   string `json,mapstructure:"branch"`
+	Commit   string `json,mapstructure:"commit"`
+	Message  string `json,mapstructure:"message"`
+	Tag      string `json,mapstructure:"tag"`
+	Slug     string `json,mapstructure:"slug"`
+	RepoURL  string `json,mapstructure:"repo_url"`
+	Id       string `json,mapstructure:"id"`
 }
 
 func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMetadata, error) {
@@ -92,50 +91,46 @@ func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMe
 
 	if os.Getenv("TRAVIS") != "" {
 		metadata = &BuildMetadata{
-			Provider:   TravisCI,
-			URL:        url,
-			Id:         os.Getenv("TRAVIS_BUILD_ID"),
-			Number:     os.Getenv("TRAVIS_BUILD_NUMBER"),
-			Branch:     os.Getenv("TRAVIS_BRANCH"),
-			Commit:     os.Getenv("TRAVIS_COMMIT"),
-			Message:    os.Getenv("TRAVIS_COMMIT_MESSAGE"),
-			Tag:        os.Getenv("TRAVIS_TAG"),
-			Slug:       os.Getenv("TRAVIS_REPO_SLUG"),
-			ProjectDir: os.Getenv("TRAVIS_REPO_SLUG"),
+			Provider: TravisCI,
+			URL:      url,
+			Id:       os.Getenv("TRAVIS_BUILD_ID"),
+			Number:   os.Getenv("TRAVIS_BUILD_NUMBER"),
+			Branch:   os.Getenv("TRAVIS_BRANCH"),
+			Commit:   os.Getenv("TRAVIS_COMMIT"),
+			Message:  os.Getenv("TRAVIS_COMMIT_MESSAGE"),
+			Tag:      os.Getenv("TRAVIS_TAG"),
+			Slug:     os.Getenv("TRAVIS_REPO_SLUG"),
 		}
 	} else if os.Getenv("CIRCLECI") != "" {
 		metadata = &BuildMetadata{
-			Provider:   CircleCI,
-			URL:        os.Getenv("CIRCLE_BUILD_URL"),
-			Number:     os.Getenv("CIRCLE_BUILD_NUM"),
-			Branch:     os.Getenv("CIRCLE_BRANCH"),
-			Commit:     os.Getenv("CIRCLE_SHA1"),
-			Tag:        os.Getenv("CIRCLE_TAG"),
-			Slug:       os.Getenv("CIRCLE_PROJECT_REPONAME"),
-			RepoURL:    os.Getenv("CIRCLE_REPOSITORY_URL"),
-			ProjectDir: os.Getenv("CIRCLE_WORKING_DIRECTORY"),
+			Provider: CircleCI,
+			URL:      os.Getenv("CIRCLE_BUILD_URL"),
+			Number:   os.Getenv("CIRCLE_BUILD_NUM"),
+			Branch:   os.Getenv("CIRCLE_BRANCH"),
+			Commit:   os.Getenv("CIRCLE_SHA1"),
+			Tag:      os.Getenv("CIRCLE_TAG"),
+			Slug:     os.Getenv("CIRCLE_PROJECT_REPONAME"),
+			RepoURL:  os.Getenv("CIRCLE_REPOSITORY_URL"),
 		}
 
 	} else if os.Getenv("BITBUCKET_BUILD_NUMBER") != "" {
 		metadata = &BuildMetadata{
-			Provider:   BitbucketPipelines,
-			Number:     os.Getenv("BITBUCKET_BUILD_NUMBER"),
-			Branch:     os.Getenv("BITBUCKET_BRANCH"),
-			Commit:     os.Getenv("BITBUCKET_COMMIT"),
-			Tag:        os.Getenv("BITBUCKET_TAG"),
-			Slug:       os.Getenv("BITBUCKET_REPO_SLUG"),
-			ProjectDir: os.Getenv("BITBUCKET_CLONE_DIR"),
+			Provider: BitbucketPipelines,
+			Number:   os.Getenv("BITBUCKET_BUILD_NUMBER"),
+			Branch:   os.Getenv("BITBUCKET_BRANCH"),
+			Commit:   os.Getenv("BITBUCKET_COMMIT"),
+			Tag:      os.Getenv("BITBUCKET_TAG"),
+			Slug:     os.Getenv("BITBUCKET_REPO_SLUG"),
 		}
 		// @todo acquire repo slug and git tag from Jenkins.
 	} else if os.Getenv("JENKINS_HOME") != "" {
 		metadata = &BuildMetadata{
-			Provider:   Jenkins,
-			URL:        os.Getenv("JOB_URL"),
-			Number:     os.Getenv("BUILD_NUMBER"),
-			Branch:     os.Getenv("GIT_BRANCH"),
-			Commit:     os.Getenv("GIT_COMMIT"),
-			RepoURL:    os.Getenv("GIT_URL"),
-			ProjectDir: os.Getenv("WORKSPACE"),
+			Provider: Jenkins,
+			URL:      os.Getenv("JOB_URL"),
+			Number:   os.Getenv("BUILD_NUMBER"),
+			Branch:   os.Getenv("GIT_BRANCH"),
+			Commit:   os.Getenv("GIT_COMMIT"),
+			RepoURL:  os.Getenv("GIT_URL"),
 		}
 	} else {
 		metadata = &BuildMetadata{}

@@ -25,16 +25,16 @@ import (
 )
 
 type options struct {
-	uuid             string
-	context          string
-	dind             bool
-	buildNumber      string
-	username         string
-	email            string
-	url              string
-	fixPermissionDir string
-	provider         string
-	message          string
+	uuid           string
+	context        string
+	dind           bool
+	buildNumber    string
+	username       string
+	email          string
+	url            string
+	fixPermissions bool
+	provider       string
+	message        string
 }
 
 var opts options
@@ -179,15 +179,11 @@ var Cmd = &cobra.Command{
 		}
 
 		// We will fix permissions either when it was instructed or when a it's a managed stack and a known CI environment.
-		if opts.fixPermissionDir != "" || (!config.BuildConfig.Custom && metadata.ProjectDir != "") {
-			var dir string
-
-			if opts.fixPermissionDir != "" {
-				dir = opts.fixPermissionDir
-				fmt.Println("Fixing codebase permissions in a provided directory...")
+		if opts.fixPermissions || (!config.BuildConfig.Custom && metadata.Provider != "Unknown") {
+			if opts.fixPermissions {
+				fmt.Println("Instructed to fix codebase permissions...")
 			} else {
-				dir = metadata.ProjectDir
-				fmt.Println(fmt.Sprintf("Managed stack detected in a known CI environment %s – fixing codebase permissions in %s...", metadata.Provider, metadata.ProjectDir))
+				fmt.Println(fmt.Sprintf("Managed stack detected in a known CI environment %s –  automatically fixing codebase permissions...", metadata.Provider))
 			}
 
 			defaultUser, err := dockerClient.GetImageDefaultUser(defaultService.Image)
@@ -208,7 +204,7 @@ var Cmd = &cobra.Command{
 					runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, config.WorkingDir))
 				}
 
-				args := []string{"chown", "-R", fmt.Sprintf("%s:%s", defaultUser, defaultUser), dir}
+				args := []string{"chown", "-R", fmt.Sprintf("%s:%s", defaultUser, defaultUser), "."}
 				err := dockerClient.Run(args, runConfig)
 
 				if err != nil {
@@ -262,7 +258,7 @@ var Cmd = &cobra.Command{
 func init() {
 	Cmd.Flags().StringVarP(&opts.context, "context", "c", "", "Build context (default: current directory)")
 	Cmd.Flags().BoolVar(&opts.dind, "dind", false, "Use data container for sharing files between commands")
-	Cmd.Flags().StringVar(&opts.fixPermissionDir, "fix-permissions-dir", "", "Fix permissions to the default service user id in provided directory. Performed automatically for known CI environments")
+	Cmd.Flags().BoolVar(&opts.fixPermissions, "fix-permissions", false, "Fix codebase permissions. Performed automatically for known CI environments. WARNING: make sure you run wodby ci init from the project directory")
 	Cmd.Flags().StringVarP(&opts.buildNumber, "build-num", "n", "", "Custom build number (used if can't identify automatically)")
 	Cmd.Flags().StringVar(&opts.url, "url", "", "Custom build url (used if can't acquire automatically)")
 	Cmd.Flags().StringVar(&opts.provider, "provider", "p", "Custom build provider name (used if can't identify automatically)")

@@ -25,15 +25,16 @@ import (
 )
 
 type options struct {
-	uuid        string
-	context     string
-	dind        bool
-	buildNumber string
-	username    string
-	email       string
-	url         string
-	provider    string
-	message     string
+	uuid             string
+	context          string
+	dind             bool
+	buildNumber      string
+	username         string
+	email            string
+	url              string
+	fixPermissionDir string
+	provider         string
+	message          string
 }
 
 var opts options
@@ -177,6 +178,49 @@ var Cmd = &cobra.Command{
 			return err
 		}
 
+		// We will fix permissions either when it was instructed or when a it's a managed stack and a known CI environment.
+		if opts.fixPermissionDir != "" || (config.BuildConfig.Custom && metadata.ProjectDir != "") {
+			defaultUser, err := dockerClient.GetImageDefaultUser(defaultService.Image)
+
+			if err != nil {
+				return err
+			}
+
+			if defaultUser != "root" {
+				var dir string
+
+				if opts.fixPermissionDir != "" {
+					dir = opts.fixPermissionDir
+				} else {
+					dir = metadata.ProjectDir
+				}
+
+				fmt.Print("Fixing codebase permissions...")
+
+				runConfig := docker.RunConfig{
+					Image: defaultService.Image,
+					User:  "root",
+				}
+
+				if config.DataContainer != "" {
+					runConfig.VolumesFrom = []string{config.DataContainer}
+				} else {
+					runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, config.WorkingDir))
+				}
+
+				args := []string{"chown", "-R", fmt.Sprintf("%s:%s", defaultUser, defaultUser), dir}
+				err := dockerClient.Run(args, runConfig)
+
+				if err != nil {
+					return err
+				}
+
+				fmt.Println("DONE")
+			} else {
+				fmt.Println("Default user of the default service is root, skipping permissions fix")
+			}
+		}
+
 		// Initializing managed stack services.
 		if config.BuildConfig.Init != nil {
 			service := config.BuildConfig.Services[config.BuildConfig.Init.Service]
@@ -218,6 +262,7 @@ var Cmd = &cobra.Command{
 func init() {
 	Cmd.Flags().StringVarP(&opts.context, "context", "c", "", "Build context (default: current directory)")
 	Cmd.Flags().BoolVar(&opts.dind, "dind", false, "Use data container for sharing files between commands")
+	Cmd.Flags().StringVar(&opts.fixPermissionDir, "fix-permissions-dir", "", "Fix permissions to the default service user id in provided directory. Performed automatically for known CI environments")
 	Cmd.Flags().StringVarP(&opts.buildNumber, "build-num", "n", "", "Custom build number (used if can't identify automatically)")
 	Cmd.Flags().StringVar(&opts.url, "url", "", "Custom build url (used if can't acquire automatically)")
 	Cmd.Flags().StringVar(&opts.provider, "provider", "p", "Custom build provider name (used if can't identify automatically)")

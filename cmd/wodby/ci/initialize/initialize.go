@@ -180,6 +180,16 @@ var Cmd = &cobra.Command{
 
 		// We will fix permissions either when it was instructed or when a it's a managed stack and a known CI environment.
 		if opts.fixPermissionDir != "" || (!config.BuildConfig.Custom && metadata.ProjectDir != "") {
+			var dir string
+
+			if opts.fixPermissionDir != "" {
+				dir = opts.fixPermissionDir
+				fmt.Println("Fixing codebase permissions in a provided directory...")
+			} else {
+				dir = metadata.ProjectDir
+				fmt.Println(fmt.Sprintf("Managed stack detected in a known CI environment %s – fixing codebase permissions in %s...", metadata.Provider, metadata.ProjectDir))
+			}
+
 			defaultUser, err := dockerClient.GetImageDefaultUser(defaultService.Image)
 
 			if err != nil {
@@ -187,16 +197,6 @@ var Cmd = &cobra.Command{
 			}
 
 			if defaultUser != "root" {
-				var dir string
-
-				if opts.fixPermissionDir != "" {
-					dir = opts.fixPermissionDir
-				} else {
-					dir = metadata.ProjectDir
-				}
-
-				fmt.Print("Fixing codebase permissions...")
-
 				runConfig := docker.RunConfig{
 					Image: defaultService.Image,
 					User:  "root",

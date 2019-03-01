@@ -179,7 +179,7 @@ var Cmd = &cobra.Command{
 		}
 
 		// We will fix permissions either when it was instructed or when a it's a managed stack and a known CI environment.
-		if opts.fixPermissionDir != "" || (config.BuildConfig.Custom && metadata.ProjectDir != "") {
+		if opts.fixPermissionDir != "" || (!config.BuildConfig.Custom && metadata.ProjectDir != "") {
 			defaultUser, err := dockerClient.GetImageDefaultUser(defaultService.Image)
 
 			if err != nil {

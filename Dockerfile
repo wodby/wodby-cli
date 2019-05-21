@@ -1,4 +1,4 @@
-FROM docker:18.06.1-ce
+FROM docker:18.09.6-ce
 
 COPY ./bin/linux-amd64/wodby /usr/local/bin/wodby
 

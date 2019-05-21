@@ -155,14 +155,19 @@ var Cmd = &cobra.Command{
 			config.DataContainer = uuid.New()
 
 			// We use working dir of the default service for data container.
-			_, err := exec.Command("docker", "create", fmt.Sprintf("--volume=%s", config.WorkingDir), fmt.Sprintf("--name=%s", config.DataContainer), "wodby/alpine:3.8-2.1.1", "/bin/true").CombinedOutput()
+			output, err := exec.Command("docker", "pull", "alpine").CombinedOutput()
 			if err != nil {
-				return err
+				return errors.Wrap(err, string(output))
 			}
 
-			_, err = exec.Command("docker", "cp", fmt.Sprintf("%s/.", config.Context), fmt.Sprintf("%s:%s", config.DataContainer, config.WorkingDir)).CombinedOutput()
+			output, err = exec.Command("docker", "create", fmt.Sprintf("--volume=%s", config.WorkingDir), fmt.Sprintf("--name=%s", config.DataContainer), "alpine", "/bin/true").CombinedOutput()
 			if err != nil {
-				return err
+				return errors.Wrap(err, string(output))
+			}
+
+			output, err = exec.Command("docker", "cp", fmt.Sprintf("%s/.", config.Context), fmt.Sprintf("%s:%s", config.DataContainer, config.WorkingDir)).CombinedOutput()
+			if err != nil {
+				return errors.Wrap(err, string(output))
 			}
 
 			fmt.Println("DONE")

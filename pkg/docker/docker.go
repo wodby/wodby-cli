@@ -28,7 +28,7 @@ type RunConfig struct {
 func (c *Client) Login(host string, username string, password string) error {
 	out, err := exec.Command("docker", "login", "-u", username, "-p", password, host).CombinedOutput()
 	if err != nil {
-		return errors.New(string(out))
+		return errors.Wrap(err, string(out))
 	}
 
 	return nil
@@ -88,9 +88,9 @@ func (c *Client) GetImageDefaultUser(image string) (string, error) {
 		return defaultUser, err
 	}
 
-	out, err := exec.Command("docker","image", "inspect", image, "-f", "{{.ContainerConfig.User}}").CombinedOutput()
+	out, err := exec.Command("docker", "image", "inspect", image, "-f", "{{.ContainerConfig.User}}").CombinedOutput()
 	if err != nil {
-		return defaultUser, errors.New(string(out))
+		return defaultUser, errors.Wrap(err, string(out))
 	}
 
 	defaultUser = strings.TrimSuffix(string(out), "\n")
@@ -111,9 +111,9 @@ func (c *Client) GetImageWorkingDir(image string) (string, error) {
 		return workingDir, err
 	}
 
-	out, err := exec.Command("docker","image", "inspect", image, "-f", "{{.ContainerConfig.WorkingDir}}").CombinedOutput()
+	out, err := exec.Command("docker", "image", "inspect", image, "-f", "{{.ContainerConfig.WorkingDir}}").CombinedOutput()
 	if err != nil {
-		return workingDir, errors.New(string(out))
+		return workingDir, errors.Wrap(err, string(out))
 	}
 
 	workingDir = strings.TrimSuffix(string(out), "\n")

@@ -21,18 +21,18 @@ import (
 )
 
 type options struct {
-	from       		string
-	to         		string
-	dockerfile 		string
-	tag 			string
-	services 		[]string
+	from       string
+	to         string
+	dockerfile string
+	tag        string
+	services   []string
 }
 
 type imageBuild struct {
-	dockerfile 		string
-	buildArgs  		map[string]string
-	tags			[]string
-	serviceNames   	[]string
+	dockerfile   string
+	buildArgs    map[string]string
+	tags         []string
+	serviceNames []string
 }
 
 var opts options
@@ -107,7 +107,7 @@ var Cmd = &cobra.Command{
 		}
 
 		if len(services) == 0 {
-			errors.New("No valid services have been found for build")
+			return errors.New("No valid services have been found for build")
 		}
 
 		if config.DataContainer != "" {
@@ -115,9 +115,9 @@ var Cmd = &cobra.Command{
 
 			from := fmt.Sprintf("%s:%s", config.DataContainer, config.WorkingDir)
 			to := fmt.Sprintf("/tmp/wodby-build-%s", config.DataContainer)
-			_, err := exec.Command("docker", "cp", from, to).CombinedOutput()
+			output, err := exec.Command("docker", "cp", from, to).CombinedOutput()
 			if err != nil {
-				return err
+				return errors.Wrap(err, string(output))
 			}
 		}
 
@@ -129,7 +129,7 @@ var Cmd = &cobra.Command{
 		}
 
 		if _, err := os.Stat(context + ".dockerignore"); os.IsNotExist(err) {
-			err = ioutil.WriteFile(path.Join(context + ".dockerignore"), []byte(Dockerignore), 0600)
+			err = ioutil.WriteFile(path.Join(context+".dockerignore"), []byte(Dockerignore), 0600)
 			if err != nil {
 				return err
 			}
@@ -139,8 +139,8 @@ var Cmd = &cobra.Command{
 
 		var (
 			dockerfile string
-			tpl string
-			tag string
+			tpl        string
+			tag        string
 		)
 
 		imageBuilds := make(map[string]*imageBuild)
@@ -177,7 +177,7 @@ var Cmd = &cobra.Command{
 				return err
 			}
 
-			data := struct{DefaultUser string}{DefaultUser: defaultUser}
+			data := struct{ DefaultUser string }{DefaultUser: defaultUser}
 			var tpl bytes.Buffer
 
 			if err := t.Execute(&tpl, data); err != nil {
@@ -203,9 +203,9 @@ var Cmd = &cobra.Command{
 				imageBuilds[service.Image].serviceNames = append(imageBuilds[service.Image].serviceNames, service.Name)
 			} else {
 				build := &imageBuild{
-					dockerfile: dockerfile,
-					buildArgs: buildArgs,
-					tags: []string{tag},
+					dockerfile:   dockerfile,
+					buildArgs:    buildArgs,
+					tags:         []string{tag},
 					serviceNames: []string{service.Name},
 				}
 

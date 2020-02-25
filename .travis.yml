@@ -5,7 +5,7 @@ services:
 
 env:
   global:
-  - DEP_VERSION=0.4.1
+  - GO111MODULE=on
   - VERSION="${TRAVIS_TAG:-dev}"
   # latest tab build only from stable, see release.sh
   - TAGS="${VERSION}"
@@ -14,13 +14,8 @@ env:
   - GIMME_OS=darwin GIMME_ARCH=amd64
   - GIMME_OS=windows GIMME_ARCH=amd64
 
-before_install:
-- curl -L -s https://github.com/golang/dep/releases/download/v${DEP_VERSION}/dep-linux-amd64 -o $GOPATH/bin/dep
-- chmod +x $GOPATH/bin/dep
-
 script:
 - set -e
-- dep ensure
 - make
 - make test
 

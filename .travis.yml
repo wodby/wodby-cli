@@ -55,8 +55,8 @@ deploy:
   overwrite: true
   skip_cleanup: true
   local_dir: bin
-  branch: '2.0'
   on:
+    branch: '2.0'
     tags: false
 
 - provider: s3

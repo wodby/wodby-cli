@@ -1,14 +1,13 @@
 package deploy
 
 import (
+	"context"
 	"fmt"
-	"log"
 	"os"
 	"path"
-	"strings"
 
+	log "github.com/sirupsen/logrus"
 	"github.com/wodby/wodby-cli/pkg/api"
-	"github.com/wodby/wodby-cli/pkg/config"
 	"github.com/wodby/wodby-cli/pkg/types"
 
 	"github.com/spf13/cobra"
@@ -39,133 +38,92 @@ var Cmd = &cobra.Command{
 		opts.services = args
 
 		v.SetConfigFile(path.Join("/tmp/.wodby-ci.json"))
-
 		err := v.ReadInConfig()
 		if err != nil {
-			return err
+			return errors.WithStack(err)
 		}
 
 		opts.uuid = v.GetString("uuid")
-
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		var logger *log.Logger
-
-		if viper.GetBool("verbose") == true {
-			logger = log.New(os.Stdout, "", log.LstdFlags)
-		}
-
-		config := new(config.Config)
-
+		config := new(types.Config)
 		err := v.Unmarshal(config)
 		if err != nil {
-			return err
+			return errors.WithStack(err)
 		}
 
-		services := make(map[string]types.Service)
+		logger := log.WithField("stage", "deploy")
+		log.SetOutput(os.Stdout)
+		if viper.GetBool("verbose") {
+			log.SetLevel(log.DebugLevel)
+		}
 
-		if len(opts.services) == 0 {
-			fmt.Println("Deploying all services")
-			services = config.BuildConfig.Services
+		if config.BuiltServices == nil {
+			return errors.New("No app services have been built to deploy")
+		}
+		released := false
+		for _, svc := range config.BuiltServices {
+			if svc.Released {
+				released = true
+				break
+			}
+		}
+		if !released {
+			return errors.New("No app services have been released to deploy")
+		}
+
+		var servicesToDeploy []*types.ServiceDeploymentInput
+		if opts.services != nil {
+			logger.Info("Deploying all services")
+			for _, svc := range config.BuiltServices {
+				if svc.Released {
+					servicesToDeploy = append(servicesToDeploy, &types.ServiceDeploymentInput{
+						Name:  svc.Name,
+						Image: svc.Image,
+					})
+				}
+			}
 		} else {
-			fmt.Println("Validating services")
-
-			for _, svc := range opts.services {
-				// Find services by prefix.
-				if svc[len(svc)-1] == '-' {
-					matchingServices, err := config.FindServicesByPrefix(svc)
-
-					if err != nil {
-						return err
-					}
-
-					for _, service := range matchingServices {
-						fmt.Printf("Found matching service %s\n", service.Name)
-						services[service.Name] = service
-					}
-				} else {
-					service, err := config.FindService(svc)
-
-					if err != nil {
-						return err
-					} else {
-						services[service.Name] = service
+			for _, serviceName := range opts.services {
+				for _, svc := range config.BuiltServices {
+					if svc.Name == serviceName {
+						if !svc.Released {
+							return errors.New(fmt.Sprintf("Service %s hasn't been released", svc.Name))
+						}
+						servicesToDeploy = append(servicesToDeploy, &types.ServiceDeploymentInput{
+							Name:  svc.Name,
+							Image: svc.Image,
+						})
+						break
 					}
 				}
 			}
 		}
 
-		if len(services) == 0 {
-			return errors.New("No valid services have been found for deploy")
-		}
-
-		// Deploying services.
-		apiConfig := &api.Config{
-			Key:    v.GetString("api.key"),
-			Scheme: v.GetString("api.proto"),
-			Host:   v.GetString("api.host"),
-			Prefix: v.GetString("api.prefix"),
-		}
-		client := api.NewClient(logger, apiConfig)
-
-		var postDeploy *bool
+		var postDeploy bool
 		if postDeployFlag != nil && postDeployFlag.Changed {
-			postDeploy = &opts.postDeploy
+			postDeploy = opts.postDeploy
 		}
-
-		if opts.number != "" {
-			config.Metadata.Number = opts.number
+		input := types.DeploymentInput{
+			AppBuildID:     config.AppBuild.ID,
+			Services:       servicesToDeploy,
+			PostDeployment: postDeploy,
 		}
-		if opts.url != "" {
-			config.Metadata.URL = opts.url
-		}
-
-		servicesTags := make(map[string]string)
-		var tag string
-
-		// Allow specifying tags for custom stacks.
-		if opts.tag != "" {
-			if strings.Contains(opts.tag, ":") {
-				tag = opts.tag
-			} else {
-				tag = fmt.Sprintf("%s:%s", opts.tag, config.Metadata.Number)
-			}
-
-			for _, service := range services {
-				servicesTags[service.Name] = tag
-			}
-		}
-
-		payload := &api.DeployBuildPayload{
-			Number:       config.Metadata.Number,
-			PostDeploy:   postDeploy,
-			Metadata:     config.Metadata,
-			ServicesTags: servicesTags,
-			Token:        config.BuildConfig.Token,
-		}
-
-		fmt.Printf("Deploying build #%s to %s...", config.Metadata.Number, config.BuildConfig.Title)
-		result, err := client.DeployBuild(opts.uuid, payload)
+		client := api.NewClient(config.API)
+		res, err := client.Deploy(context.Background(), input)
 		if err != nil {
-			return err
+			return errors.WithStack(err)
 		}
-
-		err = client.WaitTask(result.Task.UUID)
-		if err != nil {
-			return err
+		if !res {
+			return errors.New("Deployment has failed!")
 		}
-
-		fmt.Println(" DONE")
 
 		return nil
 	},
 }
 
 func init() {
-	Cmd.Flags().StringVar(&opts.number, "build-number", "", "Build number")
-	Cmd.Flags().StringVar(&opts.url, "build-url", "", "Build url")
-	Cmd.Flags().StringVarP(&opts.tag, "tag", "t", "", "Name and optionally a tag in the 'name:tag' format. Use if you want to use custom docker registry")
-	Cmd.Flags().BoolVar(&opts.postDeploy, "post-deploy", false, "Run post deployment scripts")
+	Cmd.Flags().BoolVar(&opts.postDeploy, "post-deploy", true, "Run post deployment scripts")
 	postDeployFlag = Cmd.Flags().Lookup("post-deploy")
 }

@@ -8,10 +8,9 @@ import (
 	"os"
 )
 
-// RootCmd represents the base command when called without any subcommands.
 var RootCmd = &cobra.Command{
 	Use:   "wodby",
-	Short: "CLI client for Wodby",
+	Short: "CLI client for Wodby 2.0",
 }
 
 func init() {
@@ -19,23 +18,22 @@ func init() {
 	viper.AutomaticEnv()
 
 	RootCmd.PersistentFlags().String("api-key", "", "API key")
-	viper.BindPFlag("api_key", RootCmd.PersistentFlags().Lookup("api-key"))
+	err := viper.BindPFlag("api_key", RootCmd.PersistentFlags().Lookup("api-key"))
+	if err != nil {
+		panic(err)
+	}
 
-	RootCmd.PersistentFlags().String("api-proto", "https", "API protocol")
-	viper.BindPFlag("api_proto", RootCmd.PersistentFlags().Lookup("api-proto"))
-
-	RootCmd.PersistentFlags().String("api-host", "api.wodby.com", "API host")
-	viper.BindPFlag("api_host", RootCmd.PersistentFlags().Lookup("api-host"))
-
-	RootCmd.PersistentFlags().String("api-prefix", "api/v2", "API prefix")
-	viper.BindPFlag("api_prefix", RootCmd.PersistentFlags().Lookup("api-prefix"))
+	RootCmd.PersistentFlags().String("api-endpoint", "", "API endpoint")
+	err = viper.BindPFlag("api_endpoint", RootCmd.PersistentFlags().Lookup("api-endpoint"))
+	if err != nil {
+		panic(err)
+	}
 
 	RootCmd.PersistentFlags().Bool("verbose", false, "Verbose output")
-	viper.BindPFlag("verbose", RootCmd.PersistentFlags().Lookup("verbose"))
-
-	RootCmd.PersistentFlags().Bool("dump", false, "Dump API responses")
-	RootCmd.PersistentFlags().MarkHidden("dump")
-	viper.BindPFlag("dump", RootCmd.PersistentFlags().Lookup("dump"))
+	err = viper.BindPFlag("verbose", RootCmd.PersistentFlags().Lookup("verbose"))
+	if err != nil {
+		panic(err)
+	}
 
 	RootCmd.AddCommand(ci.Cmd)
 	RootCmd.AddCommand(version.Cmd)

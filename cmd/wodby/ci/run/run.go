@@ -8,18 +8,18 @@ import (
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"github.com/wodby/wodby-cli/pkg/config"
 	"github.com/wodby/wodby-cli/pkg/docker"
+	"github.com/wodby/wodby-cli/pkg/types"
 )
 
 type options struct {
-	services   []string
+	service    string
 	image      string
 	volumes    []string
 	env        []string
 	user       string
 	entrypoint string
-	path	   string
+	path       string
 }
 
 var opts options
@@ -28,93 +28,62 @@ var v = viper.New()
 var Cmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run container",
-	Args: cobra.MinimumNArgs(1),
+	Args:  cobra.MinimumNArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
-		v.SetConfigFile(path.Join( "/tmp/.wodby-ci.json"))
-
+		v.SetConfigFile(path.Join("/tmp/.wodby-ci.json"))
 		err := v.ReadInConfig()
 		if err != nil {
-			return err
+			return errors.WithStack(err)
 		}
-
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		config := new(config.Config)
-
+		config := new(types.Config)
 		err := v.Unmarshal(config)
 		if err != nil {
-			return err
+			return errors.WithStack(err)
 		}
 
-		var images []string
-
-		if len(opts.services) != 0 {
-			for _, svc := range opts.services {
-				// Find services by prefix.
-				if svc[len(svc)-1] == '-' {
-					matchingServices, err := config.FindServicesByPrefix(svc)
-
-					if err != nil {
-						return err
-					}
-
-					for _, service := range matchingServices {
-						fmt.Printf("Found matching svc %s\n", service.Name)
-						images = append(images, service.Image)
-					}
-				} else {
-					service, err := config.FindService(svc)
-
-					if err != nil {
-						return err
-					}
-
-					images = append(images, service.Image)
+		var image string
+		if opts.service != "" {
+			for _, appServiceBuildConfig := range config.AppBuild.Config.AppServiceBuildConfigs {
+				if appServiceBuildConfig.Name == opts.service {
+					image = appServiceBuildConfig.Image
+					break
 				}
 			}
+			if image == "" {
+				return errors.New(fmt.Sprintf("Couldn't find service %s", opts.service))
+			}
 		} else if opts.image == "" {
-			images = append(images, config.BuildConfig.Services[config.BuildConfig.Default].Image)
+			image = opts.image
 		} else {
-			images = append(images, opts.image)
+			return errors.New("Must provide either service or image")
 		}
 
-		if len(images) == 0 {
-			return errors.New("No valid images found for this run")
+		runConfig := docker.RunConfig{
+			Image:      image,
+			Volumes:    opts.volumes,
+			Env:        opts.env,
+			User:       opts.user,
+			Entrypoint: opts.entrypoint,
 		}
 
-		for _, image := range images {
-			runConfig := docker.RunConfig{
-				Image:      image,
-				Volumes:    opts.volumes,
-				Env:        opts.env,
-				User:       opts.user,
-				Entrypoint: opts.entrypoint,
-			}
+		dockerClient := docker.NewClient()
+		workingDir, err := dockerClient.GetImageWorkingDir(image)
+		if err != nil {
+			return errors.WithStack(err)
+		}
 
-			dockerClient := docker.NewClient()
+		runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, workingDir))
 
-			workingDir, err := dockerClient.GetImageWorkingDir(image)
+		if opts.path != "" {
+			runConfig.WorkDir = fmt.Sprintf("%s/%s", workingDir, opts.path)
+		}
 
-			if err != nil {
-				return err
-			}
-
-			if config.DataContainer != "" {
-				runConfig.VolumesFrom = []string{config.DataContainer}
-			} else {
-				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, workingDir))
-			}
-
-			if opts.path != "" {
-				runConfig.WorkDir = fmt.Sprintf("%s/%s", workingDir, opts.path)
-			}
-
-			err = dockerClient.Run(args, runConfig)
-
-			if err != nil {
-				return err
-			}
+		err = dockerClient.Run(args, runConfig)
+		if err != nil {
+			return errors.WithStack(err)
 		}
 
 		return nil
@@ -123,7 +92,7 @@ var Cmd = &cobra.Command{
 
 func init() {
 	Cmd.Flags().StringVar(&opts.entrypoint, "entrypoint", "", "Entrypoint")
-	Cmd.Flags().StringSliceVarP(&opts.services, "services", "s", []string{}, "Service")
+	Cmd.Flags().StringVarP(&opts.service, "service", "s", "", "Service")
 	Cmd.Flags().StringVarP(&opts.image, "image", "i", "", "Image")
 	Cmd.Flags().StringSliceVarP(&opts.volumes, "volume", "v", []string{}, "Volumes")
 	Cmd.Flags().StringSliceVarP(&opts.env, "env", "e", []string{}, "Environment variables")

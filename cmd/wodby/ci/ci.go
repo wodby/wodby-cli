@@ -4,7 +4,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wodby/wodby-cli/cmd/wodby/ci/build"
 	"github.com/wodby/wodby-cli/cmd/wodby/ci/deploy"
-	"github.com/wodby/wodby-cli/cmd/wodby/ci/initialize"
+	initialize "github.com/wodby/wodby-cli/cmd/wodby/ci/init"
 	"github.com/wodby/wodby-cli/cmd/wodby/ci/release"
 	"github.com/wodby/wodby-cli/cmd/wodby/ci/run"
 )

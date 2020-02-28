@@ -7,7 +7,6 @@ import (
 	"github.com/wodby/wodby-cli/pkg/version"
 )
 
-// Cmd represents the version command.
 var Cmd = &cobra.Command{
 	Use:   "version",
 	Short: "Shows Wodby CLI version",

@@ -1,11 +1,11 @@
-# Wodby CLI
+# Wodby CLI 2.0
 
 [![Build Status](https://travis-ci.org/wodby/wodby-cli.svg?branch=master)](https://travis-ci.org/wodby/wodby-cli)
 [![Docker Pulls](https://img.shields.io/docker/pulls/wodby/wodby-cli.svg)](https://hub.docker.com/r/wodby/wodby-cli)
 [![Docker Stars](https://img.shields.io/docker/stars/wodby/wodby-cli.svg)](https://hub.docker.com/r/wodby/wodby-cli)
 [![Docker Layers](https://images.microbadger.com/badges/image/wodby/wodby-cli.svg)](https://microbadger.com/images/wodby/wodby-cli)
 
-This project provides a unified command line interface to [wodby.com](https://wodby.com).
+This project provides a unified command line interface to Wodby 2.0
 
 ## Install
 
@@ -41,19 +41,17 @@ Usage:
 
 Available Commands:
     ci
-        init WODBY_INSTANCE_UUID
+        init WODBY_APP_INSTANCE_ID
         run COMMAND
-        build SERVICE/IMAGE
-        release
-        deploy
+        build SERVICE
+        release SERVICE...
+        deploy SERVICE...
     help         Help about any command
     version      Shows Wodby CLI version
 
 Flags:
       --api-key string      API key
-      --api-prefix string   API prefix (default "api/v2")
-      --api-proto string    API protocol (default "https")
-      --dind                Docker in docker mode (for init)
+      --api-endpoint string API endpoint
   -h, --help                help for wodby
   -v, --verbose             Verbose output
 

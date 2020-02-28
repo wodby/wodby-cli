@@ -46,7 +46,11 @@ func (c *Client) Build(dockerfile string, tags []string, context string, buildAr
 
 	if len(buildArgs) != 0 {
 		for name, value := range buildArgs {
-			args = append(args, "--build-arg", fmt.Sprintf("%s=%s", name, value))
+			if value == "" {
+				args = append(args, "--build-arg", name)
+			} else {
+				args = append(args, "--build-arg", fmt.Sprintf("%s=%s", name, value))
+			}
 		}
 	}
 
@@ -171,22 +175,20 @@ func cmdStartVerbose(cmd *exec.Cmd) error {
 	stderr := io.MultiWriter(os.Stderr, &stderrBuf)
 
 	err := cmd.Start()
-
 	if err != nil {
-		return err
+		return errors.WithStack(err)
 	}
 
 	go func() {
 		_, errStdout = io.Copy(stdout, stdoutIn)
 	}()
-
 	go func() {
 		_, errStderr = io.Copy(stderr, stderrIn)
 	}()
 
 	err = cmd.Wait()
 	if err != nil {
-		return err
+		return errors.WithStack(err)
 	}
 	if errStdout != nil || errStderr != nil {
 		//return errors.New("failed to capture stdout or stderr\n")

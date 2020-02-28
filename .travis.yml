@@ -55,7 +55,7 @@ deploy:
   overwrite: true
   skip_cleanup: true
   local_dir: bin
-  branch: 2.0
+  branch: '2.0'
   on:
     tags: false
 

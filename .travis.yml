@@ -7,7 +7,7 @@ env:
   global:
   - GO111MODULE=on
   - VERSION="${TRAVIS_TAG:-dev}"
-  # latest tab build only from stable, see release.sh
+  # latest tag build only from stable, see release.sh
   - TAGS="${VERSION}"
   matrix:
   - GIMME_OS=linux GIMME_ARCH=amd64
@@ -44,6 +44,18 @@ deploy:
   overwrite: true
   skip_cleanup: true
   local_dir: bin
+  on:
+    tags: false
+
+- provider: s3
+  access_key_id: $AWS_ACCESS_KEY_ID
+  secret_access_key: $AWS_SECRET_ACCESS_KEY
+  bucket: wodby-releases
+  upload-dir: wodby-cli/2.0
+  overwrite: true
+  skip_cleanup: true
+  local_dir: bin
+  branch: 2.0
   on:
     tags: false
 

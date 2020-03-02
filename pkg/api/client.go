@@ -27,40 +27,40 @@ func (c *client) GetAppBuild(ctx context.Context, id int) (types.AppBuild, error
 	req := graphql.NewRequest(APP_BUILD)
 	req.Var("id", id)
 
-	var respData map[string]interface{}
+	var respData types.AppBuild
 	req.Header.Set("X-API-KEY", c.config.Key)
 
 	if err := c.client.Run(ctx, req, &respData); err != nil {
 		return types.AppBuild{}, errors.WithStack(err)
 	}
 
-	return respData["appBuild"].(types.AppBuild), nil
+	return respData, nil
 }
 
 func (c *client) GetDockerRegistryCredentials(ctx context.Context, appBuildID int) (types.DockerRegistryCredentials, error) {
 	req := graphql.NewRequest(DOCKER_REGISTRY_CREDENTIALS)
 	req.Var("appBuildID", appBuildID)
 
-	var respData map[string]interface{}
+	var respData types.DockerRegistryCredentials
 	req.Header.Set("X-API-KEY", c.config.Key)
 
 	if err := c.client.Run(ctx, req, &respData); err != nil {
 		return types.DockerRegistryCredentials{}, errors.WithStack(err)
 	}
 
-	return respData["dockerRegistryCredentials"].(types.DockerRegistryCredentials), nil
+	return respData, nil
 }
 
 func (c *client) Deploy(ctx context.Context, input types.DeploymentInput) (bool, error) {
 	req := graphql.NewRequest(DEPLOY)
 	req.Var("input", input)
 
-	var respData map[string]interface{}
+	var respData bool
 	req.Header.Set("X-API-KEY", c.config.Key)
 
 	if err := c.client.Run(ctx, req, &respData); err != nil {
 		return false, errors.WithStack(err)
 	}
 
-	return respData["deploy"].(bool), nil
+	return respData, nil
 }

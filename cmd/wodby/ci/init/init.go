@@ -29,7 +29,7 @@ type options struct {
 var opts options
 
 var Cmd = &cobra.Command{
-	Use:   "init WODBY_APP_INSTANCE_ID",
+	Use:   "init WODBY_BUILD_ID",
 	Short: "Initialize config for CI process",
 	Args:  cobra.ExactArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
@@ -67,7 +67,7 @@ var Cmd = &cobra.Command{
 		}
 		client := api.NewClient(apiConfig)
 
-		logger := log.WithField("instance", opts.id)
+		logger := log.WithField("stage", "init")
 		log.SetOutput(os.Stdout)
 		if viper.GetBool("verbose") {
 			log.SetLevel(log.DebugLevel)

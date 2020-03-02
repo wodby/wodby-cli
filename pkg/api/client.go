@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/machinebox/graphql"
 	"github.com/pkg/errors"
@@ -33,6 +34,7 @@ func (c *client) GetAppBuild(ctx context.Context, id int) (types.AppBuild, error
 	if err := c.client.Run(ctx, req, &respData); err != nil {
 		return types.AppBuild{}, errors.WithStack(err)
 	}
+	fmt.Printf("%+v", respData)
 
 	return respData, nil
 }

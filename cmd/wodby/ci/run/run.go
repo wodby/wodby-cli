@@ -26,7 +26,7 @@ var opts options
 var v = viper.New()
 
 var Cmd = &cobra.Command{
-	Use:   "run",
+	Use:   "run [OPTIONS] -s SERVICE | -i IMAGE",
 	Short: "Run container",
 	Args:  cobra.MinimumNArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {

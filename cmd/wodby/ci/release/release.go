@@ -33,7 +33,7 @@ type options struct {
 var opts options
 
 var Cmd = &cobra.Command{
-	Use:   "release [service...]",
+	Use:   "release [SERVICE...]",
 	Short: "Push images",
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		opts.services = args

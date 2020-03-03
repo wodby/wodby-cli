@@ -25,6 +25,7 @@ type options struct {
 	to         string
 	dockerfile string
 	services   []string
+	path       string
 }
 
 var opts options
@@ -42,10 +43,11 @@ COPY --chown={{.DefaultUser}}:{{.DefaultUser}} ${COPY_FROM} ${COPY_TO}`
 var v = viper.New()
 
 var Cmd = &cobra.Command{
-	Use:   "build [service...]",
+	Use:   "build [OPTIONS] SERVICE... PATH",
 	Short: "Build images",
 	PreRunE: func(cmd *cobra.Command, args []string) error {
-		opts.services = args
+		opts.path = args[len(args)-1]
+		opts.services = args[:len(args)-1]
 		v.SetConfigFile(path.Join("/tmp/.wodby-ci.json"))
 		err := v.ReadInConfig()
 		if err != nil {

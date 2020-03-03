@@ -32,7 +32,7 @@ var postDeployFlag *pflag.Flag
 var v = viper.New()
 
 var Cmd = &cobra.Command{
-	Use:   "deploy [service...]",
+	Use:   "deploy [SERVICE...]",
 	Short: "Deploy build to Wodby",
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		opts.services = args

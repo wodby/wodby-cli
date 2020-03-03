@@ -29,7 +29,7 @@ type options struct {
 var opts options
 
 var Cmd = &cobra.Command{
-	Use:   "init WODBY_BUILD_ID",
+	Use:   "init [OPTIONS] WODBY_BUILD_ID",
 	Short: "Initialize config for CI process",
 	Args:  cobra.ExactArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {

@@ -71,7 +71,7 @@ func (c *Client) Push(image string) error {
 
 func (c *Client) Pull(image string) error {
 	fmt.Printf("Pulling:\n docker pull %s\n", image)
-	cmd := exec.Command("docker", "pull", image)
+	cmd := exec.Command("docker", "pull", "-q", image)
 
 	return cmdStartVerbose(cmd)
 }

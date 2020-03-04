@@ -61,11 +61,12 @@ func (c *client) Deploy(ctx context.Context, input types.DeploymentInput) (bool,
 	req.Header.Set("X-API-KEY", c.config.Key)
 	req.Var("input", input)
 
-	var respData bool
+	var respData interface{}
 
 	if err := c.client.Run(ctx, req, &respData); err != nil {
 		return false, errors.WithStack(err)
 	}
+	fmt.Printf("%+v", respData)
 
-	return respData, nil
+	return true, nil
 }

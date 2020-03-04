@@ -32,7 +32,7 @@ const (
 	}`
 
 	DEPLOY = `
-	query deploy($input: DeploymentInput!) {
+	mutation deploy($input: DeploymentInput!) {
 		deploy(input: $input)
 	}`
 )

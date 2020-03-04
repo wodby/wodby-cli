@@ -64,8 +64,8 @@ var Cmd = &cobra.Command{
 		}
 
 		var servicesToRelease []types.BuiltService
-		if opts.services == nil {
-			logger.Info("Releasing all services")
+		if len(opts.services) == 0 {
+			logger.Info("Releasing all built services")
 			servicesToRelease = config.BuiltServices
 		} else {
 			for _, serviceName := range opts.services {
@@ -88,7 +88,6 @@ var Cmd = &cobra.Command{
 		if err != nil {
 			return errors.WithStack(err)
 		}
-
 		docker := docker.NewClient()
 		err = docker.Login(config.AppBuild.Config.RegistryHost, credentials.Username, credentials.Password)
 		if err != nil {
@@ -96,6 +95,7 @@ var Cmd = &cobra.Command{
 		}
 
 		for _, service := range servicesToRelease {
+			logger.Infof("Releasing service %s", service.Name)
 			err = docker.Push(service.Image)
 			if err != nil {
 				return errors.WithStack(err)

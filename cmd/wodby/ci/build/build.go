@@ -46,6 +46,9 @@ var Cmd = &cobra.Command{
 	Use:   "build [OPTIONS] SERVICE... PATH",
 	Short: "Build images",
 	PreRunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) < 2 {
+			return errors.New("Missing required parameters")
+		}
 		opts.path = args[len(args)-1]
 		opts.services = args[:len(args)-1]
 		v.SetConfigFile(path.Join("/tmp/.wodby-ci.json"))
@@ -69,7 +72,7 @@ var Cmd = &cobra.Command{
 		}
 
 		var appServiceBuildConfigs []*types.AppServiceBuildConfig
-		if opts.services == nil {
+		if len(opts.services) == 0 {
 			return errors.New("At least one service must be specified for the build")
 		} else {
 			logger.Info("Validating services")

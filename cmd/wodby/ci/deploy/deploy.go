@@ -74,8 +74,8 @@ var Cmd = &cobra.Command{
 		}
 
 		var servicesToDeploy []*types.ServiceDeploymentInput
-		if opts.services != nil {
-			logger.Info("Deploying all services")
+		if len(opts.services) == 0 {
+			logger.Info("Deploying all released services")
 			for _, svc := range config.BuiltServices {
 				if svc.Released {
 					servicesToDeploy = append(servicesToDeploy, &types.ServiceDeploymentInput{

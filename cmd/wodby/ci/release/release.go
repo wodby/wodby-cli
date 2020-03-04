@@ -90,7 +90,7 @@ var Cmd = &cobra.Command{
 		}
 
 		docker := docker.NewClient()
-		err = docker.Login(credentials.Host, credentials.Username, credentials.Password)
+		err = docker.Login(config.AppBuild.Config.RegistryHost, credentials.Username, credentials.Password)
 		if err != nil {
 			return errors.WithStack(err)
 		}

@@ -26,7 +26,6 @@ const (
 	DOCKER_REGISTRY_CREDENTIALS = `
 	query dockerRegistryCredentials($appBuildID: Int!) {
 		dockerRegistryCredentials(appBuildID: $appBuildID) {
-			host
 			username
 			password
 		}

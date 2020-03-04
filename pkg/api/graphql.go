@@ -9,6 +9,7 @@ const (
 			gitRefType
 			gitRef
 			config {
+				registryHost
 				appServiceBuildConfigs {
 					name
 					title

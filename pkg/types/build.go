@@ -14,6 +14,7 @@ type (
 		Config     *AppBuildConfig `json:"config"`
 	}
 	AppBuildConfig struct {
+		RegistryHost           string                   `json:"registryHost"`
 		AppServiceBuildConfigs []*AppServiceBuildConfig `json:"appServiceBuildConfigs"`
 	}
 	AppServiceBuildConfig struct {

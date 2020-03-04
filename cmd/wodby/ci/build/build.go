@@ -150,7 +150,7 @@ var Cmd = &cobra.Command{
 				}
 			}
 
-			tag = fmt.Sprintf("%s:%d", appServiceBuildConfig.Slug, config.AppBuild.Number)
+			tag = fmt.Sprintf("%s/%s:%d", config.AppBuild.Config.RegistryHost, appServiceBuildConfig.Slug, config.AppBuild.Number)
 			err := dockerClient.Build(dockerfile, []string{tag}, context, buildArgs)
 			if err != nil {
 				return errors.WithStack(err)

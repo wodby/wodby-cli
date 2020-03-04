@@ -96,6 +96,16 @@ var Cmd = &cobra.Command{
 			return errors.WithStack(err)
 		}
 
+		credentials, err := client.GetDockerRegistryCredentials(context.Background(), appBuild.ID)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+		dockerClient := docker.NewClient()
+		err = dockerClient.Login(appBuild.Config.RegistryHost, credentials.Username, credentials.Password)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+
 		config := types.Config{
 			API:      apiConfig,
 			ID:       opts.id,
@@ -113,7 +123,6 @@ var Cmd = &cobra.Command{
 
 		for _, appServiceBuildConfig := range appBuild.Config.AppServiceBuildConfigs {
 			if appServiceBuildConfig.Main {
-				dockerClient := docker.NewClient()
 				// We will fix permissions either when it was instructed or when a it's a managed service.
 				if os.Getenv("WODBY_CI") != "" && (opts.fixPermissions || appServiceBuildConfig.Managed) {
 					if opts.fixPermissions {

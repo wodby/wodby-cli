@@ -1,7 +1,6 @@
 package release
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -9,7 +8,6 @@ import (
 	"path"
 
 	log "github.com/sirupsen/logrus"
-	"github.com/wodby/wodby-cli/pkg/api"
 	"github.com/wodby/wodby-cli/pkg/docker"
 	"github.com/wodby/wodby-cli/pkg/types"
 
@@ -83,20 +81,10 @@ var Cmd = &cobra.Command{
 			}
 		}
 
-		client := api.NewClient(config.API)
-		credentials, err := client.GetDockerRegistryCredentials(context.Background(), config.AppBuild.ID)
-		if err != nil {
-			return errors.WithStack(err)
-		}
-		docker := docker.NewClient()
-		err = docker.Login(config.AppBuild.Config.RegistryHost, credentials.Username, credentials.Password)
-		if err != nil {
-			return errors.WithStack(err)
-		}
-
+		dockerClient := docker.NewClient()
 		for _, service := range servicesToRelease {
 			logger.Infof("Releasing service %s", service.Name)
-			err = docker.Push(service.Image)
+			err = dockerClient.Push(service.Image)
 			if err != nil {
 				return errors.WithStack(err)
 			}
@@ -109,22 +97,22 @@ var Cmd = &cobra.Command{
 
 				if config.AppBuild.GitRef == opts.latestBranch {
 					latestTag := r.ReplaceAllString(service.Image, ":latest")
-					err = docker.Tag(service.Image, latestTag)
+					err = dockerClient.Tag(service.Image, latestTag)
 					if err != nil {
 						return errors.WithStack(err)
 					}
-					err = docker.Push(latestTag)
+					err = dockerClient.Push(latestTag)
 					if err != nil {
 						return errors.WithStack(err)
 					}
 				}
 				if opts.branchTag {
 					latestTag := r.ReplaceAllString(service.Image, ":"+config.AppBuild.GitRef)
-					err = docker.Tag(service.Image, latestTag)
+					err = dockerClient.Tag(service.Image, latestTag)
 					if err != nil {
 						return errors.WithStack(err)
 					}
-					err = docker.Push(latestTag)
+					err = dockerClient.Push(latestTag)
 					if err != nil {
 						return errors.WithStack(err)
 					}

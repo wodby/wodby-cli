@@ -119,6 +119,7 @@ var Cmd = &cobra.Command{
 			return errors.New("Deployment has failed!")
 		}
 
+		logger.Infof("Build %d has been queued up for deployment!", config.AppBuild.Number)
 		return nil
 	},
 }

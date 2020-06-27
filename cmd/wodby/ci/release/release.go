@@ -94,9 +94,11 @@ var Cmd = &cobra.Command{
 		docker := docker.NewClient()
 		registry := config.BuildConfig.Registry
 
-		err = docker.Login(registry.Host, registry.Username, registry.Password)
-		if err != nil {
-			return err
+		if registry.Host != "" {
+			err = docker.Login(registry.Host, registry.Username, registry.Password)
+			if err != nil {
+				return err
+			}
 		}
 
 		for _, service := range services {

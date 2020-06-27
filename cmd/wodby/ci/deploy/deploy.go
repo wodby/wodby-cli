@@ -18,7 +18,6 @@ import (
 )
 
 type options struct {
-	uuid       string
 	context    string
 	number     string
 	url        string
@@ -42,8 +41,6 @@ var Cmd = &cobra.Command{
 		if err != nil {
 			return errors.WithStack(err)
 		}
-
-		opts.uuid = v.GetString("uuid")
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {

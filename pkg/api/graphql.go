@@ -32,7 +32,9 @@ const (
 	}`
 
 	DEPLOY = `
-	mutation deploy($input: DeploymentInput!) {
-		deploy(input: $input)
+	mutation deployFromCI($input: DeploymentFromCIInput!) {
+		deployFromCI(input: $input) {
+			id
+		}
 	}`
 )

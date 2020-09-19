@@ -61,7 +61,9 @@ func (c *client) Deploy(ctx context.Context, input types.DeploymentInput) (bool,
 	req.Header.Set("X-API-KEY", c.config.Key)
 	req.Var("input", input)
 
-	var respData interface{}
+	var respData struct {
+		AppDeployment types.AppDeployment `json:"appDeployment"`
+	}
 
 	if err := c.client.Run(ctx, req, &respData); err != nil {
 		return false, errors.WithStack(err)

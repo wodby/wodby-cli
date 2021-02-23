@@ -10,11 +10,6 @@ on:
 
   pull_request:
 
-env:
-  AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -89,6 +84,9 @@ jobs:
       with:
         args: --acl public-read --follow-symlinks --delete
       env:
+        AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         SOURCE_DIR: bin
         DEST_DIR: wodby-cli/dev
   release-latest:
@@ -105,6 +103,9 @@ jobs:
       with:
         args: --acl public-read --follow-symlinks --delete
       env:
+        AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         SOURCE_DIR: bin
         DEST_DIR: wodby-cli/latest
   release-tagged:
@@ -124,6 +125,9 @@ jobs:
       with:
         args: --acl public-read --follow-symlinks --delete
       env:
+        AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         SOURCE_DIR: bin
         DEST_DIR: wodby-cli/${{ steps.get_version.outputs.VERSION }}
   release-github:

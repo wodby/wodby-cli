@@ -136,8 +136,10 @@ jobs:
     needs: build-and-test
     steps:
     - uses: actions/checkout@v2
-    - name: prepare artifact
+    - name: build
       run: make
+    - name: prepare artifact
+      run: make package
     - name: Get the version
       id: get_version
       run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}

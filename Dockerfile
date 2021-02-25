@@ -1,10 +1,11 @@
 FROM --platform=$BUILDPLATFORM golang:alpine as build
 
-COPY . .
-
 ARG VERSION
 ARG TARGETOS
 ARG TARGETARCH
+
+WORKDIR $GOPATH/src/wodby/wodby-cli
+COPY . .
 
 ENV VERSION="${VERSION:-dev}"
 ENV GOOS=$TARGETOS

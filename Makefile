@@ -45,4 +45,5 @@ shell:
 	docker run --rm --name $(NAME) $(PARAMS) -ti $(REPO):$(TAG) /bin/bash
 
 package:
+	mkdir -p dist
 	tar cvzf dist/wodby-$(GOOS)-$(GOARCH).tar.gz -C bin wodby

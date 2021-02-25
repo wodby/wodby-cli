@@ -36,6 +36,7 @@ jobs:
     - name: build
       run: make
     - name: test
+      if: ${{ matrix.os == 'linux' && matrix.arch == 'amd64' }}
       run: make test
     - name: package
       run: make package
@@ -63,6 +64,16 @@ jobs:
         args: --acl public-read --follow-symlinks --delete
       env:
         DEST_DIR: wodby-cli/$VERSION
+    - name: release github
+      uses: xresloader/upload-to-github-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        file: dist/wodby-*.tar.gz
+        overwrite: true
+        tags: true
+        draft: false
+        tag_name: $VERSION
   build-test-release-image:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master'
@@ -81,10 +92,6 @@ jobs:
     - name: set version from tag
       if: startsWith(github.ref, 'refs/tags/')
       run: echo "VERSION=${GITHUB_REF/refs\/tags\//}" >> $GITHUB_ENV
-    - name: build
-      run: make
-    - name: test
-      run: make test
     - name: Build and push dev image
       uses: docker/build-push-action@v2
       with:

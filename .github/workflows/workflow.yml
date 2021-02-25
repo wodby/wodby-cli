@@ -61,6 +61,8 @@ jobs:
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
     - name: build
+      env:
+        VERSION: ${{ steps.get_version.outputs.VERSION }}
       run: make
     - name: Build and push
       uses: docker/build-push-action@v2
@@ -95,7 +97,12 @@ jobs:
     needs: build-and-test
     steps:
     - uses: actions/checkout@v2
+    - name: Get the version
+      id: get_version
+      run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
     - name: build
+      env:
+        VERSION: ${{ steps.get_version.outputs.VERSION }}
       run: make
     - name: Package
       run: make package
@@ -114,11 +121,13 @@ jobs:
     needs: build-and-test
     steps:
     - uses: actions/checkout@v2
-    - name: build
-      run: make
     - name: Get the version
       id: get_version
       run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
+    - name: build
+      env:
+        VERSION: ${{ steps.get_version.outputs.VERSION }}
+      run: make
     - name: Package
       run: make package
     - uses: jakejarvis/s3-sync-action@master
@@ -136,13 +145,15 @@ jobs:
     needs: build-and-test
     steps:
     - uses: actions/checkout@v2
-    - name: build
-      run: make
-    - name: prepare artifact
-      run: make package
     - name: Get the version
       id: get_version
       run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
+    - name: build
+      env:
+        VERSION: ${{ steps.get_version.outputs.VERSION }}
+      run: make
+    - name: prepare artifact
+      run: make package
     - uses: xresloader/upload-to-github-release@v1
       id: upload_artifact
       env:

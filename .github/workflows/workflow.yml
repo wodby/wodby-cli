@@ -84,7 +84,6 @@ jobs:
         tag_name: ${{ steps.version.outputs.VERSION }}
   build-test-release-image:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master'
     steps:
     - uses: actions/checkout@v2
     - uses: docker/setup-qemu-action@v1

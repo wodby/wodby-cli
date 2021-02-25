@@ -52,21 +52,21 @@ jobs:
       with:
         args: --acl public-read --follow-symlinks --delete
       env:
-        DEST_DIR: wodby-cli/dev
+        DEST_DIR: wodby-cli/dev/${{ matrix.os }}/${{ matrix.arch }}
     - name: release aws latest
       if: startsWith(github.ref, 'refs/tags/')
       uses: jakejarvis/s3-sync-action@master
       with:
         args: --acl public-read --follow-symlinks --delete
       env:
-        DEST_DIR: wodby-cli/latest
+        DEST_DIR: wodby-cli/latest/${{ matrix.os }}/${{ matrix.arch }}
     - name: release aws tagged
       if: startsWith(github.ref, 'refs/tags/')
       uses: jakejarvis/s3-sync-action@master
       with:
         args: --acl public-read --follow-symlinks --delete
       env:
-        DEST_DIR: wodby-cli/$VERSION
+        DEST_DIR: wodby-cli/$VERSION/${{ matrix.os }}/${{ matrix.arch }}
     - name: release github
       uses: xresloader/upload-to-github-release@v1
       env:

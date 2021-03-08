@@ -1,61 +1,49 @@
 -include .env
 
 PKG = github.com/wodby/wodby-cli
-APP = wodby
 
 REPO = wodby/wodby-cli
 NAME = wodby-cli
 
 GOOS ?= linux
 GOARCH ?= amd64
-VERSION ?= dev
-
-ifneq ($(STABILITY_TAG),)
-    override TAG := $(STABILITY_TAG)
-else
-    TAG = dev
-endif
-
-ifeq ($(GOOS),linux)
-    ifeq ($(GOARCH),amd64)
-        LINUX_AMD64 = 1
-    endif
-endif
+VERSION ?= 2.0
+TAG ?= $(VERSION)
 
 LD_FLAGS = "-s -w -X $(PKG)/pkg/version.VERSION=$(VERSION)"
 
-ARTIFACT := bin/$(APP)-$(GOOS)-$(GOARCH).tar.gz
+PLATFORM ?= linux/amd64
 
 default: build
 
-.PHONY: build test push shell package release
+.PHONY: build buildx-build buildx-push test shell package
 
 build:
 	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) \
-		go build -ldflags $(LD_FLAGS) -o bin/$(GOOS)-$(GOARCH)/$(APP) $(PKG)/cmd/$(APP)
-
-    ifeq ($(LINUX_AMD64),1)
-		make build-image
-    endif
+		go build -ldflags $(LD_FLAGS) -o bin/wodby $(PKG)/cmd/wodby
 
 build-image:
 	docker build -t $(REPO):$(TAG) ./
 
-test:
-	echo "OK"
+buildx-build:
+	docker buildx build \
+		--platform $(PLATFORM) \
+		--build-arg VERSION=$(VERSION) \
+		-t $(REPO):$(TAG) ./
 
-push:
-    ifeq ($(LINUX_AMD64),1)
-		docker push $(REPO):$(TAG)
-    endif
+buildx-push:
+	docker buildx build \
+		--platform $(PLATFORM) \
+		--build-arg VERSION=$(VERSION) \
+		--push \
+		-t $(REPO):$(TAG) ./
+
+test:
+	@bin/wodby version | grep $(VERSION)
 
 shell:
 	docker run --rm --name $(NAME) $(PARAMS) -ti $(REPO):$(TAG) /bin/bash
 
 package:
-    ifeq ("$(wildcard $(ARTIFACT))","")
-		tar czf $(ARTIFACT) -C bin/$(GOOS)-$(GOARCH) $(APP)
-		rm -rf bin/$(GOOS)-$(GOARCH)
-    endif
-
-release: build push
+	mkdir -p dist
+	tar cvzf dist/wodby-$(GOOS)-$(GOARCH).tar.gz -C bin wodby

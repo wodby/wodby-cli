@@ -92,7 +92,7 @@ func (c *Client) GetImageDefaultUser(image string) (string, error) {
 		return defaultUser, err
 	}
 
-	out, err := exec.Command("docker", "image", "inspect", image, "-f", "{{.ContainerConfig.User}}").CombinedOutput()
+	out, err := exec.Command("docker", "image", "inspect", image, "-f", "{{.Config.User}}").CombinedOutput()
 	if err != nil {
 		return defaultUser, errors.Wrap(err, string(out))
 	}
@@ -115,7 +115,7 @@ func (c *Client) GetImageWorkingDir(image string) (string, error) {
 		return workingDir, err
 	}
 
-	out, err := exec.Command("docker", "image", "inspect", image, "-f", "{{.ContainerConfig.WorkingDir}}").CombinedOutput()
+	out, err := exec.Command("docker", "image", "inspect", image, "-f", "{{.Config.WorkingDir}}").CombinedOutput()
 	if err != nil {
 		return workingDir, errors.Wrap(err, string(out))
 	}

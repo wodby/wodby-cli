@@ -35,6 +35,12 @@ func init() {
 		panic(err)
 	}
 
+	RootCmd.PersistentFlags().String("ci-config-path", "/tmp/.wodby-ci.json", "Path to CI config")
+	err = viper.BindPFlag("ci_config_path", RootCmd.PersistentFlags().Lookup("ci-config-path"))
+	if err != nil {
+		panic(err)
+	}
+
 	RootCmd.AddCommand(ci.Cmd)
 	RootCmd.AddCommand(version.Cmd)
 }

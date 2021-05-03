@@ -116,7 +116,7 @@ var Cmd = &cobra.Command{
 		if err != nil {
 			return errors.WithStack(err)
 		}
-		err = ioutil.WriteFile(path.Join("/tmp/.wodby-ci.json"), content, 0600)
+		err = ioutil.WriteFile(path.Join(viper.GetString("ci_config_path")), content, 0600)
 		if err != nil {
 			return errors.WithStack(err)
 		}

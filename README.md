@@ -50,10 +50,11 @@ Available Commands:
     version      Shows Wodby CLI version
 
 Flags:
-      --api-key string      API key
-      --api-endpoint string API endpoint
-  -h, --help                help for wodby
-  -v, --verbose             Verbose output
+      --api-key string          API key
+      --api-endpoint string     API endpoint
+      --ci-config-path string   Path to CI config file (/tmp/.wodby-ci.json by default)      
+  -h, --help                    Help for wodby
+  -v, --verbose                 Verbose output
 
 Use "wodby [command] --help" for more information about a command.
 ```

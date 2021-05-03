@@ -38,7 +38,7 @@ var Cmd = &cobra.Command{
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		opts.services = args
 
-		v.SetConfigFile(path.Join("/tmp/.wodby-ci.json"))
+		v.SetConfigFile(path.Join(viper.GetString("ci_config_path")))
 
 		err := v.ReadInConfig()
 		if err != nil {

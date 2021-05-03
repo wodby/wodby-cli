@@ -19,7 +19,7 @@ type options struct {
 	env        []string
 	user       string
 	entrypoint string
-	path	   string
+	path       string
 }
 
 var opts options
@@ -28,9 +28,9 @@ var v = viper.New()
 var Cmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run container",
-	Args: cobra.MinimumNArgs(1),
+	Args:  cobra.MinimumNArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
-		v.SetConfigFile(path.Join( "/tmp/.wodby-ci.json"))
+		v.SetConfigFile(path.Join(viper.GetString("ci_config_path")))
 
 		err := v.ReadInConfig()
 		if err != nil {

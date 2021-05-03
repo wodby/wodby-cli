@@ -30,6 +30,9 @@ func init() {
 	RootCmd.PersistentFlags().String("api-prefix", "api/v2", "API prefix")
 	viper.BindPFlag("api_prefix", RootCmd.PersistentFlags().Lookup("api-prefix"))
 
+	RootCmd.PersistentFlags().String("ci-config-path", "/tmp/.wodby-ci.json", "CI config path")
+	viper.BindPFlag("ci_config_path", RootCmd.PersistentFlags().Lookup("ci-config-path"))
+
 	RootCmd.PersistentFlags().Bool("verbose", false, "Verbose output")
 	viper.BindPFlag("verbose", RootCmd.PersistentFlags().Lookup("verbose"))
 

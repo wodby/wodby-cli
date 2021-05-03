@@ -50,12 +50,13 @@ Available Commands:
     version      Shows Wodby CLI version
 
 Flags:
-      --api-key string      API key
-      --api-prefix string   API prefix (default "api/v2")
-      --api-proto string    API protocol (default "https")
-      --dind                Docker in docker mode (for init)
-  -h, --help                help for wodby
-  -v, --verbose             Verbose output
+      --api-key string          API key
+      --api-prefix string       API prefix (default "api/v2")
+      --api-proto string        API protocol (default "https")
+      --ci-config-path string   Path to CI config (defaut "/tmp/.wodby-ci.json")
+      --dind                    Docker in docker mode (for init)
+  -h, --help                    Help for wodby
+  -v, --verbose                 Verbose output
 
 Use "wodby [command] --help" for more information about a command.
 ```

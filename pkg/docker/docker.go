@@ -5,10 +5,11 @@ import (
 
 	"bytes"
 	"fmt"
-	"github.com/wodby/wodby-cli/pkg/exec"
 	"io"
 	"os"
 	"strings"
+
+	"github.com/wodby/wodby-cli/pkg/exec"
 )
 
 // Client is docker client representation.
@@ -19,6 +20,7 @@ type RunConfig struct {
 	Volumes     []string
 	VolumesFrom []string
 	Env         []string
+	EnvFile     string
 	User        string
 	WorkDir     string
 	Entrypoint  string
@@ -140,6 +142,9 @@ func (c *Client) Run(args []string, config RunConfig) error {
 	}
 	for _, env := range config.Env {
 		command = append(command, fmt.Sprintf("--env=%s", env))
+	}
+	if config.EnvFile != "" {
+		command = append(command, fmt.Sprintf("--env-file=%s", config.EnvFile))
 	}
 	if config.User != "" {
 		command = append(command, fmt.Sprintf("--user=%s", config.User))

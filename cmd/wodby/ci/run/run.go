@@ -17,6 +17,7 @@ type options struct {
 	image      string
 	volumes    []string
 	env        []string
+	envFile    string
 	user       string
 	entrypoint string
 	path       string
@@ -65,6 +66,7 @@ var Cmd = &cobra.Command{
 			Image:      image,
 			Volumes:    opts.volumes,
 			Env:        opts.env,
+			EnvFile:    opts.envFile,
 			User:       opts.user,
 			Entrypoint: opts.entrypoint,
 		}
@@ -96,6 +98,7 @@ func init() {
 	Cmd.Flags().StringVarP(&opts.image, "image", "i", "", "Image")
 	Cmd.Flags().StringSliceVarP(&opts.volumes, "volume", "v", []string{}, "Volumes")
 	Cmd.Flags().StringSliceVarP(&opts.env, "env", "e", []string{}, "Environment variables")
+	Cmd.Flags().StringVar(&opts.envFile, "env-file", "", "Env file")
 	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "User")
 	Cmd.Flags().StringVarP(&opts.path, "path", "p", "", "Working dir (relative path)")
 }

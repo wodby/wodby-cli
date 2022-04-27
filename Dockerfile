@@ -16,7 +16,7 @@ RUN set -ex; \
     go build -ldflags "-s -w -X github.com/wodby/wodby-cli/pkg/version.VERSION=${VERSION}" -o /out/wodby github.com/wodby/wodby-cli/cmd/wodby; \
     /out/wodby version | grep $VERSION
 
-FROM docker:20.10.3
+FROM docker:20.10.14
 
 COPY --from=build /out/wodby /usr/local/bin/wodby
 

@@ -12,6 +12,7 @@ ENV GOOS=$TARGETOS
 ENV GOARCH=$TARGETARCH
 
 RUN set -ex; \
+    apk add --update git; \
     go build -ldflags "-s -w -X github.com/wodby/wodby-cli/pkg/version.VERSION=${VERSION}" -o /out/wodby github.com/wodby/wodby-cli/cmd/wodby; \
     /out/wodby version | grep $VERSION
 

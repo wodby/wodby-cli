@@ -20,6 +20,7 @@ const (
 const (
 	TravisCI           = "travisci"
 	CircleCI           = "circleci"
+	GitHubActions      = "github"
 	BitbucketPipelines = "bitbucket-pipelines"
 	Jenkins            = "jenkins"
 )
@@ -89,7 +90,27 @@ type BuildMetadata struct {
 func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMetadata, error) {
 	var metadata *BuildMetadata
 
-	if os.Getenv("TRAVIS") != "" {
+	if os.Getenv("GITHUB_ACTION") != "" {
+		var branch string
+		var tag string
+		if os.Getenv("GITHUB_REF_TYPE") == "tag" {
+			tag = os.Getenv("GITHUB_REF")
+		} else {
+			branch = os.Getenv("GITHUB_REF")
+		}
+
+		metadata = &BuildMetadata{
+			Provider: GitHubActions,
+			URL:      url,
+			Id:       os.Getenv("GITHUB_RUN_ID"),
+			Number:   os.Getenv("GITHUB_RUN_NUMBER"),
+			Branch:   branch,
+			Commit:   os.Getenv("GITHUB_SHA"),
+			Message:  "",
+			Tag:      tag,
+			Slug:     os.Getenv("GITHUB_REPOSITORY"),
+		}
+	} else if os.Getenv("TRAVIS") != "" {
 		metadata = &BuildMetadata{
 			Provider: TravisCI,
 			URL:      url,

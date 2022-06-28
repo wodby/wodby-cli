@@ -71,6 +71,16 @@ jobs:
         args: --acl public-read --follow-symlinks --delete
       env:
         DEST_DIR: wodby-cli/$VERSION/${{ matrix.os }}/${{ matrix.arch }}
+    - name: create gh release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.version.outputs.VERSION }}
+        release_name: ${{ steps.version.outputs.VERSION }}
+        draft: true
+        prerelease: false
     - name: release github
       if: startsWith(github.ref, 'refs/tags/')
       uses: xresloader/upload-to-github-release@v1

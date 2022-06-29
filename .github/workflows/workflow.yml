@@ -72,7 +72,7 @@ jobs:
       env:
         DEST_DIR: wodby-cli/2.0/${{ matrix.os }}/${{ matrix.arch }}
 
-  build-test-release-image:
+  build-release-image:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
@@ -86,13 +86,8 @@ jobs:
       with:
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
-    - name: get the version from tag
-      id: version
-      if: startsWith(github.ref, 'refs/tags/')
-      run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
-    - name: Build and push tagged image
+    - name: Build and push 2.0 image
       uses: docker/build-push-action@v2
-      if: startsWith(github.ref, 'refs/tags/')
       with:
         context: .
         push: true

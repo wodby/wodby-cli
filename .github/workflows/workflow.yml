@@ -15,7 +15,7 @@ env:
   SOURCE_DIR: dist
 
 jobs:
-  build-test-release-bin:
+  build-test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -33,13 +33,13 @@ jobs:
       uses: actions/setup-go@v2
       with:
         go-version: 1.16
-#    - name: set version from tag
-#      if: startsWith(github.ref, 'refs/tags/')
-#      run: echo "VERSION=${GITHUB_REF/refs\/tags\//}" >> $GITHUB_ENV
-#    - name: get the version from tag
-#      id: version
-#      if: startsWith(github.ref, 'refs/tags/')
-#      run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
+    - name: set version from tag
+      if: startsWith(github.ref, 'refs/tags/')
+      run: echo "VERSION=${GITHUB_REF/refs\/tags\//}" >> $GITHUB_ENV
+    - name: get the version from tag
+      id: version
+      if: startsWith(github.ref, 'refs/tags/')
+      run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
     - name: build
       run: make
     - name: test
@@ -47,27 +47,112 @@ jobs:
       run: make test
     - name: package
       run: make package
+    - name: Upload production artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: dist-${{ matrix.os }}-${{ matrix.arch }}
+        path: dist
+        retention-days: 1
+
+  release-aws-dev:
+    runs-on: ubuntu-latest
+    needs: [build-test]
+    if: startsWith(github.ref, 'refs/heads/')
+    strategy:
+      matrix:
+        os: [ linux,darwin,windows ]
+        arch: [ amd64,arm64 ]
+        exclude:
+        - os: windows
+          arch: arm64
+    steps:
+    - name: 'Download Artifact'
+      uses: actions/download-artifact@v3
+      with:
+        name: dist-${{ matrix.os }}-${{ matrix.arch }}
+        path: dist
     - name: release aws dev
       if: startsWith(github.ref, 'refs/heads/')
       uses: jakejarvis/s3-sync-action@master
       with:
         args: --acl public-read --follow-symlinks --delete
       env:
+        DEST_DIR: wodby-cli/dev/${{ matrix.os }}/${{ matrix.arch }}
+
+  release-aws-tagged:
+    runs-on: ubuntu-latest
+    needs: [build-test]
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        os: [ linux,darwin,windows ]
+        arch: [ amd64,arm64 ]
+        exclude:
+        - os: windows
+          arch: arm64
+    steps:
+    - name: set version from tag
+      if: startsWith(github.ref, 'refs/tags/')
+      run: echo "VERSION=${GITHUB_REF/refs\/tags\//}" >> $GITHUB_ENV
+    - name: 'Download Artifact'
+      uses: actions/download-artifact@v3
+      with:
+        name: dist-${{ matrix.os }}-${{ matrix.arch }}
+        path: dist
+    - name: release aws latest
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: jakejarvis/s3-sync-action@master
+      with:
+        args: --acl public-read --follow-symlinks --delete
+      env:
+        DEST_DIR: wodby-cli/latest/${{ matrix.os }}/${{ matrix.arch }}
+    - name: release aws tagged
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: jakejarvis/s3-sync-action@master
+      with:
+        args: --acl public-read --follow-symlinks --delete
+      env:
         DEST_DIR: wodby-cli/2.0/${{ matrix.os }}/${{ matrix.arch }}
-#    - name: release aws latest
+
+#  create-gh-release:
+#    runs-on: ubuntu-latest
+#    needs: [build-test]
+#    if: startsWith(github.ref, 'refs/tags/')
+#    steps:
+#    - name: get the version from tag
+#      id: version
 #      if: startsWith(github.ref, 'refs/tags/')
-#      uses: jakejarvis/s3-sync-action@master
-#      with:
-#        args: --acl public-read --follow-symlinks --delete
+#      run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
+#    - name: Create Release
+#      uses: actions/create-release@v1
 #      env:
-#        DEST_DIR: wodby-cli/latest/${{ matrix.os }}/${{ matrix.arch }}
-#    - name: release aws tagged
+#        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#      with:
+#        tag_name: ${{ steps.version.outputs.VERSION }}
+#        release_name: ${{ steps.version.outputs.VERSION }}
+#        draft: true
+#        prerelease: false
+
+#  upload-gh-release-artifacts:
+#    runs-on: ubuntu-latest
+#    needs: [create-gh-release]
+#    if: startsWith(github.ref, 'refs/tags/')
+#    strategy:
+#      matrix:
+#        os: [ linux,darwin,windows ]
+#        arch: [ amd64,arm64 ]
+#        exclude:
+#        - os: windows
+#          arch: arm64
+#    steps:
+#    - name: set version from tag
 #      if: startsWith(github.ref, 'refs/tags/')
-#      uses: jakejarvis/s3-sync-action@master
+#      run: echo "VERSION=${GITHUB_REF/refs\/tags\//}" >> $GITHUB_ENV
+#    - name: 'Download Artifact'
+#      uses: actions/download-artifact@v3
 #      with:
-#        args: --acl public-read --follow-symlinks --delete
-#      env:
-#        DEST_DIR: wodby-cli/$VERSION/${{ matrix.os }}/${{ matrix.arch }}
+#        name: dist-${{ matrix.os }}-${{ matrix.arch }}
+#        path: dist
 #    - name: release github
 #      if: startsWith(github.ref, 'refs/tags/')
 #      uses: xresloader/upload-to-github-release@v1
@@ -78,7 +163,8 @@ jobs:
 #        overwrite: true
 #        tags: true
 #        draft: false
-#        tag_name: ${{ steps.version.outputs.VERSION }}
+#        tag_name: ${{ env.VERSION }}
+
   build-test-release-image:
     runs-on: ubuntu-latest
     steps:
@@ -93,25 +179,25 @@ jobs:
       with:
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
-#    - name: get the version from tag
-#      id: version
-#      if: startsWith(github.ref, 'refs/tags/')
-#      run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
-    - name: Build and push dev image
+    - name: get the version from tag
+      id: version
+      if: startsWith(github.ref, 'refs/tags/')
+      run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
+#    - name: Build and push dev image
+#      uses: docker/build-push-action@v2
+#      if: startsWith(github.ref, 'refs/heads/')
+#      with:
+#        context: .
+#        push: true
+#        build-args: VERSION=dev
+#        platforms: linux/amd64,linux/arm64
+#        tags: wodby/wodby-cli:dev
+    - name: Build and push tagged image
       uses: docker/build-push-action@v2
-      if: startsWith(github.ref, 'refs/heads/')
+      if: startsWith(github.ref, 'refs/tags/')
       with:
         context: .
         push: true
         build-args: VERSION=2.0
         platforms: linux/amd64,linux/arm64
         tags: wodby/wodby-cli:2.0
-#    - name: Build and push tagged image
-#      uses: docker/build-push-action@v2
-#      if: startsWith(github.ref, 'refs/tags/')
-#      with:
-#        context: .
-#        push: true
-#        build-args: VERSION=${{ steps.version.outputs.VERSION }}
-#        platforms: linux/amd64,linux/arm64
-#        tags: wodby/wodby-cli:${{ steps.version.outputs.VERSION }},wodby/wodby-cli:latest

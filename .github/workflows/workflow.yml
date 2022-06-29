@@ -54,7 +54,7 @@ jobs:
       uses: actions/upload-artifact@v3
       with:
         name: dist-${{ matrix.os }}-${{ matrix.arch }}
-        path: dist/wodby-*.tar.gz
+        path: dist
         retention-days: 1
 
   release-aws-dev:
@@ -73,7 +73,7 @@ jobs:
       uses: actions/download-artifact@v3
       with:
         name: dist-${{ matrix.os }}-${{ matrix.arch }}
-        path: dist/wodby-*.tar.gz
+        path: dist
     - name: release aws dev
       if: startsWith(github.ref, 'refs/heads/')
       uses: jakejarvis/s3-sync-action@master
@@ -101,7 +101,7 @@ jobs:
       uses: actions/download-artifact@v3
       with:
         name: dist-${{ matrix.os }}-${{ matrix.arch }}
-        path: dist/wodby-*.tar.gz
+        path: dist
     - name: release aws latest
       if: startsWith(github.ref, 'refs/tags/')
       uses: jakejarvis/s3-sync-action@master
@@ -136,7 +136,7 @@ jobs:
         draft: true
         prerelease: false
 
-  upload-release-artifacts:
+  upload-gh-release-artifacts:
     runs-on: ubuntu-latest
     needs: [create-gh-release]
     if: startsWith(github.ref, 'refs/tags/')
@@ -155,7 +155,7 @@ jobs:
       uses: actions/download-artifact@v3
       with:
         name: dist-${{ matrix.os }}-${{ matrix.arch }}
-        path: dist/wodby-*.tar.gz
+        path: dist
     - name: release github
       if: startsWith(github.ref, 'refs/tags/')
       uses: xresloader/upload-to-github-release@v1

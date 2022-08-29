@@ -96,10 +96,6 @@ var Cmd = &cobra.Command{
 		if err != nil {
 			return errors.WithStack(err)
 		}
-		if appBuild.ID == 0 {
-			fmt.Printf("ERROR: app build with id %d not found\n", opts.id)
-			return nil
-		}
 
 		logger.Infof("Requesting registry credentials for app build %d...", opts.id)
 		credentials, err := client.GetDockerRegistryCredentials(context.Background(), appBuild.ID)

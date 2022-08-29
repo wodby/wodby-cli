@@ -81,10 +81,8 @@ func (c *client) getAuthorizedRequest(query string) (*graphql.Request, error) {
 
 	if c.config.Key != "" {
 		req.Header.Set("X-API-KEY", c.config.Key)
-	} else if c.config.AccessToken != "" {
-		req.Header.Set("X-ACCESS-TOKEN", c.config.AccessToken)
 	} else {
-		return nil, errors.New("Either API key or access token must be specified")
+		req.Header.Set("X-ACCESS-TOKEN", c.config.AccessToken)
 	}
 
 	return req, nil

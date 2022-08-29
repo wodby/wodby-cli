@@ -33,8 +33,8 @@ var Cmd = &cobra.Command{
 	Short: "Initialize config for CI process",
 	Args:  cobra.ExactArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
-		if viper.GetString("api_key") == "" {
-			return errors.New("api-key flag is required")
+		if viper.GetString("api_key") == "" && viper.GetString("access_token") == "" {
+			return errors.New("either api-key or access-token must be specified")
 		}
 		if viper.GetString("api_endpoint") == "" {
 			return errors.New("api-endpoint flag is required")

@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/machinebox/graphql"
 	"github.com/pkg/errors"
@@ -25,8 +24,10 @@ func NewClient(config types.APIConfig) *client {
 }
 
 func (c *client) GetAppBuild(ctx context.Context, id int) (types.AppBuild, error) {
-	req := graphql.NewRequest(APP_BUILD)
-	req.Header.Set("X-API-KEY", c.config.Key)
+	req, err := c.getAuthorizedRequest(APP_BUILD)
+	if err != nil {
+		return types.AppBuild{}, errors.WithStack(err)
+	}
 	req.Var("id", id)
 
 	var respData struct {
@@ -35,14 +36,15 @@ func (c *client) GetAppBuild(ctx context.Context, id int) (types.AppBuild, error
 	if err := c.client.Run(ctx, req, &respData); err != nil {
 		return types.AppBuild{}, errors.WithStack(err)
 	}
-	fmt.Printf("%+v", respData)
 
 	return respData.AppBuild, nil
 }
 
 func (c *client) GetDockerRegistryCredentials(ctx context.Context, appBuildID int) (types.DockerRegistryCredentials, error) {
-	req := graphql.NewRequest(DOCKER_REGISTRY_CREDENTIALS)
-	req.Header.Set("X-API-KEY", c.config.Key)
+	req, err := c.getAuthorizedRequest(DOCKER_REGISTRY_CREDENTIALS)
+	if err != nil {
+		return types.DockerRegistryCredentials{}, errors.WithStack(err)
+	}
 	req.Var("appBuildID", appBuildID)
 
 	var respData struct {
@@ -57,8 +59,10 @@ func (c *client) GetDockerRegistryCredentials(ctx context.Context, appBuildID in
 }
 
 func (c *client) Deploy(ctx context.Context, input types.DeploymentInput) (bool, error) {
-	req := graphql.NewRequest(DEPLOY)
-	req.Header.Set("X-API-KEY", c.config.Key)
+	req, err := c.getAuthorizedRequest(DEPLOY)
+	if err != nil {
+		return false, errors.WithStack(err)
+	}
 	req.Var("input", input)
 
 	var respData struct {
@@ -68,7 +72,20 @@ func (c *client) Deploy(ctx context.Context, input types.DeploymentInput) (bool,
 	if err := c.client.Run(ctx, req, &respData); err != nil {
 		return false, errors.WithStack(err)
 	}
-	fmt.Printf("%+v", respData)
 
 	return true, nil
+}
+
+func (c *client) getAuthorizedRequest(query string) (*graphql.Request, error) {
+	req := graphql.NewRequest(query)
+
+	if c.config.Key != "" {
+		req.Header.Set("X-API-KEY", c.config.Key)
+	} else if c.config.AccessToken != "" {
+		req.Header.Set("X-ACCESS-TOKEN", c.config.AccessToken)
+	} else {
+		return nil, errors.New("Either API key or access token must be specified")
+	}
+
+	return req, nil
 }

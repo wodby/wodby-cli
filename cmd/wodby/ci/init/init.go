@@ -62,8 +62,9 @@ var Cmd = &cobra.Command{
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		apiConfig := types.APIConfig{
-			Key:      viper.GetString("api_key"),
-			Endpoint: viper.GetString("api_endpoint"),
+			Key:         viper.GetString("api_key"),
+			Endpoint:    viper.GetString("api_endpoint"),
+			AccessToken: viper.GetString("access_token"),
 		}
 		client := api.NewClient(apiConfig)
 
@@ -90,17 +91,23 @@ var Cmd = &cobra.Command{
 		}
 
 		ctx := context.Background()
-		logger.Debugf("Requesting build info for instance %s...", opts.id)
+		logger.Infof("Requesting info for app build %d...", opts.id)
 		appBuild, err := client.GetAppBuild(ctx, opts.id)
 		if err != nil {
 			return errors.WithStack(err)
 		}
+		if appBuild.ID == 0 {
+			fmt.Printf("ERROR: app build with id %d not found\n", opts.id)
+			return nil
+		}
 
+		logger.Infof("Requesting registry credentials for app build %d...", opts.id)
 		credentials, err := client.GetDockerRegistryCredentials(context.Background(), appBuild.ID)
 		if err != nil {
 			return errors.WithStack(err)
 		}
 		dockerClient := docker.NewClient()
+		logger.Info("Logging in the docker registry...")
 		err = dockerClient.Login(appBuild.Config.RegistryHost, credentials.Username, credentials.Password)
 		if err != nil {
 			return errors.WithStack(err)

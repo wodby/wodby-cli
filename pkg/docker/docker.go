@@ -28,7 +28,8 @@ type RunConfig struct {
 
 // Login authorizes in the registry.
 func (c *Client) Login(host string, username string, password string) error {
-	out, err := exec.Command("docker", "login", "-u", username, "-p", password, host).CombinedOutput()
+	command := fmt.Sprintf("echo %s | docker login -u %s --password-stdin %s", password, username, host)
+	out, err := exec.Command("bash", "-c", command).CombinedOutput()
 	if err != nil {
 		return errors.Wrap(err, string(out))
 	}

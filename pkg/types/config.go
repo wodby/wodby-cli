@@ -2,8 +2,9 @@ package types
 
 type (
 	APIConfig struct {
-		Key      string
-		Endpoint string
+		Key         string
+		AccessToken string
+		Endpoint    string
 	}
 	Config struct {
 		ID            int

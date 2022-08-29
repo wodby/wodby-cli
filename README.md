@@ -3,7 +3,6 @@
 [![Build Status](https://github.com/wodby/installer/workflows/Build/badge.svg)](https://github.com/wodby/installer/actions)
 [![Docker Pulls](https://img.shields.io/docker/pulls/wodby/wodby-cli.svg)](https://hub.docker.com/r/wodby/wodby-cli)
 [![Docker Stars](https://img.shields.io/docker/stars/wodby/wodby-cli.svg)](https://hub.docker.com/r/wodby/wodby-cli)
-[![Docker Layers](https://images.microbadger.com/badges/image/wodby/wodby-cli.svg)](https://microbadger.com/images/wodby/wodby-cli)
 
 This project provides a unified command line interface to Wodby 2.0
 

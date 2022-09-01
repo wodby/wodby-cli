@@ -56,7 +56,7 @@ var Cmd = &cobra.Command{
 			if image == "" {
 				return errors.New(fmt.Sprintf("Couldn't find service %s", opts.service))
 			}
-		} else if opts.image == "" {
+		} else if opts.image != "" {
 			image = opts.image
 		} else {
 			return errors.New("Must provide either service or image")

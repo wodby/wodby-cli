@@ -74,7 +74,7 @@ var Cmd = &cobra.Command{
 					images = append(images, service.Image)
 				}
 			}
-		} else if opts.image == "" {
+		} else if opts.image != "" {
 			images = append(images, config.BuildConfig.Services[config.BuildConfig.Default].Image)
 		} else {
 			images = append(images, opts.image)

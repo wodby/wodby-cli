@@ -38,14 +38,14 @@ func (c *Client) Login(host string, username string, password string) error {
 }
 
 // Build builds docker image.
-func (c *Client) Build(dockerFile string, tags []string, buildArgs map[string]string) error {
+func (c *Client) Build(dockerfile string, tags []string, context string, buildArgs map[string]string) error {
 	args := []string{"build"}
 
 	for _, tag := range tags {
 		args = append(args, "-t", tag)
 	}
 
-	args = append(args, "-f", dockerFile)
+	args = append(args, "-f", dockerfile, context)
 
 	if len(buildArgs) != 0 {
 		for name, value := range buildArgs {

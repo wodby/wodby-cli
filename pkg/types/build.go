@@ -18,12 +18,13 @@ type (
 		AppServiceBuildConfigs []*AppServiceBuildConfig `json:"appServiceBuildConfigs"`
 	}
 	AppServiceBuildConfig struct {
-		Name       string  `json:"name"`
-		Title      string  `json:"title"`
-		Image      string  `json:"image"`
-		Slug       string  `json:"slug"`
-		Managed    bool    `json:"managed"`
-		Main       bool    `json:"main"`
-		Dockerfile *string `json:"dockerfile"`
+		Name         string  `json:"name"`
+		Title        string  `json:"title"`
+		Image        string  `json:"image"`
+		Slug         string  `json:"slug"`
+		Managed      bool    `json:"managed"`
+		Main         bool    `json:"main"`
+		Dockerfile   *string `json:"dockerfile"`
+		Dockerignore *string `json:"dockerignore"`
 	}
 )

@@ -29,11 +29,11 @@ type options struct {
 
 var opts options
 
-const Dockerignore = `.git
+const DefaultDockerignore = `.git
 .gitignore
 .dockerignore`
 
-const DockerfileTpl = `ARG WODBY_BASE_IMAGE
+const DefaultDockerfileTpl = `ARG WODBY_BASE_IMAGE
 FROM ${WODBY_BASE_IMAGE}
 ARG COPY_FROM
 ARG COPY_TO
@@ -90,13 +90,6 @@ var Cmd = &cobra.Command{
 		}
 
 		context := v.GetString("context")
-		if _, err := os.Stat(context + ".dockerignore"); os.IsNotExist(err) {
-			err = ioutil.WriteFile(path.Join(context+".dockerignore"), []byte(Dockerignore), 0600)
-			if err != nil {
-				return errors.WithStack(err)
-			}
-		}
-
 		dockerClient := docker.NewClient()
 		var dockerfile string
 		var tag string
@@ -138,7 +131,7 @@ var Cmd = &cobra.Command{
 					if err != nil {
 						return errors.WithStack(err)
 					}
-					t, err := template.New("Dockerfile").Parse(DockerfileTpl)
+					t, err := template.New("Dockerfile").Parse(DefaultDockerfileTpl)
 					if err != nil {
 						return errors.WithStack(err)
 					}
@@ -151,8 +144,30 @@ var Cmd = &cobra.Command{
 				}
 			}
 
+			var dockerignore string
+			if appServiceBuildConfig.Dockerignore != nil {
+				dockerignore = *appServiceBuildConfig.Dockerignore
+			} else {
+				dockerignore = DefaultDockerignore
+			}
+
+			dockerfileName := fmt.Sprintf("%s_Dockerfile", appServiceBuildConfig.Name)
+			if _, err := os.Stat(dockerfileName); os.IsNotExist(err) {
+				err = ioutil.WriteFile(path.Join(context+dockerfileName), []byte(dockerfile), 0600)
+				if err != nil {
+					return errors.WithStack(err)
+				}
+			}
+			dockerignoreName := fmt.Sprintf("%s.dockerignore", dockerfileName)
+			if _, err := os.Stat(dockerignoreName); os.IsNotExist(err) {
+				err = ioutil.WriteFile(path.Join(context+dockerignoreName), []byte(dockerignore), 0600)
+				if err != nil {
+					return errors.WithStack(err)
+				}
+			}
+
 			tag = fmt.Sprintf("%s/%s:%d", config.AppBuild.Config.RegistryHost, appServiceBuildConfig.Slug, config.AppBuild.Number)
-			err := dockerClient.Build(dockerfile, []string{tag}, context, buildArgs)
+			err := dockerClient.Build(context+dockerfileName, []string{tag}, buildArgs)
 			if err != nil {
 				return errors.WithStack(err)
 			}

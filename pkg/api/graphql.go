@@ -18,6 +18,7 @@ const (
 					main
 					image
 					dockerfile
+					dockerignore
 				}
 			}
 		}

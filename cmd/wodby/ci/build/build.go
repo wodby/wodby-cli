@@ -169,6 +169,8 @@ var Cmd = &cobra.Command{
 			}
 			dockerignoreName := fmt.Sprintf("%s.dockerignore", dockerfileName)
 			if _, err := os.Stat(dockerignoreName); os.IsNotExist(err) {
+				// Exclude dockerignore and dockerfile.
+				dockerignore = fmt.Sprintf("%s\n%s\n%s", dockerignore, dockerfileName, dockerignoreName)
 				fmt.Printf("Creating temporary .dockerignore: %s\n", path.Join(context, dockerignoreName))
 				err = ioutil.WriteFile(path.Join(context, dockerignoreName), []byte(dockerignore), 0600)
 				if err != nil {

@@ -99,8 +99,9 @@ var Cmd = &cobra.Command{
 			buildArgs["COPY_FROM"] = opts.from
 			buildArgs["WODBY_BASE_IMAGE"] = appServiceBuildConfig.Image
 
-			// When user specified custom dockerfile template.
+			// When user specified custom dockerfile.
 			if opts.dockerfile != "" {
+				fmt.Println("Using specified Dockerfile")
 				d, err := ioutil.ReadFile(context + "/" + opts.dockerfile)
 				if err != nil {
 					return errors.WithStack(err)
@@ -108,6 +109,7 @@ var Cmd = &cobra.Command{
 				dockerfile = string(d)
 			} else {
 				if appServiceBuildConfig.Dockerfile != nil {
+					fmt.Println("Dockerfile provided by app service")
 					dockerfile = *appServiceBuildConfig.Dockerfile
 					r, err := regexp.Compile("(?m)^ARG (.+)$")
 					if err != nil {
@@ -125,6 +127,7 @@ var Cmd = &cobra.Command{
 						}
 					}
 				} else {
+					fmt.Println("No Dockerfile provided by app service, using the default")
 					buildArgs["COPY_TO"] = opts.to
 					// Replace default image user in dockerfile template.
 					defaultUser, err := dockerClient.GetImageDefaultUser(appServiceBuildConfig.Image)
@@ -146,35 +149,66 @@ var Cmd = &cobra.Command{
 
 			var dockerignore string
 			if appServiceBuildConfig.Dockerignore != nil {
+				fmt.Println(".dockerignore provided by app service")
 				dockerignore = *appServiceBuildConfig.Dockerignore
 			} else {
+				fmt.Println("No .dockerignore provided by app service, using default")
 				dockerignore = DefaultDockerignore
 			}
 
+			var cleanUpDockerfile bool
+			var cleanUpDockerignore bool
 			dockerfileName := fmt.Sprintf("%s_Dockerfile", appServiceBuildConfig.Name)
 			if _, err := os.Stat(dockerfileName); os.IsNotExist(err) {
-				err = ioutil.WriteFile(path.Join(context+dockerfileName), []byte(dockerfile), 0600)
+				fmt.Printf("Creating temporary Dockerfile: %s\n", path.Join(context, dockerfileName))
+				err = ioutil.WriteFile(path.Join(context, dockerfileName), []byte(dockerfile), 0600)
 				if err != nil {
 					return errors.WithStack(err)
 				}
+				cleanUpDockerfile = true
 			}
 			dockerignoreName := fmt.Sprintf("%s.dockerignore", dockerfileName)
 			if _, err := os.Stat(dockerignoreName); os.IsNotExist(err) {
-				err = ioutil.WriteFile(path.Join(context+dockerignoreName), []byte(dockerignore), 0600)
+				fmt.Printf("Creating temporary .dockerignore: %s\n", path.Join(context, dockerignoreName))
+				err = ioutil.WriteFile(path.Join(context, dockerignoreName), []byte(dockerignore), 0600)
 				if err != nil {
 					return errors.WithStack(err)
 				}
+				cleanUpDockerignore = true
 			}
 
 			tag = fmt.Sprintf("%s/%s:%d", config.AppBuild.Config.RegistryHost, appServiceBuildConfig.Slug, config.AppBuild.Number)
-			err := dockerClient.Build(context+dockerfileName, []string{tag}, buildArgs)
+			err := dockerClient.Build(path.Join(context, dockerfileName), []string{tag}, buildArgs)
 			if err != nil {
+				if cleanUpDockerfile {
+					fmt.Println("Cleaning up Dockerfile")
+					_ = os.Remove(path.Join(context, dockerfileName))
+				}
+				if cleanUpDockerignore {
+					fmt.Println("Cleaning up .dockerignore")
+					_ = os.Remove(path.Join(context, dockerignoreName))
+				}
 				return errors.WithStack(err)
 			}
 			config.BuiltServices = append(config.BuiltServices, types.BuiltService{
 				Name:  appServiceBuildConfig.Name,
 				Image: tag,
 			})
+
+			if cleanUpDockerfile {
+				fmt.Println("Cleaning up dockerfile")
+				err = os.Remove(path.Join(context, dockerfileName))
+				if err != nil {
+					return errors.WithStack(err)
+				}
+			}
+			if cleanUpDockerignore {
+				fmt.Println("Cleaning up dockerignore")
+				err = os.Remove(path.Join(context, dockerignoreName))
+				if err != nil {
+					return errors.WithStack(err)
+				}
+			}
 		}
 
 		content, err := json.MarshalIndent(config, "", "    ")

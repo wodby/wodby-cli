@@ -58,7 +58,7 @@ func (c *Client) Build(dockerfile string, tags []string, context string, buildAr
 	}
 
 	fmt.Printf("Building:\n docker %s\n", strings.Join(args, " "))
-	cmd := exec.Command("docker", args...)
+	cmd := exec.Command("DOCKER_BUILDKIT=1 docker", args...)
 
 	return cmdStartVerbose(cmd)
 }

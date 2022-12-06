@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"os"
 
 	"github.com/machinebox/graphql"
 	"github.com/pkg/errors"
@@ -9,21 +10,24 @@ import (
 	"github.com/wodby/wodby-cli/pkg/types"
 )
 
-type client struct {
+type Client struct {
 	client *graphql.Client
 	config types.APIConfig
 	logger *logrus.Entry
 }
 
-func NewClient(config types.APIConfig) *client {
-	return &client{
+func NewClient(config types.APIConfig) *Client {
+	if os.Getenv("DEBUG") != "" {
+		logrus.SetLevel(logrus.DebugLevel)
+	}
+	return &Client{
 		client: graphql.NewClient(config.Endpoint),
 		config: config,
 		logger: logrus.WithField("logger", "client"),
 	}
 }
 
-func (c *client) GetAppBuild(ctx context.Context, id int) (types.AppBuild, error) {
+func (c *Client) GetAppBuild(ctx context.Context, id int) (types.AppBuild, error) {
 	req, err := c.getAuthorizedRequest(APP_BUILD)
 	if err != nil {
 		return types.AppBuild{}, errors.WithStack(err)
@@ -33,14 +37,16 @@ func (c *client) GetAppBuild(ctx context.Context, id int) (types.AppBuild, error
 	var respData struct {
 		AppBuild types.AppBuild `json:"appBuild"`
 	}
+	c.logger.Debugf("Exec get app build request [id: %d]", id)
 	if err := c.client.Run(ctx, req, &respData); err != nil {
+		c.logger.Debugf("%v", respData)
 		return types.AppBuild{}, errors.WithStack(err)
 	}
 
 	return respData.AppBuild, nil
 }
 
-func (c *client) GetDockerRegistryCredentials(ctx context.Context, appBuildID int) (types.DockerRegistryCredentials, error) {
+func (c *Client) GetDockerRegistryCredentials(ctx context.Context, appBuildID int) (types.DockerRegistryCredentials, error) {
 	req, err := c.getAuthorizedRequest(DOCKER_REGISTRY_CREDENTIALS)
 	if err != nil {
 		return types.DockerRegistryCredentials{}, errors.WithStack(err)
@@ -51,6 +57,7 @@ func (c *client) GetDockerRegistryCredentials(ctx context.Context, appBuildID in
 		DockerRegistryCredentials types.DockerRegistryCredentials `json:"dockerRegistryCredentials"`
 	}
 
+	c.logger.Debugf("Exec get docker credentials request [app build id: %d]", appBuildID)
 	if err := c.client.Run(ctx, req, &respData); err != nil {
 		return types.DockerRegistryCredentials{}, errors.WithStack(err)
 	}
@@ -58,7 +65,7 @@ func (c *client) GetDockerRegistryCredentials(ctx context.Context, appBuildID in
 	return respData.DockerRegistryCredentials, nil
 }
 
-func (c *client) Deploy(ctx context.Context, input types.DeploymentInput) (bool, error) {
+func (c *Client) Deploy(ctx context.Context, input types.DeploymentInput) (bool, error) {
 	req, err := c.getAuthorizedRequest(DEPLOY)
 	if err != nil {
 		return false, errors.WithStack(err)
@@ -69,6 +76,7 @@ func (c *client) Deploy(ctx context.Context, input types.DeploymentInput) (bool,
 		AppDeployment types.AppDeployment `json:"appDeployment"`
 	}
 
+	c.logger.Debugf("Exec deploy request [input: %v]", input)
 	if err := c.client.Run(ctx, req, &respData); err != nil {
 		return false, errors.WithStack(err)
 	}
@@ -76,7 +84,7 @@ func (c *client) Deploy(ctx context.Context, input types.DeploymentInput) (bool,
 	return true, nil
 }
 
-func (c *client) getAuthorizedRequest(query string) (*graphql.Request, error) {
+func (c *Client) getAuthorizedRequest(query string) (*graphql.Request, error) {
 	req := graphql.NewRequest(query)
 
 	if c.config.Key != "" {

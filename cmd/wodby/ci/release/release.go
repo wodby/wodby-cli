@@ -8,6 +8,7 @@ import (
 	"github.com/wodby/wodby-cli/pkg/config"
 	"github.com/wodby/wodby-cli/pkg/docker"
 	"github.com/wodby/wodby-cli/pkg/types"
+	"github.com/wodby/wodby-cli/pkg/utils"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -111,7 +112,7 @@ var Cmd = &cobra.Command{
 					if strings.Contains(opts.tag, ":") {
 						tag = opts.tag
 					} else {
-						tag = fmt.Sprintf("%s:%s", opts.tag, config.Metadata.Number)
+						tag = utils.BuildTag(opts.tag, service.Slug, config.Metadata.Number)
 					}
 				} else {
 					tag = fmt.Sprintf("%s:%s", service.Slug, config.Metadata.Number)

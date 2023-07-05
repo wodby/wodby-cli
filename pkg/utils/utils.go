@@ -2,8 +2,9 @@ package utils
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"time"
-	"unicode"
 )
 
 type CheckFunc func() (bool, error)
@@ -30,11 +31,11 @@ func WaitFor(check CheckFunc, interval time.Duration, timeout time.Duration) err
 	}
 }
 
-func IsAsciiPrintable(s string) bool {
-	for _, r := range s {
-		if r > unicode.MaxASCII || !unicode.IsPrint(r) {
-			return false
-		}
-	}
-	return true
+// BuildTag builds a tag for an image from provided custom registry and a service's image slug.
+//
+// We assume customRegistry specified as "my-private-registry.com/project"
+// serviceSlug usually comes with wodby docker registry that includes org name and unique image name slug.
+func BuildTag(customRegistry string, serviceSlug, buildNumber string) string {
+	parts := strings.Split(serviceSlug, "/")
+	return fmt.Sprintf("%s/%s:%s", customRegistry, parts[len(parts)-1], buildNumber)
 }

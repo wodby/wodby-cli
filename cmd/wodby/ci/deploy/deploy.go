@@ -10,6 +10,7 @@ import (
 	"github.com/wodby/wodby-cli/pkg/api"
 	"github.com/wodby/wodby-cli/pkg/config"
 	"github.com/wodby/wodby-cli/pkg/types"
+	"github.com/wodby/wodby-cli/pkg/utils"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -124,15 +125,13 @@ var Cmd = &cobra.Command{
 		servicesTags := make(map[string]string)
 		var tag string
 
-		// Allow specifying tags for custom stacks.
 		if opts.tag != "" {
-			if strings.Contains(opts.tag, ":") {
-				tag = opts.tag
-			} else {
-				tag = fmt.Sprintf("%s:%s", opts.tag, config.Metadata.Number)
-			}
-
 			for _, service := range services {
+				if strings.Contains(opts.tag, ":") {
+					tag = opts.tag
+				} else {
+					tag = utils.BuildTag(opts.tag, service.Slug, config.Metadata.Number)
+				}
 				servicesTags[service.Name] = tag
 			}
 		}

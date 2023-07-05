@@ -23,6 +23,7 @@ const (
 	GitHubActions      = "github"
 	BitbucketPipelines = "bitbucket-pipelines"
 	Jenkins            = "jenkins"
+	GitLab             = "gitlab"
 )
 
 type CircleCIConfig struct {
@@ -152,6 +153,15 @@ func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMe
 			Branch:   os.Getenv("GIT_BRANCH"),
 			Commit:   os.Getenv("GIT_COMMIT"),
 			RepoURL:  os.Getenv("GIT_URL"),
+		}
+	} else if os.Getenv("GITLAB_CI") != "" {
+		metadata = &BuildMetadata{
+			Provider: GitLab,
+			URL:      os.Getenv("CI_PIPELINE_URL"),
+			Number:   os.Getenv("CI_PIPELINE_IID"),
+			Branch:   os.Getenv("CI_COMMIT_BRANCH"),
+			Commit:   os.Getenv("CI_COMMIT_SHA"),
+			RepoURL:  os.Getenv("CI_REPOSITORY_URL"),
 		}
 	} else {
 		metadata = &BuildMetadata{}

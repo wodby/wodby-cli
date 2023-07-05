@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 
 	"fmt"
+	"strings"
+
 	"github.com/blang/semver"
 	"github.com/pborman/uuid"
 	"github.com/pkg/errors"
@@ -21,7 +23,6 @@ import (
 	"github.com/wodby/wodby-cli/pkg/types"
 	"github.com/wodby/wodby-cli/pkg/version"
 	"gopkg.in/yaml.v2"
-	"strings"
 )
 
 type options struct {
@@ -139,6 +140,8 @@ var Cmd = &cobra.Command{
 			if cfg.Jobs.Build.Docker != nil {
 				dind = true
 			}
+		} else if config.Metadata.Provider == types.GitLab {
+			dind = true
 		}
 
 		dockerClient := docker.NewClient()

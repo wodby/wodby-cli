@@ -95,7 +95,7 @@ var Cmd = &cobra.Command{
 		docker := docker.NewClient()
 		registry := config.BuildConfig.Registry
 
-		if opts.tag != "" {
+		if opts.tag == "" {
 			err = docker.Login(registry.Host, registry.Username, registry.Password)
 			if err != nil {
 				return err

@@ -10,10 +10,10 @@ const (
 			gitRef
 			config {
 				registryHost
+				registryRepository
 				services {
 					name
 					title
-					slug
 					managed
 					main
 					image

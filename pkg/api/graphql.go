@@ -10,7 +10,7 @@ const (
 			gitRef
 			config {
 				registryHost
-				appServiceBuildConfigs {
+				services {
 					name
 					title
 					slug

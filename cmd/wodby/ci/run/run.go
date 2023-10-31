@@ -47,7 +47,7 @@ var Cmd = &cobra.Command{
 
 		var image string
 		if opts.service != "" {
-			for _, appServiceBuildConfig := range config.AppBuild.Config.AppServiceBuildConfigs {
+			for _, appServiceBuildConfig := range config.AppBuild.Config.Services {
 				if appServiceBuildConfig.Name == opts.service {
 					image = appServiceBuildConfig.Image
 					break

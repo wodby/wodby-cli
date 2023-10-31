@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
-	"io/ioutil"
 	"os"
 	"path"
 	"regexp"
@@ -76,7 +75,7 @@ var Cmd = &cobra.Command{
 			logger.Info("Validating services")
 			for _, svc := range opts.services {
 				found := false
-				for _, appServiceBuildConfig := range config.AppBuild.Config.AppServiceBuildConfigs {
+				for _, appServiceBuildConfig := range config.AppBuild.Config.Services {
 					if svc == appServiceBuildConfig.Name {
 						found = true
 						appServiceBuildConfigs = append(appServiceBuildConfigs, appServiceBuildConfig)
@@ -102,7 +101,7 @@ var Cmd = &cobra.Command{
 			// When user specified custom dockerfile.
 			if opts.dockerfile != "" {
 				fmt.Println("Using specified Dockerfile")
-				d, err := ioutil.ReadFile(context + "/" + opts.dockerfile)
+				d, err := os.ReadFile(context + "/" + opts.dockerfile)
 				if err != nil {
 					return errors.WithStack(err)
 				}
@@ -161,7 +160,7 @@ var Cmd = &cobra.Command{
 			dockerfileName := fmt.Sprintf("%s_Dockerfile", appServiceBuildConfig.Name)
 			if _, err := os.Stat(dockerfileName); os.IsNotExist(err) {
 				fmt.Printf("Creating temporary Dockerfile: %s\n", path.Join(context, dockerfileName))
-				err = ioutil.WriteFile(path.Join(context, dockerfileName), []byte(dockerfile), 0600)
+				err = os.WriteFile(path.Join(context, dockerfileName), []byte(dockerfile), 0600)
 				if err != nil {
 					return errors.WithStack(err)
 				}
@@ -172,14 +171,14 @@ var Cmd = &cobra.Command{
 				// Exclude dockerignore and dockerfile.
 				dockerignore = fmt.Sprintf("%s\n%s\n%s", dockerignore, dockerfileName, dockerignoreName)
 				fmt.Printf("Creating temporary .dockerignore: %s\n", path.Join(context, dockerignoreName))
-				err = ioutil.WriteFile(path.Join(context, dockerignoreName), []byte(dockerignore), 0600)
+				err = os.WriteFile(path.Join(context, dockerignoreName), []byte(dockerignore), 0600)
 				if err != nil {
 					return errors.WithStack(err)
 				}
 				cleanUpDockerignore = true
 			}
 
-			tag = fmt.Sprintf("%s/%s-%d", config.AppBuild.Config.RegistryHost, appServiceBuildConfig.Slug, config.AppBuild.Number)
+			tag = fmt.Sprintf("%s/%s:%s-%d", config.AppBuild.Config.RegistryHost, config.AppBuild.Config.RegistryRepository, appServiceBuildConfig.Name, config.AppBuild.Number)
 			err := dockerClient.Build(dockerfileName, []string{tag}, context, buildArgs)
 			if err != nil {
 				if cleanUpDockerfile {
@@ -217,7 +216,7 @@ var Cmd = &cobra.Command{
 		if err != nil {
 			return errors.WithStack(err)
 		}
-		err = ioutil.WriteFile(path.Join(viper.GetString("ci_config_path")), content, 0600)
+		err = os.WriteFile(path.Join(viper.GetString("ci_config_path")), content, 0600)
 		if err != nil {
 			return errors.WithStack(err)
 		}

@@ -14,14 +14,14 @@ type (
 		Config     *AppBuildConfig `json:"config"`
 	}
 	AppBuildConfig struct {
-		RegistryHost           string                   `json:"registryHost"`
-		AppServiceBuildConfigs []*AppServiceBuildConfig `json:"appServiceBuildConfigs"`
+		RegistryHost       string                   `json:"registryHost"`
+		RegistryRepository string                   `json:"registryRepository"`
+		Services           []*AppServiceBuildConfig `json:"services"`
 	}
 	AppServiceBuildConfig struct {
 		Name         string  `json:"name"`
 		Title        string  `json:"title"`
 		Image        string  `json:"image"`
-		Slug         string  `json:"slug"`
 		Managed      bool    `json:"managed"`
 		Main         bool    `json:"main"`
 		Dockerfile   *string `json:"dockerfile"`

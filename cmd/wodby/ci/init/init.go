@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
@@ -119,12 +118,12 @@ var Cmd = &cobra.Command{
 		if err != nil {
 			return errors.WithStack(err)
 		}
-		err = ioutil.WriteFile(path.Join(viper.GetString("ci_config_path")), content, 0600)
+		err = os.WriteFile(path.Join(viper.GetString("ci_config_path")), content, 0600)
 		if err != nil {
 			return errors.WithStack(err)
 		}
 
-		for _, appServiceBuildConfig := range appBuild.Config.AppServiceBuildConfigs {
+		for _, appServiceBuildConfig := range appBuild.Config.Services {
 			if appServiceBuildConfig.Main {
 				// We will fix permissions either when it was instructed or when a it's a managed service.
 				if os.Getenv("WODBY_CI") != "" && (opts.fixPermissions || appServiceBuildConfig.Managed) {

@@ -179,7 +179,7 @@ var Cmd = &cobra.Command{
 				cleanUpDockerignore = true
 			}
 
-			tag = fmt.Sprintf("%s/%s:%d", config.AppBuild.Config.RegistryHost, appServiceBuildConfig.Slug, config.AppBuild.Number)
+			tag = fmt.Sprintf("%s/%s-%d", config.AppBuild.Config.RegistryHost, appServiceBuildConfig.Slug, config.AppBuild.Number)
 			err := dockerClient.Build(dockerfileName, []string{tag}, context, buildArgs)
 			if err != nil {
 				if cleanUpDockerfile {

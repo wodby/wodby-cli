@@ -207,6 +207,6 @@ func init() {
 	Cmd.Flags().StringVarP(&opts.context, "context", "c", "", "Build context (default: current directory)")
 	Cmd.Flags().BoolVar(&opts.fixPermissions, "fix-permissions", false, "Fix codebase permissions. Performed automatically for known CI environments. WARNING: make sure you run wodby ci init from the project directory")
 	Cmd.Flags().IntVarP(&opts.buildNumber, "build-num", "n", 0, "Custom build number (used if can't identify automatically)")
-	Cmd.Flags().StringVarP(&opts.buildID, "build-id", "id", "", "Custom build id (used if can't identify automatically)")
+	Cmd.Flags().StringVarP(&opts.buildID, "build-id", "bid", "", "Custom build id (used if can't identify automatically)")
 	Cmd.Flags().StringVar(&opts.provider, "provider", "p", "Custom build provider name (used if can't identify automatically)")
 }

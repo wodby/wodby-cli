@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/wodby/wodby-cli/pkg/api"
+	"github.com/wodby/wodby-cli/pkg/ci"
 	"github.com/wodby/wodby-cli/pkg/docker"
 	"github.com/wodby/wodby-cli/pkg/types"
 	"github.com/wodby/wodby-cli/pkg/version"
@@ -23,12 +24,15 @@ type options struct {
 	id             int
 	context        string
 	fixPermissions bool
+	buildNumber    int
+	buildID        string
+	provider       string
 }
 
 var opts options
 
 var Cmd = &cobra.Command{
-	Use:   "init [OPTIONS] WODBY_BUILD_ID",
+	Use:   "init [OPTIONS] WODBY_BUILD_ID|WODBY_GIT_REPO_ID",
 	Short: "Initialize config for CI process",
 	Args:  cobra.ExactArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
@@ -90,10 +94,46 @@ var Cmd = &cobra.Command{
 		}
 
 		ctx := context.Background()
-		logger.Infof("Requesting info for app build %d...", opts.id)
-		appBuild, err := client.GetAppBuild(ctx, opts.id)
-		if err != nil {
-			return errors.WithStack(err)
+
+		var appBuild types.AppBuild
+		var err error
+
+		if os.Getenv("WODBY_CI") == "" {
+			logger.Infof("Creating new app build from CI for git repo %d...", opts.id)
+			input, err := ci.CollectBuildInfo()
+			if err != nil {
+				return errors.WithStack(err)
+			}
+			input.GitRepoID = opts.id
+			if input.BuildID == "" {
+				if opts.buildID == "" {
+					return errors.New("build id must be specified")
+				}
+				input.BuildID = opts.buildID
+			}
+			if input.BuildNum == 0 {
+				if opts.buildNumber == 0 {
+					return errors.New("build number must be specified")
+				}
+				input.BuildNum = opts.buildNumber
+			}
+			if input.Provider == "" {
+				if opts.provider == "" {
+					return errors.New("provider must be specified")
+				}
+				input.Provider = opts.provider
+			}
+
+			appBuild, err = client.NewCIBuild(context.Background(), input)
+			if err != nil {
+				return errors.WithStack(err)
+			}
+		} else {
+			logger.Infof("Requesting info for app build %d...", opts.id)
+			appBuild, err = client.GetAppBuild(ctx, opts.id)
+			if err != nil {
+				return errors.WithStack(err)
+			}
 		}
 
 		logger.Infof("Requesting registry credentials for app build %d...", opts.id)
@@ -125,7 +165,7 @@ var Cmd = &cobra.Command{
 
 		for _, appServiceBuildConfig := range appBuild.Config.Services {
 			if appServiceBuildConfig.Main {
-				// We will fix permissions either when it was instructed or when a it's a managed service.
+				// We will fix permissions either when it was instructed or when it's a managed service.
 				if os.Getenv("WODBY_CI") != "" && (opts.fixPermissions || appServiceBuildConfig.Managed) {
 					if opts.fixPermissions {
 						logger.Info("Fixing codebase permissions...")
@@ -166,4 +206,7 @@ var Cmd = &cobra.Command{
 func init() {
 	Cmd.Flags().StringVarP(&opts.context, "context", "c", "", "Build context (default: current directory)")
 	Cmd.Flags().BoolVar(&opts.fixPermissions, "fix-permissions", false, "Fix codebase permissions. Performed automatically for known CI environments. WARNING: make sure you run wodby ci init from the project directory")
+	Cmd.Flags().IntVarP(&opts.buildNumber, "build-num", "n", 0, "Custom build number (used if can't identify automatically)")
+	Cmd.Flags().StringVarP(&opts.buildID, "build-id", "id", "", "Custom build id (used if can't identify automatically)")
+	Cmd.Flags().StringVar(&opts.provider, "provider", "p", "Custom build provider name (used if can't identify automatically)")
 }

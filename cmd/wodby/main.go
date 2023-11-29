@@ -1,11 +1,12 @@
 package main
 
 import (
+	"os"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/wodby/wodby-cli/cmd/wodby/ci"
 	"github.com/wodby/wodby-cli/cmd/wodby/version"
-	"os"
 )
 
 var RootCmd = &cobra.Command{
@@ -23,7 +24,7 @@ func init() {
 		panic(err)
 	}
 
-	RootCmd.PersistentFlags().String("api-endpoint", "", "API endpoint")
+	RootCmd.PersistentFlags().String("api-endpoint", "https://api.wodby.com/v1/query", "API endpoint")
 	err = viper.BindPFlag("api_endpoint", RootCmd.PersistentFlags().Lookup("api-endpoint"))
 	if err != nil {
 		panic(err)

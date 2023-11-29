@@ -27,4 +27,17 @@ type (
 		Dockerfile   *string `json:"dockerfile"`
 		Dockerignore *string `json:"dockerignore"`
 	}
+	NewCIBuildInput struct {
+		GitRepoID            int     `json:"gitRepoID"`
+		GitCommitSHA         string  `json:"gitCommitSHA"`
+		GitRef               string  `json:"gitRef"`
+		GitRefType           string  `json:"gitRefType"`
+		BuildNum             int     `json:"buildNum"`
+		BuildID              string  `json:"buildID"`
+		GitCommitAuthorName  *string `json:"gitCommitAuthorName"`
+		GitCommitAuthorEmail *string `json:"gitCommitAuthorEmail"`
+		GitCommitMessage     *string `json:"gitCommitMessage"`
+		Provider             string  `json:"provider"`
+		SkipPostDeployment   *bool   `json:"skipPostDeployment"`
+	}
 )

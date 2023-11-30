@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/machinebox/graphql"
@@ -99,6 +100,7 @@ func (c *Client) NewCIBuild(ctx context.Context, input types.NewBuildFromCIInput
 	if err := c.client.Run(ctx, req, &respData); err != nil {
 		return types.AppBuild{}, errors.WithStack(err)
 	}
+	fmt.Printf("%+v\n", respData)
 
 	return respData.AppBuild, nil
 }

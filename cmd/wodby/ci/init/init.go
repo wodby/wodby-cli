@@ -124,7 +124,7 @@ var Cmd = &cobra.Command{
 				input.Provider = opts.provider
 			}
 
-			appBuild, err = client.NewCIBuild(context.Background(), input)
+			appBuild, err = client.NewCIBuild(ctx, input)
 			if err != nil {
 				return errors.WithStack(err)
 			}

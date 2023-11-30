@@ -19,13 +19,18 @@ type (
 		Services           []*AppServiceBuildConfig `json:"services"`
 	}
 	AppServiceBuildConfig struct {
-		Name         string  `json:"name"`
-		Title        string  `json:"title"`
-		Image        string  `json:"image"`
-		Managed      bool    `json:"managed"`
-		Main         bool    `json:"main"`
-		Dockerfile   *string `json:"dockerfile"`
-		Dockerignore *string `json:"dockerignore"`
+		Name         string                `json:"name"`
+		Title        string                `json:"title"`
+		Image        string                `json:"image"`
+		Managed      bool                  `json:"managed"`
+		Main         bool                  `json:"main"`
+		Dockerfile   *string               `json:"dockerfile"`
+		Dockerignore *string               `json:"dockerignore"`
+		Args         []*AppServiceBuildArg `json:"args"`
+	}
+	AppServiceBuildArg struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
 	}
 	NewBuildFromCIInput struct {
 		GitRepoID            int     `json:"gitRepoID"`

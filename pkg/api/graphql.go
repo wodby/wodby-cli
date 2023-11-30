@@ -19,6 +19,10 @@ const (
 					image
 					dockerfile
 					dockerignore
+					args {
+						name
+						value
+					}
 				}
 			}
 		}

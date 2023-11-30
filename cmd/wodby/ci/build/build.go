@@ -98,6 +98,10 @@ var Cmd = &cobra.Command{
 			buildArgs["COPY_FROM"] = opts.from
 			buildArgs["WODBY_BASE_IMAGE"] = appServiceBuildConfig.Image
 
+			for _, arg := range appServiceBuildConfig.Args {
+				buildArgs[arg.Name] = arg.Value
+			}
+
 			// When user specified custom dockerfile.
 			if opts.dockerfile != "" {
 				fmt.Println("Using specified Dockerfile")

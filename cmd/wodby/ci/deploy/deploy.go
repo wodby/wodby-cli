@@ -108,11 +108,11 @@ var Cmd = &cobra.Command{
 			PostDeployment: postDeploy,
 		}
 		client := api.NewClient(config.API)
-		res, err := client.Deploy(context.Background(), input)
+		deployment, err := client.Deploy(context.Background(), input)
 		if err != nil {
 			return errors.WithStack(err)
 		}
-		if !res {
+		if deployment.ID == 0 {
 			return errors.New("Deployment has failed!")
 		}
 

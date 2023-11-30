@@ -66,23 +66,23 @@ func (c *Client) GetDockerRegistryCredentials(ctx context.Context, appBuildID in
 	return respData.DockerRegistryCredentials, nil
 }
 
-func (c *Client) Deploy(ctx context.Context, input types.DeploymentInput) (bool, error) {
+func (c *Client) Deploy(ctx context.Context, input types.DeploymentInput) (types.AppDeployment, error) {
 	req, err := c.getAuthorizedRequest(DEPLOY)
 	if err != nil {
-		return false, errors.WithStack(err)
+		return types.AppDeployment{}, errors.WithStack(err)
 	}
 	req.Var("input", input)
 
 	var respData struct {
-		AppDeployment types.AppDeployment `json:"appDeployment"`
+		AppDeployment types.AppDeployment `json:"deployFromCI"`
 	}
 
 	c.logger.Debugf("Exec deploy request [input: %v]", input)
 	if err := c.client.Run(ctx, req, &respData); err != nil {
-		return false, errors.WithStack(err)
+		return types.AppDeployment{}, errors.WithStack(err)
 	}
 
-	return true, nil
+	return respData.AppDeployment, nil
 }
 
 func (c *Client) NewCIBuild(ctx context.Context, input types.NewBuildFromCIInput) (types.AppBuild, error) {
@@ -93,7 +93,7 @@ func (c *Client) NewCIBuild(ctx context.Context, input types.NewBuildFromCIInput
 	req.Var("input", input)
 
 	var respData struct {
-		AppBuild types.AppBuild `json:"appBuild"`
+		AppBuild types.AppBuild `json:"newBuildFromCI"`
 	}
 
 	c.logger.Debugf("Exec new CI build request [input: %v]", input)

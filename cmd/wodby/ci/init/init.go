@@ -128,7 +128,6 @@ var Cmd = &cobra.Command{
 			if err != nil {
 				return errors.WithStack(err)
 			}
-			fmt.Printf("%+v\n", appBuild)
 		} else {
 			logger.Infof("Requesting info for app build %d...", opts.id)
 			appBuild, err = client.GetAppBuild(ctx, opts.id)

@@ -98,10 +98,6 @@ var Cmd = &cobra.Command{
 			buildArgs["COPY_FROM"] = opts.from
 			buildArgs["WODBY_BASE_IMAGE"] = appServiceBuildConfig.Image
 
-			for _, arg := range appServiceBuildConfig.Args {
-				buildArgs[arg.Name] = arg.Value
-			}
-
 			// When user specified custom dockerfile.
 			if opts.dockerfile != "" {
 				fmt.Println("Using specified Dockerfile")
@@ -122,10 +118,15 @@ var Cmd = &cobra.Command{
 					allMatches := r.FindAllStringSubmatch(dockerfile, -1)
 					for _, matches := range allMatches {
 						if !containsString([]string{"COPY_FROM", "WODBY_BASE_IMAGE"}, matches[1]) {
-							if matches[1] == "COPY_TO" {
+							argName := matches[1]
+							if argName == "COPY_TO" {
 								buildArgs["COPY_TO"] = opts.to
 							} else {
-								buildArgs[matches[1]] = ""
+								for _, arg := range appServiceBuildConfig.Args {
+									if argName == arg.Name {
+										buildArgs[argName] = arg.Value
+									}
+								}
 							}
 						}
 					}

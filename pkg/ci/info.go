@@ -1,7 +1,6 @@
 package ci
 
 import (
-	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -64,7 +63,6 @@ func CollectBuildInfo() (types.NewBuildFromCIInput, error) {
 	if buildInput.GitCommitMessage == nil && buildInput.GitCommitSHA != "" {
 		out, err := exec.Command("git", "log", "--format=%B", "-n", "1", buildInput.GitCommitSHA).CombinedOutput()
 		if err != nil {
-			fmt.Println()
 			return types.NewBuildFromCIInput{}, errors.Wrap(err, "Failed to acquire commit message")
 		}
 

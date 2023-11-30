@@ -27,7 +27,7 @@ type (
 		Dockerfile   *string `json:"dockerfile"`
 		Dockerignore *string `json:"dockerignore"`
 	}
-	NewCIBuildInput struct {
+	NewBuildFromCIInput struct {
 		GitRepoID            int     `json:"gitRepoID"`
 		GitCommitSHA         string  `json:"gitCommitSHA"`
 		GitRef               string  `json:"gitRef"`

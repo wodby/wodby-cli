@@ -40,7 +40,7 @@ const (
 	}`
 
 	NEW_CI_BUILD = `
-	mutation newBuildFromCI($input: NewCIBuildInput!) {
+	mutation newBuildFromCI($input: NewBuildFromCIInput!) {
 		newBuildFromCI(input: $input) {
 			id
 		}

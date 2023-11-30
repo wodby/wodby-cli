@@ -43,6 +43,22 @@ const (
 	mutation newBuildFromCI($input: NewBuildFromCIInput!) {
 		newBuildFromCI(input: $input) {
 			id
+			number
+			gitRefType
+			gitRef
+			config {
+				registryHost
+				registryRepository
+				services {
+					name
+					title
+					managed
+					main
+					image
+					dockerfile
+					dockerignore
+				}
+			}
 		}
 	}`
 )

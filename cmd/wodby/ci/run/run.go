@@ -59,7 +59,14 @@ var Cmd = &cobra.Command{
 		} else if opts.image != "" {
 			image = opts.image
 		} else {
-			return errors.New("Must provide either service or image")
+			fmt.Println("No service or image provided, using main service")
+			for _, appServiceBuildConfig := range config.AppBuild.Config.Services {
+				if appServiceBuildConfig.Main {
+					fmt.Printf("Main service found: %s\n", appServiceBuildConfig.Name)
+					image = appServiceBuildConfig.Image
+					break
+				}
+			}
 		}
 
 		runConfig := docker.RunConfig{

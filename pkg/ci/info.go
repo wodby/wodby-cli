@@ -16,7 +16,7 @@ func CollectBuildInfo() (types.NewBuildFromCIInput, error) {
 	if os.Getenv("CIRCLECI") != "" {
 		buildInput = types.NewBuildFromCIInput{
 			Provider:     "circleci",
-			BuildID:      os.Getenv("CIRCLE_WORKFLOW_JOB_ID"),
+			BuildID:      os.Getenv("CIRCLE_WORKFLOW_ID"),
 			GitCommitSHA: os.Getenv("CIRCLE_SHA1"),
 		}
 

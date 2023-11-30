@@ -84,7 +84,7 @@ func (c *Client) Deploy(ctx context.Context, input types.DeploymentInput) (bool,
 	return true, nil
 }
 
-func (c *Client) NewCIBuild(ctx context.Context, input types.NewCIBuildInput) (types.AppBuild, error) {
+func (c *Client) NewCIBuild(ctx context.Context, input types.NewBuildFromCIInput) (types.AppBuild, error) {
 	req, err := c.getAuthorizedRequest(NEW_CI_BUILD)
 	if err != nil {
 		return types.AppBuild{}, errors.WithStack(err)

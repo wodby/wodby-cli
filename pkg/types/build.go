@@ -37,6 +37,7 @@ type (
 		GitCommitSHA         string  `json:"gitCommitSHA"`
 		GitRef               string  `json:"gitRef"`
 		GitRefType           string  `json:"gitRefType"`
+		Workflow             string  `json:"workflow"`
 		BuildNum             int     `json:"buildNum"`
 		BuildID              string  `json:"buildID"`
 		GitCommitAuthorName  *string `json:"gitCommitAuthorName"`

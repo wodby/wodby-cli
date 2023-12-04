@@ -36,7 +36,7 @@ func NewClient(config types.APIConfig) *Client {
 	if os.Getenv("DEBUG") != "" {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
-	httpClient := http.Client{Transport: &transport{underlyingTransport: http.DefaultTransport}}
+	httpClient := http.Client{Transport: &transport{underlyingTransport: http.DefaultTransport, apiKey: config.Key, accessToken: config.AccessToken}}
 	return &Client{
 		client: graphql.NewClient(config.Endpoint, &httpClient),
 		config: config,

@@ -17,7 +17,7 @@ const (
 )
 
 type (
-	DeploymentInput struct {
+	DeploymentFromCIInput struct {
 		AppBuildID     int                       `json:"appBuildID"`
 		Services       []*ServiceDeploymentInput `json:"services"`
 		PostDeployment bool                      `json:"postDeployment"`

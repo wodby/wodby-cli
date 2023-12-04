@@ -102,7 +102,7 @@ var Cmd = &cobra.Command{
 		if postDeployFlag != nil && postDeployFlag.Changed {
 			postDeploy = opts.postDeploy
 		}
-		input := types.DeploymentInput{
+		input := types.DeploymentFromCIInput{
 			AppBuildID:     config.AppBuild.ID,
 			Services:       servicesToDeploy,
 			PostDeployment: postDeploy,

@@ -68,7 +68,7 @@ func (c *Client) GetDockerRegistryCredentials(ctx context.Context, appBuildID in
 	return query.DockerRegistryCredentials, nil
 }
 
-func (c *Client) Deploy(ctx context.Context, input types.DeploymentInput) (types.AppDeployment, error) {
+func (c *Client) Deploy(ctx context.Context, input types.DeploymentFromCIInput) (types.AppDeployment, error) {
 	var m struct {
 		AppDeployment types.AppDeployment `graphql:"deployFromCI(input: $input)"`
 	}

@@ -24,7 +24,7 @@ func init() {
 		panic(err)
 	}
 
-	RootCmd.PersistentFlags().String("api-endpoint", "https://api.wodby.com/v1/query", "API endpoint")
+	RootCmd.PersistentFlags().String("api-endpoint", "https://api.wodby.com/query", "API endpoint")
 	err = viper.BindPFlag("api_endpoint", RootCmd.PersistentFlags().Lookup("api-endpoint"))
 	if err != nil {
 		panic(err)

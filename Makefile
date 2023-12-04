@@ -21,7 +21,7 @@ default: build
 build:
 	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) \
 		go build -ldflags $(LD_FLAGS) -o bin/wodby $(PKG)/cmd/wodby
-	chmod +x $(PKG)/cmd/wodby
+	chmod bin/wodby
 
 build-image:
 	docker build -t $(REPO):$(TAG) ./

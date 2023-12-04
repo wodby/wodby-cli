@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/machinebox/graphql"
@@ -78,6 +79,7 @@ func (c *Client) Deploy(ctx context.Context, input types.DeploymentInput) (types
 
 	c.logger.Debugf("Exec deploy request [input: %v]", input)
 	if err := c.client.Run(ctx, req, &respData); err != nil {
+		fmt.Printf("%+v", respData)
 		return types.AppDeployment{}, errors.WithStack(err)
 	}
 
@@ -98,6 +100,10 @@ func (c *Client) NewCIBuild(ctx context.Context, input types.NewBuildFromCIInput
 	c.logger.Debugf("Exec new CI build request [input: %v]", input)
 	if err := c.client.Run(ctx, req, &respData); err != nil {
 		return types.AppBuild{}, errors.WithStack(err)
+	}
+	if respData.AppBuild.ID == 0 {
+		fmt.Printf("%+v", respData)
+		return types.AppBuild{}, errors.New("App build hasn't been created")
 	}
 
 	return respData.AppBuild, nil

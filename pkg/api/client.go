@@ -70,7 +70,7 @@ func (c *Client) GetDockerRegistryCredentials(ctx context.Context, appBuildID in
 
 func (c *Client) Deploy(ctx context.Context, input types.DeploymentInput) (types.AppDeployment, error) {
 	var m struct {
-		deployFromCI types.AppDeployment `graphql:"deployFromCI(input: $input)"`
+		AppDeployment types.AppDeployment `graphql:"deployFromCI(input: $input)"`
 	}
 	variables := map[string]interface{}{"input": input}
 
@@ -79,12 +79,12 @@ func (c *Client) Deploy(ctx context.Context, input types.DeploymentInput) (types
 		return types.AppDeployment{}, errors.WithStack(err)
 	}
 
-	return m.deployFromCI, nil
+	return m.AppDeployment, nil
 }
 
 func (c *Client) NewCIBuild(ctx context.Context, input types.NewBuildFromCIInput) (types.AppBuild, error) {
 	var m struct {
-		newBuildFromCI types.AppBuild `graphql:"newBuildFromCI(input: $input)"`
+		AppBuild types.AppBuild `graphql:"newBuildFromCI(input: $input)"`
 	}
 	variables := map[string]interface{}{"input": input}
 
@@ -93,5 +93,5 @@ func (c *Client) NewCIBuild(ctx context.Context, input types.NewBuildFromCIInput
 		return types.AppBuild{}, errors.WithStack(err)
 	}
 
-	return m.newBuildFromCI, nil
+	return m.AppBuild, nil
 }

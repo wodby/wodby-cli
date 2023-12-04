@@ -1,9 +1,6 @@
 package types
 
 import (
-	"database/sql"
-	"time"
-
 	"github.com/pkg/errors"
 )
 
@@ -27,15 +24,7 @@ type (
 		Image string `json:"image"`
 	}
 	AppDeployment struct {
-		ID            int
-		AppInstanceID int `db:"app_instance_id"`
-		AppBuildID    int `db:"app_build_id"`
-		TaskID        int `db:"task_id"`
-		Status        AppDeploymentStatus
-		CreatedAt     time.Time    `db:"created_at"`
-		UpdatedAt     time.Time    `db:"updated_at"`
-		StartedAt     sql.NullTime `db:"started_at"`
-		EndedAt       sql.NullTime `db:"ended_at"`
+		ID int
 	}
 	AppDeploymentStatus int
 )

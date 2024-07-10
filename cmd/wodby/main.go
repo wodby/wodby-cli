@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/wodby/wodby-cli/cmd/wodby/ci"
@@ -47,6 +48,14 @@ func init() {
 }
 
 func main() {
+	logLevel := os.Getenv("LOG_LEVEL")
+	if logLevel != "" {
+		level, err := logrus.ParseLevel(logLevel)
+		if err != nil {
+			panic(err)
+		}
+		logrus.SetLevel(level)
+	}
 	if err := RootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}

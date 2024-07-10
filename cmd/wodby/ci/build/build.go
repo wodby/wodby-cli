@@ -116,16 +116,16 @@ var Cmd = &cobra.Command{
 					}
 					// Pass build args from dockerfile.
 					allMatches := r.FindAllStringSubmatch(dockerfile, -1)
-					logger.Debugf("Found %d ARGs in Dockerfile", len(allMatches))
+					fmt.Printf("Found %d ARGs in Dockerfile", len(allMatches))
 					for _, matches := range allMatches {
 						argName := matches[1]
-						logger.Debugf("Arg name: %s", argName)
+						fmt.Printf("Arg name: %s", argName)
 						if !containsString([]string{"COPY_FROM", "WODBY_BASE_IMAGE"}, argName) {
 							if argName == "COPY_TO" {
 								buildArgs["COPY_TO"] = opts.to
 							} else {
 								for _, arg := range appServiceBuildConfig.Args {
-									logger.Debugf("Build arg %s:%s", arg.Name, arg.Value)
+									fmt.Printf("Build arg %s:%s", arg.Name, arg.Value)
 									if argName == arg.Name {
 										buildArgs[argName] = arg.Value
 									}

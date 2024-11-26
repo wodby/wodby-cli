@@ -114,6 +114,7 @@ var Cmd = &cobra.Command{
 					}
 					err = dockerClient.Push(latestTag)
 					if err != nil {
+						log.Error("[ERROR] Failed to release image. If you're using Wodby Docker Registry make sure you are within registry storage limits.")
 						return errors.WithStack(err)
 					}
 				}

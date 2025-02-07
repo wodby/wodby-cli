@@ -171,76 +171,33 @@ func NewClient() *Client {
 	return &Client{}
 }
 
-type CustomError struct {
-	Msg      string
-	StdOut   string
-	StdErr   string
-	Original error
-}
-
-func (e *CustomError) Error() string {
-	return fmt.Sprintf("Docker push failed: %s\nStdout: %s\nStderr: %s\nOriginal error: %v", e.Msg, e.StdOut, e.StdErr, e.Original)
-}
-
 func cmdStartVerbose(cmd *exec.Cmd) error {
 	var stdoutBuf, stderrBuf bytes.Buffer
+	stdoutIn, _ := cmd.StdoutPipe()
+	stderrIn, _ := cmd.StderrPipe()
 
-	stdoutIn, err := cmd.StdoutPipe()
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	stderrIn, err := cmd.StderrPipe()
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
+	var errStdout, errStderr error
 	stdout := io.MultiWriter(os.Stdout, &stdoutBuf)
 	stderr := io.MultiWriter(os.Stderr, &stderrBuf)
 
-	err = cmd.Start()
+	err := cmd.Start()
 	if err != nil {
-		return &CustomError{
-			Msg:      "Failed to start docker push command",
-			Original: err,
-		}
+		return errors.WithStack(err)
 	}
-
-	var errStdout, errStderr error
-	var done = make(chan struct{})
 
 	go func() {
 		_, errStdout = io.Copy(stdout, stdoutIn)
-		done <- struct{}{}
 	}()
-
 	go func() {
 		_, errStderr = io.Copy(stderr, stderrIn)
-		done <- struct{}{}
 	}()
-
-	// Wait for both goroutines to complete
-	for i := 0; i < 2; i++ {
-		<-done
-	}
 
 	err = cmd.Wait()
 	if err != nil {
-		return &CustomError{
-			Msg:      "Docker push command failed",
-			StdOut:   stdoutBuf.String(),
-			StdErr:   stderrBuf.String(),
-			Original: err,
-		}
+		return errors.WithStack(err)
 	}
-
 	if errStdout != nil || errStderr != nil {
-		return &CustomError{
-			Msg:      "Failed to capture stdout or stderr",
-			StdOut:   stdoutBuf.String(),
-			StdErr:   stderrBuf.String(),
-			Original: errors.New("IO copy error"),
-		}
+		//return errors.New("failed to capture stdout or stderr\n")
 	}
 
 	return nil

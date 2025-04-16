@@ -18,16 +18,16 @@ import (
 )
 
 type options struct {
-	context    string
-	number     string
-	url        string
-	tag        string
-	postDeploy bool
-	services   []string
+	context        string
+	number         string
+	url            string
+	tag            string
+	skipPostDeploy bool
+	services       []string
 }
 
 var opts options
-var postDeployFlag *pflag.Flag
+var skipPostDeployFlag *pflag.Flag
 var v = viper.New()
 
 var Cmd = &cobra.Command{
@@ -98,14 +98,10 @@ var Cmd = &cobra.Command{
 			}
 		}
 
-		var postDeploy bool
-		if postDeployFlag != nil && postDeployFlag.Changed {
-			postDeploy = opts.postDeploy
-		}
 		input := types.DeploymentFromCIInput{
 			AppBuildID:     config.AppBuild.ID,
 			Services:       servicesToDeploy,
-			PostDeployment: postDeploy,
+			PostDeployment: !opts.skipPostDeploy,
 		}
 		client := api.NewClient(config.API)
 		deployment, err := client.Deploy(context.Background(), input)
@@ -122,6 +118,5 @@ var Cmd = &cobra.Command{
 }
 
 func init() {
-	Cmd.Flags().BoolVar(&opts.postDeploy, "post-deploy", true, "Run post deployment scripts")
-	postDeployFlag = Cmd.Flags().Lookup("post-deploy")
+	Cmd.Flags().BoolVar(&opts.skipPostDeploy, "skip-post-deploy", false, "Skip post deployment scripts execution")
 }

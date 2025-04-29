@@ -41,12 +41,9 @@ COPY --chown={{.DefaultUser}}:{{.DefaultUser}} ${COPY_FROM} ${COPY_TO}`
 var v = viper.New()
 
 var Cmd = &cobra.Command{
-	Use:   "build [OPTIONS] SERVICE...",
+	Use:   "build [OPTIONS] [SERVICE]...",
 	Short: "Build images",
 	PreRunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) < 1 {
-			return errors.New("Missing required parameters")
-		}
 		opts.services = args
 		v.SetConfigFile(path.Join(viper.GetString("ci_config_path")))
 		err := v.ReadInConfig()
@@ -69,9 +66,7 @@ var Cmd = &cobra.Command{
 		}
 
 		var appServiceBuildConfigs []*types.AppServiceBuildConfig
-		if len(opts.services) == 0 {
-			return errors.New("At least one service must be specified for the build")
-		} else {
+		if len(opts.services) > 0 {
 			logger.Info("Validating services")
 			for _, svc := range opts.services {
 				found := false
@@ -85,6 +80,11 @@ var Cmd = &cobra.Command{
 				if !found {
 					return errors.New(fmt.Sprintf("Couldn't find service %s", svc))
 				}
+			}
+		} else {
+			logger.Info("No services specified, trying to build all services")
+			for _, appServiceBuildConfig := range config.AppBuild.Config.Services {
+				appServiceBuildConfigs = append(appServiceBuildConfigs, appServiceBuildConfig)
 			}
 		}
 

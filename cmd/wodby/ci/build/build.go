@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -20,10 +21,12 @@ import (
 )
 
 type options struct {
-	from       string
-	to         string
-	dockerfile string
-	services   []string
+	from            string
+	to              string
+	dockerfile      string
+	services        []string
+	buildArgs       []string
+	buildArgEnvVars []string
 }
 
 var opts options
@@ -97,6 +100,21 @@ var Cmd = &cobra.Command{
 			buildArgs := make(map[string]string)
 			buildArgs["COPY_FROM"] = opts.from
 			buildArgs["WODBY_BASE_IMAGE"] = appServiceBuildConfig.Image
+
+			for _, buildArg := range opts.buildArgs {
+				name, value, err := parseBuildArg(buildArg)
+				if err != nil {
+					return errors.WithStack(err)
+				}
+				buildArgs[name] = value
+			}
+			for _, envName := range opts.buildArgEnvVars {
+				value, ok := os.LookupEnv(envName)
+				if !ok {
+					return errors.Errorf("environment variable %s is not set", envName)
+				}
+				buildArgs[envName] = value
+			}
 
 			// When user specified custom dockerfile.
 			if opts.dockerfile != "" {
@@ -242,8 +260,19 @@ func containsString(s []string, e string) bool {
 	return false
 }
 
+func parseBuildArg(raw string) (string, string, error) {
+	parts := strings.SplitN(raw, "=", 2)
+	if len(parts) != 2 || parts[0] == "" {
+		return "", "", errors.Errorf("invalid build arg %q, expected NAME=VALUE", raw)
+	}
+
+	return parts[0], parts[1], nil
+}
+
 func init() {
 	Cmd.Flags().StringVar(&opts.from, "from", ".", "Relative path to codebase")
 	Cmd.Flags().StringVar(&opts.to, "to", ".", "Codebase destination path in container")
 	Cmd.Flags().StringVarP(&opts.dockerfile, "dockerfile", "f", "", "Relative path to dockerfile")
+	Cmd.Flags().StringArrayVar(&opts.buildArgs, "build-arg", nil, "Additional build argument in the 'NAME=VALUE' format. Repeatable")
+	Cmd.Flags().StringArrayVar(&opts.buildArgEnvVars, "build-arg-env", nil, "Environment variable name to forward as a docker build argument. Repeatable")
 }

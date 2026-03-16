@@ -22,11 +22,13 @@ import (
 )
 
 type options struct {
-	from       string
-	to         string
-	dockerfile string
-	tag        string
-	services   []string
+	from            string
+	to              string
+	dockerfile      string
+	tag             string
+	services        []string
+	buildArgs       []string
+	buildArgEnvVars []string
 }
 
 type imageBuild struct {
@@ -153,6 +155,24 @@ var Cmd = &cobra.Command{
 			buildArgs["COPY_TO"] = opts.to
 			buildArgs["WODBY_BASE_IMAGE"] = service.Image
 
+			for _, buildArg := range opts.buildArgs {
+				name, value, err := parseBuildArg(buildArg)
+				if err != nil {
+					return err
+				}
+
+				buildArgs[name] = value
+			}
+
+			for _, envName := range opts.buildArgEnvVars {
+				value, ok := os.LookupEnv(envName)
+				if !ok {
+					return errors.Errorf("environment variable %s is not set", envName)
+				}
+
+				buildArgs[envName] = value
+			}
+
 			// When user specified custom dockerfile template.
 			if opts.dockerfile != "" {
 				d, err := ioutil.ReadFile(context + "/" + opts.dockerfile)
@@ -228,9 +248,20 @@ var Cmd = &cobra.Command{
 	},
 }
 
+func parseBuildArg(raw string) (string, string, error) {
+	parts := strings.SplitN(raw, "=", 2)
+	if len(parts) != 2 || parts[0] == "" {
+		return "", "", errors.Errorf("invalid build arg %q, expected NAME=VALUE", raw)
+	}
+
+	return parts[0], parts[1], nil
+}
+
 func init() {
 	Cmd.Flags().StringVar(&opts.from, "from", ".", "Relative path to codebase")
 	Cmd.Flags().StringVar(&opts.to, "to", ".", "Codebase destination path in container")
 	Cmd.Flags().StringVarP(&opts.dockerfile, "dockerfile", "f", "", "Relative path to dockerfile")
 	Cmd.Flags().StringVarP(&opts.tag, "tag", "t", "", "Name and optionally a tag in the 'name:tag' format. Use if you want to use custom docker registry")
+	Cmd.Flags().StringArrayVar(&opts.buildArgs, "build-arg", nil, "Additional build argument in the 'NAME=VALUE' format. Repeatable")
+	Cmd.Flags().StringArrayVar(&opts.buildArgEnvVars, "build-arg-env", nil, "Environment variable name to forward as a docker build argument. Repeatable")
 }

@@ -22,10 +22,10 @@ func CollectBuildInfo() (types.NewBuildFromCIInput, error) {
 		}
 
 		if os.Getenv("CIRCLE_TAG") != "" {
-			buildInput.GitRefType = "tag"
+			buildInput.GitRefType = string(types.GitRefTypeTag)
 			buildInput.GitRef = os.Getenv("CIRCLE_TAG")
 		} else {
-			buildInput.GitRefType = "branch"
+			buildInput.GitRefType = string(types.GitRefTypeBranch)
 			buildInput.GitRef = os.Getenv("CIRCLE_BRANCH")
 		}
 
@@ -47,10 +47,10 @@ func CollectBuildInfo() (types.NewBuildFromCIInput, error) {
 				return types.NewBuildFromCIInput{}, errors.Wrap(err, "Failed to acquire tag info")
 			}
 			buildInput.GitRef = strings.TrimSuffix(string(out), "\n")
-			buildInput.GitRefType = "tag"
+			buildInput.GitRefType = string(types.GitRefTypeTag)
 		} else {
 			buildInput.GitRef = branch
-			buildInput.GitRefType = "branch"
+			buildInput.GitRefType = string(types.GitRefTypeBranch)
 		}
 
 		out, err = exec.Command("git", "rev-parse", "HEAD").CombinedOutput()

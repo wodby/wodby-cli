@@ -1,7 +1,11 @@
 package types
 
+import "strings"
+
 const (
-	GitRefTypeBranch GitRefType = "branch"
+	GitRefTypeBranch GitRefType = "BRANCH"
+	GitRefTypeTag    GitRefType = "TAG"
+	GitRefTypeCommit GitRefType = "COMMIT"
 )
 
 type (
@@ -47,3 +51,16 @@ type (
 		SkipPostDeployment   *bool   `json:"skipPostDeployment"`
 	}
 )
+
+func (t GitRefType) Normalize() GitRefType {
+	switch strings.ToUpper(string(t)) {
+	case string(GitRefTypeBranch):
+		return GitRefTypeBranch
+	case string(GitRefTypeTag):
+		return GitRefTypeTag
+	case string(GitRefTypeCommit):
+		return GitRefTypeCommit
+	default:
+		return t
+	}
+}

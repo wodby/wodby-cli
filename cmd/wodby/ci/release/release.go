@@ -89,7 +89,7 @@ var Cmd = &cobra.Command{
 				return errors.WithStack(err)
 			}
 
-			if config.AppBuild.GitRefType != types.GitRefTypeBranch {
+			if config.AppBuild.GitRefType.Normalize() != types.GitRefTypeBranch {
 				r, err := regexp.Compile(":.+$")
 				if err != nil {
 					return errors.WithStack(err)

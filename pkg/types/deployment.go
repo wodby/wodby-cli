@@ -1,6 +1,7 @@
 package types
 
 import (
+	graphql "github.com/hasura/go-graphql-client"
 	"github.com/pkg/errors"
 )
 
@@ -15,7 +16,7 @@ const (
 
 type (
 	DeploymentFromCIInput struct {
-		AppBuildID     int                       `json:"appBuildID"`
+		AppBuildID     graphql.ID                `json:"appBuildID"`
 		Services       []*ServiceDeploymentInput `json:"services"`
 		PostDeployment bool                      `json:"postDeployment"`
 	}
@@ -24,7 +25,7 @@ type (
 		Image string `json:"image"`
 	}
 	AppDeployment struct {
-		ID int
+		ID graphql.ID
 	}
 	AppDeploymentStatus int
 )

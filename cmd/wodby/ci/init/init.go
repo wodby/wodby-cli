@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	graphql "github.com/hasura/go-graphql-client"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -48,7 +49,6 @@ var Cmd = &cobra.Command{
 		if err != nil {
 			return errors.WithStack(err)
 		}
-
 		if opts.context != "" {
 			opts.context, err = filepath.Abs(opts.context)
 			if err != nil {
@@ -104,7 +104,7 @@ var Cmd = &cobra.Command{
 			if err != nil {
 				return errors.WithStack(err)
 			}
-			input.GitRepoID = opts.id
+			input.GitRepoID = graphql.ID(strconv.Itoa(opts.id))
 			if input.BuildID == "" {
 				if opts.buildID == "" {
 					return errors.New("build id must be specified")
@@ -130,7 +130,7 @@ var Cmd = &cobra.Command{
 			}
 		} else {
 			logger.Infof("Requesting info for app build %d...", opts.id)
-			appBuild, err = client.GetAppBuild(ctx, opts.id)
+			appBuild, err = client.GetAppBuild(ctx, graphql.ID(strconv.Itoa(opts.id)))
 			if err != nil {
 				return errors.WithStack(err)
 			}
@@ -150,7 +150,7 @@ var Cmd = &cobra.Command{
 
 		config := types.Config{
 			API:      apiConfig,
-			ID:       opts.id,
+			ID:       strconv.Itoa(opts.id),
 			Context:  opts.context,
 			AppBuild: appBuild,
 		}

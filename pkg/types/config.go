@@ -7,7 +7,7 @@ type (
 		Endpoint    string
 	}
 	Config struct {
-		ID            int
+		ID            string
 		WorkingDir    string
 		Context       string
 		BuiltServices []BuiltService

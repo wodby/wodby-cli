@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/hasura/go-graphql-client"
+	graphql "github.com/hasura/go-graphql-client"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/wodby/wodby-cli/pkg/types"
@@ -44,7 +44,7 @@ func NewClient(config types.APIConfig) *Client {
 	}
 }
 
-func (c *Client) GetAppBuild(ctx context.Context, id int) (types.AppBuild, error) {
+func (c *Client) GetAppBuild(ctx context.Context, id graphql.ID) (types.AppBuild, error) {
 	var query struct {
 		AppBuild types.AppBuild `graphql:"appBuild(id: $id)"`
 	}
@@ -56,7 +56,7 @@ func (c *Client) GetAppBuild(ctx context.Context, id int) (types.AppBuild, error
 	return query.AppBuild, nil
 }
 
-func (c *Client) GetDockerRegistryCredentials(ctx context.Context, appBuildID int) (types.DockerRegistryCredentials, error) {
+func (c *Client) GetDockerRegistryCredentials(ctx context.Context, appBuildID graphql.ID) (types.DockerRegistryCredentials, error) {
 	var query struct {
 		DockerRegistryCredentials types.DockerRegistryCredentials `graphql:"dockerRegistryCredentials(appBuildID: $appBuildID)"`
 	}

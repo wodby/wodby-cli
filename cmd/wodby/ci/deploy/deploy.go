@@ -108,7 +108,7 @@ var Cmd = &cobra.Command{
 		if err != nil {
 			return errors.WithStack(err)
 		}
-		if deployment.ID == 0 {
+		if deployment.ID == "" {
 			return errors.New("Deployment has failed!")
 		}
 

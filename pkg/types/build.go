@@ -1,6 +1,10 @@
 package types
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/hasura/go-graphql-client"
+)
 
 const (
 	GitRefTypeBranch GitRefType = "BRANCH"
@@ -11,7 +15,7 @@ const (
 type (
 	GitRefType string
 	AppBuild   struct {
-		ID         int             `json:"id"`
+		ID         graphql.ID      `json:"id"`
 		Number     int             `json:"number"`
 		GitRefType GitRefType      `json:"gitRefType"`
 		GitRef     string          `json:"gitRef"`
@@ -37,18 +41,18 @@ type (
 		Value string `json:"value"`
 	}
 	NewBuildFromCIInput struct {
-		GitRepoID            int     `json:"gitRepoID"`
-		GitCommitSHA         string  `json:"gitCommitSHA"`
-		GitRef               string  `json:"gitRef"`
-		GitRefType           string  `json:"gitRefType"`
-		Workflow             string  `json:"workflow"`
-		BuildNum             int     `json:"buildNum"`
-		BuildID              string  `json:"buildID"`
-		GitCommitAuthorName  *string `json:"gitCommitAuthorName"`
-		GitCommitAuthorEmail *string `json:"gitCommitAuthorEmail"`
-		GitCommitMessage     *string `json:"gitCommitMessage"`
-		Provider             string  `json:"provider"`
-		SkipPostDeployment   *bool   `json:"skipPostDeployment"`
+		GitRepoID            graphql.ID `json:"gitRepoID"`
+		GitCommitSHA         string     `json:"gitCommitSHA"`
+		GitRef               string     `json:"gitRef"`
+		GitRefType           string     `json:"gitRefType"`
+		Workflow             string     `json:"workflow"`
+		BuildNum             int        `json:"buildNum"`
+		BuildID              string     `json:"buildID"`
+		GitCommitAuthorName  *string    `json:"gitCommitAuthorName"`
+		GitCommitAuthorEmail *string    `json:"gitCommitAuthorEmail"`
+		GitCommitMessage     *string    `json:"gitCommitMessage"`
+		Provider             string     `json:"provider"`
+		SkipPostDeployment   *bool      `json:"skipPostDeployment"`
 	}
 )
 

@@ -24,8 +24,8 @@ require (
 	github.com/spf13/afero v1.0.2 // indirect
 	github.com/spf13/cast v1.2.0 // indirect
 	github.com/spf13/jwalterweatherman v0.0.0-20180109140146-7c0cea34c8ec // indirect
-	golang.org/x/sys v0.0.0-20220715151400-c0bba94af5f8 // indirect
-	golang.org/x/text v0.3.2 // indirect
+	golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f // indirect
+	golang.org/x/text v0.3.8 // indirect
 	gopkg.in/yaml.v2 v2.2.8 // indirect
 	nhooyr.io/websocket v1.8.7 // indirect
 )

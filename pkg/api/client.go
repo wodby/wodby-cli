@@ -44,7 +44,7 @@ func NewClient(config types.APIConfig) *Client {
 	}
 }
 
-func (c *Client) GetAppBuild(ctx context.Context, id graphql.ID) (types.AppBuild, error) {
+func (c *Client) GetAppBuild(ctx context.Context, id types.ID) (types.AppBuild, error) {
 	var query struct {
 		AppBuild types.AppBuild `graphql:"appBuild(id: $id)"`
 	}
@@ -56,7 +56,7 @@ func (c *Client) GetAppBuild(ctx context.Context, id graphql.ID) (types.AppBuild
 	return query.AppBuild, nil
 }
 
-func (c *Client) GetDockerRegistryCredentials(ctx context.Context, appBuildID graphql.ID) (types.DockerRegistryCredentials, error) {
+func (c *Client) GetDockerRegistryCredentials(ctx context.Context, appBuildID types.ID) (types.DockerRegistryCredentials, error) {
 	var query struct {
 		DockerRegistryCredentials types.DockerRegistryCredentials `graphql:"dockerRegistryCredentials(appBuildID: $appBuildID)"`
 	}

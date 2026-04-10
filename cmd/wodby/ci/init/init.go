@@ -35,7 +35,7 @@ type options struct {
 var opts options
 
 var Cmd = &cobra.Command{
-	Use:   "init [OPTIONS] WODBY_BUILD_ID|WODBY_GIT_REPO_ID",
+	Use:   "init [OPTIONS] WODBY_APP_SERVICE_ID|WODBY_BUILD_ID",
 	Short: "Initialize config for CI process",
 	Args:  cobra.ExactArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
@@ -101,7 +101,7 @@ var Cmd = &cobra.Command{
 		var err error
 
 		if os.Getenv("WODBY_CI") == "" {
-			logger.Infof("Creating new app build from CI for git repo %d...", opts.id)
+			logger.Infof("Creating new app build from CI for app service %d...", opts.id)
 			input, err := ci.CollectBuildInfo()
 			if err != nil {
 				return errors.WithStack(err)
@@ -145,7 +145,7 @@ var Cmd = &cobra.Command{
 			}
 		}
 
-		logger.Infof("Requesting registry credentials for app build %d...", opts.id)
+		logger.Infof("Requesting registry credentials for app build %d...", appBuild.ID)
 		credentials, err := client.GetDockerRegistryCredentials(context.Background(), appBuild.ID)
 		if err != nil {
 			return errors.WithStack(err)

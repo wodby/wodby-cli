@@ -104,6 +104,7 @@ var Cmd = &cobra.Command{
 				return errors.WithStack(err)
 			}
 			input.GitRepoID = types.ToID(opts.id)
+			input.AppServiceID = types.ToID(opts.id)
 			if input.BuildID == "" {
 				if opts.buildID == "" {
 					return errors.New("build id must be specified")

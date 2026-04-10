@@ -39,6 +39,7 @@ type (
 		Value string `json:"value"`
 	}
 	NewBuildFromCIInput struct {
+		AppServiceID         ID      `json:"appServiceID"`
 		GitRepoID            ID      `json:"gitRepoID"`
 		GitCommitSHA         string  `json:"gitCommitSHA"`
 		GitRef               string  `json:"gitRef"`

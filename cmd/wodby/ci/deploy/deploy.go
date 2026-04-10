@@ -99,9 +99,9 @@ var Cmd = &cobra.Command{
 		}
 
 		input := types.DeploymentFromCIInput{
-			AppBuildID:     config.AppBuild.ID,
-			Services:       servicesToDeploy,
-			PostDeployment: !opts.skipPostDeploy,
+			AppBuildID:         config.AppBuild.ID,
+			Services:           servicesToDeploy,
+			SkipPostDeployment: opts.skipPostDeploy,
 		}
 		client := api.NewClient(config.API)
 		deployment, err := client.Deploy(context.Background(), input)

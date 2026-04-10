@@ -123,6 +123,13 @@ var Cmd = &cobra.Command{
 				}
 				input.Provider = opts.provider
 			}
+			postDeployment, err := readPostDeployment(opts.context)
+			if err != nil {
+				return errors.WithStack(err)
+			}
+			if postDeployment != "" {
+				input.PostDeployment = &postDeployment
+			}
 
 			appBuild, err = client.NewCIBuild(ctx, input)
 			if err != nil {
@@ -209,4 +216,21 @@ func init() {
 	Cmd.Flags().IntVarP(&opts.buildNumber, "build-num", "n", 0, "Custom build number (used if can't identify automatically)")
 	Cmd.Flags().StringVarP(&opts.buildID, "build-id", "i", "", "Custom build id (used if can't identify automatically)")
 	Cmd.Flags().StringVar(&opts.provider, "provider", "p", "Custom build provider name (used if can't identify automatically)")
+}
+
+func readPostDeployment(context string) (string, error) {
+	postDeploymentFile := filepath.Join(context, ".wodby", "post-deployment.yml")
+	if _, err := os.Stat(postDeploymentFile); err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+
+	content, err := os.ReadFile(postDeploymentFile)
+	if err != nil {
+		return "", err
+	}
+
+	return string(content), nil
 }

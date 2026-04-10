@@ -139,7 +139,7 @@ func collectGitHubActionsBuildInfo() (types.NewBuildFromCIInput, error) {
 	}
 
 	buildInput := types.NewBuildFromCIInput{
-		Provider:     "githubactions",
+		Provider:     "github",
 		Workflow:     os.Getenv("GITHUB_RUN_ID"),
 		BuildID:      githubActionsBuildID(),
 		BuildNum:     buildNum,

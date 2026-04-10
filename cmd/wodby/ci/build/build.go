@@ -97,6 +97,7 @@ var Cmd = &cobra.Command{
 				appServiceBuildConfigs = append(appServiceBuildConfigs, appServiceBuildConfig)
 			}
 		}
+		appServiceBuildConfigs = prioritizeMainService(appServiceBuildConfigs)
 
 		context := config.Context
 		if config.DataContainer != "" {
@@ -292,6 +293,25 @@ func containsString(s []string, e string) bool {
 
 func dataContainerContextPath(dataContainer string) string {
 	return fmt.Sprintf("/tmp/wodby-build-%s", dataContainer)
+}
+
+func prioritizeMainService(services []*types.AppServiceBuildConfig) []*types.AppServiceBuildConfig {
+	for i, service := range services {
+		if service.Main {
+			if i == 0 {
+				return services
+			}
+
+			ordered := make([]*types.AppServiceBuildConfig, 0, len(services))
+			ordered = append(ordered, service)
+			ordered = append(ordered, services[:i]...)
+			ordered = append(ordered, services[i+1:]...)
+
+			return ordered
+		}
+	}
+
+	return services
 }
 
 type tempBuildFiles struct {

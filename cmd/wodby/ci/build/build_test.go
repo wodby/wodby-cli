@@ -52,6 +52,51 @@ func TestNewBuildFiles(t *testing.T) {
 	})
 }
 
+func TestPrioritizeMainService(t *testing.T) {
+	t.Run("moves main service to the front", func(t *testing.T) {
+		services := []*types.AppServiceBuildConfig{
+			{Name: "nginx"},
+			{Name: "php", Main: true},
+			{Name: "redis"},
+		}
+
+		got := prioritizeMainService(services)
+
+		want := []string{"php", "nginx", "redis"}
+		for i, service := range got {
+			if service.Name != want[i] {
+				t.Fatalf("service at index %d = %q, want %q", i, service.Name, want[i])
+			}
+		}
+	})
+
+	t.Run("keeps order when main service is already first", func(t *testing.T) {
+		services := []*types.AppServiceBuildConfig{
+			{Name: "php", Main: true},
+			{Name: "nginx"},
+		}
+
+		got := prioritizeMainService(services)
+
+		if got[0].Name != "php" || got[1].Name != "nginx" {
+			t.Fatalf("service order = [%q %q], want [php nginx]", got[0].Name, got[1].Name)
+		}
+	})
+
+	t.Run("keeps order when there is no main service", func(t *testing.T) {
+		services := []*types.AppServiceBuildConfig{
+			{Name: "php"},
+			{Name: "nginx"},
+		}
+
+		got := prioritizeMainService(services)
+
+		if got[0].Name != "php" || got[1].Name != "nginx" {
+			t.Fatalf("service order = [%q %q], want [php nginx]", got[0].Name, got[1].Name)
+		}
+	})
+}
+
 func TestResolveCacheOptions(t *testing.T) {
 	config := &types.Config{
 		DataContainer: "data-container",

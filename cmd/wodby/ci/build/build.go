@@ -7,7 +7,7 @@ import (
 	"html/template"
 	"os"
 	"os/exec"
-	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -49,7 +49,7 @@ var Cmd = &cobra.Command{
 	Short: "Build images",
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		opts.services = args
-		v.SetConfigFile(path.Join(viper.GetString("ci_config_path")))
+		v.SetConfigFile(filepath.Join(viper.GetString("ci_config_path")))
 		err := v.ReadInConfig()
 		if err != nil {
 			return errors.WithStack(err)
@@ -116,6 +116,7 @@ var Cmd = &cobra.Command{
 			buildArgs := make(map[string]string)
 			buildArgs["COPY_FROM"] = opts.from
 			buildArgs["WODBY_BASE_IMAGE"] = appServiceBuildConfig.Image
+			buildFiles := newBuildFiles(context, appServiceBuildConfig.Name, opts.dockerfile)
 
 			for _, buildArg := range opts.buildArgs {
 				name, value, err := parseBuildArg(buildArg)
@@ -132,40 +133,32 @@ var Cmd = &cobra.Command{
 				buildArgs[envName] = value
 			}
 
-			// When user specified custom dockerfile.
 			if opts.dockerfile != "" {
 				fmt.Println("Using specified Dockerfile")
-				d, err := os.ReadFile(context + "/" + opts.dockerfile)
+				d, err := os.ReadFile(buildFiles.dockerfilePath)
 				if err != nil {
 					return errors.WithStack(err)
 				}
 				dockerfile = string(d)
+				if err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, opts.to, logger); err != nil {
+					return errors.WithStack(err)
+				}
+			} else if fileExists(buildFiles.dockerfilePath) {
+				fmt.Printf("Using Dockerfile from context: %s\n", buildFiles.dockerfilePath)
+				d, err := os.ReadFile(buildFiles.dockerfilePath)
+				if err != nil {
+					return errors.WithStack(err)
+				}
+				dockerfile = string(d)
+				if err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, opts.to, logger); err != nil {
+					return errors.WithStack(err)
+				}
 			} else {
 				if appServiceBuildConfig.Dockerfile != nil {
 					fmt.Println("Dockerfile provided by app service")
 					dockerfile = *appServiceBuildConfig.Dockerfile
-					r, err := regexp.Compile("(?m)^ARG (.+)$")
-					if err != nil {
+					if err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, opts.to, logger); err != nil {
 						return errors.WithStack(err)
-					}
-					// Pass build args from dockerfile.
-					allMatches := r.FindAllStringSubmatch(dockerfile, -1)
-					logger.Debugf("Found %d ARGs in Dockerfile", len(allMatches))
-					for _, matches := range allMatches {
-						argName := matches[1]
-						logger.Debugf("Arg name: %s", argName)
-						if !containsString([]string{"COPY_FROM", "WODBY_BASE_IMAGE"}, argName) {
-							if argName == "COPY_TO" {
-								buildArgs["COPY_TO"] = opts.to
-							} else {
-								for _, arg := range appServiceBuildConfig.Args {
-									logger.Debugf("Build arg %s:%s", arg.Name, arg.Value)
-									if argName == arg.Name {
-										buildArgs[argName] = arg.Value
-									}
-								}
-							}
-						}
 					}
 				} else {
 					fmt.Println("No Dockerfile provided by app service, using the default")
@@ -199,37 +192,40 @@ var Cmd = &cobra.Command{
 
 			var cleanUpDockerfile bool
 			var cleanUpDockerignore bool
-			dockerfileName := fmt.Sprintf("%s_Dockerfile", appServiceBuildConfig.Name)
-			if _, err := os.Stat(dockerfileName); os.IsNotExist(err) {
-				fmt.Printf("Creating temporary Dockerfile: %s\n", path.Join(context, dockerfileName))
-				err = os.WriteFile(path.Join(context, dockerfileName), []byte(dockerfile), 0600)
+			if !fileExists(buildFiles.dockerfilePath) {
+				cleanUpDockerfile = true
+				fmt.Printf("Creating temporary Dockerfile: %s\n", buildFiles.dockerfilePath)
+				err = os.WriteFile(buildFiles.dockerfilePath, []byte(dockerfile), 0600)
 				if err != nil {
+					_ = os.Remove(buildFiles.dockerfilePath)
 					return errors.WithStack(err)
 				}
-				cleanUpDockerfile = true
 			}
-			dockerignoreName := fmt.Sprintf("%s.dockerignore", dockerfileName)
-			if _, err := os.Stat(dockerignoreName); os.IsNotExist(err) {
+			if !fileExists(buildFiles.dockerignorePath) {
 				// Exclude dockerignore and dockerfile.
-				dockerignore = fmt.Sprintf("%s\n%s\n%s", dockerignore, dockerfileName, dockerignoreName)
-				fmt.Printf("Creating temporary .dockerignore: %s\n", path.Join(context, dockerignoreName))
-				err = os.WriteFile(path.Join(context, dockerignoreName), []byte(dockerignore), 0600)
+				dockerignore = fmt.Sprintf("%s\n%s\n%s", dockerignore, buildFiles.dockerfileName, buildFiles.dockerignoreName)
+				fmt.Printf("Creating temporary .dockerignore: %s\n", buildFiles.dockerignorePath)
+				err = os.WriteFile(buildFiles.dockerignorePath, []byte(dockerignore), 0600)
 				if err != nil {
+					if cleanUpDockerfile {
+						_ = os.Remove(buildFiles.dockerfilePath)
+					}
+					_ = os.Remove(buildFiles.dockerignorePath)
 					return errors.WithStack(err)
 				}
 				cleanUpDockerignore = true
 			}
 
 			tag = fmt.Sprintf("%s/%s:%s-%d", config.AppBuild.Config.RegistryHost, config.AppBuild.Config.RegistryRepository, appServiceBuildConfig.Name, config.AppBuild.Number)
-			err := dockerClient.Build(dockerfileName, []string{tag}, context, buildArgs)
+			err = dockerClient.Build(buildFiles.dockerfilePath, []string{tag}, context, buildArgs)
 			if err != nil {
 				if cleanUpDockerfile {
 					fmt.Println("Cleaning up Dockerfile")
-					_ = os.Remove(path.Join(context, dockerfileName))
+					_ = os.Remove(buildFiles.dockerfilePath)
 				}
 				if cleanUpDockerignore {
 					fmt.Println("Cleaning up .dockerignore")
-					_ = os.Remove(path.Join(context, dockerignoreName))
+					_ = os.Remove(buildFiles.dockerignorePath)
 				}
 				return errors.WithStack(err)
 			}
@@ -240,14 +236,14 @@ var Cmd = &cobra.Command{
 
 			if cleanUpDockerfile {
 				fmt.Println("Cleaning up dockerfile")
-				err = os.Remove(path.Join(context, dockerfileName))
+				err = os.Remove(buildFiles.dockerfilePath)
 				if err != nil {
 					return errors.WithStack(err)
 				}
 			}
 			if cleanUpDockerignore {
 				fmt.Println("Cleaning up dockerignore")
-				err = os.Remove(path.Join(context, dockerignoreName))
+				err = os.Remove(buildFiles.dockerignorePath)
 				if err != nil {
 					return errors.WithStack(err)
 				}
@@ -258,7 +254,7 @@ var Cmd = &cobra.Command{
 		if err != nil {
 			return errors.WithStack(err)
 		}
-		err = os.WriteFile(path.Join(viper.GetString("ci_config_path")), content, 0600)
+		err = os.WriteFile(filepath.Join(viper.GetString("ci_config_path")), content, 0600)
 		if err != nil {
 			return errors.WithStack(err)
 		}
@@ -278,6 +274,62 @@ func containsString(s []string, e string) bool {
 
 func dataContainerContextPath(dataContainer string) string {
 	return fmt.Sprintf("/tmp/wodby-build-%s", dataContainer)
+}
+
+type tempBuildFiles struct {
+	dockerfileName   string
+	dockerfilePath   string
+	dockerignoreName string
+	dockerignorePath string
+}
+
+func newBuildFiles(context string, serviceName string, dockerfileOverride string) tempBuildFiles {
+	dockerfilePath := filepath.Join(context, fmt.Sprintf("%s_Dockerfile", serviceName))
+	if dockerfileOverride != "" {
+		dockerfilePath = filepath.Join(context, dockerfileOverride)
+	}
+	dockerfileName := filepath.Base(dockerfilePath)
+	dockerignoreName := fmt.Sprintf("%s.dockerignore", dockerfileName)
+
+	return tempBuildFiles{
+		dockerfileName:   dockerfileName,
+		dockerfilePath:   dockerfilePath,
+		dockerignoreName: dockerignoreName,
+		dockerignorePath: filepath.Join(filepath.Dir(dockerfilePath), dockerignoreName),
+	}
+}
+
+func addDockerfileBuildArgs(buildArgs map[string]string, dockerfile string, appServiceBuildConfig *types.AppServiceBuildConfig, copyTo string, logger *log.Entry) error {
+	r, err := regexp.Compile("(?m)^ARG (.+)$")
+	if err != nil {
+		return err
+	}
+	// Pass build args from dockerfile.
+	allMatches := r.FindAllStringSubmatch(dockerfile, -1)
+	logger.Debugf("Found %d ARGs in Dockerfile", len(allMatches))
+	for _, matches := range allMatches {
+		argName := matches[1]
+		logger.Debugf("Arg name: %s", argName)
+		if !containsString([]string{"COPY_FROM", "WODBY_BASE_IMAGE"}, argName) {
+			if argName == "COPY_TO" {
+				buildArgs["COPY_TO"] = copyTo
+			} else {
+				for _, arg := range appServiceBuildConfig.Args {
+					logger.Debugf("Build arg %s:%s", arg.Name, arg.Value)
+					if argName == arg.Name {
+						buildArgs[argName] = arg.Value
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func fileExists(filePath string) bool {
+	_, err := os.Stat(filePath)
+	return err == nil
 }
 
 func parseBuildArg(raw string) (string, string, error) {

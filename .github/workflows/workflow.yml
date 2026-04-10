@@ -11,7 +11,7 @@ on:
   pull_request:
 
 env:
-  VERSION: dev
+  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '2.0-dev' }}
   AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
   SOURCE_DIR: dist
 
@@ -35,10 +35,10 @@ jobs:
       with:
         go-version: 1.26
     - name: build
-      run: make
+      run: make VERSION="${VERSION}"
     - name: test
       if: ${{ matrix.os == 'linux' && matrix.arch == 'amd64' }}
-      run: make test
+      run: make test VERSION="${VERSION}"
     - name: package
       run: make package
     - name: Upload production artifacts
@@ -72,7 +72,7 @@ jobs:
       env:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        DEST_DIR: wodby-cli/2.0/${{ matrix.os }}/${{ matrix.arch }}
+        DEST_DIR: wodby-cli/${{ env.VERSION }}/${{ matrix.os }}/${{ matrix.arch }}
 
   release-aws-tagged:
     runs-on: ubuntu-latest
@@ -164,7 +164,7 @@ jobs:
       with:
         images: wodby/wodby-cli
         tags: |
-          type=raw,value=2.0,enable=${{ github.ref == 'refs/heads/2.0' }}
+          type=raw,value=2.0-dev,enable=${{ github.ref == 'refs/heads/2.0' }}
           type=raw,value=2.0,enable=${{ github.ref_type == 'tag' && startsWith(github.ref_name, '2.0') }}
           type=ref,event=tag
           type=sha
@@ -173,7 +173,7 @@ jobs:
       with:
         context: .
         push: true
-        build-args: VERSION=${{ github.ref_type == 'tag' && github.ref_name || '2.0' }}
+        build-args: VERSION=${{ env.VERSION }}
         platforms: linux/amd64,linux/arm64
         labels: ${{ steps.meta.outputs.labels }}
         tags: ${{ steps.meta.outputs.tags }}

@@ -106,7 +106,6 @@ var Cmd = &cobra.Command{
 			if err != nil {
 				return errors.WithStack(err)
 			}
-			input.GitRepoID = types.ToID(opts.id)
 			input.AppServiceID = types.ToID(opts.id)
 			if input.BuildID == "" {
 				if opts.buildID == "" {

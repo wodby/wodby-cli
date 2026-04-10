@@ -1,6 +1,6 @@
 # Wodby CLI 2.0
 
-[![Build Status](https://github.com/wodby/installer/workflows/Build/badge.svg)](https://github.com/wodby/installer/actions)
+[![Build Status](https://github.com/wodby/wodby-cli/workflows/Build/badge.svg)](https://github.com/wodby/wodby-cli/actions)
 [![Docker Pulls](https://img.shields.io/docker/pulls/wodby/wodby-cli.svg)](https://hub.docker.com/r/wodby/wodby-cli)
 [![Docker Stars](https://img.shields.io/docker/stars/wodby/wodby-cli.svg)](https://hub.docker.com/r/wodby/wodby-cli)
 

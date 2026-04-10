@@ -68,7 +68,7 @@ func TestFindMainServiceBuildConfig(t *testing.T) {
 	})
 }
 
-func TestShouldFixPermissions(t *testing.T) {
+func TestPermissionFixDecision(t *testing.T) {
 	testCases := []struct {
 		name             string
 		isCI             bool
@@ -76,6 +76,7 @@ func TestShouldFixPermissions(t *testing.T) {
 		managed          bool
 		hasDataContainer bool
 		want             bool
+		wantReason       string
 	}{
 		{
 			name:             "disabled outside CI",
@@ -84,6 +85,7 @@ func TestShouldFixPermissions(t *testing.T) {
 			managed:          true,
 			hasDataContainer: true,
 			want:             false,
+			wantReason:       "not running in a managed CI environment",
 		},
 		{
 			name:             "enabled explicitly on bind mount",
@@ -92,6 +94,7 @@ func TestShouldFixPermissions(t *testing.T) {
 			managed:          false,
 			hasDataContainer: false,
 			want:             true,
+			wantReason:       "requested explicitly with --fix-permissions",
 		},
 		{
 			name:             "enabled automatically for managed service in data container",
@@ -100,6 +103,7 @@ func TestShouldFixPermissions(t *testing.T) {
 			managed:          true,
 			hasDataContainer: true,
 			want:             true,
+			wantReason:       "managed service using --dind data-container mode",
 		},
 		{
 			name:             "disabled automatically for managed service on host workspace",
@@ -108,13 +112,27 @@ func TestShouldFixPermissions(t *testing.T) {
 			managed:          true,
 			hasDataContainer: false,
 			want:             false,
+			wantReason:       "automatic permission fix for managed services only runs with --dind data-container mode",
+		},
+		{
+			name:             "disabled for unmanaged service without explicit flag",
+			isCI:             true,
+			explicit:         false,
+			managed:          false,
+			hasDataContainer: true,
+			want:             false,
+			wantReason:       "main service is not managed and --fix-permissions was not set",
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := shouldFixPermissions(tc.isCI, tc.explicit, tc.managed, tc.hasDataContainer); got != tc.want {
-				t.Fatalf("shouldFixPermissions() = %v, want %v", got, tc.want)
+			got, reason := permissionFixDecision(tc.isCI, tc.explicit, tc.managed, tc.hasDataContainer)
+			if got != tc.want {
+				t.Fatalf("permissionFixDecision() = %v, want %v", got, tc.want)
+			}
+			if reason != tc.wantReason {
+				t.Fatalf("permissionFixDecision() reason = %q, want %q", reason, tc.wantReason)
 			}
 		})
 	}

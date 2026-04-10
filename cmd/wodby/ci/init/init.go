@@ -215,12 +215,15 @@ var Cmd = &cobra.Command{
 			return errors.WithStack(err)
 		}
 
-		if shouldFixPermissions(os.Getenv("WODBY_CI") != "", opts.fixPermissions, mainService.Managed, config.DataContainer != "") {
-			if opts.fixPermissions {
-				logger.Info("Fixing codebase permissions...")
-			} else {
-				logger.Infof("Fixing permissions for managed service %s in data container", mainService.Title)
-			}
+		shouldFixPermissions, permissionFixReason := permissionFixDecision(
+			os.Getenv("WODBY_CI") != "",
+			opts.fixPermissions,
+			mainService.Managed,
+			config.DataContainer != "",
+		)
+
+		if shouldFixPermissions {
+			logger.Infof("Fixing codebase permissions: %s", permissionFixReason)
 
 			defaultUser, err := dockerClient.GetImageDefaultUser(mainService.Image)
 			if err != nil {
@@ -244,8 +247,10 @@ var Cmd = &cobra.Command{
 					return errors.WithStack(err)
 				}
 			} else {
-				logger.Debug("Default user of the default service is root, skipping permissions fix")
+				logger.Info("Skipping codebase permissions fix: main service image default user is root")
 			}
+		} else {
+			logger.Infof("Skipping codebase permissions fix: %s", permissionFixReason)
 		}
 
 		return nil
@@ -261,16 +266,24 @@ func init() {
 	Cmd.Flags().StringVar(&opts.provider, "provider", "p", "Custom build provider name (used if can't identify automatically)")
 }
 
-func shouldFixPermissions(isCI bool, explicit bool, managed bool, hasDataContainer bool) bool {
-	if !isCI {
-		return false
+func permissionFixDecision(isWodbyCI bool, explicit bool, managed bool, hasDataContainer bool) (bool, string) {
+	if !isWodbyCI {
+		return false, "not running in a Wodby CI environment"
 	}
 
 	if explicit {
-		return true
+		return true, "requested explicitly with --fix-permissions"
 	}
 
-	return managed && hasDataContainer
+	if !managed {
+		return false, "main service is not managed and --fix-permissions was not set"
+	}
+
+	if !hasDataContainer {
+		return false, "automatic permission fix for managed services only runs with --dind data-container mode"
+	}
+
+	return false, "default"
 }
 
 func findMainServiceBuildConfig(services []*types.AppServiceBuildConfig) (*types.AppServiceBuildConfig, error) {

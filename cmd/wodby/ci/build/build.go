@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"os"
+	"os/exec"
 	"path"
 	"regexp"
 	"strings"
@@ -91,7 +92,22 @@ var Cmd = &cobra.Command{
 			}
 		}
 
-		context := v.GetString("context")
+		context := config.Context
+		if config.DataContainer != "" {
+			fmt.Println("Synchronizing data container")
+
+			context = dataContainerContextPath(config.DataContainer)
+			output, err := exec.Command(
+				"docker",
+				"cp",
+				fmt.Sprintf("%s:%s", config.DataContainer, config.WorkingDir),
+				context,
+			).CombinedOutput()
+			if err != nil {
+				return errors.Wrap(err, string(output))
+			}
+		}
+
 		dockerClient := docker.NewClient()
 		var dockerfile string
 		var tag string
@@ -258,6 +274,10 @@ func containsString(s []string, e string) bool {
 		}
 	}
 	return false
+}
+
+func dataContainerContextPath(dataContainer string) string {
+	return fmt.Sprintf("/tmp/wodby-build-%s", dataContainer)
 }
 
 func parseBuildArg(raw string) (string, string, error) {

@@ -84,7 +84,14 @@ var Cmd = &cobra.Command{
 			return errors.WithStack(err)
 		}
 
-		runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, workingDir))
+		if config.DataContainer != "" {
+			runConfig.VolumesFrom = []string{config.DataContainer}
+			if config.WorkingDir != "" {
+				workingDir = config.WorkingDir
+			}
+		} else {
+			runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, workingDir))
+		}
 
 		if opts.path != "" {
 			runConfig.WorkDir = fmt.Sprintf("%s/%s", workingDir, opts.path)

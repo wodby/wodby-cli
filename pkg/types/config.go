@@ -8,6 +8,7 @@ type (
 	}
 	Config struct {
 		ID            string
+		DataContainer string
 		WorkingDir    string
 		Context       string
 		BuiltServices []BuiltService

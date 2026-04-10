@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strconv"
 
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -23,6 +25,7 @@ import (
 type options struct {
 	id             int
 	context        string
+	dind           bool
 	fixPermissions bool
 	buildNumber    int
 	buildID        string
@@ -155,12 +158,55 @@ var Cmd = &cobra.Command{
 			return errors.WithStack(err)
 		}
 
-		config := types.Config{
-			API:      apiConfig,
-			ID:       strconv.Itoa(opts.id),
-			Context:  opts.context,
-			AppBuild: appBuild,
+		mainService, err := findMainServiceBuildConfig(appBuild.Config.Services)
+		if err != nil {
+			return errors.WithStack(err)
 		}
+		workingDir, err := dockerClient.GetImageWorkingDir(mainService.Image)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+
+		config := types.Config{
+			API:        apiConfig,
+			ID:         strconv.Itoa(opts.id),
+			WorkingDir: workingDir,
+			Context:    opts.context,
+			AppBuild:   appBuild,
+		}
+
+		if opts.dind {
+			logger.Info("Using docker in docker build schema. Creating data container...")
+			config.DataContainer = uuid.NewString()
+
+			output, err := exec.Command("docker", "pull", "alpine").CombinedOutput()
+			if err != nil {
+				return errors.Wrap(err, string(output))
+			}
+
+			output, err = exec.Command(
+				"docker",
+				"create",
+				fmt.Sprintf("--volume=%s", config.WorkingDir),
+				fmt.Sprintf("--name=%s", config.DataContainer),
+				"alpine",
+				"/bin/true",
+			).CombinedOutput()
+			if err != nil {
+				return errors.Wrap(err, string(output))
+			}
+
+			output, err = exec.Command(
+				"docker",
+				"cp",
+				fmt.Sprintf("%s/.", config.Context),
+				fmt.Sprintf("%s:%s", config.DataContainer, config.WorkingDir),
+			).CombinedOutput()
+			if err != nil {
+				return errors.Wrap(err, string(output))
+			}
+		}
+
 		content, err := json.MarshalIndent(config, "", "    ")
 		if err != nil {
 			return errors.WithStack(err)
@@ -170,39 +216,37 @@ var Cmd = &cobra.Command{
 			return errors.WithStack(err)
 		}
 
-		for _, appServiceBuildConfig := range appBuild.Config.Services {
-			if appServiceBuildConfig.Main {
-				// We will fix permissions either when it was instructed or when it's a managed service.
-				if os.Getenv("WODBY_CI") != "" && (opts.fixPermissions || appServiceBuildConfig.Managed) {
-					if opts.fixPermissions {
-						logger.Info("Fixing codebase permissions...")
-					} else {
-						logger.Infof("Fixing permissions for managed service %s", appServiceBuildConfig.Title)
-					}
-					defaultUser, err := dockerClient.GetImageDefaultUser(appServiceBuildConfig.Image)
-					if err != nil {
-						return errors.WithStack(err)
-					}
-					workingDir, err := dockerClient.GetImageWorkingDir(appServiceBuildConfig.Image)
-					if err != nil {
-						return errors.WithStack(err)
-					}
+		// We will fix permissions either when it was instructed or when it's a managed service.
+		if os.Getenv("WODBY_CI") != "" && (opts.fixPermissions || mainService.Managed) {
+			if opts.fixPermissions {
+				logger.Info("Fixing codebase permissions...")
+			} else {
+				logger.Infof("Fixing permissions for managed service %s", mainService.Title)
+			}
 
-					if defaultUser != "root" {
-						runConfig := docker.RunConfig{
-							Image: appServiceBuildConfig.Image,
-							User:  "root",
-						}
-						runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", opts.context, workingDir))
-						args := []string{"chown", "-R", fmt.Sprintf("%s:%s", defaultUser, defaultUser), "."}
-						err := dockerClient.Run(args, runConfig)
-						if err != nil {
-							return errors.WithStack(err)
-						}
-					} else {
-						logger.Debug("Default user of the default service is root, skipping permissions fix")
-					}
+			defaultUser, err := dockerClient.GetImageDefaultUser(mainService.Image)
+			if err != nil {
+				return errors.WithStack(err)
+			}
+
+			if defaultUser != "root" {
+				runConfig := docker.RunConfig{
+					Image: mainService.Image,
+					User:  "root",
 				}
+				if config.DataContainer != "" {
+					runConfig.VolumesFrom = []string{config.DataContainer}
+				} else {
+					runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", opts.context, config.WorkingDir))
+				}
+
+				args := []string{"chown", "-R", fmt.Sprintf("%s:%s", defaultUser, defaultUser), "."}
+				err := dockerClient.Run(args, runConfig)
+				if err != nil {
+					return errors.WithStack(err)
+				}
+			} else {
+				logger.Debug("Default user of the default service is root, skipping permissions fix")
 			}
 		}
 
@@ -212,10 +256,21 @@ var Cmd = &cobra.Command{
 
 func init() {
 	Cmd.Flags().StringVarP(&opts.context, "context", "c", "", "Build context (default: current directory)")
+	Cmd.Flags().BoolVar(&opts.dind, "dind", false, "Use data container for sharing files between commands")
 	Cmd.Flags().BoolVar(&opts.fixPermissions, "fix-permissions", false, "Fix codebase permissions. Performed automatically for known CI environments. WARNING: make sure you run wodby ci init from the project directory")
 	Cmd.Flags().IntVarP(&opts.buildNumber, "build-num", "n", 0, "Custom build number (used if can't identify automatically)")
 	Cmd.Flags().StringVarP(&opts.buildID, "build-id", "i", "", "Custom build id (used if can't identify automatically)")
 	Cmd.Flags().StringVar(&opts.provider, "provider", "p", "Custom build provider name (used if can't identify automatically)")
+}
+
+func findMainServiceBuildConfig(services []*types.AppServiceBuildConfig) (*types.AppServiceBuildConfig, error) {
+	for _, service := range services {
+		if service.Main {
+			return service, nil
+		}
+	}
+
+	return nil, errors.New("main service not found")
 }
 
 func readPostDeployment(context string) (string, error) {

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/wodby/wodby-cli/pkg/types"
 )
 
 func TestReadPostDeployment(t *testing.T) {
@@ -38,6 +40,30 @@ func TestReadPostDeployment(t *testing.T) {
 		}
 		if content != want {
 			t.Fatalf("readPostDeployment() content = %q, want %q", content, want)
+		}
+	})
+}
+
+func TestFindMainServiceBuildConfig(t *testing.T) {
+	t.Run("finds main service", func(t *testing.T) {
+		service, err := findMainServiceBuildConfig([]*types.AppServiceBuildConfig{
+			{Name: "php"},
+			{Name: "nginx", Main: true},
+		})
+		if err != nil {
+			t.Fatalf("findMainServiceBuildConfig() error = %v", err)
+		}
+		if service.Name != "nginx" {
+			t.Fatalf("findMainServiceBuildConfig() name = %q, want %q", service.Name, "nginx")
+		}
+	})
+
+	t.Run("missing main service", func(t *testing.T) {
+		_, err := findMainServiceBuildConfig([]*types.AppServiceBuildConfig{
+			{Name: "php"},
+		})
+		if err == nil {
+			t.Fatal("findMainServiceBuildConfig() error = nil, want error")
 		}
 	})
 }

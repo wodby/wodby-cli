@@ -67,3 +67,55 @@ func TestFindMainServiceBuildConfig(t *testing.T) {
 		}
 	})
 }
+
+func TestShouldFixPermissions(t *testing.T) {
+	testCases := []struct {
+		name             string
+		isCI             bool
+		explicit         bool
+		managed          bool
+		hasDataContainer bool
+		want             bool
+	}{
+		{
+			name:             "disabled outside CI",
+			isCI:             false,
+			explicit:         true,
+			managed:          true,
+			hasDataContainer: true,
+			want:             false,
+		},
+		{
+			name:             "enabled explicitly on bind mount",
+			isCI:             true,
+			explicit:         true,
+			managed:          false,
+			hasDataContainer: false,
+			want:             true,
+		},
+		{
+			name:             "enabled automatically for managed service in data container",
+			isCI:             true,
+			explicit:         false,
+			managed:          true,
+			hasDataContainer: true,
+			want:             true,
+		},
+		{
+			name:             "disabled automatically for managed service on host workspace",
+			isCI:             true,
+			explicit:         false,
+			managed:          true,
+			hasDataContainer: false,
+			want:             false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldFixPermissions(tc.isCI, tc.explicit, tc.managed, tc.hasDataContainer); got != tc.want {
+				t.Fatalf("shouldFixPermissions() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

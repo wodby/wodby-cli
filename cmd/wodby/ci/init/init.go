@@ -215,12 +215,11 @@ var Cmd = &cobra.Command{
 			return errors.WithStack(err)
 		}
 
-		// We will fix permissions either when it was instructed or when it's a managed service.
-		if os.Getenv("WODBY_CI") != "" && (opts.fixPermissions || mainService.Managed) {
+		if shouldFixPermissions(os.Getenv("WODBY_CI") != "", opts.fixPermissions, mainService.Managed, config.DataContainer != "") {
 			if opts.fixPermissions {
 				logger.Info("Fixing codebase permissions...")
 			} else {
-				logger.Infof("Fixing permissions for managed service %s", mainService.Title)
+				logger.Infof("Fixing permissions for managed service %s in data container", mainService.Title)
 			}
 
 			defaultUser, err := dockerClient.GetImageDefaultUser(mainService.Image)
@@ -256,10 +255,22 @@ var Cmd = &cobra.Command{
 func init() {
 	Cmd.Flags().StringVarP(&opts.context, "context", "c", "", "Build context (default: current directory)")
 	Cmd.Flags().BoolVar(&opts.dind, "dind", false, "Use data container for sharing files between commands")
-	Cmd.Flags().BoolVar(&opts.fixPermissions, "fix-permissions", false, "Fix codebase permissions. Performed automatically for known CI environments. WARNING: make sure you run wodby ci init from the project directory")
+	Cmd.Flags().BoolVar(&opts.fixPermissions, "fix-permissions", false, "Fix codebase permissions explicitly. WARNING: this can change ownership of files in the project directory")
 	Cmd.Flags().IntVarP(&opts.buildNumber, "build-num", "n", 0, "Custom build number (used if can't identify automatically)")
 	Cmd.Flags().StringVarP(&opts.buildID, "build-id", "i", "", "Custom build id (used if can't identify automatically)")
 	Cmd.Flags().StringVar(&opts.provider, "provider", "p", "Custom build provider name (used if can't identify automatically)")
+}
+
+func shouldFixPermissions(isCI bool, explicit bool, managed bool, hasDataContainer bool) bool {
+	if !isCI {
+		return false
+	}
+
+	if explicit {
+		return true
+	}
+
+	return managed && hasDataContainer
 }
 
 func findMainServiceBuildConfig(services []*types.AppServiceBuildConfig) (*types.AppServiceBuildConfig, error) {

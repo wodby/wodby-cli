@@ -81,7 +81,7 @@ Flags:
 -n, --build-num int     Custom build number (used if can't identify automatically)
 -c, --context string    Build context (default: current directory)
     --dind              Use data container for sharing files between commands
-    --fix-permissions   Fix codebase permissions
+    --fix-permissions   Fix codebase permissions explicitly
     --provider string   Custom build provider name (used if can't identify automatically)
 ```
 
@@ -89,7 +89,8 @@ Notes:
 
 - `wodby ci init` requires `WODBY_API_KEY` to be set.
 - It reads `.wodby/post-deployment.yml` from the build context and attaches it to the build when present.
-- In managed CI environments it can fix file permissions automatically for managed services.
+- In managed CI environments it fixes file permissions automatically only for managed services using `--dind` data-container mode.
+- For bind-mounted workspaces such as GitHub Actions checkouts, use `--fix-permissions` only when you explicitly want ownership changes in the project directory.
 
 #### `wodby ci build`
 

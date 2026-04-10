@@ -216,10 +216,7 @@ var Cmd = &cobra.Command{
 		}
 
 		shouldFixPermissions, permissionFixReason := permissionFixDecision(
-			os.Getenv("WODBY_CI") != "",
 			opts.fixPermissions,
-			mainService.Managed,
-			config.DataContainer != "",
 		)
 
 		if shouldFixPermissions {
@@ -266,24 +263,12 @@ func init() {
 	Cmd.Flags().StringVar(&opts.provider, "provider", "p", "Custom build provider name (used if can't identify automatically)")
 }
 
-func permissionFixDecision(isWodbyCI bool, explicit bool, managed bool, hasDataContainer bool) (bool, string) {
-	if !isWodbyCI {
-		return false, "not running in a Wodby CI environment"
-	}
-
+func permissionFixDecision(explicit bool) (bool, string) {
 	if explicit {
 		return true, "requested explicitly with --fix-permissions"
 	}
 
-	if !managed {
-		return false, "main service is not managed and --fix-permissions was not set"
-	}
-
-	if !hasDataContainer {
-		return false, "automatic permission fix for managed services only runs with --dind data-container mode"
-	}
-
-	return false, "default"
+	return false, "--fix-permissions was not set"
 }
 
 func findMainServiceBuildConfig(services []*types.AppServiceBuildConfig) (*types.AppServiceBuildConfig, error) {

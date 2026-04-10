@@ -89,8 +89,7 @@ Notes:
 
 - `wodby ci init` requires `WODBY_API_KEY` to be set.
 - It reads `.wodby/post-deployment.yml` from the build context and attaches it to the build when present.
-- In managed CI environments it fixes file permissions automatically only for managed services using `--dind` data-container mode.
-- For bind-mounted workspaces such as GitHub Actions checkouts, use `--fix-permissions` only when you explicitly want ownership changes in the project directory.
+- It changes codebase permissions only when `--fix-permissions` is passed explicitly.
 
 #### `wodby ci build`
 

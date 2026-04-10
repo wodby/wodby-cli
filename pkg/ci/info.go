@@ -140,8 +140,8 @@ func collectGitHubActionsBuildInfo() (types.NewBuildFromCIInput, error) {
 
 	buildInput := types.NewBuildFromCIInput{
 		Provider:     "github",
-		Workflow:     os.Getenv("GITHUB_RUN_ID"),
-		BuildID:      githubActionsBuildID(),
+		Workflow:     parseGitHubWorkflowRef(os.Getenv("GITHUB_WORKFLOW_REF")),
+		BuildID:      os.Getenv("GITHUB_RUN_ID"),
 		BuildNum:     buildNum,
 		GitCommitSHA: os.Getenv("GITHUB_SHA"),
 	}
@@ -197,21 +197,19 @@ func parseBuildNum(envVar string) (int, error) {
 	return buildNum, nil
 }
 
-func githubActionsBuildID() string {
-	runID := os.Getenv("GITHUB_RUN_ID")
-	jobID := os.Getenv("GITHUB_JOB")
-	runAttempt := os.Getenv("GITHUB_RUN_ATTEMPT")
-
-	switch {
-	case runID != "" && jobID != "" && runAttempt != "":
-		return strings.Join([]string{runID, jobID, runAttempt}, ":")
-	case runID != "" && jobID != "":
-		return strings.Join([]string{runID, jobID}, ":")
-	case runID != "":
-		return runID
-	default:
-		return jobID
+func parseGitHubWorkflowRef(workflowRef string) string {
+	if workflowRef == "" {
+		return ""
 	}
+
+	parts := strings.SplitN(workflowRef, "@", 2)
+	workflowPath := parts[0]
+
+	if slash := strings.Index(workflowPath, "/.github/workflows/"); slash >= 0 {
+		return workflowPath[slash+1:]
+	}
+
+	return workflowPath
 }
 
 func firstNonEmpty(values ...string) string {

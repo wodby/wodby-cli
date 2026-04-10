@@ -75,6 +75,7 @@ func TestCollectGitHubActionsBuildInfoUsesHeadRefForPullRequests(t *testing.T) {
 	t.Setenv("GITHUB_RUN_NUMBER", "17")
 	t.Setenv("GITHUB_RUN_ATTEMPT", "2")
 	t.Setenv("GITHUB_JOB", "build")
+	t.Setenv("GITHUB_WORKFLOW_REF", "wodby/wodby-cli/.github/workflows/build.yml@refs/heads/main")
 	t.Setenv("GITHUB_SHA", "deadbeef")
 	t.Setenv("GITHUB_REF_TYPE", "branch")
 	t.Setenv("GITHUB_REF_NAME", "123/merge")
@@ -85,14 +86,14 @@ func TestCollectGitHubActionsBuildInfoUsesHeadRefForPullRequests(t *testing.T) {
 		t.Fatalf("collectGitHubActionsBuildInfo returned error: %v", err)
 	}
 
-	if buildInput.Provider != "githubactions" {
-		t.Fatalf("expected provider githubactions, got %q", buildInput.Provider)
+	if buildInput.Provider != "github" {
+		t.Fatalf("expected provider github, got %q", buildInput.Provider)
 	}
-	if buildInput.Workflow != "1001" {
-		t.Fatalf("expected workflow 1001, got %q", buildInput.Workflow)
+	if buildInput.Workflow != ".github/workflows/build.yml" {
+		t.Fatalf("expected workflow path .github/workflows/build.yml, got %q", buildInput.Workflow)
 	}
-	if buildInput.BuildID != "1001:build:2" {
-		t.Fatalf("expected build ID 1001:build:2, got %q", buildInput.BuildID)
+	if buildInput.BuildID != "1001" {
+		t.Fatalf("expected build ID 1001, got %q", buildInput.BuildID)
 	}
 	if buildInput.BuildNum != 17 {
 		t.Fatalf("expected build number 17, got %d", buildInput.BuildNum)
@@ -112,6 +113,7 @@ func TestCollectGitHubActionsBuildInfoUsesTagRef(t *testing.T) {
 	t.Setenv("GITHUB_RUN_ID", "2002")
 	t.Setenv("GITHUB_RUN_NUMBER", "33")
 	t.Setenv("GITHUB_JOB", "release")
+	t.Setenv("GITHUB_WORKFLOW_REF", "wodby/wodby-cli/.github/workflows/release.yml@refs/tags/v1.2.3")
 	t.Setenv("GITHUB_SHA", "feedface")
 	t.Setenv("GITHUB_REF_TYPE", "tag")
 	t.Setenv("GITHUB_REF_NAME", "v1.2.3")
@@ -121,13 +123,48 @@ func TestCollectGitHubActionsBuildInfoUsesTagRef(t *testing.T) {
 		t.Fatalf("collectGitHubActionsBuildInfo returned error: %v", err)
 	}
 
-	if buildInput.BuildID != "2002:release" {
-		t.Fatalf("expected build ID 2002:release, got %q", buildInput.BuildID)
+	if buildInput.BuildID != "2002" {
+		t.Fatalf("expected build ID 2002, got %q", buildInput.BuildID)
+	}
+	if buildInput.Workflow != ".github/workflows/release.yml" {
+		t.Fatalf("expected workflow path .github/workflows/release.yml, got %q", buildInput.Workflow)
 	}
 	if buildInput.GitRefType != string(types.GitRefTypeTag) {
 		t.Fatalf("expected tag ref type, got %q", buildInput.GitRefType)
 	}
 	if buildInput.GitRef != "v1.2.3" {
 		t.Fatalf("expected tag v1.2.3, got %q", buildInput.GitRef)
+	}
+}
+
+func TestParseGitHubWorkflowRef(t *testing.T) {
+	testCases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "extracts workflow path from ref",
+			in:   "wodby/wodby-cli/.github/workflows/build.yml@refs/heads/main",
+			want: ".github/workflows/build.yml",
+		},
+		{
+			name: "returns original value when path prefix is missing",
+			in:   ".github/workflows/build.yml@refs/heads/main",
+			want: ".github/workflows/build.yml",
+		},
+		{
+			name: "returns empty value",
+			in:   "",
+			want: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseGitHubWorkflowRef(tc.in); got != tc.want {
+				t.Fatalf("parseGitHubWorkflowRef(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

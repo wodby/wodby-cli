@@ -26,20 +26,22 @@ wget -qO- "${WODBY_CLI_LATEST_URL}" | tar xz -C /usr/local/bin
 
 ## Usage
 
-You can run the Wodby CLI in your shell by typing `wodby`.
+Before using the CLI, set your Wodby API key:
+
+```bash
+export WODBY_API_KEY=...
+```
+
+After that you can run the CLI with `wodby`.
 
 ### Global flags
 
-The root command currently supports:
+Commonly used global flags:
 
 ```text
---api-endpoint string     API endpoint (default "https://api.wodby.com/query")
---api-key string          API key
 --ci-config-path string   Path to CI config (default "/tmp/.wodby-ci.json")
 --verbose                 Verbose output
 ```
-
-These values can also be supplied via environment variables such as `WODBY_API_KEY`, `WODBY_API_ENDPOINT`, `WODBY_CI_CONFIG_PATH`, and `WODBY_VERBOSE`.
 
 ### Commands
 
@@ -85,7 +87,7 @@ Flags:
 
 Notes:
 
-- `wodby ci init` requires `--api-key`.
+- `wodby ci init` requires `WODBY_API_KEY` to be set.
 - It reads `.wodby/post-deployment.yml` from the build context and attaches it to the build when present.
 - In managed CI environments it can fix file permissions automatically for managed services.
 

@@ -145,7 +145,7 @@ var Cmd = &cobra.Command{
 			}
 		}
 
-		logger.Infof("Requesting registry credentials for app build %d...", appBuild.ID)
+		logger.Infof("Requesting registry credentials for app build %s...", appBuild.ID)
 		credentials, err := client.GetDockerRegistryCredentials(context.Background(), appBuild.ID)
 		if err != nil {
 			return errors.WithStack(err)

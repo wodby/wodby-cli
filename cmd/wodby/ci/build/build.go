@@ -28,6 +28,12 @@ type options struct {
 	services        []string
 	buildArgs       []string
 	buildArgEnvVars []string
+	cacheBackend    string
+	cacheDir        string
+	cacheRef        string
+	cacheMode       string
+	cacheFrom       []string
+	cacheTo         []string
 }
 
 var opts options
@@ -117,6 +123,10 @@ var Cmd = &cobra.Command{
 			buildArgs["COPY_FROM"] = opts.from
 			buildArgs["WODBY_BASE_IMAGE"] = appServiceBuildConfig.Image
 			buildFiles := newBuildFiles(context, appServiceBuildConfig.Name, opts.dockerfile)
+			cacheFrom, cacheTo, err := resolveCacheOptions(config, appServiceBuildConfig.Name, opts)
+			if err != nil {
+				return errors.WithStack(err)
+			}
 
 			for _, buildArg := range opts.buildArgs {
 				name, value, err := parseBuildArg(buildArg)
@@ -217,7 +227,15 @@ var Cmd = &cobra.Command{
 			}
 
 			tag = fmt.Sprintf("%s/%s:%s-%d", config.AppBuild.Config.RegistryHost, config.AppBuild.Config.RegistryRepository, appServiceBuildConfig.Name, config.AppBuild.Number)
-			err = dockerClient.Build(buildFiles.dockerfilePath, []string{tag}, context, buildArgs)
+			err = dockerClient.Build(docker.BuildConfig{
+				Dockerfile: buildFiles.dockerfilePath,
+				Tags:       []string{tag},
+				Context:    context,
+				BuildArgs:  buildArgs,
+				CacheFrom:  cacheFrom,
+				CacheTo:    cacheTo,
+				Load:       true,
+			})
 			if err != nil {
 				if cleanUpDockerfile {
 					fmt.Println("Cleaning up Dockerfile")
@@ -341,10 +359,80 @@ func parseBuildArg(raw string) (string, string, error) {
 	return parts[0], parts[1], nil
 }
 
+func resolveCacheOptions(config *types.Config, serviceName string, opts options) ([]string, []string, error) {
+	if len(opts.cacheFrom) != 0 || len(opts.cacheTo) != 0 {
+		return opts.cacheFrom, opts.cacheTo, nil
+	}
+
+	backend := opts.cacheBackend
+	if backend == "" {
+		backend = "auto"
+	}
+
+	mode := opts.cacheMode
+	if mode == "" {
+		mode = "max"
+	}
+
+	switch backend {
+	case "none":
+		return nil, nil, nil
+	case "auto":
+		if opts.cacheDir != "" {
+			return localCacheOptions(opts.cacheDir, mode), localCacheDestinations(opts.cacheDir, mode), nil
+		}
+		if config.DataContainer != "" {
+			ref := cacheRef(config, serviceName, opts.cacheRef)
+			return registryCacheOptions(ref, mode), registryCacheDestinations(ref, mode), nil
+		}
+		return nil, nil, nil
+	case "local":
+		dir := opts.cacheDir
+		if dir == "" {
+			dir = ".buildx-cache"
+		}
+		return localCacheOptions(dir, mode), localCacheDestinations(dir, mode), nil
+	case "registry":
+		ref := cacheRef(config, serviceName, opts.cacheRef)
+		return registryCacheOptions(ref, mode), registryCacheDestinations(ref, mode), nil
+	default:
+		return nil, nil, errors.Errorf("unsupported cache backend %q", backend)
+	}
+}
+
+func cacheRef(config *types.Config, serviceName string, explicitRef string) string {
+	if explicitRef != "" {
+		return explicitRef
+	}
+	return fmt.Sprintf("%s/%s:%s-buildcache", config.AppBuild.Config.RegistryHost, config.AppBuild.Config.RegistryRepository, serviceName)
+}
+
+func localCacheOptions(dir string, mode string) []string {
+	return []string{fmt.Sprintf("type=local,src=%s", dir)}
+}
+
+func localCacheDestinations(dir string, mode string) []string {
+	return []string{fmt.Sprintf("type=local,dest=%s,mode=%s", dir, mode)}
+}
+
+func registryCacheOptions(ref string, mode string) []string {
+	return []string{fmt.Sprintf("type=registry,ref=%s", ref)}
+}
+
+func registryCacheDestinations(ref string, mode string) []string {
+	return []string{fmt.Sprintf("type=registry,ref=%s,mode=%s", ref, mode)}
+}
+
 func init() {
 	Cmd.Flags().StringVar(&opts.from, "from", ".", "Relative path to codebase")
 	Cmd.Flags().StringVar(&opts.to, "to", ".", "Codebase destination path in container")
 	Cmd.Flags().StringVarP(&opts.dockerfile, "dockerfile", "f", "", "Relative path to dockerfile")
 	Cmd.Flags().StringArrayVar(&opts.buildArgs, "build-arg", nil, "Additional build argument in the 'NAME=VALUE' format. Repeatable")
 	Cmd.Flags().StringArrayVar(&opts.buildArgEnvVars, "build-arg-env", nil, "Environment variable name to forward as a docker build argument. Repeatable")
+	Cmd.Flags().StringVar(&opts.cacheBackend, "cache-backend", "auto", "Build cache backend: auto, local, registry, none")
+	Cmd.Flags().StringVar(&opts.cacheDir, "cache-dir", "", "Build cache directory for local backend")
+	Cmd.Flags().StringVar(&opts.cacheRef, "cache-ref", "", "Build cache reference for registry backend")
+	Cmd.Flags().StringVar(&opts.cacheMode, "cache-mode", "max", "Build cache export mode")
+	Cmd.Flags().StringArrayVar(&opts.cacheFrom, "cache-from", nil, "Additional buildx cache source. Repeatable")
+	Cmd.Flags().StringArrayVar(&opts.cacheTo, "cache-to", nil, "Additional buildx cache destination. Repeatable")
 }

@@ -26,6 +26,16 @@ type RunConfig struct {
 	Entrypoint  string
 }
 
+type BuildConfig struct {
+	Dockerfile string
+	Tags       []string
+	Context    string
+	BuildArgs  map[string]string
+	CacheFrom  []string
+	CacheTo    []string
+	Load       bool
+}
+
 // Login authorizes in the registry.
 func (c *Client) Login(host string, username string, password string) error {
 	command := fmt.Sprintf("echo %s | docker login -u %s --password-stdin %s", password, username, host)
@@ -38,17 +48,27 @@ func (c *Client) Login(host string, username string, password string) error {
 }
 
 // Build builds docker image.
-func (c *Client) Build(dockerfile string, tags []string, context string, buildArgs map[string]string) error {
-	args := []string{"build"}
+func (c *Client) Build(config BuildConfig) error {
+	args := []string{"buildx", "build"}
 
-	for _, tag := range tags {
+	if config.Load {
+		args = append(args, "--load")
+	}
+
+	for _, tag := range config.Tags {
 		args = append(args, "-t", tag)
 	}
 
-	args = append(args, "-f", dockerfile, context)
+	for _, cacheFrom := range config.CacheFrom {
+		args = append(args, "--cache-from", cacheFrom)
+	}
 
-	if len(buildArgs) != 0 {
-		for name, value := range buildArgs {
+	for _, cacheTo := range config.CacheTo {
+		args = append(args, "--cache-to", cacheTo)
+	}
+
+	if len(config.BuildArgs) != 0 {
+		for name, value := range config.BuildArgs {
 			if value == "" {
 				args = append(args, "--build-arg", name)
 			} else {
@@ -56,6 +76,8 @@ func (c *Client) Build(dockerfile string, tags []string, context string, buildAr
 			}
 		}
 	}
+
+	args = append(args, "-f", config.Dockerfile, config.Context)
 
 	fmt.Printf("Building:\n docker %s\n", strings.Join(args, " "))
 	cmd := exec.Command("docker", args...)

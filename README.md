@@ -105,6 +105,12 @@ Flags:
 ```text
     --build-arg stringArray       Additional build argument in the 'NAME=VALUE' format. Repeatable
     --build-arg-env stringArray   Environment variable name to forward as a docker build argument. Repeatable
+    --cache-backend string        Build cache backend: auto, local, registry, none (default "auto")
+    --cache-dir string            Build cache directory for local backend
+    --cache-ref string            Build cache reference for registry backend
+    --cache-mode string           Build cache export mode (default "max")
+    --cache-from stringArray      Additional buildx cache source. Repeatable. Advanced override
+    --cache-to stringArray        Additional buildx cache destination. Repeatable. Advanced override
 -f, --dockerfile string           Relative path to dockerfile
     --from string                 Relative path to codebase (default ".")
     --to string                   Codebase destination path in container (default ".")
@@ -116,6 +122,10 @@ Capabilities:
 - Falls back to the Dockerfile and `.dockerignore` provided by the Wodby app service config.
 - Generates a default Dockerfile when neither is provided.
 - Supports forwarding explicit build args and environment variables into Docker builds.
+- Uses `docker buildx build --load` so built images remain available for `wodby ci release`.
+- `--cache-dir` is enough to enable local cache for non-DIND builds.
+- In `--dind` mode, `--cache-backend auto` defaults to registry-backed cache refs per service.
+- `--cache-from` and `--cache-to` remain available as low-level buildx overrides.
 
 #### `wodby ci release`
 

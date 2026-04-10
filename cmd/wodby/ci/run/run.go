@@ -1,7 +1,10 @@
 package run
 
 import (
+	"os"
 	"path"
+	"strings"
+	"syscall"
 
 	"fmt"
 
@@ -72,9 +75,8 @@ var Cmd = &cobra.Command{
 		runConfig := docker.RunConfig{
 			Image:      image,
 			Volumes:    opts.volumes,
-			Env:        opts.env,
+			Env:        withDefaultSkipCodebaseChownEnv(opts.env),
 			EnvFile:    opts.envFile,
-			User:       opts.user,
 			Entrypoint: opts.entrypoint,
 		}
 
@@ -91,6 +93,11 @@ var Cmd = &cobra.Command{
 			}
 		} else {
 			runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, workingDir))
+		}
+
+		runConfig.User, err = resolveRunUser(opts.user, config)
+		if err != nil {
+			return errors.WithStack(err)
 		}
 
 		if opts.path != "" {
@@ -113,6 +120,42 @@ func init() {
 	Cmd.Flags().StringSliceVarP(&opts.volumes, "volume", "v", []string{}, "Volumes")
 	Cmd.Flags().StringSliceVarP(&opts.env, "env", "e", []string{}, "Environment variables")
 	Cmd.Flags().StringVar(&opts.envFile, "env-file", "", "Env file")
-	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "User")
+	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "User (defaults to host uid:gid for bind-mounted contexts)")
 	Cmd.Flags().StringVarP(&opts.path, "path", "p", "", "Working dir (relative path)")
+}
+
+func resolveRunUser(explicitUser string, config *types.Config) (string, error) {
+	if explicitUser != "" {
+		return explicitUser, nil
+	}
+
+	if config.DataContainer != "" {
+		return "", nil
+	}
+
+	return hostUserForPath(config.Context)
+}
+
+func hostUserForPath(p string) (string, error) {
+	info, err := os.Stat(p)
+	if err != nil {
+		return "", err
+	}
+
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return "", errors.Errorf("could not determine owner for path %s", p)
+	}
+
+	return fmt.Sprintf("%d:%d", stat.Uid, stat.Gid), nil
+}
+
+func withDefaultSkipCodebaseChownEnv(envs []string) []string {
+	for _, env := range envs {
+		if strings.HasPrefix(env, "WODBY_SKIP_CODEBASE_CHOWN=") {
+			return envs
+		}
+	}
+
+	return append(envs, "WODBY_SKIP_CODEBASE_CHOWN=1")
 }

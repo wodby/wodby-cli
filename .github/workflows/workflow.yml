@@ -143,6 +143,8 @@ jobs:
       uses: docker/metadata-action@v6
       with:
         images: wodby/wodby-cli
+        flavor: |
+          latest=false
         tags: |
           type=raw,value=2.0-dev,enable=${{ github.ref == 'refs/heads/2.0' }}
           type=raw,value=2.0,enable=${{ github.ref_type == 'tag' && startsWith(github.ref_name, '2.0') }}

@@ -16,14 +16,15 @@ import (
 type Client struct{}
 
 type RunConfig struct {
-	Image       string
-	Volumes     []string
-	VolumesFrom []string
-	Env         []string
-	EnvFile     string
-	User        string
-	WorkDir     string
-	Entrypoint  string
+	Image           string
+	Volumes         []string
+	VolumesFrom     []string
+	Env             []string
+	EnvFile         string
+	User            string
+	WorkDir         string
+	Entrypoint      string
+	ClearEntrypoint bool
 }
 
 type BuildConfig struct {
@@ -175,7 +176,9 @@ func (c *Client) Run(args []string, config RunConfig) error {
 	if config.WorkDir != "" {
 		command = append(command, fmt.Sprintf("--workdir=%s", config.WorkDir))
 	}
-	if config.Entrypoint != "" {
+	if config.ClearEntrypoint {
+		command = append(command, "--entrypoint=")
+	} else if config.Entrypoint != "" {
 		command = append(command, fmt.Sprintf("--entrypoint=%s", config.Entrypoint))
 	}
 	command = append(append(command, config.Image), args...)

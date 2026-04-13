@@ -1,15 +1,17 @@
 package run
 
 import (
-	"os"
-	"path/filepath"
-	"reflect"
 	"testing"
 
+	"github.com/pkg/errors"
 	"github.com/wodby/wodby-cli/pkg/types"
 )
 
 func TestResolveRunUser(t *testing.T) {
+	t.Cleanup(func() {
+		currentHostUser = defaultCurrentHostUser
+	})
+
 	t.Run("uses explicit user override", func(t *testing.T) {
 		got, err := resolveRunUser("root", &types.Config{})
 		if err != nil {
@@ -30,54 +32,88 @@ func TestResolveRunUser(t *testing.T) {
 		}
 	})
 
-	t.Run("uses host owner for bind mounted context", func(t *testing.T) {
-		dir := t.TempDir()
+	t.Run("skips custom user for default image uid gid", func(t *testing.T) {
+		currentHostUser = func() (string, error) {
+			return "1000:1000", nil
+		}
 
-		got, err := resolveRunUser("", &types.Config{Context: dir})
+		got, err := resolveRunUser("", &types.Config{})
 		if err != nil {
 			t.Fatalf("resolveRunUser() error = %v", err)
 		}
 
-		info, err := os.Stat(dir)
-		if err != nil {
-			t.Fatalf("os.Stat() error = %v", err)
-		}
-		want, err := expectedHostUserForFileInfo(dir, info)
-		if err != nil {
-			t.Fatalf("expectedHostUserForFileInfo() error = %v", err)
-		}
-
-		if got != want {
-			t.Fatalf("resolveRunUser() = %q, want %q", got, want)
+		if got != "" {
+			t.Fatalf("resolveRunUser() = %q, want empty user", got)
 		}
 	})
 
-	t.Run("returns stat errors", func(t *testing.T) {
-		missing := filepath.Join(t.TempDir(), "missing")
+	t.Run("uses current user when it differs from image uid gid", func(t *testing.T) {
+		currentHostUser = func() (string, error) {
+			return "1001:121", nil
+		}
 
-		_, err := resolveRunUser("", &types.Config{Context: missing})
+		got, err := resolveRunUser("", &types.Config{})
+		if err != nil {
+			t.Fatalf("resolveRunUser() error = %v", err)
+		}
+		if got != "1001:121" {
+			t.Fatalf("resolveRunUser() = %q, want %q", got, "1001:121")
+		}
+	})
+
+	t.Run("returns current user lookup errors", func(t *testing.T) {
+		currentHostUser = func() (string, error) {
+			return "", errors.New("boom")
+		}
+
+		_, err := resolveRunUser("", &types.Config{})
 		if err == nil {
 			t.Fatal("resolveRunUser() error = nil, want error")
 		}
 	})
 }
 
-func TestWithDefaultSkipCodebaseChownEnv(t *testing.T) {
-	t.Run("adds default env when absent", func(t *testing.T) {
-		got := withDefaultSkipCodebaseChownEnv([]string{"FOO=bar"})
-		want := []string{"FOO=bar", "WODBY_SKIP_CODEBASE_CHOWN=1"}
+func TestShouldClearImageEntrypoint(t *testing.T) {
+	tests := []struct {
+		name               string
+		explicitEntrypoint string
+		user               string
+		want               bool
+	}{
+		{
+			name: "clears entrypoint for numeric uid gid user",
+			user: "1001:1001",
+			want: true,
+		},
+		{
+			name: "clears entrypoint for numeric uid with named group",
+			user: "1001:www-data",
+			want: true,
+		},
+		{
+			name: "keeps entrypoint for named user",
+			user: "wodby",
+			want: false,
+		},
+		{
+			name:               "keeps entrypoint when explicit entrypoint provided",
+			explicitEntrypoint: "composer",
+			user:               "1001:1001",
+			want:               false,
+		},
+		{
+			name: "keeps entrypoint when no user is set",
+			user: "",
+			want: false,
+		},
+	}
 
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("withDefaultSkipCodebaseChownEnv() = %#v, want %#v", got, want)
-		}
-	})
-
-	t.Run("preserves explicit env value", func(t *testing.T) {
-		got := withDefaultSkipCodebaseChownEnv([]string{"WODBY_SKIP_CODEBASE_CHOWN=0"})
-		want := []string{"WODBY_SKIP_CODEBASE_CHOWN=0"}
-
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("withDefaultSkipCodebaseChownEnv() = %#v, want %#v", got, want)
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldClearImageEntrypoint(tt.explicitEntrypoint, tt.user)
+			if got != tt.want {
+				t.Fatalf("shouldClearImageEntrypoint(%q, %q) = %t, want %t", tt.explicitEntrypoint, tt.user, got, tt.want)
+			}
+		})
+	}
 }

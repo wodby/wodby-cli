@@ -182,8 +182,9 @@ Flags:
 
 Notes:
 
-- When `wodby ci run` bind-mounts the CI workspace, it defaults to the host workspace owner (`uid:gid`) unless `--user` is specified explicitly.
-- `wodby ci run` also passes `WODBY_SKIP_CODEBASE_CHOWN=1` by default unless that environment variable is already set explicitly.
+- When `wodby ci run` bind-mounts the CI workspace, it uses the current process `uid:gid` unless `--user` is specified explicitly.
+- If the current process user is `1000:1000`, `wodby ci run` leaves the image default user unchanged.
+- When the effective Docker user is numeric (for example `1001:1001`), `wodby ci run` clears the image `ENTRYPOINT` unless `--entrypoint` is set explicitly.
 - In `--dind` mode, no automatic host user mapping is applied because the codebase is mounted from the data container instead of the host filesystem.
 
 If neither `--service` nor `--image` is provided, the CLI falls back to the main service image from the Wodby app build config.

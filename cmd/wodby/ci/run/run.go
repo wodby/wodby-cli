@@ -1,7 +1,6 @@
 package run
 
 import (
-	"os"
 	"path"
 	"strings"
 
@@ -27,6 +26,7 @@ type options struct {
 
 var opts options
 var v = viper.New()
+var currentHostUser = defaultCurrentHostUser
 
 var Cmd = &cobra.Command{
 	Use:   "run [OPTIONS] -s SERVICE | -i IMAGE",
@@ -74,7 +74,7 @@ var Cmd = &cobra.Command{
 		runConfig := docker.RunConfig{
 			Image:      image,
 			Volumes:    opts.volumes,
-			Env:        withDefaultSkipCodebaseChownEnv(opts.env),
+			Env:        opts.env,
 			EnvFile:    opts.envFile,
 			Entrypoint: opts.entrypoint,
 		}
@@ -98,6 +98,7 @@ var Cmd = &cobra.Command{
 		if err != nil {
 			return errors.WithStack(err)
 		}
+		runConfig.ClearEntrypoint = shouldClearImageEntrypoint(opts.entrypoint, runConfig.User)
 
 		if opts.path != "" {
 			runConfig.WorkDir = fmt.Sprintf("%s/%s", workingDir, opts.path)
@@ -119,7 +120,7 @@ func init() {
 	Cmd.Flags().StringSliceVarP(&opts.volumes, "volume", "v", []string{}, "Volumes")
 	Cmd.Flags().StringSliceVarP(&opts.env, "env", "e", []string{}, "Environment variables")
 	Cmd.Flags().StringVar(&opts.envFile, "env-file", "", "Env file")
-	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "User (defaults to host uid:gid for bind-mounted contexts)")
+	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "User (defaults to current uid:gid for bind-mounted contexts, except 1000:1000)")
 	Cmd.Flags().StringVarP(&opts.path, "path", "p", "", "Working dir (relative path)")
 }
 
@@ -132,24 +133,37 @@ func resolveRunUser(explicitUser string, config *types.Config) (string, error) {
 		return "", nil
 	}
 
-	return hostUserForPath(config.Context)
-}
-
-func hostUserForPath(p string) (string, error) {
-	info, err := os.Stat(p)
+	user, err := currentHostUser()
 	if err != nil {
 		return "", err
 	}
 
-	return hostUserFromFileInfo(p, info)
+	if user == "1000:1000" {
+		return "", nil
+	}
+
+	return user, nil
 }
 
-func withDefaultSkipCodebaseChownEnv(envs []string) []string {
-	for _, env := range envs {
-		if strings.HasPrefix(env, "WODBY_SKIP_CODEBASE_CHOWN=") {
-			return envs
+func shouldClearImageEntrypoint(explicitEntrypoint string, user string) bool {
+	if explicitEntrypoint != "" || user == "" {
+		return false
+	}
+
+	identity := user
+	if idx := strings.Index(identity, ":"); idx >= 0 {
+		identity = identity[:idx]
+	}
+
+	if identity == "" {
+		return false
+	}
+
+	for _, r := range identity {
+		if r < '0' || r > '9' {
+			return false
 		}
 	}
 
-	return append(envs, "WODBY_SKIP_CODEBASE_CHOWN=1")
+	return true
 }

@@ -4,7 +4,6 @@ import (
 	"os"
 	"path"
 	"strings"
-	"syscall"
 
 	"fmt"
 
@@ -142,12 +141,7 @@ func hostUserForPath(p string) (string, error) {
 		return "", err
 	}
 
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return "", errors.Errorf("could not determine owner for path %s", p)
-	}
-
-	return fmt.Sprintf("%d:%d", stat.Uid, stat.Gid), nil
+	return hostUserFromFileInfo(p, info)
 }
 
 func withDefaultSkipCodebaseChownEnv(envs []string) []string {

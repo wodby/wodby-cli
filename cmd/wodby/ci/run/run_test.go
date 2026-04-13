@@ -1,11 +1,9 @@
 package run
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
-	"syscall"
 	"testing"
 
 	"github.com/wodby/wodby-cli/pkg/types"
@@ -44,8 +42,10 @@ func TestResolveRunUser(t *testing.T) {
 		if err != nil {
 			t.Fatalf("os.Stat() error = %v", err)
 		}
-		stat := info.Sys().(*syscall.Stat_t)
-		want := fmt.Sprintf("%d:%d", stat.Uid, stat.Gid)
+		want, err := expectedHostUserForFileInfo(dir, info)
+		if err != nil {
+			t.Fatalf("expectedHostUserForFileInfo() error = %v", err)
+		}
 
 		if got != want {
 			t.Fatalf("resolveRunUser() = %q, want %q", got, want)

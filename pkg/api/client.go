@@ -4,12 +4,15 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"time"
 
 	graphql "github.com/hasura/go-graphql-client"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/wodby/wodby-cli/pkg/types"
 )
+
+const defaultHTTPTimeout = 30 * time.Second
 
 type transport struct {
 	underlyingTransport http.RoundTripper
@@ -36,11 +39,21 @@ func NewClient(config types.APIConfig) *Client {
 	if os.Getenv("DEBUG") != "" {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
-	httpClient := http.Client{Transport: &transport{underlyingTransport: http.DefaultTransport, apiKey: config.Key, accessToken: config.AccessToken}}
 	return &Client{
-		client: graphql.NewClient(config.Endpoint, &httpClient),
+		client: graphql.NewClient(config.Endpoint, newHTTPClient(config)),
 		config: config,
 		logger: logrus.WithField("logger", "client"),
+	}
+}
+
+func newHTTPClient(config types.APIConfig) *http.Client {
+	return &http.Client{
+		Transport: &transport{
+			underlyingTransport: http.DefaultTransport,
+			apiKey:              config.Key,
+			accessToken:         config.AccessToken,
+		},
+		Timeout: defaultHTTPTimeout,
 	}
 }
 

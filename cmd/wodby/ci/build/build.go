@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
@@ -338,15 +337,10 @@ func newBuildFiles(context string, serviceName string, dockerfileOverride string
 }
 
 func addDockerfileBuildArgs(buildArgs map[string]string, dockerfile string, appServiceBuildConfig *types.AppServiceBuildConfig, copyTo string, logger *log.Entry) error {
-	r, err := regexp.Compile("(?m)^ARG (.+)$")
-	if err != nil {
-		return err
-	}
 	// Pass build args from dockerfile.
-	allMatches := r.FindAllStringSubmatch(dockerfile, -1)
-	logger.Debugf("Found %d ARGs in Dockerfile", len(allMatches))
-	for _, matches := range allMatches {
-		argName := matches[1]
+	argNames := dockerfileArgNames(dockerfile)
+	logger.Debugf("Found %d ARGs in Dockerfile", len(argNames))
+	for _, argName := range argNames {
 		logger.Debugf("Arg name: %s", argName)
 		if !containsString([]string{"COPY_FROM", "WODBY_BASE_IMAGE"}, argName) {
 			if argName == "COPY_TO" {
@@ -363,6 +357,26 @@ func addDockerfileBuildArgs(buildArgs map[string]string, dockerfile string, appS
 	}
 
 	return nil
+}
+
+func dockerfileArgNames(dockerfile string) []string {
+	var argNames []string
+	for _, line := range strings.Split(dockerfile, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 || !strings.EqualFold(fields[0], "ARG") {
+			continue
+		}
+
+		argName := fields[1]
+		if idx := strings.Index(argName, "="); idx >= 0 {
+			argName = argName[:idx]
+		}
+		if argName != "" {
+			argNames = append(argNames, argName)
+		}
+	}
+
+	return argNames
 }
 
 func fileExists(filePath string) bool {

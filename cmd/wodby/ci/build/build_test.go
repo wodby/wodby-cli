@@ -2,8 +2,10 @@ package build
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 
+	log "github.com/sirupsen/logrus"
 	"github.com/wodby/wodby-cli/pkg/types"
 )
 
@@ -230,4 +232,43 @@ func TestResolveCacheOptions(t *testing.T) {
 			t.Fatal("resolveCacheOptions() error = nil, want error")
 		}
 	})
+}
+
+func TestDockerfileArgNames(t *testing.T) {
+	dockerfile := `ARG WODBY_BASE_IMAGE
+FROM ${WODBY_BASE_IMAGE}
+ARG COPY_TO=/var/www/html
+ARG APP_ENV=prod
+  arg EXTRA
+RUN echo done`
+
+	got := dockerfileArgNames(dockerfile)
+	want := []string{"WODBY_BASE_IMAGE", "COPY_TO", "APP_ENV", "EXTRA"}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("dockerfileArgNames() = %v, want %v", got, want)
+	}
+}
+
+func TestAddDockerfileBuildArgsUsesArgNameWithoutDefault(t *testing.T) {
+	buildArgs := map[string]string{}
+	appServiceBuildConfig := &types.AppServiceBuildConfig{
+		Args: []*types.AppServiceBuildArg{
+			{Name: "APP_ENV", Value: "stage"},
+		},
+	}
+	dockerfile := `ARG COPY_TO=/var/www/html
+ARG APP_ENV=prod`
+
+	err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, "/srv/app", log.NewEntry(log.New()))
+	if err != nil {
+		t.Fatalf("addDockerfileBuildArgs() error = %v", err)
+	}
+
+	if got := buildArgs["COPY_TO"]; got != "/srv/app" {
+		t.Fatalf("COPY_TO build arg = %q, want %q", got, "/srv/app")
+	}
+	if got := buildArgs["APP_ENV"]; got != "stage" {
+		t.Fatalf("APP_ENV build arg = %q, want %q", got, "stage")
+	}
 }

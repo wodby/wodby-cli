@@ -238,7 +238,7 @@ var Cmd = &cobra.Command{
 					runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", opts.context, config.WorkingDir))
 				}
 
-				args := []string{"chown", "-R", fmt.Sprintf("%s:%s", defaultUser, defaultUser), "."}
+				args := []string{"chown", "-R", docker.ChownSpec(defaultUser), "."}
 				err := dockerClient.Run(args, runConfig)
 				if err != nil {
 					return errors.WithStack(err)

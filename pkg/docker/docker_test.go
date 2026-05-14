@@ -30,3 +30,25 @@ func TestLoginCommandUsesPasswordStdin(t *testing.T) {
 		t.Fatalf("login command stdin = %q, want %q", gotPassword, password)
 	}
 }
+
+func TestChownSpec(t *testing.T) {
+	tests := []struct {
+		user string
+		want string
+	}{
+		{user: "", want: "root:root"},
+		{user: "root", want: "root:root"},
+		{user: "wodby", want: "wodby:wodby"},
+		{user: "1000", want: "1000:1000"},
+		{user: "1000:1000", want: "1000:1000"},
+		{user: "wodby:www-data", want: "wodby:www-data"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.user, func(t *testing.T) {
+			if got := ChownSpec(tt.user); got != tt.want {
+				t.Fatalf("ChownSpec(%q) = %q, want %q", tt.user, got, tt.want)
+			}
+		})
+	}
+}

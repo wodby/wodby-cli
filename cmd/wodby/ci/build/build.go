@@ -46,7 +46,7 @@ const DefaultDockerfileTpl = `ARG WODBY_BASE_IMAGE
 FROM ${WODBY_BASE_IMAGE}
 ARG COPY_FROM
 ARG COPY_TO
-COPY --chown={{.DefaultUser}}:{{.DefaultUser}} ${COPY_FROM} ${COPY_TO}`
+COPY --chown={{.DefaultUserOwnership}} ${COPY_FROM} ${COPY_TO}`
 
 var v = viper.New()
 
@@ -183,7 +183,7 @@ var Cmd = &cobra.Command{
 					if err != nil {
 						return errors.WithStack(err)
 					}
-					data := struct{ DefaultUser string }{DefaultUser: defaultUser}
+					data := struct{ DefaultUserOwnership string }{DefaultUserOwnership: docker.ChownSpec(defaultUser)}
 					var tpl bytes.Buffer
 					if err := t.Execute(&tpl, data); err != nil {
 						return errors.WithStack(err)

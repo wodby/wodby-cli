@@ -155,6 +155,17 @@ func (c *Client) GetImageWorkingDir(image string) (string, error) {
 	return workingDir, nil
 }
 
+func ChownSpec(user string) string {
+	if user == "" {
+		return "root:root"
+	}
+	if strings.Contains(user, ":") {
+		return user
+	}
+
+	return fmt.Sprintf("%s:%s", user, user)
+}
+
 // Run runs docker container.
 func (c *Client) Run(args []string, config RunConfig) error {
 	command := []string{"run", "--rm"}

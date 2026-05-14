@@ -70,32 +70,12 @@ var Cmd = &cobra.Command{
 			return errors.New("No app services have been released to deploy")
 		}
 
-		var servicesToDeploy []*types.ServiceDeploymentInput
 		if len(opts.services) == 0 {
 			logger.Info("Deploying all released services")
-			for _, svc := range config.BuiltServices {
-				if svc.Released {
-					servicesToDeploy = append(servicesToDeploy, &types.ServiceDeploymentInput{
-						Name:  svc.Name,
-						Image: svc.Image,
-					})
-				}
-			}
-		} else {
-			for _, serviceName := range opts.services {
-				for _, svc := range config.BuiltServices {
-					if svc.Name == serviceName {
-						if !svc.Released {
-							return errors.New(fmt.Sprintf("Service %s hasn't been released", svc.Name))
-						}
-						servicesToDeploy = append(servicesToDeploy, &types.ServiceDeploymentInput{
-							Name:  svc.Name,
-							Image: svc.Image,
-						})
-						break
-					}
-				}
-			}
+		}
+		servicesToDeploy, err := deploymentServices(config.BuiltServices, opts.services)
+		if err != nil {
+			return err
 		}
 
 		input := types.DeploymentFromCIInput{
@@ -115,6 +95,46 @@ var Cmd = &cobra.Command{
 		logger.Infof("Build %d has been queued up for deployment!", config.AppBuild.Number)
 		return nil
 	},
+}
+
+func deploymentServices(builtServices []types.BuiltService, serviceNames []string) ([]*types.ServiceDeploymentInput, error) {
+	var servicesToDeploy []*types.ServiceDeploymentInput
+	if len(serviceNames) == 0 {
+		for _, svc := range builtServices {
+			if svc.Released {
+				servicesToDeploy = append(servicesToDeploy, &types.ServiceDeploymentInput{
+					Name:  svc.Name,
+					Image: svc.Image,
+				})
+			}
+		}
+
+		return servicesToDeploy, nil
+	}
+
+	for _, serviceName := range serviceNames {
+		found := false
+		for _, svc := range builtServices {
+			if svc.Name != serviceName {
+				continue
+			}
+
+			found = true
+			if !svc.Released {
+				return nil, errors.New(fmt.Sprintf("Service %s hasn't been released", svc.Name))
+			}
+			servicesToDeploy = append(servicesToDeploy, &types.ServiceDeploymentInput{
+				Name:  svc.Name,
+				Image: svc.Image,
+			})
+			break
+		}
+		if !found {
+			return nil, errors.New(fmt.Sprintf("No built images found for service %s", serviceName))
+		}
+	}
+
+	return servicesToDeploy, nil
 }
 
 func init() {

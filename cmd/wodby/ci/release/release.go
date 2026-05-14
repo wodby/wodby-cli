@@ -89,34 +89,19 @@ var Cmd = &cobra.Command{
 				return errors.WithStack(err)
 			}
 
-			if config.AppBuild.GitRefType.Normalize() != types.GitRefTypeBranch {
-				r, err := regexp.Compile(":.+$")
+			extraTags, err := releaseExtraTags(service.Image, config.AppBuild.GitRefType, config.AppBuild.GitRef, opts.latestBranch, opts.branchTag)
+			if err != nil {
+				return errors.WithStack(err)
+			}
+			for _, extraTag := range extraTags {
+				err = dockerClient.Tag(service.Image, extraTag)
 				if err != nil {
 					return errors.WithStack(err)
 				}
-
-				if config.AppBuild.GitRef == opts.latestBranch {
-					latestTag := r.ReplaceAllString(service.Image, ":latest")
-					err = dockerClient.Tag(service.Image, latestTag)
-					if err != nil {
-						return errors.WithStack(err)
-					}
-					err = dockerClient.Push(latestTag)
-					if err != nil {
-						return errors.WithStack(err)
-					}
-				}
-				if opts.branchTag {
-					latestTag := r.ReplaceAllString(service.Image, ":"+config.AppBuild.GitRef)
-					err = dockerClient.Tag(service.Image, latestTag)
-					if err != nil {
-						return errors.WithStack(err)
-					}
-					err = dockerClient.Push(latestTag)
-					if err != nil {
-						log.Error("[ERROR] Failed to release image. If you're using Wodby Docker Registry make sure you are within registry storage limits.")
-						return errors.WithStack(err)
-					}
+				err = dockerClient.Push(extraTag)
+				if err != nil {
+					log.Error("[ERROR] Failed to release image. If you're using Wodby Docker Registry make sure you are within registry storage limits.")
+					return errors.WithStack(err)
 				}
 			}
 
@@ -139,6 +124,27 @@ var Cmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func releaseExtraTags(image string, gitRefType types.GitRefType, gitRef string, latestBranch string, branchTag bool) ([]string, error) {
+	if gitRefType.Normalize() != types.GitRefTypeBranch {
+		return nil, nil
+	}
+
+	r, err := regexp.Compile(":.+$")
+	if err != nil {
+		return nil, err
+	}
+
+	var tags []string
+	if gitRef == latestBranch {
+		tags = append(tags, r.ReplaceAllString(image, ":latest"))
+	}
+	if branchTag {
+		tags = append(tags, r.ReplaceAllString(image, ":"+gitRef))
+	}
+
+	return tags, nil
 }
 
 func init() {

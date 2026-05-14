@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -103,10 +104,13 @@ var Cmd = &cobra.Command{
 			fmt.Println("Synchronizing data container")
 
 			context = dataContainerContextPath(config.DataContainer)
+			if err := os.RemoveAll(context); err != nil {
+				return errors.WithStack(err)
+			}
 			output, err := exec.Command(
 				"docker",
 				"cp",
-				fmt.Sprintf("%s:%s", config.DataContainer, config.WorkingDir),
+				fmt.Sprintf("%s:%s", config.DataContainer, dataContainerWorkingDirContents(config.WorkingDir)),
 				context,
 			).CombinedOutput()
 			if err != nil {
@@ -292,6 +296,15 @@ func containsString(s []string, e string) bool {
 
 func dataContainerContextPath(dataContainer string) string {
 	return fmt.Sprintf("/tmp/wodby-build-%s", dataContainer)
+}
+
+func dataContainerWorkingDirContents(workingDir string) string {
+	cleaned := path.Clean(workingDir)
+	if cleaned == "." || cleaned == "/" {
+		return "/."
+	}
+
+	return cleaned + "/."
 }
 
 func prioritizeMainService(services []*types.AppServiceBuildConfig) []*types.AppServiceBuildConfig {

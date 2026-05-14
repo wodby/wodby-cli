@@ -18,6 +18,26 @@ func TestDataContainerContextPath(t *testing.T) {
 	}
 }
 
+func TestDataContainerWorkingDirContents(t *testing.T) {
+	tests := []struct {
+		workingDir string
+		want       string
+	}{
+		{workingDir: "", want: "/."},
+		{workingDir: "/", want: "/."},
+		{workingDir: "/var/www/html", want: "/var/www/html/."},
+		{workingDir: "/var/www/html/", want: "/var/www/html/."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.workingDir, func(t *testing.T) {
+			if got := dataContainerWorkingDirContents(tt.workingDir); got != tt.want {
+				t.Fatalf("dataContainerWorkingDirContents(%q) = %q, want %q", tt.workingDir, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNewBuildFiles(t *testing.T) {
 	t.Run("service dockerfile path", func(t *testing.T) {
 		got := newBuildFiles("contexts/app", "php", "")

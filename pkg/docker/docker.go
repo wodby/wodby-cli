@@ -1,14 +1,13 @@
 package docker
 
 import (
-	"github.com/pkg/errors"
-
 	"bytes"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
+	"github.com/pkg/errors"
 	"github.com/wodby/wodby-cli/pkg/exec"
 )
 
@@ -39,13 +38,14 @@ type BuildConfig struct {
 
 // Login authorizes in the registry.
 func (c *Client) Login(host string, username string, password string) error {
-	command := fmt.Sprintf("echo %s | docker login -u %s --password-stdin %s", password, username, host)
-	out, err := exec.Command("bash", "-c", command).CombinedOutput()
-	if err != nil {
-		return errors.Wrap(err, string(out))
-	}
+	return cmdStartVerbose(loginCommand(host, username, password))
+}
 
-	return nil
+func loginCommand(host string, username string, password string) *exec.Cmd {
+	cmd := exec.Command("docker", "login", "-u", username, "--password-stdin", host)
+	cmd.Stdin = strings.NewReader(password)
+
+	return cmd
 }
 
 // Build builds docker image.

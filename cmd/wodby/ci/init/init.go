@@ -260,7 +260,7 @@ func init() {
 	Cmd.Flags().BoolVar(&opts.fixPermissions, "fix-permissions", false, "Fix codebase permissions explicitly. WARNING: this can change ownership of files in the project directory")
 	Cmd.Flags().IntVarP(&opts.buildNumber, "build-num", "n", 0, "Custom build number (used if can't identify automatically)")
 	Cmd.Flags().StringVarP(&opts.buildID, "build-id", "i", "", "Custom build id (used if can't identify automatically)")
-	Cmd.Flags().StringVar(&opts.provider, "provider", "p", "Custom build provider name (used if can't identify automatically)")
+	Cmd.Flags().StringVarP(&opts.provider, "provider", "p", "", "Custom build provider name (used if can't identify automatically)")
 }
 
 func permissionFixDecision(explicit bool) (bool, string) {

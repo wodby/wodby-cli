@@ -35,8 +35,9 @@ type (
 		Args         []*AppServiceBuildArg `json:"args"`
 	}
 	AppServiceBuildArg struct {
-		Name  string `json:"name"`
-		Value string `json:"value"`
+		Name   string `json:"name"`
+		Value  string `json:"value"`
+		Secret bool   `json:"secret"`
 	}
 	NewBuildFromCIInput struct {
 		AppServiceID         ID      `json:"appServiceID"`

@@ -27,13 +27,14 @@ type RunConfig struct {
 }
 
 type BuildConfig struct {
-	Dockerfile string
-	Tags       []string
-	Context    string
-	BuildArgs  map[string]string
-	CacheFrom  []string
-	CacheTo    []string
-	Load       bool
+	Dockerfile   string
+	Tags         []string
+	Context      string
+	BuildArgs    map[string]string
+	CacheFrom    []string
+	CacheTo      []string
+	Load         bool
+	RedactValues []string
 }
 
 // Login authorizes in the registry.
@@ -85,7 +86,7 @@ func (c *Client) Build(config BuildConfig) error {
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, "DOCKER_BUILDKIT=1")
 
-	return cmdStartVerbose(cmd)
+	return cmdStartVerboseRedacted(cmd, config.RedactValues)
 }
 
 func (c *Client) Push(image string) error {
@@ -208,13 +209,17 @@ func NewClient() *Client {
 }
 
 func cmdStartVerbose(cmd *exec.Cmd) error {
+	return cmdStartVerboseRedacted(cmd, nil)
+}
+
+func cmdStartVerboseRedacted(cmd *exec.Cmd, redactions []string) error {
 	var stdoutBuf, stderrBuf bytes.Buffer
 	stdoutIn, _ := cmd.StdoutPipe()
 	stderrIn, _ := cmd.StderrPipe()
 
 	var errStdout, errStderr error
-	stdout := io.MultiWriter(os.Stdout, &stdoutBuf)
-	stderr := io.MultiWriter(os.Stderr, &stderrBuf)
+	stdout := io.MultiWriter(redactWriter{w: os.Stdout, redactions: redactions}, &stdoutBuf)
+	stderr := io.MultiWriter(redactWriter{w: os.Stderr, redactions: redactions}, &stderrBuf)
 
 	err := cmd.Start()
 	if err != nil {
@@ -237,4 +242,23 @@ func cmdStartVerbose(cmd *exec.Cmd) error {
 	}
 
 	return nil
+}
+
+type redactWriter struct {
+	w          io.Writer
+	redactions []string
+}
+
+func (w redactWriter) Write(p []byte) (int, error) {
+	output := string(p)
+	for _, value := range w.redactions {
+		if len(value) > 4 {
+			output = strings.ReplaceAll(output, value, "*****")
+		}
+	}
+	_, err := w.w.Write([]byte(output))
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }

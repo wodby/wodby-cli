@@ -1,6 +1,7 @@
 package build
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -280,7 +281,8 @@ func TestAddDockerfileBuildArgsUsesArgNameWithoutDefault(t *testing.T) {
 	dockerfile := `ARG COPY_TO=/var/www/html
 ARG APP_ENV=prod`
 
-	err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, "/srv/app", log.NewEntry(log.New()))
+	var redactValues []string
+	err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, "/srv/app", log.NewEntry(log.New()), &redactValues)
 	if err != nil {
 		t.Fatalf("addDockerfileBuildArgs() error = %v", err)
 	}
@@ -290,5 +292,48 @@ ARG APP_ENV=prod`
 	}
 	if got := buildArgs["APP_ENV"]; got != "stage" {
 		t.Fatalf("APP_ENV build arg = %q, want %q", got, "stage")
+	}
+}
+
+func TestAddDockerfileBuildArgsForSecretUsesEnvForwarding(t *testing.T) {
+	t.Setenv("APP_SECRET", "very-secret-value")
+
+	buildArgs := map[string]string{}
+	appServiceBuildConfig := &types.AppServiceBuildConfig{
+		Args: []*types.AppServiceBuildArg{
+			{Name: "APP_SECRET", Secret: true},
+		},
+	}
+	dockerfile := `ARG APP_SECRET`
+
+	var redactValues []string
+	err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, "/srv/app", log.NewEntry(log.New()), &redactValues)
+	if err != nil {
+		t.Fatalf("addDockerfileBuildArgs() error = %v", err)
+	}
+
+	if got := buildArgs["APP_SECRET"]; got != "" {
+		t.Fatalf("APP_SECRET build arg = %q, want empty env-forwarding value", got)
+	}
+	if !reflect.DeepEqual(redactValues, []string{"very-secret-value"}) {
+		t.Fatalf("redactValues = %v, want [very-secret-value]", redactValues)
+	}
+}
+
+func TestAddDockerfileBuildArgsForSecretRequiresEnv(t *testing.T) {
+	_ = os.Unsetenv("APP_SECRET")
+
+	buildArgs := map[string]string{}
+	appServiceBuildConfig := &types.AppServiceBuildConfig{
+		Args: []*types.AppServiceBuildArg{
+			{Name: "APP_SECRET", Secret: true},
+		},
+	}
+	dockerfile := `ARG APP_SECRET`
+
+	var redactValues []string
+	err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, "/srv/app", log.NewEntry(log.New()), &redactValues)
+	if err == nil {
+		t.Fatal("addDockerfileBuildArgs() error = nil, want missing env error")
 	}
 }

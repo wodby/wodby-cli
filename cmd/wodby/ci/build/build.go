@@ -124,6 +124,7 @@ var Cmd = &cobra.Command{
 
 		for _, appServiceBuildConfig := range appServiceBuildConfigs {
 			buildArgs := make(map[string]string)
+			var redactValues []string
 			buildArgs["COPY_FROM"] = opts.from
 			buildArgs["WODBY_BASE_IMAGE"] = appServiceBuildConfig.Image
 			buildFiles := newBuildFiles(context, appServiceBuildConfig.Name, opts.dockerfile)
@@ -154,7 +155,7 @@ var Cmd = &cobra.Command{
 					return errors.WithStack(err)
 				}
 				dockerfile = string(d)
-				if err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, opts.to, logger); err != nil {
+				if err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, opts.to, logger, &redactValues); err != nil {
 					return errors.WithStack(err)
 				}
 			} else if fileExists(buildFiles.dockerfilePath) {
@@ -164,14 +165,14 @@ var Cmd = &cobra.Command{
 					return errors.WithStack(err)
 				}
 				dockerfile = string(d)
-				if err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, opts.to, logger); err != nil {
+				if err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, opts.to, logger, &redactValues); err != nil {
 					return errors.WithStack(err)
 				}
 			} else {
 				if appServiceBuildConfig.Dockerfile != nil {
 					fmt.Println("Dockerfile provided by app service")
 					dockerfile = *appServiceBuildConfig.Dockerfile
-					if err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, opts.to, logger); err != nil {
+					if err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, opts.to, logger, &redactValues); err != nil {
 						return errors.WithStack(err)
 					}
 				} else {
@@ -232,13 +233,14 @@ var Cmd = &cobra.Command{
 
 			tag = fmt.Sprintf("%s/%s:%s-%d", config.AppBuild.Config.RegistryHost, config.AppBuild.Config.RegistryRepository, appServiceBuildConfig.Name, config.AppBuild.Number)
 			err = dockerClient.Build(docker.BuildConfig{
-				Dockerfile: buildFiles.dockerfilePath,
-				Tags:       []string{tag},
-				Context:    context,
-				BuildArgs:  buildArgs,
-				CacheFrom:  cacheFrom,
-				CacheTo:    cacheTo,
-				Load:       true,
+				Dockerfile:   buildFiles.dockerfilePath,
+				Tags:         []string{tag},
+				Context:      context,
+				BuildArgs:    buildArgs,
+				CacheFrom:    cacheFrom,
+				CacheTo:      cacheTo,
+				Load:         true,
+				RedactValues: redactValues,
 			})
 			if err != nil {
 				if cleanUpDockerfile {
@@ -349,7 +351,7 @@ func newBuildFiles(context string, serviceName string, dockerfileOverride string
 	}
 }
 
-func addDockerfileBuildArgs(buildArgs map[string]string, dockerfile string, appServiceBuildConfig *types.AppServiceBuildConfig, copyTo string, logger *log.Entry) error {
+func addDockerfileBuildArgs(buildArgs map[string]string, dockerfile string, appServiceBuildConfig *types.AppServiceBuildConfig, copyTo string, logger *log.Entry, redactValues *[]string) error {
 	// Pass build args from dockerfile.
 	argNames := dockerfileArgNames(dockerfile)
 	logger.Debugf("Found %d ARGs in Dockerfile", len(argNames))
@@ -360,9 +362,18 @@ func addDockerfileBuildArgs(buildArgs map[string]string, dockerfile string, appS
 				buildArgs["COPY_TO"] = copyTo
 			} else {
 				for _, arg := range appServiceBuildConfig.Args {
-					logger.Debugf("Build arg %s:%s", arg.Name, arg.Value)
+					logger.Debugf("Build arg %s", arg.Name)
 					if argName == arg.Name {
-						buildArgs[argName] = arg.Value
+						if arg.Secret {
+							value, ok := os.LookupEnv(arg.Name)
+							if !ok {
+								return errors.Errorf("secret build arg %s requires environment variable %s", arg.Name, arg.Name)
+							}
+							buildArgs[argName] = ""
+							*redactValues = append(*redactValues, value)
+						} else {
+							buildArgs[argName] = arg.Value
+						}
 					}
 				}
 			}

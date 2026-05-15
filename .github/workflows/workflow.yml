@@ -119,6 +119,7 @@ jobs:
         tag_name: ${{ github.ref_name }}
         name: ${{ github.ref_name }}
         prerelease: false
+        generate_release_notes: true
         files: dist/wodby-*.tar.gz
         fail_on_unmatched_files: true
 

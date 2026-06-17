@@ -11,6 +11,8 @@ import (
 	"github.com/wodby/wodby-cli/pkg/types"
 )
 
+const ProviderUnknown = "unknown"
+
 func CollectBuildInfo() (types.NewBuildFromCIInput, error) {
 	buildInput, detected, err := collectBuildInfoFromCIEnv()
 	if err != nil {
@@ -158,7 +160,7 @@ func collectGitHubActionsBuildInfo() (types.NewBuildFromCIInput, error) {
 }
 
 func collectBuildInfoFromGit() (types.NewBuildFromCIInput, error) {
-	var buildInput types.NewBuildFromCIInput
+	buildInput := types.NewBuildFromCIInput{Provider: ProviderUnknown}
 
 	out, err := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput()
 	if err != nil {

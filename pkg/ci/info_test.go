@@ -2,6 +2,8 @@ package ci
 
 import (
 	"os"
+	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/wodby/wodby-cli/pkg/types"
@@ -67,6 +69,74 @@ func TestCollectBuildInfoFromGitLabCI(t *testing.T) {
 	}
 	if buildInput.GitCommitAuthorEmail == nil || *buildInput.GitCommitAuthorEmail != "jane@example.com" {
 		t.Fatalf("expected commit author email jane@example.com, got %#v", buildInput.GitCommitAuthorEmail)
+	}
+}
+
+func TestCollectBuildInfoFromGitFallsBackToUnknownProvider(t *testing.T) {
+	t.Setenv("CIRCLECI", "")
+	t.Setenv("GITLAB_CI", "")
+	t.Setenv("GITHUB_ACTIONS", "")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current directory: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Fatalf("failed to restore directory: %v", err)
+		}
+	})
+
+	runGit(t, "init")
+	runGit(t, "checkout", "-b", "main")
+	runGit(t, "config", "user.name", "Jane Doe")
+	runGit(t, "config", "user.email", "jane@example.com")
+	if err := os.WriteFile("README.md", []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("failed to write README.md: %v", err)
+	}
+	runGit(t, "add", "README.md")
+	runGit(t, "commit", "-m", "initial commit")
+
+	buildInput, err := CollectBuildInfo()
+	if err != nil {
+		t.Fatalf("CollectBuildInfo returned error: %v", err)
+	}
+
+	if buildInput.Provider != ProviderUnknown {
+		t.Fatalf("expected provider %q, got %q", ProviderUnknown, buildInput.Provider)
+	}
+	if buildInput.GitRefType != string(types.GitRefTypeBranch) {
+		t.Fatalf("expected branch ref type, got %q", buildInput.GitRefType)
+	}
+	if buildInput.GitRef != "main" {
+		t.Fatalf("expected branch main, got %q", buildInput.GitRef)
+	}
+	if buildInput.GitCommitSHA == "" {
+		t.Fatal("expected commit SHA")
+	}
+	if buildInput.GitCommitMessage == nil || strings.TrimSpace(*buildInput.GitCommitMessage) != "initial commit" {
+		t.Fatalf("expected commit message from git, got %#v", buildInput.GitCommitMessage)
+	}
+	if buildInput.GitCommitAuthorName == nil || *buildInput.GitCommitAuthorName != "Jane Doe" {
+		t.Fatalf("expected commit author name Jane Doe, got %#v", buildInput.GitCommitAuthorName)
+	}
+	if buildInput.GitCommitAuthorEmail == nil || *buildInput.GitCommitAuthorEmail != "jane@example.com" {
+		t.Fatalf("expected commit author email jane@example.com, got %#v", buildInput.GitCommitAuthorEmail)
+	}
+}
+
+func runGit(t *testing.T, args ...string) {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
 	}
 }
 

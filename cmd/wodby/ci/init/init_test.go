@@ -114,3 +114,51 @@ func TestProviderFlagHasShorthandAndNoDefault(t *testing.T) {
 		t.Fatalf("provider default = %q, want empty string", flag.DefValue)
 	}
 }
+
+func TestApplyCIBuildInputFlagsOverridesDetectedValues(t *testing.T) {
+	input := types.NewBuildFromCIInput{
+		Provider: "gitlab",
+		BuildID:  "detected-build",
+		BuildNum: 7,
+	}
+
+	err := applyCIBuildInputFlags(&input, options{
+		provider:    "unknown",
+		buildID:     "manual-build",
+		buildNumber: 42,
+	})
+	if err != nil {
+		t.Fatalf("applyCIBuildInputFlags() error = %v", err)
+	}
+	if input.Provider != "unknown" {
+		t.Fatalf("provider = %q, want unknown", input.Provider)
+	}
+	if input.BuildID != "manual-build" {
+		t.Fatalf("build ID = %q, want manual-build", input.BuildID)
+	}
+	if input.BuildNum != 42 {
+		t.Fatalf("build num = %d, want 42", input.BuildNum)
+	}
+}
+
+func TestApplyCIBuildInputFlagsKeepsCollectedValues(t *testing.T) {
+	input := types.NewBuildFromCIInput{
+		Provider: "unknown",
+		BuildID:  "detected-build",
+		BuildNum: 7,
+	}
+
+	err := applyCIBuildInputFlags(&input, options{})
+	if err != nil {
+		t.Fatalf("applyCIBuildInputFlags() error = %v", err)
+	}
+	if input.Provider != "unknown" {
+		t.Fatalf("provider = %q, want unknown", input.Provider)
+	}
+	if input.BuildID != "detected-build" {
+		t.Fatalf("build ID = %q, want detected-build", input.BuildID)
+	}
+	if input.BuildNum != 7 {
+		t.Fatalf("build num = %d, want 7", input.BuildNum)
+	}
+}

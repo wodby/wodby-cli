@@ -107,23 +107,8 @@ var Cmd = &cobra.Command{
 				return errors.WithStack(err)
 			}
 			input.AppServiceID = types.ToID(opts.id)
-			if input.BuildID == "" {
-				if opts.buildID == "" {
-					return errors.New("build id must be specified")
-				}
-				input.BuildID = opts.buildID
-			}
-			if input.BuildNum == 0 {
-				if opts.buildNumber == 0 {
-					return errors.New("build number must be specified")
-				}
-				input.BuildNum = opts.buildNumber
-			}
-			if input.Provider == "" {
-				if opts.provider == "" {
-					return errors.New("provider must be specified")
-				}
-				input.Provider = opts.provider
+			if err = applyCIBuildInputFlags(&input, opts); err != nil {
+				return err
 			}
 			postDeployment, err := readPostDeployment(opts.context)
 			if err != nil {
@@ -260,7 +245,7 @@ func init() {
 	Cmd.Flags().BoolVar(&opts.fixPermissions, "fix-permissions", false, "Fix codebase permissions explicitly. WARNING: this can change ownership of files in the project directory")
 	Cmd.Flags().IntVarP(&opts.buildNumber, "build-num", "n", 0, "Custom build number (used if can't identify automatically)")
 	Cmd.Flags().StringVarP(&opts.buildID, "build-id", "i", "", "Custom build id (used if can't identify automatically)")
-	Cmd.Flags().StringVarP(&opts.provider, "provider", "p", "", "Custom build provider name (used if can't identify automatically)")
+	Cmd.Flags().StringVarP(&opts.provider, "provider", "p", "", "Override detected build provider name")
 }
 
 func permissionFixDecision(explicit bool) (bool, string) {
@@ -269,6 +254,31 @@ func permissionFixDecision(explicit bool) (bool, string) {
 	}
 
 	return false, "--fix-permissions was not set"
+}
+
+func applyCIBuildInputFlags(input *types.NewBuildFromCIInput, opts options) error {
+	if opts.buildID != "" {
+		input.BuildID = opts.buildID
+	}
+	if input.BuildID == "" {
+		return errors.New("build id must be specified")
+	}
+
+	if opts.buildNumber != 0 {
+		input.BuildNum = opts.buildNumber
+	}
+	if input.BuildNum == 0 {
+		return errors.New("build number must be specified")
+	}
+
+	if opts.provider != "" {
+		input.Provider = opts.provider
+	}
+	if input.Provider == "" {
+		return errors.New("provider must be specified")
+	}
+
+	return nil
 }
 
 func findMainServiceBuildConfig(services []*types.AppServiceBuildConfig) (*types.AppServiceBuildConfig, error) {

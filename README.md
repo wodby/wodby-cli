@@ -176,6 +176,31 @@ wodby task cancel 123 --yes
 wodby task repeat 123 --force --wait
 ```
 
+### CLI reference docs
+
+The generated CLI reference is built from the Cobra command tree.
+
+Generate it locally:
+
+```bash
+make cli-docs
+```
+
+Generated files are written to `out/docs/cli-reference`.
+
+To update the public docs repository, set machine-user credentials and run:
+
+```bash
+export MACHINE_USER_API_TOKEN=...
+export MACHINE_USER=...
+export MACHINE_USER_EMAIL=...
+make docs-update
+```
+
+The update script clones `wodby/docs`, replaces `2.0/docs/dev/cli-reference`,
+ensures the MkDocs nav contains `CLI reference`, commits the changes, and pushes
+to the docs `master` branch.
+
 ### `wodby ci`
 
 The `ci` namespace manages the full build pipeline against Wodby:

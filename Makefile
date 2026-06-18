@@ -16,7 +16,7 @@ PLATFORM ?= linux/amd64
 
 default: build
 
-.PHONY: build buildx-build buildx-push test shell package
+.PHONY: build buildx-build buildx-push cli-docs docs-update test shell package
 
 build:
 	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) \
@@ -38,6 +38,12 @@ buildx-push:
 		--build-arg VERSION=$(VERSION) \
 		--push \
 		-t $(REPO):$(TAG) ./
+
+cli-docs:
+	bash scripts/cli-docs-build.sh
+
+docs-update:
+	bash scripts/update-repo-docs.sh
 
 test:
 	@bin/wodby version | grep $(VERSION)

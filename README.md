@@ -39,6 +39,10 @@ After that you can run the CLI with `wodby`.
 Commonly used global flags:
 
 ```text
+--access-token string     Access token
+--api-base-url string     Public REST API base URL (default "https://api.wodby.com/v1")
+--api-endpoint string     GraphQL API endpoint used by CI commands (default "https://apiv2.wodby.com/query")
+--api-key string          API key
 --ci-config-path string   Path to CI config (default "/tmp/.wodby-ci.json")
 --verbose                 Verbose output
 ```
@@ -48,10 +52,128 @@ Commonly used global flags:
 `wodby` currently exposes:
 
 ```text
+app         Manage apps, app instances, app services, and app routes
+backup      Manage app and database backups
+build       Manage app builds
 ci          CI-oriented build, release, deploy, and run workflows
 completion  Generate shell completion scripts
+deployment  Manage deployments
+env         Manage environments
 help        Help about any command
+import      Manage imports
+instance    Alias for app instance operations
+org         Show organization context
+project     Manage projects
+route       Alias for app route operations
+task        Manage background tasks
 version     Shows Wodby CLI version
+```
+
+### Public API commands
+
+The top-level operational commands use the public Wodby REST API. API keys are scoped
+to one organization, so commands that need `orgId` infer it automatically when the
+current credentials expose a single organization.
+
+All public API commands support:
+
+```text
+-o, --output table|json   Output format (default "table")
+```
+
+Mutating commands with complex bodies also support:
+
+```text
+    --data string   JSON request body
+-f, --file string   Path to JSON request body
+```
+
+Commands that start asynchronous work generally support:
+
+```text
+    --wait               Wait for the created task or deployment to finish
+    --timeout duration   Maximum time to wait (default 10m0s)
+```
+
+#### Organization and projects
+
+```bash
+wodby org current
+wodby project list
+wodby project get 123
+```
+
+#### Environments
+
+```bash
+wodby env list
+wodby env get 123
+wodby env create --name prod-eu --title "Production EU" --type prod
+wodby env update 123 --name prod-eu --title "Production EU" --type prod
+wodby env delete 123 --yes
+```
+
+#### Apps, instances, services, and routes
+
+```bash
+wodby app list
+wodby app get 123
+wodby app status 123
+
+wodby app instance list --app 123
+wodby app instance get 456
+wodby app instance status 456
+
+wodby instance list --app 123
+wodby instance status 456
+
+wodby app service list --instance 456
+wodby app service get 789
+wodby app service update 789 --replicas 2
+wodby app service action 789 cache-clear --wait
+
+wodby app route list --instance 456
+wodby app route get 321
+wodby app route create --service 789 --host example.com --port 80 --primary
+wodby app route update 321 --disabled
+wodby app route delete 321 --yes
+
+wodby route list --instance 456
+```
+
+#### Builds and deployments
+
+```bash
+wodby build list --instance 456
+wodby build get 123
+wodby build deploy 123 --wait
+wodby build void 123 --yes
+wodby build registry-login 123 --host registry.example.com
+
+wodby deployment list --instance 456
+wodby deployment get 123
+wodby deployment create --service 789 --force --wait
+wodby deployment redeploy 123 --wait
+wodby deployment wait 123
+```
+
+#### Backups, imports, and tasks
+
+```bash
+wodby backup list --instance 456
+wodby backup get 123
+wodby backup create --service 789 --integration 12 --bucket backups --wait
+
+wodby import list --instance 456
+wodby import get 123
+wodby import create --service 789 --source url --url https://example.com/archive.tar --wait
+
+wodby task list --instance 456 --statuses pending,in_progress
+wodby task get 123
+wodby task wait 123
+wodby task logs 123
+wodby task cancel 123 --yes
+wodby task repeat 123 --force --wait
 ```
 
 ### `wodby ci`

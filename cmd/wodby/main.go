@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/wodby/wodby-cli/cmd/wodby/ci"
+	"github.com/wodby/wodby-cli/cmd/wodby/ops"
 	"github.com/wodby/wodby-cli/cmd/wodby/version"
 )
 
@@ -25,8 +26,20 @@ func init() {
 		panic(err)
 	}
 
-	RootCmd.PersistentFlags().String("api-endpoint", "https://apiv2.wodby.com/query", "API endpoint")
+	RootCmd.PersistentFlags().String("access-token", "", "Access token")
+	err = viper.BindPFlag("access_token", RootCmd.PersistentFlags().Lookup("access-token"))
+	if err != nil {
+		panic(err)
+	}
+
+	RootCmd.PersistentFlags().String("api-endpoint", "https://apiv2.wodby.com/query", "GraphQL API endpoint used by CI commands")
 	err = viper.BindPFlag("api_endpoint", RootCmd.PersistentFlags().Lookup("api-endpoint"))
+	if err != nil {
+		panic(err)
+	}
+
+	RootCmd.PersistentFlags().String("api-base-url", "https://api.wodby.com/v1", "Public REST API base URL")
+	err = viper.BindPFlag("api_base_url", RootCmd.PersistentFlags().Lookup("api-base-url"))
 	if err != nil {
 		panic(err)
 	}
@@ -44,6 +57,7 @@ func init() {
 	}
 
 	RootCmd.AddCommand(ci.Cmd)
+	RootCmd.AddCommand(ops.Commands()...)
 	RootCmd.AddCommand(version.Cmd)
 }
 

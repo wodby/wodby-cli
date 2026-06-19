@@ -42,8 +42,8 @@ var Cmd = &cobra.Command{
 		if viper.GetString("api_key") == "" && viper.GetString("access_token") == "" {
 			return errors.New("either api-key or access-token must be specified")
 		}
-		if viper.GetString("api_endpoint") == "" {
-			return errors.New("api-endpoint flag is required")
+		if viper.GetString("api_base_url") == "" {
+			return errors.New("api-base-url flag is required")
 		}
 
 		var err error
@@ -68,10 +68,13 @@ var Cmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		apiConfig := types.APIConfig{
 			Key:         viper.GetString("api_key"),
-			Endpoint:    viper.GetString("api_endpoint"),
+			Endpoint:    viper.GetString("api_base_url"),
 			AccessToken: viper.GetString("access_token"),
 		}
-		client := api.NewClient(apiConfig)
+		client, err := api.NewClient(apiConfig)
+		if err != nil {
+			return errors.WithStack(err)
+		}
 
 		logger := log.WithField("stage", "init")
 		log.SetOutput(os.Stdout)
@@ -98,7 +101,6 @@ var Cmd = &cobra.Command{
 		ctx := context.Background()
 
 		var appBuild types.AppBuild
-		var err error
 
 		if os.Getenv("WODBY_CI") == "" {
 			logger.Infof("Creating new app build from CI for app service %d...", opts.id)
@@ -129,6 +131,13 @@ var Cmd = &cobra.Command{
 				return errors.WithStack(err)
 			}
 		}
+
+		logger.Infof("Requesting config for app build %s...", appBuild.ID)
+		appBuildConfig, err := client.GetAppBuildConfig(ctx, appBuild.ID)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+		appBuild.Config = &appBuildConfig
 
 		logger.Infof("Requesting registry credentials for app build %s...", appBuild.ID)
 		credentials, err := client.GetDockerRegistryCredentials(context.Background(), appBuild.ID)

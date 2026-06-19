@@ -83,7 +83,10 @@ var Cmd = &cobra.Command{
 			Services:           servicesToDeploy,
 			SkipPostDeployment: opts.skipPostDeploy,
 		}
-		client := api.NewClient(config.API)
+		client, err := api.NewClient(config.API)
+		if err != nil {
+			return errors.WithStack(err)
+		}
 		deployment, err := client.Deploy(context.Background(), input)
 		if err != nil {
 			return errors.WithStack(err)

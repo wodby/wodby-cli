@@ -2,109 +2,126 @@ package api
 
 import (
 	"context"
-	"net/http"
-	"os"
-	"time"
+	"net/url"
+	"strconv"
 
-	graphql "github.com/hasura/go-graphql-client"
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
+	"github.com/wodby/wodby-cli/pkg/api/rest"
 	"github.com/wodby/wodby-cli/pkg/types"
 )
 
-const defaultHTTPTimeout = 30 * time.Second
-
-type transport struct {
-	underlyingTransport http.RoundTripper
-	apiKey              string
-	accessToken         string
-}
-
-func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.apiKey != "" {
-		req.Header.Set("X-API-KEY", t.apiKey)
-	} else {
-		req.Header.Set("X-ACCESS-TOKEN", t.accessToken)
-	}
-	return t.underlyingTransport.RoundTrip(req)
-}
-
 type Client struct {
-	client *graphql.Client
-	config types.APIConfig
-	logger *logrus.Entry
+	client *rest.Client
 }
 
-func NewClient(config types.APIConfig) *Client {
-	if os.Getenv("DEBUG") != "" {
-		logrus.SetLevel(logrus.DebugLevel)
+type newBuildFromCIRequest struct {
+	AppServiceID         int     `json:"appServiceId"`
+	GitCommitSHA         string  `json:"gitCommitSHA"`
+	GitRef               string  `json:"gitRef"`
+	GitRefType           string  `json:"gitRefType"`
+	Workflow             string  `json:"workflow"`
+	BuildNum             int     `json:"buildNum"`
+	BuildID              string  `json:"buildId"`
+	GitCommitAuthorName  *string `json:"gitCommitAuthorName"`
+	GitCommitAuthorEmail *string `json:"gitCommitAuthorEmail"`
+	GitCommitMessage     *string `json:"gitCommitMessage"`
+	Provider             string  `json:"provider"`
+	PostDeployment       *string `json:"postDeployment"`
+}
+
+type deploymentFromCIRequest struct {
+	AppBuildID         int                             `json:"appBuildId"`
+	Services           []*types.ServiceDeploymentInput `json:"services"`
+	SkipPostDeployment bool                            `json:"skipPostDeployment"`
+}
+
+func NewClient(config types.APIConfig) (*Client, error) {
+	client, err := rest.NewClient(config)
+	if err != nil {
+		return nil, err
 	}
 	return &Client{
-		client: graphql.NewClient(config.Endpoint, newHTTPClient(config)),
-		config: config,
-		logger: logrus.WithField("logger", "client"),
-	}
-}
-
-func newHTTPClient(config types.APIConfig) *http.Client {
-	return &http.Client{
-		Transport: &transport{
-			underlyingTransport: http.DefaultTransport,
-			apiKey:              config.Key,
-			accessToken:         config.AccessToken,
-		},
-		Timeout: defaultHTTPTimeout,
-	}
+		client: client,
+	}, nil
 }
 
 func (c *Client) GetAppBuild(ctx context.Context, id types.ID) (types.AppBuild, error) {
-	var query struct {
-		AppBuild types.AppBuild `graphql:"appBuild(id: $id)"`
-	}
-	variables := map[string]interface{}{"id": id}
-	err := c.client.Query(ctx, &query, variables)
-	if err != nil {
+	var appBuild types.AppBuild
+	if err := c.client.Get(ctx, "/app-builds/"+url.PathEscape(id.String()), nil, &appBuild); err != nil {
 		return types.AppBuild{}, errors.WithStack(err)
 	}
-	return query.AppBuild, nil
+	return appBuild, nil
+}
+
+func (c *Client) GetAppBuildConfig(ctx context.Context, appBuildID types.ID) (types.AppBuildConfig, error) {
+	var config types.AppBuildConfig
+	if err := c.client.Get(ctx, "/app-builds/"+url.PathEscape(appBuildID.String())+"/config", nil, &config); err != nil {
+		return types.AppBuildConfig{}, errors.WithStack(err)
+	}
+	return config, nil
 }
 
 func (c *Client) GetDockerRegistryCredentials(ctx context.Context, appBuildID types.ID) (types.DockerRegistryCredentials, error) {
-	var query struct {
-		DockerRegistryCredentials types.DockerRegistryCredentials `graphql:"dockerRegistryCredentials(appBuildID: $appBuildID)"`
-	}
-	variables := map[string]interface{}{"appBuildID": appBuildID}
-	err := c.client.Query(ctx, &query, variables)
-	if err != nil {
+	var credentials types.DockerRegistryCredentials
+	if err := c.client.Get(ctx, "/app-builds/"+url.PathEscape(appBuildID.String())+"/docker-registry-credentials", nil, &credentials); err != nil {
 		return types.DockerRegistryCredentials{}, errors.WithStack(err)
 	}
-	return query.DockerRegistryCredentials, nil
+	return credentials, nil
 }
 
 func (c *Client) Deploy(ctx context.Context, input types.DeploymentFromCIInput) (types.AppDeployment, error) {
-	var m struct {
-		AppDeployment types.AppDeployment `graphql:"deployFromCI(input: $input)"`
-	}
-	variables := map[string]interface{}{"input": input}
-
-	err := c.client.Mutate(ctx, &m, variables)
+	appBuildID, err := idAsInt(input.AppBuildID, "app build id")
 	if err != nil {
+		return types.AppDeployment{}, err
+	}
+
+	request := deploymentFromCIRequest{
+		AppBuildID:         appBuildID,
+		Services:           input.Services,
+		SkipPostDeployment: input.SkipPostDeployment,
+	}
+
+	var appDeployment types.AppDeployment
+	if err := c.client.Post(ctx, "/app-deployments/from-ci", nil, request, &appDeployment); err != nil {
 		return types.AppDeployment{}, errors.WithStack(err)
 	}
 
-	return m.AppDeployment, nil
+	return appDeployment, nil
 }
 
 func (c *Client) NewCIBuild(ctx context.Context, input types.NewBuildFromCIInput) (types.AppBuild, error) {
-	var m struct {
-		AppBuild types.AppBuild `graphql:"newBuildFromCI(input: $input)"`
-	}
-	variables := map[string]interface{}{"input": input}
-
-	err := c.client.Mutate(ctx, &m, variables)
+	appServiceID, err := idAsInt(input.AppServiceID, "app service id")
 	if err != nil {
+		return types.AppBuild{}, err
+	}
+
+	request := newBuildFromCIRequest{
+		AppServiceID:         appServiceID,
+		GitCommitSHA:         input.GitCommitSHA,
+		GitRef:               input.GitRef,
+		GitRefType:           input.GitRefType,
+		Workflow:             input.Workflow,
+		BuildNum:             input.BuildNum,
+		BuildID:              input.BuildID,
+		GitCommitAuthorName:  input.GitCommitAuthorName,
+		GitCommitAuthorEmail: input.GitCommitAuthorEmail,
+		GitCommitMessage:     input.GitCommitMessage,
+		Provider:             input.Provider,
+		PostDeployment:       input.PostDeployment,
+	}
+
+	var appBuild types.AppBuild
+	if err := c.client.Post(ctx, "/app-builds/from-ci", nil, request, &appBuild); err != nil {
 		return types.AppBuild{}, errors.WithStack(err)
 	}
 
-	return m.AppBuild, nil
+	return appBuild, nil
+}
+
+func idAsInt(id types.ID, name string) (int, error) {
+	value, err := strconv.Atoi(id.String())
+	if err != nil {
+		return 0, errors.Wrapf(err, "invalid %s %q", name, id.String())
+	}
+	return value, nil
 }

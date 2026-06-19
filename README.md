@@ -28,7 +28,7 @@ wget -qO- "${WODBY_CLI_LATEST_URL}" | tar xz -C /usr/local/bin
 
 See the [Wodby CLI documentation](https://wodby.com/docs/2.0/dev/cli/) for usage
 and examples, and the
-[CLI reference](https://wodby.com/docs/2.0/dev/cli-reference/) for the full
+[CLI reference](https://wodby.com/docs/2.0/cli/) for the full
 command list.
 
 ## Authentication

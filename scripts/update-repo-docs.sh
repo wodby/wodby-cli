@@ -29,8 +29,10 @@ git checkout -B "${branch}" "origin/${branch}"
 git config "branch.${branch}.remote" origin
 git config "branch.${branch}.merge" "refs/heads/${branch}"
 
-docs_dir="${clone_dir}/2.0/docs/dev/cli-reference"
+docs_dir="${clone_dir}/2.0/cli"
+legacy_docs_dir="${clone_dir}/2.0/docs/dev/cli-reference"
 rm -rf "${docs_dir}"
+rm -rf "${legacy_docs_dir}"
 mkdir -p "${docs_dir}"
 cp -R "${out_dir}/." "${docs_dir}/"
 
@@ -40,26 +42,26 @@ import sys
 
 path = Path(sys.argv[1])
 content = path.read_text()
-nav_needle = "      - CLI: dev/cli.md\n"
-nav_insert = "      - CLI reference: dev/cli-reference/index.md\n"
-not_in_nav_entry = "  dev/cli-reference/wodby*.md\n"
+nav_entries = [
+    "      - CLI reference: dev/cli-reference/index.md\n",
+    "      - CLI reference: dev/cli-reference/index.html\n",
+]
+not_in_nav_entries = [
+    "  dev/cli-reference/wodby*.md\n",
+    "  dev/cli-reference/*.html\n",
+]
 changed = False
 
-if nav_insert not in content:
-    if nav_needle not in content:
-        raise SystemExit("Could not find Development CLI nav entry")
-    content = content.replace(nav_needle, nav_needle + nav_insert, 1)
-    changed = True
-
-if not_in_nav_entry in content:
-    content = content.replace(not_in_nav_entry, "", 1)
-    changed = True
+for entry in nav_entries + not_in_nav_entries:
+    if entry in content:
+        content = content.replace(entry, "", 1)
+        changed = True
 
 if changed:
     path.write_text(content)
 PY
 
-git add 2.0/docs/dev/cli-reference 2.0/mkdocs.yml
+git add -A 2.0/cli 2.0/docs/dev/cli-reference 2.0/mkdocs.yml
 git update-index -q --refresh
 
 if git diff --cached --quiet; then

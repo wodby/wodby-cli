@@ -74,7 +74,10 @@ if changed:
     path.write_text(content)
 PY
 
-git add -A 2.0/docs/cli 2.0/docs/dev/cli-reference 2.0/cli 2.0/mkdocs.yml
+git add -A 2.0/docs 2.0/mkdocs.yml
+if [[ -e 2.0/cli || -n "$(git ls-files 2.0/cli)" ]]; then
+    git add -A 2.0/cli
+fi
 git update-index -q --refresh
 
 if git diff --cached --quiet; then

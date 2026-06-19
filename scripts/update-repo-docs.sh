@@ -17,9 +17,7 @@ if [[ -z "${MACHINE_USER_API_TOKEN:-}" ]]; then
     exit 1
 fi
 
-if [[ ! -f "${out_dir}/wodby.md" ]]; then
-    bash "${root_dir}/scripts/cli-docs-build.sh" "${out_dir}"
-fi
+bash "${root_dir}/scripts/cli-docs-build.sh" "${out_dir}"
 
 rm -rf "${clone_dir}"
 git clone https://x-access-token:"${MACHINE_USER_API_TOKEN}"@github.com/"${repo}".git "${clone_dir}"
@@ -53,13 +51,8 @@ if nav_insert not in content:
     content = content.replace(nav_needle, nav_needle + nav_insert, 1)
     changed = True
 
-if not_in_nav_entry not in content:
-    if "not_in_nav: |\n" in content:
-        content = content.replace("not_in_nav: |\n", "not_in_nav: |\n" + not_in_nav_entry, 1)
-    elif "\nnav:\n" in content:
-        content = content.replace("\nnav:\n", "\nnot_in_nav: |\n" + not_in_nav_entry + "\nnav:\n", 1)
-    else:
-        raise SystemExit("Could not find MkDocs nav section")
+if not_in_nav_entry in content:
+    content = content.replace(not_in_nav_entry, "", 1)
     changed = True
 
 if changed:

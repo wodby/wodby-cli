@@ -127,19 +127,31 @@ jobs:
     permissions:
       contents: write
     steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
     - name: Download Artifacts
       uses: actions/download-artifact@v8
       with:
         pattern: dist-*
         path: dist
         merge-multiple: true
+    - name: Read tag description
+      run: |
+        if [ "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" != "tag" ]; then
+          echo "Tag ${GITHUB_REF_NAME} is not annotated; no tag description is available." >&2
+          : > release-notes.md
+          exit 0
+        fi
+
+        git for-each-ref "refs/tags/${GITHUB_REF_NAME}" --format='%(contents)' > release-notes.md
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ github.ref_name }}
         name: ${{ github.ref_name }}
         prerelease: false
-        generate_release_notes: true
+        body_path: release-notes.md
         files: dist/wodby-*.tar.gz
         fail_on_unmatched_files: true
 

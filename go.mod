@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/google/uuid v1.6.0
+	github.com/hasura/go-graphql-client v0.15.1
 	github.com/pkg/errors v0.9.1
 	github.com/sirupsen/logrus v1.9.4
 	github.com/spf13/cobra v1.10.2
@@ -12,12 +13,11 @@ require (
 )
 
 require (
-	github.com/cpuguy83/go-md2man/v2 v2.0.6 // indirect
+	github.com/coder/websocket v1.8.14 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.3.0 // indirect
-	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect

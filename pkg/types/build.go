@@ -40,13 +40,13 @@ type (
 		Secret bool   `json:"secret"`
 	}
 	NewBuildFromCIInput struct {
-		AppServiceID         ID      `json:"appServiceId"`
+		AppServiceID         ID      `json:"appServiceID"`
 		GitCommitSHA         string  `json:"gitCommitSHA"`
 		GitRef               string  `json:"gitRef"`
 		GitRefType           string  `json:"gitRefType"`
 		Workflow             string  `json:"workflow"`
 		BuildNum             int     `json:"buildNum"`
-		BuildID              string  `json:"buildId"`
+		BuildID              string  `json:"buildID"`
 		GitCommitAuthorName  *string `json:"gitCommitAuthorName"`
 		GitCommitAuthorEmail *string `json:"gitCommitAuthorEmail"`
 		GitCommitMessage     *string `json:"gitCommitMessage"`

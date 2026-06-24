@@ -39,6 +39,10 @@ func ToID(v interface{}) ID {
 	}
 }
 
+func (id ID) GetGraphQLType() string {
+	return "ID"
+}
+
 func (id ID) MarshalJSON() ([]byte, error) {
 	return json.Marshal(string(id))
 }

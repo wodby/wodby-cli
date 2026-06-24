@@ -36,11 +36,8 @@ func bindPersistentFlags(cmd *cobra.Command) {
 		panic(err)
 	}
 
-	cmd.PersistentFlags().String("api-endpoint", "", "Deprecated: use --api-base-url")
+	cmd.PersistentFlags().String("api-endpoint", "https://apiv2.wodby.com/query", "CI API endpoint")
 	if err := viper.BindPFlag("api_endpoint", cmd.PersistentFlags().Lookup("api-endpoint")); err != nil {
-		panic(err)
-	}
-	if err := cmd.PersistentFlags().MarkDeprecated("api-endpoint", "use --api-base-url"); err != nil {
 		panic(err)
 	}
 

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/spf13/viper"
 	"github.com/wodby/wodby-cli/pkg/types"
 )
 
@@ -112,6 +113,27 @@ func TestProviderFlagHasShorthandAndNoDefault(t *testing.T) {
 	}
 	if flag.DefValue != "" {
 		t.Fatalf("provider default = %q, want empty string", flag.DefValue)
+	}
+}
+
+func TestNewCIAPIConfigUsesLegacyAPIEndpoint(t *testing.T) {
+	viper.Set("api_key", "secret")
+	viper.Set("access_token", "")
+	viper.Set("api_endpoint", "https://ci.example.com/query")
+	viper.Set("api_base_url", "https://api.example.com/v1")
+	t.Cleanup(func() {
+		viper.Set("api_key", "")
+		viper.Set("access_token", "")
+		viper.Set("api_endpoint", "")
+		viper.Set("api_base_url", "")
+	})
+
+	config := newCIAPIConfig()
+	if config.Endpoint != "https://ci.example.com/query" {
+		t.Fatalf("endpoint = %q, want legacy CI API endpoint", config.Endpoint)
+	}
+	if config.Key != "secret" {
+		t.Fatalf("key = %q, want secret", config.Key)
 	}
 }
 

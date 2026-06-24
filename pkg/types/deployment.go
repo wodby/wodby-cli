@@ -13,7 +13,7 @@ const (
 
 type (
 	DeploymentFromCIInput struct {
-		AppBuildID         ID                        `json:"appBuildID"`
+		AppBuildID         ID                        `json:"appBuildId"`
 		Services           []*ServiceDeploymentInput `json:"services"`
 		SkipPostDeployment bool                      `json:"skipPostDeployment"`
 	}

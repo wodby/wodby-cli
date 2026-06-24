@@ -57,15 +57,23 @@ func newRESTClient() (*rest.Client, error) {
 	if viper.GetString("api_key") == "" && viper.GetString("access_token") == "" {
 		return nil, errors.New("either api-key or access-token must be specified")
 	}
-	if viper.GetString("api_base_url") == "" {
+	endpoint := apiBaseURL()
+	if endpoint == "" {
 		return nil, errors.New("api-base-url flag is required")
 	}
 
 	return rest.NewClient(types.APIConfig{
 		Key:         viper.GetString("api_key"),
 		AccessToken: viper.GetString("access_token"),
-		Endpoint:    viper.GetString("api_base_url"),
+		Endpoint:    endpoint,
 	})
+}
+
+func apiBaseURL() string {
+	if endpoint := viper.GetString("api_endpoint"); endpoint != "" {
+		return endpoint
+	}
+	return viper.GetString("api_base_url")
 }
 
 func readBody(opts bodyOptions) (interface{}, bool, error) {

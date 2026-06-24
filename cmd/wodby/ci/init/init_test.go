@@ -116,10 +116,10 @@ func TestProviderFlagHasShorthandAndNoDefault(t *testing.T) {
 	}
 }
 
-func TestNewCIAPIConfigUsesLegacyAPIEndpoint(t *testing.T) {
+func TestNewCIAPIConfigUsesLegacyAPIEndpointAsRESTBaseURL(t *testing.T) {
 	viper.Set("api_key", "secret")
 	viper.Set("access_token", "")
-	viper.Set("api_endpoint", "https://ci.example.com/query")
+	viper.Set("api_endpoint", "https://ci.example.com/v1")
 	viper.Set("api_base_url", "https://api.example.com/v1")
 	t.Cleanup(func() {
 		viper.Set("api_key", "")
@@ -129,11 +129,32 @@ func TestNewCIAPIConfigUsesLegacyAPIEndpoint(t *testing.T) {
 	})
 
 	config := newCIAPIConfig()
-	if config.Endpoint != "https://ci.example.com/query" {
-		t.Fatalf("endpoint = %q, want legacy CI API endpoint", config.Endpoint)
+	if config.Endpoint != "https://ci.example.com/v1" {
+		t.Fatalf("endpoint = %q, want legacy endpoint as REST base URL", config.Endpoint)
 	}
 	if config.Key != "secret" {
 		t.Fatalf("key = %q, want secret", config.Key)
+	}
+}
+
+func TestNewCIAPIConfigFallsBackToAPIBaseURL(t *testing.T) {
+	viper.Set("api_key", "")
+	viper.Set("access_token", "token")
+	viper.Set("api_endpoint", "")
+	viper.Set("api_base_url", "https://apiv2.wodby.com/v1")
+	t.Cleanup(func() {
+		viper.Set("api_key", "")
+		viper.Set("access_token", "")
+		viper.Set("api_endpoint", "")
+		viper.Set("api_base_url", "")
+	})
+
+	config := newCIAPIConfig()
+	if config.Endpoint != "https://apiv2.wodby.com/v1" {
+		t.Fatalf("endpoint = %q, want REST base URL", config.Endpoint)
+	}
+	if config.AccessToken != "token" {
+		t.Fatalf("access token = %q, want token", config.AccessToken)
 	}
 }
 

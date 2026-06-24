@@ -9,15 +9,15 @@ func TestAPIEndpointDefaults(t *testing.T) {
 	if ciEndpoint == nil {
 		t.Fatal("api-endpoint flag was not registered")
 	}
-	if ciEndpoint.DefValue != "https://apiv2.wodby.com/query" {
-		t.Fatalf("api-endpoint default = %q, want legacy CI API endpoint", ciEndpoint.DefValue)
+	if ciEndpoint.DefValue != "" {
+		t.Fatalf("api-endpoint default = %q, want empty deprecated alias default", ciEndpoint.DefValue)
 	}
 
 	restBaseURL := cmd.PersistentFlags().Lookup("api-base-url")
 	if restBaseURL == nil {
 		t.Fatal("api-base-url flag was not registered")
 	}
-	if restBaseURL.DefValue != "https://api.wodby.com/v1" {
-		t.Fatalf("api-base-url default = %q, want public REST API base URL", restBaseURL.DefValue)
+	if restBaseURL.DefValue != "https://apiv2.wodby.com/v1" {
+		t.Fatalf("api-base-url default = %q, want apiv2 REST API base URL", restBaseURL.DefValue)
 	}
 }

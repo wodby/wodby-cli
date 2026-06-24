@@ -42,8 +42,8 @@ var Cmd = &cobra.Command{
 		if viper.GetString("api_key") == "" && viper.GetString("access_token") == "" {
 			return errors.New("either api-key or access-token must be specified")
 		}
-		if viper.GetString("api_endpoint") == "" {
-			return errors.New("api-endpoint flag is required")
+		if apiBaseURL() == "" {
+			return errors.New("api-base-url flag is required")
 		}
 
 		var err error
@@ -249,9 +249,16 @@ var Cmd = &cobra.Command{
 func newCIAPIConfig() types.APIConfig {
 	return types.APIConfig{
 		Key:         viper.GetString("api_key"),
-		Endpoint:    viper.GetString("api_endpoint"),
+		Endpoint:    apiBaseURL(),
 		AccessToken: viper.GetString("access_token"),
 	}
+}
+
+func apiBaseURL() string {
+	if endpoint := viper.GetString("api_endpoint"); endpoint != "" {
+		return endpoint
+	}
+	return viper.GetString("api_base_url")
 }
 
 func init() {

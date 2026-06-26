@@ -5,8 +5,8 @@ PKG = github.com/wodby/wodby-cli
 REPO = wodby/wodby-cli
 NAME = wodby-cli
 
-GOOS ?= linux
-GOARCH ?= amd64
+GOOS ?= darwin
+GOARCH ?= arm64
 VERSION ?= 2.0
 TAG ?= $(VERSION)
 

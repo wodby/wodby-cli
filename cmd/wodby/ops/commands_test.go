@@ -44,6 +44,27 @@ func TestCommandsExposeTopLevelOperationalSurface(t *testing.T) {
 	}
 }
 
+func TestDefaultTableColumnsOmitOrgID(t *testing.T) {
+	for name, columns := range map[string][]string{
+		"project":     projectColumns,
+		"env":         envColumns,
+		"database":    databaseColumns,
+		"cluster":     clusterColumns,
+		"integration": integrationColumns,
+		"provider":    providerColumns,
+		"stack":       stackColumns,
+		"service":     catalogServiceColumns,
+		"app":         appColumns,
+		"task":        taskColumns,
+	} {
+		for _, column := range columns {
+			if column == "orgId" {
+				t.Fatalf("%s columns should not include orgId", name)
+			}
+		}
+	}
+}
+
 func TestAppCommandExposesCanonicalNestedResources(t *testing.T) {
 	app := newAppCommand()
 	names := make(map[string]bool)

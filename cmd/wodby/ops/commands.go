@@ -13,15 +13,15 @@ import (
 
 var (
 	orgColumns            = []string{"id", "name", "title", "domain"}
-	projectColumns        = []string{"id", "name", "title", "orgId"}
-	envColumns            = []string{"id", "name", "title", "type", "orgId"}
+	projectColumns        = []string{"id", "name", "title"}
+	envColumns            = []string{"id", "name", "title", "type"}
 	databaseColumns       = []string{"id", "name", "title", "status", "kind", "type", "version", "envId", "integrationId", "region", "zone"}
-	clusterColumns        = []string{"id", "name", "title", "status", "integrationId", "orgId", "region", "zone", "version", "serverless"}
-	integrationColumns    = []string{"id", "name", "title", "scope", "status", "providerRevId", "orgId", "createdAt"}
-	providerColumns       = []string{"id", "name", "title", "status", "public", "revId", "orgId"}
-	stackColumns          = []string{"id", "name", "title", "status", "public", "revId", "latestRevNumber", "orgId"}
-	catalogServiceColumns = []string{"id", "name", "title", "type", "status", "public", "external", "revId", "latestRevNumber", "orgId"}
-	appColumns            = []string{"id", "name", "title", "status", "clusterApp", "orgId"}
+	clusterColumns        = []string{"id", "name", "title", "status", "integrationId", "region", "zone", "version", "serverless"}
+	integrationColumns    = []string{"id", "name", "title", "scope", "status", "providerRevId", "createdAt"}
+	providerColumns       = []string{"id", "name", "title", "status", "public", "revId"}
+	stackColumns          = []string{"id", "name", "title", "status", "public", "revId", "latestRevNumber"}
+	catalogServiceColumns = []string{"id", "name", "title", "type", "status", "public", "external", "revId", "latestRevNumber"}
+	appColumns            = []string{"id", "name", "title", "status", "clusterApp"}
 	instanceColumns       = []string{"id", "name", "title", "status", "appId", "envId", "clusterId", "mainDomain"}
 	serviceColumns        = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
 	routeColumns          = []string{"id", "host", "path", "pathType", "action", "status", "appServiceId", "portId", "main", "primary", "disabled"}
@@ -29,7 +29,7 @@ var (
 	deploymentColumns     = []string{"id", "number", "status", "appInstanceId", "skipRollback", "createdAt", "startedAt", "endedAt"}
 	backupColumns         = []string{"id", "name", "status", "appInstanceId", "appServiceId", "databaseId", "databaseDbId", "createdAt"}
 	importColumns         = []string{"id", "name", "source", "status", "taskId", "appInstanceId", "appServiceId", "databaseId", "databaseDbId", "createdAt"}
-	taskColumns           = []string{"id", "name", "title", "status", "progress", "orgId", "appId", "appInstanceId", "createdAt", "startedAt", "endedAt"}
+	taskColumns           = []string{"id", "name", "title", "status", "progress", "appId", "appInstanceId", "createdAt", "startedAt", "endedAt"}
 	operationColumns      = []string{"success", "taskId"}
 )
 

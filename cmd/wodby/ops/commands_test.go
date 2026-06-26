@@ -1,11 +1,13 @@
 package ops
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -62,6 +64,163 @@ func TestDefaultTableColumnsOmitOrgID(t *testing.T) {
 				t.Fatalf("%s columns should not include orgId", name)
 			}
 		}
+	}
+}
+
+func TestDefaultTableColumnsUseReadableRelations(t *testing.T) {
+	for name, columns := range map[string][]string{
+		"database":   databaseColumns,
+		"instance":   instanceColumns,
+		"route":      routeColumns,
+		"build":      buildColumns,
+		"deployment": deploymentColumns,
+		"backup":     backupColumns,
+		"import":     importColumns,
+		"task":       taskColumns,
+		"operation":  operationColumns,
+	} {
+		for _, column := range columns {
+			switch column {
+			case "envId", "appId", "clusterId", "mainDomain", "appServiceId", "portId", "appInstanceId", "databaseId", "databaseDbId", "taskId":
+				t.Fatalf("%s columns should use readable relation names, got %q", name, column)
+			}
+		}
+	}
+}
+
+func TestTableColumnsShowIntegrationTitleWithProviderTitle(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	printTable(cmd, []interface{}{
+		map[string]interface{}{
+			"id":   1,
+			"name": "main",
+			"integration": map[string]interface{}{
+				"title": "Production AWS",
+				"provider": map[string]interface{}{
+					"title": "Amazon Web Services",
+				},
+			},
+		},
+	}, databaseColumns)
+
+	output := out.String()
+	if strings.Contains(output, "integrationId") {
+		t.Fatalf("output should not include integrationId column: %s", output)
+	}
+	if !strings.Contains(output, "integration") {
+		t.Fatalf("output should include integration column: %s", output)
+	}
+	if !strings.Contains(output, "Production AWS (Amazon Web Services)") {
+		t.Fatalf("output should include integration and provider titles: %s", output)
+	}
+}
+
+func TestTableColumnsShowProviderTitleWithVersionAndRev(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	printTable(cmd, []interface{}{
+		map[string]interface{}{
+			"id":   1,
+			"name": "aws-prod",
+			"providerRev": map[string]interface{}{
+				"version": "2.1.0",
+				"number":  7,
+				"provider": map[string]interface{}{
+					"title": "Amazon Web Services",
+				},
+			},
+		},
+	}, integrationColumns)
+
+	output := out.String()
+	if strings.Contains(output, "providerRevId") || strings.Contains(output, "providerId") {
+		t.Fatalf("output should not include provider ID columns: %s", output)
+	}
+	if !strings.Contains(output, "provider") {
+		t.Fatalf("output should include provider column: %s", output)
+	}
+	if !strings.Contains(output, "Amazon Web Services (2.1.0 #7)") {
+		t.Fatalf("output should include provider title, version, and revision: %s", output)
+	}
+}
+
+func TestTableColumnsShowAppInstanceRelations(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	printTable(cmd, []interface{}{
+		map[string]interface{}{
+			"id":         1,
+			"name":       "prod",
+			"title":      "Production",
+			"status":     "running",
+			"mainDomain": "example.com",
+			"app": map[string]interface{}{
+				"id":    11,
+				"title": "Drupal",
+			},
+			"env": map[string]interface{}{
+				"id":    22,
+				"title": "Prod",
+			},
+			"cluster": map[string]interface{}{
+				"id":    33,
+				"title": "Primary",
+			},
+		},
+	}, instanceColumns)
+
+	output := out.String()
+	for _, rawColumn := range []string{"appId", "envId", "clusterId", "mainDomain"} {
+		if strings.Contains(output, rawColumn) {
+			t.Fatalf("output should not include %s column: %s", rawColumn, output)
+		}
+	}
+	for _, expected := range []string{"app", "env", "cluster", "domain", "Drupal", "Prod", "Primary", "example.com"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("output should include %q: %s", expected, output)
+		}
+	}
+}
+
+func TestGetResultUsesVerticalTableWithRelationIDs(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	err := printGetResult(cmd, outputOptions{output: outputTable}, map[string]interface{}{
+		"id":         1,
+		"name":       "prod",
+		"title":      "Production",
+		"status":     "running",
+		"mainDomain": "example.com",
+		"app": map[string]interface{}{
+			"id":    11,
+			"title": "Drupal",
+		},
+		"env": map[string]interface{}{
+			"id":    22,
+			"title": "Prod",
+		},
+	}, instanceColumns)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"id:", "name:", "app:", "Drupal (id: 11)", "app id:", "11", "env:", "Prod (id: 22)", "env id:", "22", "domain:", "example.com"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("vertical output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, "appId:") || strings.Contains(output, "envId:") || strings.Contains(output, "mainDomain:") {
+		t.Fatalf("vertical output should use readable keys: %s", output)
 	}
 }
 

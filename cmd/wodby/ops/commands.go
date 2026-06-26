@@ -15,22 +15,22 @@ var (
 	orgColumns            = []string{"id", "name", "title", "domain"}
 	projectColumns        = []string{"id", "name", "title"}
 	envColumns            = []string{"id", "name", "title", "type"}
-	databaseColumns       = []string{"id", "name", "title", "status", "kind", "type", "version", "envId", "integrationId", "region", "zone"}
-	clusterColumns        = []string{"id", "name", "title", "status", "integrationId", "region", "zone", "version", "serverless"}
-	integrationColumns    = []string{"id", "name", "title", "scope", "status", "providerRevId", "createdAt"}
+	databaseColumns       = []string{"id", "name", "title", "status", "kind", "type", "version", "env", "integration", "region", "zone"}
+	clusterColumns        = []string{"id", "name", "title", "status", "integration", "region", "zone", "version", "serverless"}
+	integrationColumns    = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
 	providerColumns       = []string{"id", "name", "title", "status", "public", "revId"}
 	stackColumns          = []string{"id", "name", "title", "status", "public", "revId", "latestRevNumber"}
 	catalogServiceColumns = []string{"id", "name", "title", "type", "status", "public", "external", "revId", "latestRevNumber"}
 	appColumns            = []string{"id", "name", "title", "status", "clusterApp"}
-	instanceColumns       = []string{"id", "name", "title", "status", "appId", "envId", "clusterId", "mainDomain"}
+	instanceColumns       = []string{"id", "name", "title", "status", "app", "env", "cluster", "domain"}
 	serviceColumns        = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
-	routeColumns          = []string{"id", "host", "path", "pathType", "action", "status", "appServiceId", "portId", "main", "primary", "disabled"}
-	buildColumns          = []string{"id", "number", "status", "appInstanceId", "appServiceId", "gitRefType", "gitRef", "commitHash", "createdAt"}
-	deploymentColumns     = []string{"id", "number", "status", "appInstanceId", "skipRollback", "createdAt", "startedAt", "endedAt"}
-	backupColumns         = []string{"id", "name", "status", "appInstanceId", "appServiceId", "databaseId", "databaseDbId", "createdAt"}
-	importColumns         = []string{"id", "name", "source", "status", "taskId", "appInstanceId", "appServiceId", "databaseId", "databaseDbId", "createdAt"}
-	taskColumns           = []string{"id", "name", "title", "status", "progress", "appId", "appInstanceId", "createdAt", "startedAt", "endedAt"}
-	operationColumns      = []string{"success", "taskId"}
+	routeColumns          = []string{"id", "host", "path", "pathType", "action", "status", "service", "port", "main", "primary", "disabled"}
+	buildColumns          = []string{"id", "number", "status", "instance", "service", "gitRefType", "gitRef", "commitHash", "createdAt"}
+	deploymentColumns     = []string{"id", "number", "status", "instance", "skipRollback", "createdAt", "startedAt", "endedAt"}
+	backupColumns         = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "createdAt"}
+	importColumns         = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "createdAt"}
+	taskColumns           = []string{"id", "name", "title", "status", "progress", "app", "instance", "createdAt", "startedAt", "endedAt"}
+	operationColumns      = []string{"success", "task"}
 )
 
 func Commands() []*cobra.Command {
@@ -1998,7 +1998,7 @@ func getAndPrint(cmd *cobra.Command, out outputOptions, path string, columns []s
 	if err := client.Get(cmd.Context(), path, nil, &result); err != nil {
 		return err
 	}
-	return printResult(cmd, out, result, columns)
+	return printGetResult(cmd, out, result, columns)
 }
 
 func optionalInt(value string) interface{} {

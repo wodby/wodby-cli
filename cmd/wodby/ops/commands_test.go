@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -180,6 +181,50 @@ func TestProviderListSendsSupportedFilters(t *testing.T) {
 	if requestedQuery != want {
 		t.Fatalf("query = %q, want %q", requestedQuery, want)
 	}
+}
+
+func TestInstanceListExcludesClusterAppsByDefault(t *testing.T) {
+	query := executeInstanceListQuery(t, "list", "--org", "123")
+
+	if got := query.Get("clusterApp"); got != "false" {
+		t.Fatalf("clusterApp = %q, want false", got)
+	}
+}
+
+func TestInstanceListCanFilterClusterApps(t *testing.T) {
+	query := executeInstanceListQuery(t, "list", "--org", "123", "--cluster-app")
+
+	if got := query.Get("clusterApp"); got != "true" {
+		t.Fatalf("clusterApp = %q, want true", got)
+	}
+}
+
+func executeInstanceListQuery(t *testing.T, args ...string) url.Values {
+	t.Helper()
+
+	var requestedPath string
+	var requestedQuery url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		requestedQuery = r.URL.Query()
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+			{"id": 1, "name": "demo"},
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if requestedPath != "/v1/app-instances" {
+		t.Fatalf("path = %q, want /v1/app-instances", requestedPath)
+	}
+	return requestedQuery
 }
 
 func configureTestAPI(t *testing.T, endpoint string) {

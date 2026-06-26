@@ -746,6 +746,7 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 	addOutputFlag(cmd, &out)
 
 	var orgID, projectIDs, appID, clusterID string
+	var clusterApp bool
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List app instances",
@@ -762,7 +763,7 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 			addQuery(query, "projectIds", projectIDs)
 			addQuery(query, "appId", appID)
 			addQuery(query, "clusterId", clusterID)
-			addBoolQuery(cmd, query, "clusterApp", "cluster-app")
+			query.Set("clusterApp", strconv.FormatBool(clusterApp))
 			var result interface{}
 			if err := client.Get(cmd.Context(), "/app-instances", query, &result); err != nil {
 				return err
@@ -774,7 +775,7 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 	listCmd.Flags().StringVar(&projectIDs, "project", "", "Project ID or comma-separated project IDs")
 	listCmd.Flags().StringVar(&appID, "app", "", "App ID")
 	listCmd.Flags().StringVar(&clusterID, "cluster", "", "Cluster ID")
-	listCmd.Flags().Bool("cluster-app", false, "Filter cluster app instances")
+	listCmd.Flags().BoolVar(&clusterApp, "cluster-app", false, "Filter cluster app instances")
 
 	getCmd := &cobra.Command{
 		Use:   "get ID",

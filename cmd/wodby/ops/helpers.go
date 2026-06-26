@@ -221,6 +221,33 @@ func addBoolQuery(cmd *cobra.Command, query url.Values, name string, flag string
 	}
 }
 
+func addPagination(query url.Values, page int, pageSize int) {
+	if page != 0 {
+		query.Set("page", strconv.Itoa(page))
+	}
+	if pageSize != 0 {
+		query.Set("pageSize", strconv.Itoa(pageSize))
+	}
+}
+
+func addOptionalInt(values map[string]interface{}, key string, value string, flag string) error {
+	if value == "" {
+		return nil
+	}
+	number, err := strconv.Atoi(value)
+	if err != nil {
+		return errors.Wrapf(err, "invalid %s", flag)
+	}
+	values[key] = number
+	return nil
+}
+
+func addOptionalString(values map[string]interface{}, key string, value string) {
+	if value != "" {
+		values[key] = value
+	}
+}
+
 func requireFlag(value string, name string) error {
 	if value == "" {
 		return errors.Errorf("%s is required", name)

@@ -12,19 +12,24 @@ import (
 )
 
 var (
-	orgColumns        = []string{"id", "name", "title", "domain"}
-	projectColumns    = []string{"id", "name", "title", "orgId"}
-	envColumns        = []string{"id", "name", "title", "type", "orgId"}
-	appColumns        = []string{"id", "name", "title", "status", "clusterApp", "orgId"}
-	instanceColumns   = []string{"id", "name", "title", "status", "appId", "envId", "clusterId", "mainDomain"}
-	serviceColumns    = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
-	routeColumns      = []string{"id", "host", "path", "pathType", "action", "status", "appServiceId", "portId", "main", "primary", "disabled"}
-	buildColumns      = []string{"id", "number", "status", "appInstanceId", "appServiceId", "gitRefType", "gitRef", "commitHash", "createdAt"}
-	deploymentColumns = []string{"id", "number", "status", "appInstanceId", "skipRollback", "createdAt", "startedAt", "endedAt"}
-	backupColumns     = []string{"id", "name", "status", "appInstanceId", "appServiceId", "databaseId", "databaseDbId", "createdAt"}
-	importColumns     = []string{"id", "name", "source", "status", "taskId", "appInstanceId", "appServiceId", "databaseId", "databaseDbId", "createdAt"}
-	taskColumns       = []string{"id", "name", "title", "status", "progress", "orgId", "appId", "appInstanceId", "createdAt", "startedAt", "endedAt"}
-	operationColumns  = []string{"success", "taskId"}
+	orgColumns            = []string{"id", "name", "title", "domain"}
+	projectColumns        = []string{"id", "name", "title", "orgId"}
+	envColumns            = []string{"id", "name", "title", "type", "orgId"}
+	clusterColumns        = []string{"id", "name", "title", "status", "integrationId", "orgId", "region", "zone", "version", "serverless"}
+	integrationColumns    = []string{"id", "name", "title", "scope", "status", "providerRevId", "orgId", "createdAt"}
+	providerColumns       = []string{"id", "name", "title", "status", "public", "revId", "orgId"}
+	stackColumns          = []string{"id", "name", "title", "status", "public", "revId", "latestRevNumber", "orgId"}
+	catalogServiceColumns = []string{"id", "name", "title", "type", "status", "public", "external", "revId", "latestRevNumber", "orgId"}
+	appColumns            = []string{"id", "name", "title", "status", "clusterApp", "orgId"}
+	instanceColumns       = []string{"id", "name", "title", "status", "appId", "envId", "clusterId", "mainDomain"}
+	serviceColumns        = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
+	routeColumns          = []string{"id", "host", "path", "pathType", "action", "status", "appServiceId", "portId", "main", "primary", "disabled"}
+	buildColumns          = []string{"id", "number", "status", "appInstanceId", "appServiceId", "gitRefType", "gitRef", "commitHash", "createdAt"}
+	deploymentColumns     = []string{"id", "number", "status", "appInstanceId", "skipRollback", "createdAt", "startedAt", "endedAt"}
+	backupColumns         = []string{"id", "name", "status", "appInstanceId", "appServiceId", "databaseId", "databaseDbId", "createdAt"}
+	importColumns         = []string{"id", "name", "source", "status", "taskId", "appInstanceId", "appServiceId", "databaseId", "databaseDbId", "createdAt"}
+	taskColumns           = []string{"id", "name", "title", "status", "progress", "orgId", "appId", "appInstanceId", "createdAt", "startedAt", "endedAt"}
+	operationColumns      = []string{"success", "taskId"}
 )
 
 func Commands() []*cobra.Command {
@@ -32,6 +37,11 @@ func Commands() []*cobra.Command {
 		newOrgCommand(),
 		newProjectCommand(),
 		newEnvCommand(),
+		newClusterCommand(),
+		newIntegrationCommand(),
+		newProviderCommand(),
+		newStackCommand(),
+		newServiceCommand(),
 		newAppCommand(),
 		newAppInstanceCommand("instance", "Manage app instances"),
 		newBuildCommand(),
@@ -257,6 +267,414 @@ func newEnvUpdateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "Environment machine name")
 	cmd.Flags().StringVar(&title, "title", "", "Environment title")
 	cmd.Flags().StringVar(&envType, "type", "", "Environment type: prod, staging, test, dev, or feature")
+	return cmd
+}
+
+func newClusterCommand() *cobra.Command {
+	out := outputOptions{}
+	cmd := &cobra.Command{
+		Use:     "cluster",
+		Aliases: []string{"clusters"},
+		Short:   "Manage clusters",
+	}
+	addOutputFlag(cmd, &out)
+
+	var orgID, projectIDs, integrationID string
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List clusters",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
+			if err != nil {
+				return err
+			}
+			query := url.Values{"orgId": []string{resolvedOrgID}}
+			addQuery(query, "projectIds", projectIDs)
+			addQuery(query, "integrationId", integrationID)
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/clusters", query, &result); err != nil {
+				return err
+			}
+			return printResult(cmd, out, result, clusterColumns)
+		},
+	}
+	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
+	listCmd.Flags().StringVar(&projectIDs, "project", "", "Project ID or comma-separated project IDs")
+	listCmd.Flags().StringVar(&integrationID, "integration", "", "Integration ID")
+
+	getCmd := &cobra.Command{
+		Use:   "get ID",
+		Short: "Get cluster",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return getAndPrint(cmd, out, "/clusters/"+args[0], clusterColumns)
+		},
+	}
+
+	cmd.AddCommand(listCmd, getCmd, newClusterCreateCommand(out), newClusterUpdateCommand(out), newDeleteCommand("delete ID", "Delete cluster", "/clusters/", clusterColumns, out))
+	return cmd
+}
+
+func newClusterCreateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	var orgID, projectID, integrationID, name, title, region, zone, version, machineType, billingOption string
+	var serverless, disableMonitoring bool
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create cluster",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if err := requireFlag(integrationID, "--integration"); err != nil {
+					return err
+				}
+				if err := requireFlag(name, "--name"); err != nil {
+					return err
+				}
+				if err := requireFlag(title, "--title"); err != nil {
+					return err
+				}
+				integrationIDNumber, err := strconv.Atoi(integrationID)
+				if err != nil {
+					return errors.Wrap(err, "invalid --integration")
+				}
+				values := map[string]interface{}{
+					"integrationId":     integrationIDNumber,
+					"name":              name,
+					"title":             title,
+					"serverless":        serverless,
+					"disableMonitoring": disableMonitoring,
+				}
+				resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
+				if err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "orgId", resolvedOrgID, "--org"); err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "projectId", projectID, "--project"); err != nil {
+					return err
+				}
+				addOptionalString(values, "region", region)
+				addOptionalString(values, "zone", zone)
+				addOptionalString(values, "version", version)
+				addOptionalString(values, "machineType", machineType)
+				addOptionalString(values, "billingOption", billingOption)
+				if value, ok := changedInt(cmd, "min-node-count"); ok {
+					values["minNodeCount"] = value
+				}
+				if value, ok := changedInt(cmd, "max-node-count"); ok {
+					values["maxNodeCount"] = value
+				}
+				if value, ok := changedInt(cmd, "node-disk-size"); ok {
+					values["nodeDiskSize"] = value
+				}
+				if value, ok := changedBool(cmd, "single-node"); ok {
+					values["singleNode"] = value
+				}
+				requestBody = values
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), "/clusters", nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printResult(cmd, out, result, clusterColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
+	cmd.Flags().StringVar(&projectID, "project", "", "Project ID")
+	cmd.Flags().StringVar(&integrationID, "integration", "", "Integration ID")
+	cmd.Flags().StringVar(&name, "name", "", "Cluster machine name")
+	cmd.Flags().StringVar(&title, "title", "", "Cluster title")
+	cmd.Flags().BoolVar(&serverless, "serverless", false, "Create a serverless cluster")
+	cmd.Flags().BoolVar(&disableMonitoring, "disable-monitoring", false, "Disable cluster monitoring")
+	cmd.Flags().StringVar(&region, "region", "", "Provider region")
+	cmd.Flags().StringVar(&zone, "zone", "", "Provider zone")
+	cmd.Flags().StringVar(&version, "version", "", "Kubernetes version")
+	cmd.Flags().StringVar(&machineType, "machine-type", "", "Machine type")
+	cmd.Flags().StringVar(&billingOption, "billing-option", "", "Provider billing option")
+	cmd.Flags().Int("min-node-count", 0, "Minimum node count")
+	cmd.Flags().Int("max-node-count", 0, "Maximum node count")
+	cmd.Flags().Int("node-disk-size", 0, "Node disk size")
+	cmd.Flags().Bool("single-node", false, "Create a single-node cluster")
+	return cmd
+}
+
+func newClusterUpdateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	var title string
+	cmd := &cobra.Command{
+		Use:   "update ID",
+		Short: "Update cluster",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if err := requireFlag(title, "--title"); err != nil {
+					return err
+				}
+				requestBody = map[string]interface{}{"title": title}
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Put(cmd.Context(), "/clusters/"+args[0], nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printResult(cmd, out, result, clusterColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().StringVar(&title, "title", "", "Cluster title")
+	return cmd
+}
+
+func newIntegrationCommand() *cobra.Command {
+	out := outputOptions{}
+	cmd := &cobra.Command{
+		Use:     "integration",
+		Aliases: []string{"integrations"},
+		Short:   "Manage integrations",
+	}
+	addOutputFlag(cmd, &out)
+
+	var orgID, projectIDs, labels string
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List integrations",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
+			if err != nil {
+				return err
+			}
+			query := url.Values{"orgId": []string{resolvedOrgID}}
+			addQuery(query, "projectIds", projectIDs)
+			addQuery(query, "labels", labels)
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/integrations", query, &result); err != nil {
+				return err
+			}
+			return printResult(cmd, out, result, integrationColumns)
+		},
+	}
+	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
+	listCmd.Flags().StringVar(&projectIDs, "project", "", "Project ID or comma-separated project IDs")
+	listCmd.Flags().StringVar(&labels, "labels", "", "Comma-separated labels")
+
+	getCmd := &cobra.Command{
+		Use:   "get ID",
+		Short: "Get integration",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return getAndPrint(cmd, out, "/integrations/"+args[0], integrationColumns)
+		},
+	}
+
+	cmd.AddCommand(listCmd, getCmd, newIntegrationCreateCommand(out), newIntegrationUpdateCommand(out), newDeleteCommand("delete ID", "Delete integration", "/integrations/", integrationColumns, out))
+	return cmd
+}
+
+func newIntegrationCreateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	var orgID, projectID, providerID, name, title, auth, scope string
+	var kinds []string
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create integration",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if err := requireFlag(providerID, "--provider"); err != nil {
+					return err
+				}
+				if err := requireFlag(name, "--name"); err != nil {
+					return err
+				}
+				if err := requireFlag(title, "--title"); err != nil {
+					return err
+				}
+				if len(kinds) == 0 {
+					return errors.New("--kind is required")
+				}
+				providerIDNumber, err := strconv.Atoi(providerID)
+				if err != nil {
+					return errors.Wrap(err, "invalid --provider")
+				}
+				values := map[string]interface{}{
+					"providerId": providerIDNumber,
+					"name":       name,
+					"title":      title,
+					"kinds":      kinds,
+				}
+				resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
+				if err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "orgId", resolvedOrgID, "--org"); err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "projectId", projectID, "--project"); err != nil {
+					return err
+				}
+				addOptionalString(values, "auth", auth)
+				addOptionalString(values, "scope", scope)
+				requestBody = values
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), "/integrations", nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printResult(cmd, out, result, integrationColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
+	cmd.Flags().StringVar(&projectID, "project", "", "Project ID")
+	cmd.Flags().StringVar(&providerID, "provider", "", "Provider ID")
+	cmd.Flags().StringVar(&name, "name", "", "Integration machine name")
+	cmd.Flags().StringVar(&title, "title", "", "Integration title")
+	cmd.Flags().StringArrayVar(&kinds, "kind", nil, "Integration kind; repeatable")
+	cmd.Flags().StringVar(&auth, "auth", "", "Integration auth mode")
+	cmd.Flags().StringVar(&scope, "scope", "", "Integration scope")
+	return cmd
+}
+
+func newIntegrationUpdateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	var name, title, scope string
+	var kinds []string
+	cmd := &cobra.Command{
+		Use:   "update ID",
+		Short: "Update integration",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if err := requireFlag(name, "--name"); err != nil {
+					return err
+				}
+				if err := requireFlag(title, "--title"); err != nil {
+					return err
+				}
+				if len(kinds) == 0 {
+					return errors.New("--kind is required")
+				}
+				values := map[string]interface{}{
+					"name":  name,
+					"title": title,
+					"kinds": kinds,
+				}
+				addOptionalString(values, "scope", scope)
+				requestBody = values
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Put(cmd.Context(), "/integrations/"+args[0], nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printResult(cmd, out, result, integrationColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().StringVar(&name, "name", "", "Integration machine name")
+	cmd.Flags().StringVar(&title, "title", "", "Integration title")
+	cmd.Flags().StringArrayVar(&kinds, "kind", nil, "Integration kind; repeatable")
+	cmd.Flags().StringVar(&scope, "scope", "", "Integration scope")
+	return cmd
+}
+
+func newProviderCommand() *cobra.Command {
+	return newCatalogCommand("provider", "providers", "Manage providers", "/providers", providerColumns, true)
+}
+
+func newStackCommand() *cobra.Command {
+	return newCatalogCommand("stack", "stacks", "Manage stacks", "/stacks", stackColumns, false)
+}
+
+func newServiceCommand() *cobra.Command {
+	return newCatalogCommand("service", "services", "Manage services", "/services", catalogServiceColumns, false)
+}
+
+func newCatalogCommand(use string, alias string, short string, path string, columns []string, excludePublic bool) *cobra.Command {
+	out := outputOptions{}
+	cmd := &cobra.Command{
+		Use:     use,
+		Aliases: []string{alias},
+		Short:   short,
+	}
+	addOutputFlag(cmd, &out)
+	cmd.AddCommand(newCatalogListCommand("list", "List "+alias, path, columns, out, excludePublic), newGetCommand("get ID", "Get "+use, path+"/", columns, out))
+	return cmd
+}
+
+func newCatalogListCommand(use string, short string, path string, columns []string, out outputOptions, excludePublic bool) *cobra.Command {
+	var orgID, projectIDs, search string
+	var page, pageSize int
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query := url.Values{}
+			addQuery(query, "orgId", orgID)
+			addQuery(query, "projectIds", projectIDs)
+			addQuery(query, "search", search)
+			addPagination(query, page, pageSize)
+			if excludePublic {
+				addBoolQuery(cmd, query, "excludePublic", "exclude-public")
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), path, query, &result); err != nil {
+				return err
+			}
+			return printResult(cmd, out, result, columns)
+		},
+	}
+	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID")
+	cmd.Flags().StringVar(&projectIDs, "project", "", "Project ID or comma-separated project IDs")
+	cmd.Flags().StringVar(&search, "search", "", "Search query")
+	cmd.Flags().IntVar(&page, "page", 0, "Page number")
+	cmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
+	if excludePublic {
+		cmd.Flags().Bool("exclude-public", false, "Exclude public resources")
+	}
 	return cmd
 }
 

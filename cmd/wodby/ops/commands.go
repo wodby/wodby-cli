@@ -15,6 +15,7 @@ var (
 	orgColumns            = []string{"id", "name", "title", "domain"}
 	projectColumns        = []string{"id", "name", "title", "orgId"}
 	envColumns            = []string{"id", "name", "title", "type", "orgId"}
+	databaseColumns       = []string{"id", "name", "title", "status", "kind", "type", "version", "envId", "integrationId", "region", "zone"}
 	clusterColumns        = []string{"id", "name", "title", "status", "integrationId", "orgId", "region", "zone", "version", "serverless"}
 	integrationColumns    = []string{"id", "name", "title", "scope", "status", "providerRevId", "orgId", "createdAt"}
 	providerColumns       = []string{"id", "name", "title", "status", "public", "revId", "orgId"}
@@ -37,6 +38,7 @@ func Commands() []*cobra.Command {
 		newOrgCommand(),
 		newProjectCommand(),
 		newEnvCommand(),
+		newDatabaseCommand(),
 		newClusterCommand(),
 		newIntegrationCommand(),
 		newProviderCommand(),
@@ -267,6 +269,201 @@ func newEnvUpdateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "Environment machine name")
 	cmd.Flags().StringVar(&title, "title", "", "Environment title")
 	cmd.Flags().StringVar(&envType, "type", "", "Environment type: prod, staging, test, dev, or feature")
+	return cmd
+}
+
+func newDatabaseCommand() *cobra.Command {
+	out := outputOptions{}
+	cmd := &cobra.Command{
+		Use:     "database",
+		Aliases: []string{"databases"},
+		Short:   "Manage databases",
+	}
+	addOutputFlag(cmd, &out)
+
+	var orgID, projectIDs, kind string
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List databases",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
+			if err != nil {
+				return err
+			}
+			query := url.Values{"orgId": []string{resolvedOrgID}}
+			addQuery(query, "projectIds", projectIDs)
+			addQuery(query, "kind", kind)
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/databases", query, &result); err != nil {
+				return err
+			}
+			return printResult(cmd, out, result, databaseColumns)
+		},
+	}
+	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
+	listCmd.Flags().StringVar(&projectIDs, "project", "", "Project ID or comma-separated project IDs")
+	listCmd.Flags().StringVar(&kind, "kind", "", "Database kind")
+
+	getCmd := &cobra.Command{
+		Use:   "get ID",
+		Short: "Get database",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return getAndPrint(cmd, out, "/databases/"+args[0], databaseColumns)
+		},
+	}
+
+	cmd.AddCommand(listCmd, getCmd, newDatabaseCreateCommand(out), newDatabaseUpdateCommand(out), newDeleteCommand("delete ID", "Delete database", "/databases/", databaseColumns, out))
+	return cmd
+}
+
+func newDatabaseCreateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	var orgID, projectID, envID, integrationKindID, name, title, dbType, version, machineType, region, zone, password, residedClusterID string
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create database",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if err := requireFlag(envID, "--env"); err != nil {
+					return err
+				}
+				if err := requireFlag(integrationKindID, "--integration-kind"); err != nil {
+					return err
+				}
+				if err := requireFlag(name, "--name"); err != nil {
+					return err
+				}
+				if err := requireFlag(title, "--title"); err != nil {
+					return err
+				}
+				if err := requireFlag(dbType, "--type"); err != nil {
+					return err
+				}
+				if err := requireFlag(version, "--version"); err != nil {
+					return err
+				}
+				if err := requireFlag(machineType, "--machine-type"); err != nil {
+					return err
+				}
+				envIDNumber, err := strconv.Atoi(envID)
+				if err != nil {
+					return errors.Wrap(err, "invalid --env")
+				}
+				integrationKindIDNumber, err := strconv.Atoi(integrationKindID)
+				if err != nil {
+					return errors.Wrap(err, "invalid --integration-kind")
+				}
+				values := map[string]interface{}{
+					"envId":             envIDNumber,
+					"integrationKindId": integrationKindIDNumber,
+					"name":              name,
+					"title":             title,
+					"type":              dbType,
+					"version":           version,
+					"machineType":       machineType,
+				}
+				resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
+				if err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "orgId", resolvedOrgID, "--org"); err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "projectId", projectID, "--project"); err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "residedClusterId", residedClusterID, "--resided-cluster"); err != nil {
+					return err
+				}
+				addOptionalString(values, "region", region)
+				addOptionalString(values, "zone", zone)
+				addOptionalString(values, "password", password)
+				if value, ok := changedBool(cmd, "high-availability"); ok {
+					values["highAvailability"] = value
+				}
+				if value, ok := changedBool(cmd, "storage-autoscaling"); ok {
+					values["storageAutoscaling"] = value
+				}
+				if value, ok := changedInt(cmd, "storage-size"); ok {
+					values["storageSize"] = value
+				}
+				if value, ok := changedInt(cmd, "iops"); ok {
+					values["iops"] = value
+				}
+				requestBody = values
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), "/databases", nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printResult(cmd, out, result, databaseColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
+	cmd.Flags().StringVar(&projectID, "project", "", "Project ID")
+	cmd.Flags().StringVar(&envID, "env", "", "Environment ID")
+	cmd.Flags().StringVar(&integrationKindID, "integration-kind", "", "Integration kind ID")
+	cmd.Flags().StringVar(&name, "name", "", "Database machine name")
+	cmd.Flags().StringVar(&title, "title", "", "Database title")
+	cmd.Flags().StringVar(&dbType, "type", "", "Database type")
+	cmd.Flags().StringVar(&version, "version", "", "Database version")
+	cmd.Flags().StringVar(&machineType, "machine-type", "", "Machine type")
+	cmd.Flags().StringVar(&region, "region", "", "Provider region")
+	cmd.Flags().StringVar(&zone, "zone", "", "Provider zone")
+	cmd.Flags().StringVar(&password, "password", "", "Database password")
+	cmd.Flags().StringVar(&residedClusterID, "resided-cluster", "", "Resided cluster ID")
+	cmd.Flags().Bool("high-availability", false, "Enable high availability")
+	cmd.Flags().Bool("storage-autoscaling", false, "Enable storage autoscaling")
+	cmd.Flags().Int("storage-size", 0, "Storage size")
+	cmd.Flags().Int("iops", 0, "Provisioned IOPS")
+	return cmd
+}
+
+func newDatabaseUpdateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	var title string
+	cmd := &cobra.Command{
+		Use:   "update ID",
+		Short: "Update database",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if err := requireFlag(title, "--title"); err != nil {
+					return err
+				}
+				requestBody = map[string]interface{}{"title": title}
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Put(cmd.Context(), "/databases/"+args[0], nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printResult(cmd, out, result, databaseColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().StringVar(&title, "title", "", "Database title")
 	return cmd
 }
 

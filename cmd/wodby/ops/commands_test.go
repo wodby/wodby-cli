@@ -23,6 +23,7 @@ func TestCommandsExposeTopLevelOperationalSurface(t *testing.T) {
 		"org",
 		"project",
 		"env",
+		"database",
 		"cluster",
 		"integration",
 		"provider",
@@ -77,6 +78,111 @@ func TestNewCatalogCommandsExposeBasicReadOperations(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDatabaseCommandExposesBasicOperations(t *testing.T) {
+	database := newDatabaseCommand()
+	names := make(map[string]bool)
+	for _, cmd := range database.Commands() {
+		names[cmd.Name()] = true
+	}
+
+	for _, name := range []string{"list", "get", "create", "update", "delete"} {
+		if !names[name] {
+			t.Fatalf("missing database subcommand %q", name)
+		}
+	}
+}
+
+func TestDatabaseCreateUsesPublicAPIShape(t *testing.T) {
+	var requestedMethod string
+	var requestedPath string
+	var body map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedMethod = r.Method
+		requestedPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":    101,
+			"name":  "main",
+			"title": "Main",
+			"type":  "postgres",
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newDatabaseCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{
+		"create",
+		"--env", "3",
+		"--integration-kind", "7",
+		"--name", "main",
+		"--title", "Main",
+		"--type", "postgres",
+		"--version", "16",
+		"--machine-type", "db-s",
+		"--org", "10",
+		"--project", "12",
+		"--region", "us",
+		"--zone", "us-a",
+		"--resided-cluster", "99",
+		"--high-availability",
+		"--storage-autoscaling",
+		"--storage-size", "50",
+		"--iops", "3000",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if requestedMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", requestedMethod)
+	}
+	if requestedPath != "/v1/databases" {
+		t.Fatalf("path = %q, want /v1/databases", requestedPath)
+	}
+	if body["envId"] != float64(3) {
+		t.Fatalf("envId = %#v, want 3", body["envId"])
+	}
+	if body["integrationKindId"] != float64(7) {
+		t.Fatalf("integrationKindId = %#v, want 7", body["integrationKindId"])
+	}
+	if body["orgId"] != float64(10) {
+		t.Fatalf("orgId = %#v, want 10", body["orgId"])
+	}
+	if body["projectId"] != float64(12) {
+		t.Fatalf("projectId = %#v, want 12", body["projectId"])
+	}
+	if body["residedClusterId"] != float64(99) {
+		t.Fatalf("residedClusterId = %#v, want 99", body["residedClusterId"])
+	}
+	if body["type"] != "postgres" {
+		t.Fatalf("type = %#v, want postgres", body["type"])
+	}
+	if body["version"] != "16" {
+		t.Fatalf("version = %#v, want 16", body["version"])
+	}
+	if body["machineType"] != "db-s" {
+		t.Fatalf("machineType = %#v, want db-s", body["machineType"])
+	}
+	if body["highAvailability"] != true {
+		t.Fatalf("highAvailability = %#v, want true", body["highAvailability"])
+	}
+	if body["storageAutoscaling"] != true {
+		t.Fatalf("storageAutoscaling = %#v, want true", body["storageAutoscaling"])
+	}
+	if body["storageSize"] != float64(50) {
+		t.Fatalf("storageSize = %#v, want 50", body["storageSize"])
+	}
+	if body["iops"] != float64(3000) {
+		t.Fatalf("iops = %#v, want 3000", body["iops"])
 	}
 }
 

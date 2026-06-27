@@ -136,24 +136,27 @@ jobs:
         pattern: dist-*
         path: dist
         merge-multiple: true
-    - name: Read tag description
+    - name: Validate annotated tag
       run: |
         if [ "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" != "tag" ]; then
-          echo "Tag ${GITHUB_REF_NAME} is not annotated; no tag description is available." >&2
-          : > release-notes.md
-          exit 0
+          echo "::error::Tag ${GITHUB_REF_NAME} is not annotated; create it with git tag -a so release notes can come from the tag description."
+          exit 1
+        fi
+    - name: Create Release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        shopt -s nullglob
+        assets=(dist/wodby-*.tar.gz)
+        if [ ${#assets[@]} -eq 0 ]; then
+          echo "::error::No release assets found in dist."
+          exit 1
         fi
 
-        git for-each-ref "refs/tags/${GITHUB_REF_NAME}" --format='%(contents)' > release-notes.md
-    - name: Create Release
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: ${{ github.ref_name }}
-        name: ${{ github.ref_name }}
-        prerelease: false
-        body_path: release-notes.md
-        files: dist/wodby-*.tar.gz
-        fail_on_unmatched_files: true
+        gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
+          --verify-tag \
+          --title "${GITHUB_REF_NAME}" \
+          --notes-from-tag
 
   build-release-image:
     runs-on: ubuntu-latest

@@ -117,10 +117,12 @@ var relationColumns = map[string]relationColumn{
 		titlePaths:    []string{"databaseTitle", "database.title", "database", "databaseName", "database.name", "origin.databaseTitle", "origin.database.title", "origin.database.name"},
 	},
 	"databaseDb": {
-		title:         "database db",
-		idTitle:       "database db id",
+		title:         "db",
+		objectKey:     "databaseDb",
+		idTitle:       "db id",
 		idPaths:       []string{"databaseDbId", "databaseDb.id", "databaseDBId", "databaseDB.id", "dbId", "db.id", "origin.databaseDbId", "origin.databaseDb.id", "origin.databaseDBId", "origin.databaseDB.id", "origin.dbId", "origin.db.id"},
 		idScalarPaths: []string{"databaseDb", "databaseDB", "db", "origin.databaseDb", "origin.databaseDB", "origin.db"},
+		pathPrefix:    "/database-dbs/",
 		titlePaths:    []string{"databaseDbTitle", "databaseDb.title", "databaseDBTitle", "databaseDB.title", "dbTitle", "db.title", "databaseDb", "databaseDB", "db", "databaseDbName", "databaseDb.name", "databaseDBName", "databaseDB.name", "dbName", "db.name", "origin.databaseDbTitle", "origin.databaseDb.title", "origin.databaseDb.name", "origin.databaseDBTitle", "origin.databaseDB.title", "origin.databaseDB.name", "origin.dbTitle", "origin.db.title", "origin.db.name"},
 	},
 	"port": {
@@ -129,8 +131,7 @@ var relationColumns = map[string]relationColumn{
 		idTitle:           "port id",
 		idPaths:           []string{"portId", "port.id"},
 		idScalarPaths:     []string{"port"},
-		pathPrefix:        "/ports/",
-		pathPrefixes:      []string{"/app-service-ports/"},
+		pathPrefix:        "/app-ports/",
 		titlePaths:        []string{"portNumber", "portNumber.number", "port.number", "port.port", "port", "number", "portName", "port.name", "portTitle", "port.title"},
 		allowNumericTitle: true,
 	},
@@ -599,6 +600,8 @@ func tableColumnTitle(column string) string {
 		return "domain"
 	case "infraAppInstanceId":
 		return "instance id"
+	case "ips":
+		return "ips"
 	default:
 		if relation, ok := relationColumnFor(column); ok {
 			return relation.title
@@ -678,12 +681,28 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		return formatServicesColumn(row)
 	case "instances":
 		return formatInstancesColumn(row)
+	case "dbs":
+		return formatDBsColumn(row)
 	case "kubernetesVersion":
 		return firstScalarPath(row, "kubernetesVersion", "kubernetes.version", "version")
 	case "infraVersion":
 		return firstScalarPath(row, "infraVersion", "infrastructureVersion", "infra.version", "infrastructure.version")
-	case "publicIp":
-		return firstScalarPath(row, "publicIp", "publicIP", "publicIPAddress", "publicIpAddress", "publicAddress")
+	case "ips", "publicIp":
+		return formatIPsColumn(row)
+	case "nodes":
+		return formatClusterNodesColumn(row)
+	case "singleNode":
+		return firstScalarPath(row, "singleNode", "single_node", "single-node")
+	case "scalable":
+		return formatClusterScalableColumn(row)
+	case "username":
+		if username := firstScalarPath(row, "username", "userName", "databaseUsername", "login"); username != "" {
+			return username
+		}
+		if firstRelationID(row, relationColumns["database"]) != "" {
+			return firstScalarPath(row, "name")
+		}
+		return ""
 	case "jobs":
 		return formatTaskJobsColumn(row)
 	case "outdated":
@@ -1358,6 +1377,124 @@ func instanceLabel(value interface{}) string {
 	return title + " " + strings.Join(details, " ")
 }
 
+func formatDBsColumn(row map[string]interface{}) string {
+	value := firstNonNilPath(row, "dbs", "databaseDbs", "databaseDBs", "databaseDb")
+	if value == nil {
+		return ""
+	}
+
+	labels := databaseDBLabels(value)
+	if len(labels) == 0 {
+		return "none"
+	}
+	return strings.Join(labels, ", ")
+}
+
+func databaseDBLabels(value interface{}) []string {
+	switch v := value.(type) {
+	case []interface{}:
+		labels := make([]string, 0, len(v))
+		for _, item := range v {
+			if label := databaseDBLabel(item); label != "" {
+				labels = append(labels, label)
+			}
+		}
+		return labels
+	case []map[string]interface{}:
+		labels := make([]string, 0, len(v))
+		for _, item := range v {
+			if label := databaseDBLabel(item); label != "" {
+				labels = append(labels, label)
+			}
+		}
+		return labels
+	default:
+		if label := databaseDBLabel(value); label != "" {
+			return []string{label}
+		}
+		return nil
+	}
+}
+
+func databaseDBLabel(value interface{}) string {
+	m, ok := value.(map[string]interface{})
+	if !ok {
+		return scalarString(value)
+	}
+	return firstTitlePath(m, "name", "title", "databaseDb.name", "databaseDB.name", "db.name")
+}
+
+func formatIPsColumn(row map[string]interface{}) string {
+	value := firstNonNilPath(row, "ips", "publicIps", "publicIPs", "publicIp", "publicIP", "publicIPAddress", "publicIpAddress", "publicAddress")
+	switch v := value.(type) {
+	case []interface{}:
+		values := make([]string, 0, len(v))
+		for _, item := range v {
+			if formatted := scalarString(item); formatted != "" {
+				values = append(values, formatted)
+			}
+		}
+		return strings.Join(values, ", ")
+	case []string:
+		return strings.Join(v, ", ")
+	default:
+		return scalarString(v)
+	}
+}
+
+func formatClusterNodesColumn(row map[string]interface{}) string {
+	current := firstScalarPath(
+		row,
+		"currentNodeCount",
+		"nodeCount",
+		"nodesCount",
+		"currentNodes",
+		"nodesCurrent",
+		"nodes.current",
+		"nodes.currentCount",
+		"node.current",
+		"node.currentCount",
+	)
+	maximum := firstScalarPath(
+		row,
+		"maxNodeCount",
+		"nodesMax",
+		"maxNodes",
+		"nodes.max",
+		"nodes.maxCount",
+		"node.max",
+		"node.maxCount",
+	)
+	if current == "" && maximum == "" {
+		if firstScalarPath(row, "singleNode", "single_node", "single-node") == "true" {
+			return "1/1"
+		}
+		return ""
+	}
+	if current == "" {
+		return maximum
+	}
+	if maximum == "" {
+		return current
+	}
+	return current + "/" + maximum
+}
+
+func formatClusterScalableColumn(row map[string]interface{}) string {
+	if scalable := firstScalarPath(row, "scalable", "autoscaling", "nodeAutoscaling"); scalable != "" {
+		return scalable
+	}
+	singleNode := firstScalarPath(row, "singleNode", "single_node", "single-node")
+	switch singleNode {
+	case "true":
+		return "false"
+	case "false":
+		return "true"
+	default:
+		return ""
+	}
+}
+
 func formatAuthorColumn(row map[string]interface{}) string {
 	for _, path := range []string{"author", "createdBy", "createdByUser", "createdByMembership", "createdByOrgMembership", "orgMembership", "membership", "user"} {
 		if m, ok := valueAtPath(row, path).(map[string]interface{}); ok {
@@ -1628,6 +1765,24 @@ func addOptionalInt(values map[string]interface{}, key string, value string, fla
 	}
 	values[key] = number
 	return nil
+}
+
+func parseIntValues(values []string, flag string) ([]int, error) {
+	result := make([]int, 0, len(values))
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			number, err := strconv.Atoi(part)
+			if err != nil {
+				return nil, errors.Wrapf(err, "invalid %s", flag)
+			}
+			result = append(result, number)
+		}
+	}
+	return result, nil
 }
 
 func addOptionalString(values map[string]interface{}, key string, value string) {

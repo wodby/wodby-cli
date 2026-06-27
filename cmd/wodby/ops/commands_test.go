@@ -3,6 +3,7 @@ package ops
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -35,6 +36,8 @@ func TestCommandsExposeTopLevelOperationalSurface(t *testing.T) {
 		"service",
 		"app",
 		"instance",
+		"aps",
+		"route",
 		"build",
 		"deployment",
 		"backup",
@@ -49,17 +52,19 @@ func TestCommandsExposeTopLevelOperationalSurface(t *testing.T) {
 
 func TestDefaultTableColumnsOmitOrgID(t *testing.T) {
 	for name, columns := range map[string][]string{
-		"project":     projectColumns,
-		"env":         envColumns,
-		"database":    databaseColumns,
-		"cluster":     clusterColumns,
-		"integration": integrationColumns,
-		"member":      memberColumns,
-		"provider":    providerColumns,
-		"stack":       stackColumns,
-		"service":     catalogServiceColumns,
-		"app":         appColumns,
-		"task":        taskColumns,
+		"project":      projectColumns,
+		"env":          envColumns,
+		"database":     databaseColumns,
+		"cluster":      clusterColumns,
+		"integration":  integrationColumns,
+		"member":       memberColumns,
+		"provider":     providerColumns,
+		"stack":        stackColumns,
+		"service":      catalogServiceColumns,
+		"databaseDb":   databaseDbColumns,
+		"databaseUser": databaseUserColumns,
+		"app":          appColumns,
+		"task":         taskColumns,
 	} {
 		for _, column := range columns {
 			if column == "orgId" {
@@ -71,16 +76,18 @@ func TestDefaultTableColumnsOmitOrgID(t *testing.T) {
 
 func TestDefaultTableColumnsUseReadableRelations(t *testing.T) {
 	for name, columns := range map[string][]string{
-		"app":        appColumns,
-		"database":   databaseColumns,
-		"instance":   instanceColumns,
-		"route":      routeColumns,
-		"build":      buildColumns,
-		"deployment": deploymentColumns,
-		"backup":     backupColumns,
-		"import":     importColumns,
-		"task":       taskColumns,
-		"operation":  operationColumns,
+		"app":          appColumns,
+		"database":     databaseColumns,
+		"databaseDb":   databaseDbColumns,
+		"databaseUser": databaseUserColumns,
+		"instance":     instanceColumns,
+		"route":        routeColumns,
+		"build":        buildColumns,
+		"deployment":   deploymentColumns,
+		"backup":       backupColumns,
+		"import":       importColumns,
+		"task":         taskColumns,
+		"operation":    operationColumns,
 	} {
 		for _, column := range columns {
 			switch column {
@@ -132,9 +139,14 @@ func TestClusterGetColumnsShowAdditionalDetails(t *testing.T) {
 			t.Fatalf("clusterColumns should not include %q on list: %s", unwanted, listColumns)
 		}
 	}
+	for _, expected := range []string{"nodes", "singleNode", "scalable"} {
+		if !strings.Contains(listColumns, expected) {
+			t.Fatalf("clusterColumns should include %q: %s", expected, listColumns)
+		}
+	}
 
 	getColumns := strings.Join(clusterGetColumns, ",")
-	for _, expected := range []string{"kubernetesVersion", "infraVersion", "publicIp", "instances"} {
+	for _, expected := range []string{"kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "scalable", "instances"} {
 		if !strings.Contains(getColumns, expected) {
 			t.Fatalf("clusterGetColumns should include %q: %s", expected, getColumns)
 		}
@@ -258,7 +270,7 @@ func TestTableColumnTitlesAreHumanReadable(t *testing.T) {
 		"latestRevNumber":    "latest rev number",
 		"revId":              "rev id",
 		"pathType":           "path type",
-		"databaseDb":         "database db",
+		"databaseDb":         "db",
 		"infraAppInstanceId": "instance id",
 	} {
 		if got := tableColumnTitle(column); got != expected {
@@ -535,7 +547,7 @@ func TestTaskGetDerivesAppFromAppInstance(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"app:", "Drupal", "app id:", "11", "instance:", "Prod", "instance id:", "7", "service:", "PHP", "service id:", "22", "database:", "Postgres", "database id:", "33", "database db:", "Main DB", "database db id:", "44", "duration:", "2m", "jobs:", "Build [job-1] (done, 2m, 2 steps)", "Prepare [step-1] (done, 30s)", "Deploy [step-2] (done, 1m 30s)"} {
+	for _, expected := range []string{"app:", "Drupal", "app id:", "11", "instance:", "Prod", "instance id:", "7", "service:", "PHP", "service id:", "22", "database:", "Postgres", "database id:", "33", "db:", "Main DB", "db id:", "44", "duration:", "2m", "jobs:", "Build [job-1] (done, 2m, 2 steps)", "Prepare [step-1] (done, 30s)", "Deploy [step-2] (done, 1m 30s)"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("task get output should include %q: %s", expected, output)
 		}
@@ -771,7 +783,7 @@ func TestInstanceCommandExposesCanonicalNestedResources(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	for _, name := range []string{"list", "get", "status", "service", "route"} {
+	for _, name := range []string{"list", "get", "status", "service", "route", "build", "deployment", "backup", "import"} {
 		if !names[name] {
 			t.Fatalf("missing instance subcommand %q", name)
 		}
@@ -868,6 +880,110 @@ func TestAppListShowsStackFromStackRevision(t *testing.T) {
 	}
 }
 
+func TestAppListShowsStackFromInstanceRelation(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apps":
+			if got := r.URL.Query().Get("orgId"); got != "123" {
+				t.Fatalf("orgId = %q, want 123", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":     1,
+					"name":   "drupal",
+					"title":  "Drupal",
+					"status": "running",
+				},
+			})
+		case "/v1/app-instances":
+			if got := r.URL.Query().Get("orgId"); got != "123" {
+				t.Fatalf("orgId = %q, want 123", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":    21,
+					"appId": 1,
+					"stack": map[string]interface{}{
+						"id":    7,
+						"title": "Drupal Stack",
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "--org", "123"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"stack", "Drupal Stack"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("app list output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, "stackId") || strings.Contains(output, "7") {
+		t.Fatalf("app list output should not include raw stack id: %s", output)
+	}
+}
+
+func TestAppListShowsStackFromEmbeddedInstanceRelation(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apps":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":     1,
+					"name":   "drupal",
+					"title":  "Drupal",
+					"status": "running",
+					"instances": []map[string]interface{}{
+						{
+							"id": 21,
+							"stack": map[string]interface{}{
+								"id":    7,
+								"title": "Drupal Stack",
+							},
+						},
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "--org", "123"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"stack", "Drupal Stack"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("app list output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, "stackId") || strings.Contains(output, "7") {
+		t.Fatalf("app list output should not include raw stack id: %s", output)
+	}
+}
+
 func TestAppGetEnrichesStackRelation(t *testing.T) {
 	var out bytes.Buffer
 
@@ -919,6 +1035,107 @@ func TestAppGetEnrichesStackRelation(t *testing.T) {
 	}
 }
 
+func TestAppGetShowsStackFromInstanceRelation(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apps/1":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     1,
+				"name":   "drupal",
+				"title":  "Drupal",
+				"status": "running",
+			})
+		case "/v1/app-instances":
+			if got := r.URL.Query().Get("appId"); got != "1" {
+				t.Fatalf("appId = %q, want 1", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":     21,
+					"title":  "Production",
+					"status": "running",
+					"appId":  1,
+					"stack": map[string]interface{}{
+						"id":    7,
+						"title": "Drupal Stack",
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"get", "1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"stack:", "Drupal Stack", "stack id:", "7", "instances:", "Production [21] (running)"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("app get output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, "stackId:") {
+		t.Fatalf("app get output should not include raw stackId: %s", output)
+	}
+}
+
+func TestAppGetShowsStackFromEmbeddedInstanceRelation(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apps/1":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     1,
+				"name":   "drupal",
+				"title":  "Drupal",
+				"status": "running",
+				"instances": []map[string]interface{}{
+					{
+						"id":     21,
+						"title":  "Production",
+						"status": "running",
+						"stack": map[string]interface{}{
+							"id":    7,
+							"title": "Drupal Stack",
+						},
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"get", "1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"stack:", "Drupal Stack", "stack id:", "7", "instances:", "Production [21] (running)"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("app get output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, "stackId:") {
+		t.Fatalf("app get output should not include raw stackId: %s", output)
+	}
+}
+
 func TestRouteListEnrichesPortNumber(t *testing.T) {
 	var out bytes.Buffer
 
@@ -942,7 +1159,7 @@ func TestRouteListEnrichesPortNumber(t *testing.T) {
 					"portId": 55,
 				},
 			})
-		case "/v1/ports/55":
+		case "/v1/app-ports/55":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 55, "number": 8080})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
@@ -968,6 +1185,90 @@ func TestRouteListEnrichesPortNumber(t *testing.T) {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("route list output should not include %q: %s", unwanted, output)
 		}
+	}
+}
+
+func TestTopLevelRouteListUsesInstanceFlag(t *testing.T) {
+	var requestedPath string
+	var requestedQuery string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		requestedQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppRouteCommand("route", []string{"routes"}, "Manage app routes", instanceFilterFlag)
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"list", "--instance", "21"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if requestedPath != "/v1/app-routes" {
+		t.Fatalf("path = %q, want /v1/app-routes", requestedPath)
+	}
+	if requestedQuery != "appInstanceId=21" {
+		t.Fatalf("query = %q, want appInstanceId=21", requestedQuery)
+	}
+}
+
+func TestTopLevelApsListUsesInstanceFlag(t *testing.T) {
+	var requestedPath string
+	var requestedQuery string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		requestedQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppServiceCommand("aps", nil, "Manage app services", instanceFilterFlag)
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"list", "--instance", "21"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if requestedPath != "/v1/app-services" {
+		t.Fatalf("path = %q, want /v1/app-services", requestedPath)
+	}
+	if requestedQuery != "appInstanceId=21" {
+		t.Fatalf("query = %q, want appInstanceId=21", requestedQuery)
+	}
+}
+
+func TestInstanceBackupAndImportListUseInstanceArg(t *testing.T) {
+	var requests []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.Path+"?"+r.URL.RawQuery)
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	backupCmd := newAppInstanceCommand("instance", "Manage app instances")
+	backupCmd.SetOut(io.Discard)
+	backupCmd.SetArgs([]string{"backup", "list", "21"})
+	if err := backupCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	importCmd := newAppInstanceCommand("instance", "Manage app instances")
+	importCmd.SetOut(io.Discard)
+	importCmd.SetArgs([]string{"import", "list", "21"})
+	if err := importCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"/v1/backups?appInstanceId=21", "/v1/imports?appInstanceId=21"}
+	if strings.Join(requests, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("requests = %#v, want %#v", requests, want)
 	}
 }
 
@@ -1095,10 +1396,78 @@ func TestDatabaseCommandExposesBasicOperations(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	for _, name := range []string{"list", "get", "create", "update", "delete"} {
+	for _, name := range []string{"list", "get", "create", "update", "delete", "db", "user"} {
 		if !names[name] {
 			t.Fatalf("missing database subcommand %q", name)
 		}
+	}
+}
+
+func TestDatabaseListShowsAppServiceRelation(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/databases":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":           1,
+					"name":         "postgres",
+					"title":        "Postgres",
+					"status":       "running",
+					"type":         "postgres",
+					"appServiceId": 22,
+				},
+			})
+		case "/v1/app-services/22":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 22, "title": "Postgres Service"})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newDatabaseCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "--org", "123"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"service", "Postgres Service"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("database list output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"appServiceId", "22"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("database list output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
+func TestDatabaseNestedCommandsExposeBasicOperations(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		cmd      *cobra.Command
+		expected []string
+	}{
+		{name: "db", cmd: newDatabaseDbCommand(), expected: []string{"list", "get", "create", "delete"}},
+		{name: "user", cmd: newDatabaseUserCommand(), expected: []string{"list", "create", "dbs", "delete"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			names := make(map[string]bool)
+			for _, cmd := range test.cmd.Commands() {
+				names[cmd.Name()] = true
+			}
+			for _, name := range test.expected {
+				if !names[name] {
+					t.Fatalf("missing database %s subcommand %q", test.name, name)
+				}
+			}
+		})
 	}
 }
 
@@ -1218,6 +1587,9 @@ func TestDatabaseCreateUsesPublicAPIShape(t *testing.T) {
 	if body["machineType"] != "db-s" {
 		t.Fatalf("machineType = %#v, want db-s", body["machineType"])
 	}
+	if _, ok := body["username"]; ok {
+		t.Fatalf("body should not include username: %#v", body)
+	}
 	if body["highAvailability"] != true {
 		t.Fatalf("highAvailability = %#v, want true", body["highAvailability"])
 	}
@@ -1229,6 +1601,203 @@ func TestDatabaseCreateUsesPublicAPIShape(t *testing.T) {
 	}
 	if body["iops"] != float64(3000) {
 		t.Fatalf("iops = %#v, want 3000", body["iops"])
+	}
+}
+
+func TestDatabaseDbListUsesDatabaseFilter(t *testing.T) {
+	var requests []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.Path+"?"+r.URL.RawQuery)
+		switch r.URL.Path {
+		case "/v1/database-dbs":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 44, "name": "main", "databaseId": 33},
+			})
+		case "/v1/databases/33":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 33, "title": "Postgres"})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newDatabaseCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"db", "list", "33"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(requests) == 0 || requests[0] != "/v1/database-dbs?databaseId=33" {
+		t.Fatalf("first request = %#v, want /v1/database-dbs?databaseId=33", requests)
+	}
+}
+
+func TestDatabaseDbCreateUsesPublicAPIShape(t *testing.T) {
+	var requests []struct {
+		method string
+		path   string
+		body   map[string]interface{}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		requests = append(requests, struct {
+			method string
+			path   string
+			body   map[string]interface{}
+		}{method: r.Method, path: r.URL.Path, body: body})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 44, "name": "main"})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	createCmd := newDatabaseCommand()
+	createCmd.SetOut(io.Discard)
+	createCmd.SetArgs([]string{"db", "create", "33", "--name", "main", "--charset", "utf8mb4", "--collation", "utf8mb4_unicode_ci"})
+	if err := createCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(requests))
+	}
+	if requests[0].method != http.MethodPost || requests[0].path != "/v1/database-dbs" {
+		t.Fatalf("create request = %s %s", requests[0].method, requests[0].path)
+	}
+	if requests[0].body["databaseId"] != float64(33) || requests[0].body["name"] != "main" || requests[0].body["charset"] != "utf8mb4" || requests[0].body["collation"] != "utf8mb4_unicode_ci" {
+		t.Fatalf("create body = %#v", requests[0].body)
+	}
+	if _, ok := requests[0].body["title"]; ok {
+		t.Fatalf("create body should not include title: %#v", requests[0].body)
+	}
+}
+
+func TestDatabaseUserListUsesDatabaseFilter(t *testing.T) {
+	var requests []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.Path+"?"+r.URL.RawQuery)
+		switch r.URL.Path {
+		case "/v1/database-users":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 55, "name": "editor", "databaseId": 33},
+			})
+		case "/v1/databases/33":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 33, "title": "Postgres"})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newDatabaseCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"user", "list", "33"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(requests) == 0 || requests[0] != "/v1/database-users?databaseId=33" {
+		t.Fatalf("first request = %#v, want /v1/database-users?databaseId=33", requests)
+	}
+}
+
+func TestDatabaseUserListShowsUsernameFromNameFallback(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/database-users":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 55, "name": "editor", "databaseId": 33},
+			})
+		case "/v1/databases/33":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 33, "title": "Postgres"})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newDatabaseCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"user", "list", "33"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"username", "editor"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("database user output should include %q: %s", expected, output)
+		}
+	}
+}
+
+func TestDatabaseUserCreateAndGrantDBsUsePublicAPIShape(t *testing.T) {
+	var requests []struct {
+		method string
+		path   string
+		body   map[string]interface{}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		requests = append(requests, struct {
+			method string
+			path   string
+			body   map[string]interface{}
+		}{method: r.Method, path: r.URL.Path, body: body})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 55, "name": "editor"})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	createCmd := newDatabaseCommand()
+	createCmd.SetOut(io.Discard)
+	createCmd.SetArgs([]string{"user", "create", "33", "--username", "editor", "--password", "secret", "--hostname", "%", "--database-db", "44", "--database-db", "45,46"})
+	if err := createCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	dbsCmd := newDatabaseCommand()
+	dbsCmd.SetOut(io.Discard)
+	dbsCmd.SetArgs([]string{"user", "dbs", "55", "--database-db", "44,45"})
+	if err := dbsCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(requests))
+	}
+	if requests[0].method != http.MethodPost || requests[0].path != "/v1/database-users" {
+		t.Fatalf("create request = %s %s", requests[0].method, requests[0].path)
+	}
+	if requests[0].body["databaseId"] != float64(33) || requests[0].body["name"] != "editor" || requests[0].body["password"] != "secret" || requests[0].body["hostname"] != "%" {
+		t.Fatalf("create body = %#v", requests[0].body)
+	}
+	if got := requests[0].body["databaseDbIds"]; fmt.Sprint(got) != "[44 45 46]" {
+		t.Fatalf("databaseDbIds = %#v, want [44 45 46]", got)
+	}
+	if _, ok := requests[0].body["username"]; ok {
+		t.Fatalf("create body should use name, not username: %#v", requests[0].body)
+	}
+	if requests[1].method != http.MethodPut || requests[1].path != "/v1/database-users/55/dbs" {
+		t.Fatalf("grant request = %s %s", requests[1].method, requests[1].path)
+	}
+	if got := requests[1].body["databaseDbIds"]; fmt.Sprint(got) != "[44 45]" {
+		t.Fatalf("databaseDbIds = %#v, want [44 45]", got)
 	}
 }
 
@@ -1265,6 +1834,7 @@ func TestClusterCreateUsesPublicAPIShape(t *testing.T) {
 		"--project", "12",
 		"--serverless",
 		"--disable-monitoring",
+		"--single-node",
 		"--region", "us",
 		"--min-node-count", "1",
 	})
@@ -1289,6 +1859,9 @@ func TestClusterCreateUsesPublicAPIShape(t *testing.T) {
 	}
 	if body["serverless"] != true {
 		t.Fatalf("serverless = %#v, want true", body["serverless"])
+	}
+	if body["singleNode"] != true {
+		t.Fatalf("singleNode = %#v, want true", body["singleNode"])
 	}
 	if body["minNodeCount"] != float64(1) {
 		t.Fatalf("minNodeCount = %#v, want 1", body["minNodeCount"])
@@ -1396,21 +1969,21 @@ func TestClusterListEnrichesIntegrationTitleWithProviderTitle(t *testing.T) {
 	}
 }
 
-func TestClusterCommandExposesInfraAppSubcommand(t *testing.T) {
+func TestClusterCommandExposesAppSubcommand(t *testing.T) {
 	cluster := newClusterCommand()
 	names := make(map[string]bool)
 	for _, cmd := range cluster.Commands() {
 		names[cmd.Name()] = true
 	}
 
-	for _, name := range []string{"list", "get", "infra-app", "create", "update", "delete"} {
+	for _, name := range []string{"list", "get", "app", "create", "update", "delete"} {
 		if !names[name] {
 			t.Fatalf("missing cluster subcommand %q", name)
 		}
 	}
 }
 
-func TestClusterGetShowsVersionInfraAndPublicIP(t *testing.T) {
+func TestClusterGetShowsVersionInfraIPsAndNodes(t *testing.T) {
 	var out bytes.Buffer
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1426,7 +1999,10 @@ func TestClusterGetShowsVersionInfraAndPublicIP(t *testing.T) {
 				"zone":                  "a",
 				"version":               "1.31",
 				"infrastructureVersion": "2026.06",
-				"publicIP":              "203.0.113.10",
+				"ips":                   []string{"203.0.113.10"},
+				"currentNodeCount":      2,
+				"maxNodeCount":          5,
+				"singleNode":            false,
 				"serverless":            false,
 			})
 		case "/v1/app-instances":
@@ -1458,7 +2034,7 @@ func TestClusterGetShowsVersionInfraAndPublicIP(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"kubernetes version:", "1.31", "infra version:", "2026.06", "public ip:", "203.0.113.10", "instances:", "Production [21] (running)"} {
+	for _, expected := range []string{"kubernetes version:", "1.31", "infra version:", "2026.06", "ips:", "203.0.113.10", "nodes:", "2/5", "single node:", "false", "scalable:", "true", "instances:", "Production [21] (running)"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("cluster get output should include %q: %s", expected, output)
 		}
@@ -1468,7 +2044,7 @@ func TestClusterGetShowsVersionInfraAndPublicIP(t *testing.T) {
 	}
 }
 
-func TestClusterInfraAppListShowsSingleInstanceID(t *testing.T) {
+func TestClusterAppListShowsSingleInstanceID(t *testing.T) {
 	var out bytes.Buffer
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1515,7 +2091,7 @@ func TestClusterInfraAppListShowsSingleInstanceID(t *testing.T) {
 
 	cmd := newClusterCommand()
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"infra-app", "list", "101"})
+	cmd.SetArgs([]string{"app", "list", "101"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -1802,6 +2378,64 @@ func TestInstanceListEnrichesReadableRelations(t *testing.T) {
 	}
 }
 
+func TestInstanceListUsesStackFromInstanceRelation(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/app-instances":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":         1,
+					"name":       "prod",
+					"title":      "Production",
+					"status":     "running",
+					"mainDomain": "example.com",
+					"app": map[string]interface{}{
+						"id":    11,
+						"title": "Drupal",
+					},
+					"stack": map[string]interface{}{
+						"id":    7,
+						"title": "Drupal Stack",
+					},
+					"env": map[string]interface{}{
+						"id":    22,
+						"title": "Prod",
+					},
+					"cluster": map[string]interface{}{
+						"id":    33,
+						"title": "Primary",
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "--org", "123"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"app", "stack", "env", "cluster", "domain", "Drupal", "Drupal Stack", "Prod", "Primary", "example.com"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("instance list output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"appId", "stackId", "envId", "clusterId", "mainDomain", "7", "22", "33"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("instance list output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
 func TestInstanceGetEnrichesStackThroughAppRelation(t *testing.T) {
 	var out bytes.Buffer
 
@@ -1824,6 +2458,53 @@ func TestInstanceGetEnrichesStackThroughAppRelation(t *testing.T) {
 						"id":    7,
 						"title": "Drupal Stack",
 					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"get", "1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"app:", "Drupal", "app id:", "11", "stack:", "Drupal Stack", "stack id:", "7"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("instance get output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"appId:", "stackId:"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("instance get output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
+func TestInstanceGetUsesStackFromInstanceRelation(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/app-instances/1":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     1,
+				"name":   "prod",
+				"title":  "Production",
+				"status": "running",
+				"app": map[string]interface{}{
+					"id":    11,
+					"title": "Drupal",
+				},
+				"stack": map[string]interface{}{
+					"id":    7,
+					"title": "Drupal Stack",
 				},
 			})
 		default:

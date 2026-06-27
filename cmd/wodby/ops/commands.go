@@ -17,9 +17,11 @@ var (
 	memberColumns         = []string{"id", "member", "email", "role", "status"}
 	projectColumns        = []string{"id", "name", "title"}
 	envColumns            = []string{"id", "name", "title", "type"}
-	databaseColumns       = []string{"id", "name", "title", "status", "kind", "type", "version", "env", "integration", "region", "zone"}
-	clusterColumns        = []string{"id", "name", "title", "status", "integration", "region", "zone", "version", "serverless"}
-	clusterGetColumns     = []string{"id", "name", "title", "status", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "publicIp", "serverless", "instances"}
+	databaseColumns       = []string{"id", "name", "title", "status", "kind", "type", "version", "env", "integration", "service", "region", "zone"}
+	databaseDbColumns     = []string{"id", "name", "status", "charset", "collation", "database", "createdAt"}
+	databaseUserColumns   = []string{"id", "username", "hostname", "status", "database", "dbs", "createdAt"}
+	clusterColumns        = []string{"id", "name", "title", "status", "integration", "region", "zone", "version", "nodes", "singleNode", "scalable", "serverless"}
+	clusterGetColumns     = []string{"id", "name", "title", "status", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "scalable", "serverless", "instances"}
 	infraAppColumns       = []string{"id", "name", "title", "status", "stack", "infraAppInstanceId"}
 	integrationColumns    = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
 	providerColumns       = []string{"id", "name", "title", "status", "public", "revId"}
@@ -54,6 +56,8 @@ func Commands() []*cobra.Command {
 		newServiceCommand(),
 		newAppCommand(),
 		newAppInstanceCommand("instance", "Manage app instances"),
+		newAppServiceCommand("aps", []string{"app-service", "app-services"}, "Manage app services", instanceFilterFlag),
+		newAppRouteCommand("route", []string{"routes"}, "Manage app routes", instanceFilterFlag),
 		newBuildCommand(),
 		newDeploymentCommand(),
 		newBackupCommand(),
@@ -361,6 +365,212 @@ func newDatabaseCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(listCmd, getCmd, newDatabaseCreateCommand(out), newDatabaseUpdateCommand(out), newDeleteCommand("delete ID", "Delete database", "/databases/", databaseColumns, out))
+	cmd.AddCommand(newDatabaseDbCommand(), newDatabaseUserCommand())
+	return cmd
+}
+
+func newDatabaseDbCommand() *cobra.Command {
+	out := outputOptions{}
+	cmd := &cobra.Command{
+		Use:     "db",
+		Aliases: []string{"dbs"},
+		Short:   "Manage DBs",
+	}
+	addOutputFlag(cmd, &out)
+
+	listCmd := &cobra.Command{
+		Use:   "list DATABASE_ID",
+		Short: "List DBs",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query := url.Values{"databaseId": []string{args[0]}}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/database-dbs", query, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, databaseDbColumns)
+		},
+	}
+
+	getCmd := newGetCommand("get ID", "Get DB", "/database-dbs/", databaseDbColumns, out)
+	cmd.AddCommand(listCmd, getCmd, newDatabaseDbCreateCommand(out), newDeleteCommand("delete ID", "Delete DB", "/database-dbs/", databaseDbColumns, out))
+	return cmd
+}
+
+func newDatabaseDbCreateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	var name, charset, collation string
+	cmd := &cobra.Command{
+		Use:   "create DATABASE_ID",
+		Short: "Create DB",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if err := requireFlag(name, "--name"); err != nil {
+					return err
+				}
+				databaseID, err := strconv.Atoi(args[0])
+				if err != nil {
+					return errors.Wrap(err, "invalid DATABASE_ID")
+				}
+				requestBody = bodyFromMap(map[string]interface{}{
+					"databaseId": databaseID,
+					"name":       name,
+					"charset":    charset,
+					"collation":  collation,
+				})
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), "/database-dbs", nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, databaseDbColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().StringVar(&name, "name", "", "DB name")
+	cmd.Flags().StringVar(&charset, "charset", "", "DB charset")
+	cmd.Flags().StringVar(&collation, "collation", "", "DB collation")
+	return cmd
+}
+
+func newDatabaseUserCommand() *cobra.Command {
+	out := outputOptions{}
+	cmd := &cobra.Command{
+		Use:     "user",
+		Aliases: []string{"users"},
+		Short:   "Manage database users",
+	}
+	addOutputFlag(cmd, &out)
+
+	listCmd := &cobra.Command{
+		Use:   "list DATABASE_ID",
+		Short: "List database users",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query := url.Values{"databaseId": []string{args[0]}}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/database-users", query, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, databaseUserColumns)
+		},
+	}
+
+	cmd.AddCommand(listCmd, newDatabaseUserCreateCommand(out), newDatabaseUserDBsCommand(out), newDeleteCommand("delete ID", "Delete database user", "/database-users/", databaseUserColumns, out))
+	return cmd
+}
+
+func newDatabaseUserCreateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	var username, password, hostname string
+	var databaseDBIDs []string
+	cmd := &cobra.Command{
+		Use:   "create DATABASE_ID",
+		Short: "Create database user",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				databaseID, err := strconv.Atoi(args[0])
+				if err != nil {
+					return errors.Wrap(err, "invalid DATABASE_ID")
+				}
+				if err := requireFlag(username, "--username"); err != nil {
+					return err
+				}
+				if err := requireFlag(password, "--password"); err != nil {
+					return err
+				}
+				parsedDBIDs, err := parseIntValues(databaseDBIDs, "--database-db")
+				if err != nil {
+					return err
+				}
+				values := map[string]interface{}{
+					"databaseId": databaseID,
+					"name":       username,
+					"password":   password,
+					"hostname":   hostname,
+				}
+				if len(parsedDBIDs) != 0 {
+					values["databaseDbIds"] = parsedDBIDs
+				}
+				requestBody = bodyFromMap(values)
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), "/database-users", nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, databaseUserColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().StringVar(&username, "username", "", "Database username")
+	cmd.Flags().StringVar(&password, "password", "", "Database user password")
+	cmd.Flags().StringVar(&hostname, "hostname", "", "Database user hostname")
+	cmd.Flags().StringArrayVar(&databaseDBIDs, "database-db", nil, "DB ID to grant; repeatable or comma-separated")
+	return cmd
+}
+
+func newDatabaseUserDBsCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	var databaseDBIDs []string
+	cmd := &cobra.Command{
+		Use:     "dbs USER_ID",
+		Aliases: []string{"grants"},
+		Short:   "Update database user DB grants",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				parsedDBIDs, err := parseIntValues(databaseDBIDs, "--database-db")
+				if err != nil {
+					return err
+				}
+				if len(parsedDBIDs) == 0 {
+					return errors.New("--database-db is required unless --data/--file is provided")
+				}
+				requestBody = bodyFromMap(map[string]interface{}{"databaseDbIds": parsedDBIDs})
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Put(cmd.Context(), "/database-users/"+args[0]+"/dbs", nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, databaseUserColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().StringArrayVar(&databaseDBIDs, "database-db", nil, "DB ID to grant; repeatable or comma-separated")
 	return cmd
 }
 
@@ -555,23 +765,23 @@ func newClusterCommand() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(listCmd, getCmd, newClusterInfraAppCommand(), newClusterCreateCommand(out), newClusterUpdateCommand(out), newDeleteCommand("delete ID", "Delete cluster", "/clusters/", clusterColumns, out))
+	cmd.AddCommand(listCmd, getCmd, newClusterAppCommand(), newClusterCreateCommand(out), newClusterUpdateCommand(out), newDeleteCommand("delete ID", "Delete cluster", "/clusters/", clusterColumns, out))
 	return cmd
 }
 
-func newClusterInfraAppCommand() *cobra.Command {
+func newClusterAppCommand() *cobra.Command {
 	out := outputOptions{}
 	cmd := &cobra.Command{
-		Use:     "infra-app",
-		Aliases: []string{"infra-apps"},
-		Short:   "Manage cluster infra apps",
+		Use:     "app",
+		Aliases: []string{"apps", "infra-app", "infra-apps"},
+		Short:   "Manage cluster apps",
 	}
 	addOutputFlag(cmd, &out)
 
 	var page, pageSize int
 	listCmd := &cobra.Command{
 		Use:   "list CLUSTER_ID",
-		Short: "List cluster infra apps",
+		Short: "List cluster apps",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			clusterID := args[0]
@@ -1045,6 +1255,9 @@ func newAppCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/apps", query, &result); err != nil {
 				return err
 			}
+			if out.output != outputJSON {
+				enrichAppStacksFromInstances(cmd.Context(), client, normalizeItems(result), query)
+			}
 			return printClientResult(cmd, client, out, result, appColumns)
 		},
 	}
@@ -1132,26 +1345,167 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 	}
 
 	cmd.AddCommand(listCmd, getCmd, statusCmd)
-	cmd.AddCommand(newAppServiceCommand())
-	cmd.AddCommand(newAppRouteCommand("route", "Manage app instance routes"))
+	cmd.AddCommand(newAppServiceCommand("service", []string{"services"}, "Manage app services", instanceFilterArg))
+	cmd.AddCommand(newAppRouteCommand("route", []string{"routes"}, "Manage app instance routes", instanceFilterArg))
+	cmd.AddCommand(newInstanceBuildCommand(), newInstanceDeploymentCommand(), newInstanceBackupCommand(), newInstanceImportCommand())
 	return cmd
 }
 
-func newAppServiceCommand() *cobra.Command {
+func newInstanceBuildCommand() *cobra.Command {
 	out := outputOptions{}
 	cmd := &cobra.Command{
-		Use:     "service",
-		Aliases: []string{"services"},
-		Short:   "Manage app services",
+		Use:     "build",
+		Aliases: []string{"builds"},
+		Short:   "Manage app instance builds",
+	}
+	addOutputFlag(cmd, &out)
+	cmd.AddCommand(newInstancePaginatedListCommand("list INSTANCE_ID", "List builds", "/app-builds", buildColumns, out), newGetCommand("get ID", "Get build", "/app-builds/", buildColumns, out), newBuildDeployCommand(out))
+	return cmd
+}
+
+func newInstanceDeploymentCommand() *cobra.Command {
+	out := outputOptions{}
+	cmd := &cobra.Command{
+		Use:     "deployment",
+		Aliases: []string{"deployments"},
+		Short:   "Manage app instance deployments",
 	}
 	addOutputFlag(cmd, &out)
 
-	listCmd := &cobra.Command{
-		Use:   "list INSTANCE_ID",
-		Short: "List app services",
+	waitCmd := &cobra.Command{
+		Use:   "wait ID",
+		Short: "Wait for deployment",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			instanceID := args[0]
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			timeout, _ := cmd.Flags().GetDuration("timeout")
+			result, err := waitForDeployment(cmd.Context(), client, args[0], timeout)
+			if err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, deploymentColumns)
+		},
+	}
+	waitCmd.Flags().Duration("timeout", 10*time.Minute, "Maximum time to wait")
+
+	cmd.AddCommand(newInstancePaginatedListCommand("list INSTANCE_ID", "List deployments", "/app-deployments", deploymentColumns, out), newGetCommand("get ID", "Get deployment", "/app-deployments/", deploymentColumns, out), waitCmd, newDeploymentCreateCommand(out), newDeploymentRedeployCommand(out))
+	return cmd
+}
+
+func newInstanceBackupCommand() *cobra.Command {
+	out := outputOptions{}
+	cmd := &cobra.Command{
+		Use:     "backup",
+		Aliases: []string{"backups"},
+		Short:   "Manage app instance backups",
+	}
+	addOutputFlag(cmd, &out)
+	cmd.AddCommand(newInstanceFilteredListCommand("list INSTANCE_ID", "List backups", "/backups", backupColumns, out, true), newGetCommand("get ID", "Get backup", "/backups/", backupColumns, out), newBackupCreateCommand(out))
+	return cmd
+}
+
+func newInstanceImportCommand() *cobra.Command {
+	out := outputOptions{}
+	cmd := &cobra.Command{
+		Use:     "import",
+		Aliases: []string{"imports"},
+		Short:   "Manage app instance imports",
+	}
+	addOutputFlag(cmd, &out)
+	cmd.AddCommand(newInstanceFilteredListCommand("list INSTANCE_ID", "List imports", "/imports", importColumns, out, false), newGetCommand("get ID", "Get import", "/imports/", importColumns, out), newImportCreateCommand(out))
+	return cmd
+}
+
+func newInstancePaginatedListCommand(use string, short string, path string, columns []string, out outputOptions) *cobra.Command {
+	var page, pageSize int
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query := url.Values{"appInstanceId": []string{args[0]}}
+			addPagination(query, page, pageSize)
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), path, query, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, columns)
+		},
+	}
+	cmd.Flags().IntVar(&page, "page", 0, "Page number")
+	cmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
+	return cmd
+}
+
+func newInstanceFilteredListCommand(use string, short string, path string, columns []string, out outputOptions, backup bool) *cobra.Command {
+	var serviceID, databaseID, databaseDBID, name string
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query := url.Values{"appInstanceId": []string{args[0]}}
+			addQuery(query, "appServiceId", serviceID)
+			addQuery(query, "databaseId", databaseID)
+			addQuery(query, "databaseDbId", databaseDBID)
+			if backup {
+				addQuery(query, "backupName", name)
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), path, query, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, columns)
+		},
+	}
+	cmd.Flags().StringVar(&serviceID, "service", "", "App service ID")
+	cmd.Flags().StringVar(&databaseID, "database", "", "Database ID")
+	cmd.Flags().StringVar(&databaseDBID, "database-db", "", "DB ID")
+	if backup {
+		cmd.Flags().StringVar(&name, "name", "", "Backup name")
+	}
+	return cmd
+}
+
+type instanceFilterMode int
+
+const (
+	instanceFilterFlag instanceFilterMode = iota
+	instanceFilterArg
+)
+
+func newAppServiceCommand(use string, aliases []string, short string, mode instanceFilterMode) *cobra.Command {
+	out := outputOptions{}
+	cmd := &cobra.Command{
+		Use:     use,
+		Aliases: aliases,
+		Short:   short,
+	}
+	addOutputFlag(cmd, &out)
+
+	var instanceID string
+	listCmd := &cobra.Command{
+		Use:   instanceScopedListUse("list", mode),
+		Short: "List app services",
+		Args:  instanceScopedListArgs(mode),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if mode == instanceFilterArg {
+				instanceID = args[0]
+			}
+			if err := requireFlag(instanceID, "--instance"); err != nil {
+				return err
+			}
 			query := url.Values{"appInstanceId": []string{instanceID}}
 			client, err := newRESTClient()
 			if err != nil {
@@ -1163,6 +1517,9 @@ func newAppServiceCommand() *cobra.Command {
 			}
 			return printClientResult(cmd, client, out, result, serviceColumns)
 		},
+	}
+	if mode == instanceFilterFlag {
+		listCmd.Flags().StringVar(&instanceID, "instance", "", "App instance ID")
 	}
 
 	getCmd := &cobra.Command{
@@ -1258,21 +1615,27 @@ func newAppServiceActionCommand(out outputOptions) *cobra.Command {
 	return cmd
 }
 
-func newAppRouteCommand(use string, short string) *cobra.Command {
+func newAppRouteCommand(use string, aliases []string, short string, mode instanceFilterMode) *cobra.Command {
 	out := outputOptions{}
 	cmd := &cobra.Command{
 		Use:     use,
-		Aliases: []string{"routes"},
+		Aliases: aliases,
 		Short:   short,
 	}
 	addOutputFlag(cmd, &out)
 
+	var instanceID string
 	listCmd := &cobra.Command{
-		Use:   "list INSTANCE_ID",
+		Use:   instanceScopedListUse("list", mode),
 		Short: "List app routes",
-		Args:  cobra.ExactArgs(1),
+		Args:  instanceScopedListArgs(mode),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			instanceID := args[0]
+			if mode == instanceFilterArg {
+				instanceID = args[0]
+			}
+			if err := requireFlag(instanceID, "--instance"); err != nil {
+				return err
+			}
 			query := url.Values{"appInstanceId": []string{instanceID}}
 			client, err := newRESTClient()
 			if err != nil {
@@ -1284,6 +1647,9 @@ func newAppRouteCommand(use string, short string) *cobra.Command {
 			}
 			return printClientResult(cmd, client, out, result, routeColumns)
 		},
+	}
+	if mode == instanceFilterFlag {
+		listCmd.Flags().StringVar(&instanceID, "instance", "", "App instance ID")
 	}
 
 	getCmd := &cobra.Command{
@@ -1297,6 +1663,20 @@ func newAppRouteCommand(use string, short string) *cobra.Command {
 
 	cmd.AddCommand(listCmd, getCmd, newAppRouteCreateCommand(out), newAppRouteUpdateCommand(out), newDeleteCommand("delete ID", "Delete app route", "/app-routes/", routeColumns, out))
 	return cmd
+}
+
+func instanceScopedListUse(base string, mode instanceFilterMode) string {
+	if mode == instanceFilterArg {
+		return base + " INSTANCE_ID"
+	}
+	return base
+}
+
+func instanceScopedListArgs(mode instanceFilterMode) cobra.PositionalArgs {
+	if mode == instanceFilterArg {
+		return cobra.ExactArgs(1)
+	}
+	return cobra.NoArgs
 }
 
 func newAppRouteCreateCommand(out outputOptions) *cobra.Command {
@@ -1746,7 +2126,7 @@ func newBackupCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().IntVar(&integrationID, "integration", 0, "Storage integration ID")
 	cmd.Flags().StringVar(&bucket, "bucket", "", "Storage bucket")
 	cmd.Flags().StringVar(&serviceID, "service", "", "App service ID")
-	cmd.Flags().StringVar(&databaseDBID, "database-db", "", "Database DB ID")
+	cmd.Flags().StringVar(&databaseDBID, "database-db", "", "DB ID")
 	cmd.Flags().StringVar(&backupName, "name", "", "Backup name")
 	cmd.Flags().StringVar(&storageClass, "storage-class", "", "Storage class")
 	return cmd
@@ -1812,7 +2192,7 @@ func newImportCreateCommand(out outputOptions) *cobra.Command {
 	addBodyFlags(cmd, &body)
 	addWaitFlags(cmd, &wait)
 	cmd.Flags().StringVar(&serviceID, "service", "", "App service ID")
-	cmd.Flags().StringVar(&databaseDBID, "database-db", "", "Database DB ID")
+	cmd.Flags().StringVar(&databaseDBID, "database-db", "", "DB ID")
 	cmd.Flags().StringVar(&source, "source", "", "Import source")
 	cmd.Flags().StringVar(&importURL, "url", "", "Import archive URL")
 	cmd.Flags().StringVar(&importName, "name", "", "Import name")
@@ -2073,7 +2453,7 @@ func newFilteredListCommand(use string, short string, path string, columns []str
 	cmd.Flags().StringVar(&instanceID, "instance", "", "App instance ID")
 	cmd.Flags().StringVar(&serviceID, "service", "", "App service ID")
 	cmd.Flags().StringVar(&databaseID, "database", "", "Database ID")
-	cmd.Flags().StringVar(&databaseDBID, "database-db", "", "Database DB ID")
+	cmd.Flags().StringVar(&databaseDBID, "database-db", "", "DB ID")
 	if backup {
 		cmd.Flags().StringVar(&name, "name", "", "Backup name")
 	}
@@ -2155,7 +2535,13 @@ func getAndPrintWithInstances(cmd *cobra.Command, out outputOptions, path string
 
 func enrichInstancesSummary(ctx context.Context, client *rest.Client, value interface{}, filterName string, filterValue string) {
 	rows := asRows(value)
-	if len(rows) == 0 || firstNonNilPath(rows[0], "instances", "appInstances") != nil {
+	if len(rows) == 0 {
+		return
+	}
+	if instances := firstNonNilPath(rows[0], "instances", "appInstances"); instances != nil {
+		if filterName == "appId" && !hasStackReference(rows[0]) {
+			enrichAppRowWithEmbeddedInstanceStack(rows[0], instances)
+		}
 		return
 	}
 
@@ -2176,7 +2562,125 @@ func enrichInstancesSummary(ctx context.Context, client *rest.Client, value inte
 	if err := client.Get(ctx, "/app-instances", query, &result); err != nil {
 		return
 	}
-	rows[0]["appInstances"] = normalizeItems(result)
+	instances := normalizeItems(result)
+	rows[0]["appInstances"] = instances
+	if filterName == "appId" && !hasStackReference(rows[0]) {
+		enrichAppRowsWithInstanceStacks(rows, responseRows(instances))
+	}
+}
+
+func enrichAppStacksFromInstances(ctx context.Context, client *rest.Client, value interface{}, appQuery url.Values) {
+	rows := asRows(value)
+	if len(rows) == 0 {
+		return
+	}
+
+	needsStack := false
+	for _, row := range rows {
+		if !hasStackReference(row) && enrichAppRowWithEmbeddedInstanceStack(row, firstNonNilPath(row, "instances", "appInstances")) {
+			continue
+		}
+		if !hasStackReference(row) {
+			needsStack = true
+			break
+		}
+	}
+	if !needsStack {
+		return
+	}
+
+	query := url.Values{}
+	for _, name := range []string{"orgId", "projectIds", "clusterApp"} {
+		if values, ok := appQuery[name]; ok {
+			query[name] = append([]string{}, values...)
+		}
+	}
+
+	var result interface{}
+	if err := client.Get(ctx, "/app-instances", query, &result); err != nil {
+		return
+	}
+	enrichAppRowsWithInstanceStacks(rows, responseRows(result))
+}
+
+func enrichAppRowWithEmbeddedInstanceStack(app map[string]interface{}, instances interface{}) bool {
+	for _, instance := range responseRows(instances) {
+		if stack := firstStackObject(instance); stack != nil {
+			app["stack"] = stack
+			return true
+		}
+		if stackID := firstRelationID(instance, relationColumns["stack"]); stackID != "" {
+			app["stackId"] = stackID
+			return true
+		}
+	}
+	return false
+}
+
+func enrichAppRowsWithInstanceStacks(apps []map[string]interface{}, instances []map[string]interface{}) {
+	stacksByAppID := map[string]interface{}{}
+	stackIDsByAppID := map[string]string{}
+	for _, instance := range instances {
+		appID := firstRelationID(instance, relationColumns["app"])
+		if appID == "" {
+			continue
+		}
+		if stack := firstStackObject(instance); stack != nil {
+			stacksByAppID[appID] = stack
+			continue
+		}
+		if stackID := firstRelationID(instance, relationColumns["stack"]); stackID != "" {
+			stackIDsByAppID[appID] = stackID
+		}
+	}
+
+	for _, app := range apps {
+		if hasStackReference(app) {
+			continue
+		}
+		appID := firstScalarPath(app, "id", "appId", "app.id")
+		if appID == "" {
+			continue
+		}
+		if stack := stacksByAppID[appID]; stack != nil {
+			app["stack"] = stack
+			continue
+		}
+		if stackID := stackIDsByAppID[appID]; stackID != "" {
+			app["stackId"] = stackID
+		}
+	}
+}
+
+func hasStackReference(row map[string]interface{}) bool {
+	if formatColumnValue(row, "stack") != "" {
+		return true
+	}
+	return firstRelationID(row, relationColumns["stack"]) != ""
+}
+
+func firstStackObject(row map[string]interface{}) map[string]interface{} {
+	for _, path := range []string{
+		"stack",
+		"stackRev.stack",
+		"stackRevision.stack",
+		"app.stack",
+		"app.stackRev.stack",
+		"app.stackRevision.stack",
+		"appInstance.stack",
+		"appInstance.app.stack",
+		"appInstance.app.stackRev.stack",
+		"appInstance.app.stackRevision.stack",
+		"instance.stack",
+		"instance.app.stack",
+		"instance.app.stackRev.stack",
+		"instance.app.stackRevision.stack",
+	} {
+		if stack, ok := valueAtPath(row, path).(map[string]interface{}); ok {
+			return stack
+		}
+	}
+	return nil
 }
 
 func optionalInt(value string) interface{} {

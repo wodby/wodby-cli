@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/xml"
 	"flag"
 	"fmt"
 	"html/template"
@@ -12,6 +13,12 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/wodby/wodby-cli/cmd/wodby/root"
+)
+
+const (
+	cliReferenceBaseURL = "https://wodby.com/docs/2.0/cli/"
+	siteName            = "Wodby Documentation"
+	indexDescription    = "Command-line reference for Wodby 2.0, including commands, options, aliases, and examples."
 )
 
 type flagInfo struct {
@@ -35,10 +42,12 @@ type navItem struct {
 }
 
 type commandPage struct {
-	Title   string
-	Active  string
-	Nav     []navItem
-	Command *commandInfo
+	Title        string
+	Description  string
+	CanonicalURL string
+	Active       string
+	Nav          []navItem
+	Command      *commandInfo
 }
 
 type commandInfo struct {
@@ -57,12 +66,24 @@ type commandInfo struct {
 }
 
 type indexPage struct {
-	Title    string
-	Active   string
-	Nav      []navItem
-	Command  *commandInfo
-	Root     commandLink
-	Commands []commandLink
+	Title        string
+	Description  string
+	CanonicalURL string
+	Active       string
+	Nav          []navItem
+	Command      *commandInfo
+	Root         commandLink
+	Commands     []commandLink
+}
+
+type sitemap struct {
+	XMLName xml.Name     `xml:"urlset"`
+	XMLNS   string       `xml:"xmlns,attr"`
+	URLs    []sitemapURL `xml:"url"`
+}
+
+type sitemapURL struct {
+	Loc string `xml:"loc"`
 }
 
 func main() {
@@ -95,11 +116,13 @@ func generate(outDir string) error {
 	}
 
 	if err := writeIndex(outDir, indexPage{
-		Title:    "Wodby CLI manual",
-		Active:   "index.html",
-		Nav:      nav,
-		Root:     linkForCommand(cmd),
-		Commands: childLinks(cmd),
+		Title:        "Wodby CLI manual",
+		Description:  indexDescription,
+		CanonicalURL: canonicalURL("index.html"),
+		Active:       "index.html",
+		Nav:          nav,
+		Root:         linkForCommand(cmd),
+		Commands:     childLinks(cmd),
 	}); err != nil {
 		return err
 	}
@@ -107,14 +130,20 @@ func generate(outDir string) error {
 	for _, command := range commands {
 		info := infoForCommand(command)
 		page := commandPage{
-			Title:   info.Path + " | Wodby CLI",
-			Active:  info.File,
-			Nav:     nav,
-			Command: &info,
+			Title:        info.Path + " | Wodby CLI",
+			Description:  commandDescription(info),
+			CanonicalURL: canonicalURL(info.File),
+			Active:       info.File,
+			Nav:          nav,
+			Command:      &info,
 		}
 		if err := writeCommandPage(outDir, page); err != nil {
 			return err
 		}
+	}
+
+	if err := writeSitemap(outDir, commands); err != nil {
+		return err
 	}
 
 	return nil
@@ -257,6 +286,24 @@ func fileName(cmd *cobra.Command) string {
 	return strings.ReplaceAll(cmd.CommandPath(), " ", "_") + ".html"
 }
 
+func canonicalURL(file string) string {
+	if file == "" || file == "index.html" {
+		return cliReferenceBaseURL
+	}
+	return cliReferenceBaseURL + file
+}
+
+func commandDescription(info commandInfo) string {
+	summary := strings.TrimSpace(info.Short)
+	if summary == "" {
+		summary = "Usage, options, aliases, and examples."
+	} else if !strings.HasSuffix(summary, ".") {
+		summary += "."
+	}
+
+	return fmt.Sprintf("%s command reference for Wodby CLI. %s", info.Path, summary)
+}
+
 func writeIndex(outDir string, page indexPage) error {
 	var buf bytes.Buffer
 	if err := pageTemplate.ExecuteTemplate(&buf, "index", page); err != nil {
@@ -271,6 +318,27 @@ func writeCommandPage(outDir string, page commandPage) error {
 		return err
 	}
 	return writeFile(outDir, page.Command.File, buf.Bytes())
+}
+
+func writeSitemap(outDir string, commands []*cobra.Command) error {
+	urls := []sitemapURL{{Loc: canonicalURL("index.html")}}
+	for _, command := range commands {
+		urls = append(urls, sitemapURL{Loc: canonicalURL(fileName(command))})
+	}
+
+	var buf bytes.Buffer
+	buf.WriteString(xml.Header)
+	encoder := xml.NewEncoder(&buf)
+	encoder.Indent("", "  ")
+	if err := encoder.Encode(sitemap{
+		XMLNS: "http://www.sitemaps.org/schemas/sitemap/0.9",
+		URLs:  urls,
+	}); err != nil {
+		return err
+	}
+	buf.WriteByte('\n')
+
+	return writeFile(outDir, "sitemap.xml", buf.Bytes())
 }
 
 func writeFile(outDir string, name string, content []byte) error {
@@ -299,6 +367,17 @@ var pageTemplate = template.Must(template.New("manual").Funcs(template.FuncMap{
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.Title}}</title>
+  <meta name="description" content="{{.Description}}">
+  <link rel="canonical" href="{{.CanonicalURL}}">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="` + siteName + `">
+  <meta property="og:title" content="{{.Title}}">
+  <meta property="og:description" content="{{.Description}}">
+  <meta property="og:url" content="{{.CanonicalURL}}">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{{.Title}}">
+  <meta name="twitter:description" content="{{.Description}}">
+  <link rel="sitemap" type="application/xml" href="` + cliReferenceBaseURL + `sitemap.xml">
   <link rel="stylesheet" href="manual.css">
 </head>
 <body>

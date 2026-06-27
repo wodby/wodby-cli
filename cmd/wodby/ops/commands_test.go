@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -23,6 +24,7 @@ func TestCommandsExposeTopLevelOperationalSurface(t *testing.T) {
 
 	for _, name := range []string{
 		"org",
+		"member",
 		"project",
 		"env",
 		"database",
@@ -53,6 +55,7 @@ func TestDefaultTableColumnsOmitOrgID(t *testing.T) {
 		"database":    databaseColumns,
 		"cluster":     clusterColumns,
 		"integration": integrationColumns,
+		"member":      memberColumns,
 		"provider":    providerColumns,
 		"stack":       stackColumns,
 		"service":     catalogServiceColumns,
@@ -69,6 +72,7 @@ func TestDefaultTableColumnsOmitOrgID(t *testing.T) {
 
 func TestDefaultTableColumnsUseReadableRelations(t *testing.T) {
 	for name, columns := range map[string][]string{
+		"app":        appColumns,
 		"database":   databaseColumns,
 		"instance":   instanceColumns,
 		"route":      routeColumns,
@@ -81,9 +85,99 @@ func TestDefaultTableColumnsUseReadableRelations(t *testing.T) {
 	} {
 		for _, column := range columns {
 			switch column {
-			case "envId", "appId", "clusterId", "mainDomain", "appServiceId", "portId", "appInstanceId", "databaseId", "databaseDbId", "taskId":
+			case "envId", "appId", "stackId", "clusterId", "mainDomain", "appServiceId", "portId", "appInstanceId", "databaseId", "databaseDbId", "taskId", "authorId":
 				t.Fatalf("%s columns should use readable relation names, got %q", name, column)
 			}
+		}
+	}
+}
+
+func TestDefaultTaskColumnsUseCompactListShape(t *testing.T) {
+	got := strings.Join(taskColumns, ",")
+	want := "id,title,status,author,createdAt,duration"
+	if got != want {
+		t.Fatalf("taskColumns = %q, want %q", got, want)
+	}
+
+	getColumns := strings.Join(taskGetColumns, ",")
+	for _, expected := range []string{"author", "app", "instance", "service", "database", "databaseDb"} {
+		if !strings.Contains(getColumns, expected) {
+			t.Fatalf("taskGetColumns should include %q: %s", expected, getColumns)
+		}
+	}
+}
+
+func TestStackColumnsShowDatesAndGetShowsServices(t *testing.T) {
+	listColumns := strings.Join(stackColumns, ",")
+	for _, expected := range []string{"createdAt", "updatedAt"} {
+		if !strings.Contains(listColumns, expected) {
+			t.Fatalf("stackColumns should include %q: %s", expected, listColumns)
+		}
+	}
+	if strings.Contains(listColumns, "services") {
+		t.Fatalf("stackColumns should not include services on list: %s", listColumns)
+	}
+
+	getColumns := strings.Join(stackGetColumns, ",")
+	for _, expected := range []string{"createdAt", "updatedAt", "services"} {
+		if !strings.Contains(getColumns, expected) {
+			t.Fatalf("stackGetColumns should include %q: %s", expected, getColumns)
+		}
+	}
+}
+
+func TestClusterGetColumnsShowAdditionalDetails(t *testing.T) {
+	listColumns := strings.Join(clusterColumns, ",")
+	for _, unwanted := range []string{"kubernetesVersion", "infraVersion", "publicIp"} {
+		if strings.Contains(listColumns, unwanted) {
+			t.Fatalf("clusterColumns should not include %q on list: %s", unwanted, listColumns)
+		}
+	}
+
+	getColumns := strings.Join(clusterGetColumns, ",")
+	for _, expected := range []string{"kubernetesVersion", "infraVersion", "publicIp", "instances"} {
+		if !strings.Contains(getColumns, expected) {
+			t.Fatalf("clusterGetColumns should include %q: %s", expected, getColumns)
+		}
+	}
+}
+
+func TestMemberListShowsReadableMemberInfo(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/org-memberships" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("orgId"); got != "123" {
+			t.Fatalf("orgId = %q, want 123", got)
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+			{
+				"id":     8,
+				"role":   "owner",
+				"status": "active",
+				"user": map[string]interface{}{
+					"name":  "Jane Doe",
+					"email": "jane@example.com",
+				},
+			},
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newMemberCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "--org", "123"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"member", "email", "role", "status", "Jane Doe <jane@example.com>", "jane@example.com", "owner", "active"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("member list output should include %q: %s", expected, output)
 		}
 	}
 }
@@ -173,6 +267,277 @@ func TestTableColumnTitlesAreHumanReadable(t *testing.T) {
 	}
 }
 
+func TestTableColumnsFormatTimestampsAsRelativeAge(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	createdAt := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+
+	printTable(cmd, []interface{}{
+		map[string]interface{}{
+			"id":        1,
+			"createdAt": createdAt,
+		},
+	}, []string{"id", "createdAt"})
+
+	output := out.String()
+	if !strings.Contains(output, "2h ago") {
+		t.Fatalf("output should include relative timestamp: %s", output)
+	}
+	if strings.Contains(output, createdAt) {
+		t.Fatalf("output should not include raw timestamp: %s", output)
+	}
+}
+
+func TestTaskColumnsShowDurationInsteadOfStartAndEndTimes(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	createdAt := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+
+	printTable(cmd, []interface{}{
+		map[string]interface{}{
+			"id":          1,
+			"name":        "worker-task",
+			"title":       "Deploy",
+			"status":      "done",
+			"progress":    87,
+			"createdAt":   createdAt,
+			"startedAt":   "2026-01-02T03:04:05Z",
+			"endedAt":     "2026-01-02T04:06:07Z",
+			"appInstance": map[string]interface{}{"title": "Prod"},
+			"app":         map[string]interface{}{"title": "Drupal"},
+		},
+	}, taskColumns)
+
+	output := out.String()
+	for _, expected := range []string{"id", "title", "status", "created at", "duration", "2h ago", "1h 2m"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"name", "worker-task", "progress", "app", "Drupal", "instance", "Prod", "started at", "ended at", createdAt, "2026-01-02T03:04:05Z", "2026-01-02T04:06:07Z"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
+func TestTaskListEnrichesAuthor(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/tasks":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":        42,
+					"title":     "Deploy",
+					"status":    "done",
+					"authorId":  8,
+					"createdAt": "2026-01-02T03:00:00Z",
+					"startedAt": "2026-01-02T03:04:00Z",
+					"endedAt":   "2026-01-02T03:06:00Z",
+				},
+			})
+		case "/v1/org-memberships/8":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id": 8,
+				"user": map[string]interface{}{
+					"name":  "Jane Doe",
+					"email": "jane@example.com",
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newTaskCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"author", "Jane Doe <jane@example.com>"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("task list output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"authorId", "jane@example.com\t8"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("task list output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
+func TestTaskGetEnrichesAuthor(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/tasks/42":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":        42,
+				"title":     "Deploy",
+				"status":    "done",
+				"authorId":  8,
+				"createdAt": "2026-01-02T03:00:00Z",
+				"startedAt": "2026-01-02T03:04:00Z",
+				"endedAt":   "2026-01-02T03:06:00Z",
+			})
+		case "/v1/org-memberships/8":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id": 8,
+				"user": map[string]interface{}{
+					"name":  "Jane Doe",
+					"email": "jane@example.com",
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newTaskCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"get", "42"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"author:", "Jane Doe <jane@example.com>", "author id:", "8"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("task get output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, "authorId:") {
+		t.Fatalf("task get output should not include raw authorId: %s", output)
+	}
+}
+
+func TestTaskGetDerivesAppFromAppInstance(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/tasks/42":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":        42,
+				"title":     "Deploy",
+				"status":    "done",
+				"createdAt": "2026-01-02T03:00:00Z",
+				"startedAt": "2026-01-02T03:04:00Z",
+				"endedAt":   "2026-01-02T03:06:00Z",
+				"appInstance": map[string]interface{}{
+					"title": "Prod",
+					"id":    7,
+					"appId": 11,
+				},
+				"appServiceId": 22,
+				"databaseId":   33,
+				"databaseDb": map[string]interface{}{
+					"id":    44,
+					"title": "Main DB",
+				},
+				"jobs": []map[string]interface{}{
+					{
+						"id":        "job-1",
+						"title":     "Build",
+						"status":    "done",
+						"startedAt": "2026-01-02T03:04:00Z",
+						"endedAt":   "2026-01-02T03:06:00Z",
+						"steps": []map[string]interface{}{
+							{
+								"id":        "step-1",
+								"name":      "Prepare",
+								"status":    "done",
+								"startedAt": "2026-01-02T03:04:00Z",
+								"endedAt":   "2026-01-02T03:04:30Z",
+							},
+							{
+								"id":        "step-2",
+								"title":     "Deploy",
+								"status":    "done",
+								"startedAt": "2026-01-02T03:04:30Z",
+								"endedAt":   "2026-01-02T03:06:00Z",
+							},
+						},
+					},
+				},
+			})
+		case "/v1/apps/11":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 11, "title": "Drupal"})
+		case "/v1/app-services/22":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 22, "title": "PHP"})
+		case "/v1/databases/33":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 33, "title": "Postgres"})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newTaskCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"get", "42"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"app:", "Drupal", "app id:", "11", "instance:", "Prod", "instance id:", "7", "service:", "PHP", "service id:", "22", "database:", "Postgres", "database id:", "33", "database db:", "Main DB", "database db id:", "44", "duration:", "2m", "jobs:", "Build [job-1] (done, 2m, 2 steps)", "Prepare [step-1] (done, 30s)", "Deploy [step-2] (done, 1m 30s)"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("task get output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"appServiceId:", "databaseId:", "databaseDbId:"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("task get output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
+func TestJSONOutputKeepsRawTaskData(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	err := printResult(cmd, outputOptions{output: outputJSON}, map[string]interface{}{
+		"id":        1,
+		"name":      "worker-task",
+		"title":     "Deploy",
+		"status":    "done",
+		"progress":  87,
+		"createdAt": "2026-01-02T03:00:00Z",
+		"startedAt": "2026-01-02T03:04:05Z",
+		"endedAt":   "2026-01-02T04:06:07Z",
+	}, taskColumns)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{`"name": "worker-task"`, `"progress": 87`, `"startedAt": "2026-01-02T03:04:05Z"`, `"endedAt": "2026-01-02T04:06:07Z"`} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("json output should include raw field %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{`"duration"`, "2026-01-02 03:04", "1h 2m"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("json output should not include display value %q: %s", unwanted, output)
+		}
+	}
+}
+
 func TestTableColumnsShowAppInstanceRelations(t *testing.T) {
 	var out bytes.Buffer
 	cmd := &cobra.Command{}
@@ -189,6 +554,10 @@ func TestTableColumnsShowAppInstanceRelations(t *testing.T) {
 				"id":    11,
 				"title": "Drupal",
 			},
+			"stack": map[string]interface{}{
+				"id":    7,
+				"title": "Drupal Stack",
+			},
 			"env": map[string]interface{}{
 				"id":    22,
 				"title": "Prod",
@@ -201,12 +570,12 @@ func TestTableColumnsShowAppInstanceRelations(t *testing.T) {
 	}, instanceColumns)
 
 	output := out.String()
-	for _, rawColumn := range []string{"appId", "envId", "clusterId", "mainDomain"} {
+	for _, rawColumn := range []string{"appId", "stackId", "envId", "clusterId", "mainDomain"} {
 		if strings.Contains(output, rawColumn) {
 			t.Fatalf("output should not include %s column: %s", rawColumn, output)
 		}
 	}
-	for _, expected := range []string{"app", "env", "cluster", "domain", "Drupal", "Prod", "Primary", "example.com"} {
+	for _, expected := range []string{"app", "stack", "env", "cluster", "domain", "Drupal", "Drupal Stack", "Prod", "Primary", "example.com"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("output should include %q: %s", expected, output)
 		}
@@ -228,6 +597,10 @@ func TestGetResultUsesVerticalTableWithRelationIDRows(t *testing.T) {
 			"id":    11,
 			"title": "Drupal",
 		},
+		"stack": map[string]interface{}{
+			"id":    7,
+			"title": "Drupal Stack",
+		},
 		"env": map[string]interface{}{
 			"id":    22,
 			"title": "Prod",
@@ -238,12 +611,12 @@ func TestGetResultUsesVerticalTableWithRelationIDRows(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"id:", "name:", "app:", "Drupal", "app id:", "11", "env:", "Prod", "env id:", "22", "domain:", "example.com"} {
+	for _, expected := range []string{"id:", "name:", "app:", "Drupal", "app id:", "11", "stack:", "Drupal Stack", "stack id:", "7", "env:", "Prod", "env id:", "22", "domain:", "example.com"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("vertical output should include %q: %s", expected, output)
 		}
 	}
-	for _, unwanted := range []string{"Drupal (id: 11)", "Prod (id: 22)", "appId:", "envId:", "mainDomain:"} {
+	for _, unwanted := range []string{"Drupal (id: 11)", "Drupal Stack (id: 7)", "Prod (id: 22)", "appId:", "stackId:", "envId:", "mainDomain:"} {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("vertical output should not include %q: %s", unwanted, output)
 		}
@@ -345,6 +718,199 @@ func TestAppCommandExposesCanonicalNestedResources(t *testing.T) {
 	}
 }
 
+func TestAppListEnrichesStackRelation(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apps":
+			if got := r.URL.Query().Get("orgId"); got != "123" {
+				t.Fatalf("orgId = %q, want 123", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":      1,
+					"name":    "drupal",
+					"title":   "Drupal",
+					"status":  "running",
+					"stackId": 7,
+				},
+			})
+		case "/v1/stacks/7":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 7, "title": "Drupal Stack"})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "--org", "123"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"stack", "Drupal Stack"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("app list output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"stackId", "7"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("app list output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
+func TestAppListShowsStackFromStackRevision(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apps":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":     1,
+					"name":   "drupal",
+					"title":  "Drupal",
+					"status": "running",
+					"stackRev": map[string]interface{}{
+						"stack": map[string]interface{}{
+							"id":    7,
+							"title": "Drupal Stack",
+						},
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "--org", "123"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Drupal Stack") {
+		t.Fatalf("app list output should include stack from stack revision: %s", output)
+	}
+	if strings.Contains(output, "stackId") {
+		t.Fatalf("app list output should not include raw stackId: %s", output)
+	}
+}
+
+func TestAppGetEnrichesStackRelation(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apps/1":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":      1,
+				"name":    "drupal",
+				"title":   "Drupal",
+				"status":  "running",
+				"stackId": 7,
+			})
+		case "/v1/stacks/7":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 7, "title": "Drupal Stack"})
+		case "/v1/app-instances":
+			if got := r.URL.Query().Get("appId"); got != "1" {
+				t.Fatalf("appId = %q, want 1", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":     21,
+					"title":  "Production",
+					"status": "running",
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"get", "1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"stack:", "Drupal Stack", "stack id:", "7", "instances:", "Production [21] (running)"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("app get output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, "stackId:") {
+		t.Fatalf("app get output should not include raw stackId: %s", output)
+	}
+}
+
+func TestRouteListEnrichesPortNumber(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/app-routes":
+			if got := r.URL.Query().Get("appInstanceId"); got != "21" {
+				t.Fatalf("appInstanceId = %q, want 21", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":       1,
+					"host":     "example.com",
+					"path":     "/",
+					"pathType": "prefix",
+					"action":   "proxy",
+					"status":   "active",
+					"appService": map[string]interface{}{
+						"title": "Nginx",
+					},
+					"portId": 55,
+				},
+			})
+		case "/v1/ports/55":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 55, "number": 8080})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppRouteCommand("route", "Manage app routes")
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "--instance", "21"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"port", "8080"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("route list output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"portId", "55"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("route list output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
 func TestNewCatalogCommandsExposeBasicReadOperations(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -365,6 +931,98 @@ func TestNewCatalogCommandsExposeBasicReadOperations(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestStackListShowsCreatedAndUpdatedDatesWithoutServices(t *testing.T) {
+	var out bytes.Buffer
+	createdAt := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	updatedAt := time.Now().Add(-30 * time.Minute).UTC().Format(time.RFC3339)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/stacks" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"items": []map[string]interface{}{
+				{
+					"id":              1,
+					"name":            "drupal",
+					"title":           "Drupal",
+					"status":          "active",
+					"public":          true,
+					"revId":           11,
+					"latestRevNumber": 3,
+					"createdAt":       createdAt,
+					"updatedAt":       updatedAt,
+					"services": []map[string]interface{}{
+						{"title": "PHP"},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newStackCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"created at", "updated at", "2h ago", "30m ago"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("stack list output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"services", "PHP", createdAt, updatedAt} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("stack list output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
+func TestStackGetShowsServicesAndDates(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/stacks/1" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":              1,
+			"name":            "drupal",
+			"title":           "Drupal",
+			"status":          "active",
+			"public":          true,
+			"revId":           11,
+			"latestRevNumber": 3,
+			"createdAt":       "2026-01-02T03:04:05Z",
+			"updatedAt":       "2026-01-03T04:05:06Z",
+			"services": []map[string]interface{}{
+				{"title": "PHP"},
+				{"service": map[string]interface{}{"title": "Nginx"}},
+			},
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newStackCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"get", "1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"created at:", "updated at:", "services:", "2026-01-02 03:04", "2026-01-03 04:05", "PHP, Nginx"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("stack get output should include %q: %s", expected, output)
+		}
 	}
 }
 
@@ -676,6 +1334,166 @@ func TestClusterListEnrichesIntegrationTitleWithProviderTitle(t *testing.T) {
 	}
 }
 
+func TestClusterGetShowsVersionInfraAndPublicIP(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/clusters/101":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":                    101,
+				"name":                  "prod",
+				"title":                 "Production",
+				"status":                "running",
+				"integration":           map[string]interface{}{"title": "AWS"},
+				"region":                "us-east",
+				"zone":                  "a",
+				"version":               "1.31",
+				"infrastructureVersion": "2026.06",
+				"publicIP":              "203.0.113.10",
+				"serverless":            false,
+			})
+		case "/v1/app-instances":
+			if got := r.URL.Query().Get("clusterId"); got != "101" {
+				t.Fatalf("clusterId = %q, want 101", got)
+			}
+			if got := r.URL.Query().Get("clusterApp"); got != "false" {
+				t.Fatalf("clusterApp = %q, want false", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":     21,
+					"title":  "Production",
+					"status": "running",
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newClusterCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"get", "101"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"kubernetes version:", "1.31", "infra version:", "2026.06", "public ip:", "203.0.113.10", "instances:", "Production [21] (running)"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("cluster get output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, "version:") && !strings.Contains(output, "kubernetes version:") {
+		t.Fatalf("cluster get output should use kubernetes version title: %s", output)
+	}
+}
+
+func TestClusterListShowsSpecialIntegrationLabelsWithoutEnrichment(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/clusters" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"items": []map[string]interface{}{
+				{
+					"id":            101,
+					"name":          "cloud",
+					"title":         "Cloud",
+					"status":        "running",
+					"wodby":         true,
+					"integrationId": 701,
+				},
+				{
+					"id":            102,
+					"name":          "local",
+					"title":         "Local",
+					"status":        "running",
+					"serverless":    false,
+					"type":          "k3s",
+					"integrationId": 802,
+				},
+				{
+					"id":            103,
+					"name":          "sample",
+					"title":         "Sample",
+					"status":        "running",
+					"serverless":    false,
+					"kind":          "demo",
+					"integrationId": 903,
+				},
+			},
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newClusterCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "--org", "123"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"Wodby Cloud", "k3s", "Demo"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("cluster list output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"integrationId", "701", "802", "903"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("cluster list output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
+func TestClusterGetOmitsSpecialIntegrationIDRows(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/clusters/101":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":            101,
+				"name":          "cloud",
+				"title":         "Cloud",
+				"status":        "running",
+				"wodby":         true,
+				"integrationId": 701,
+			})
+		case "/v1/app-instances":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newClusterCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"get", "101"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "integration:") || !strings.Contains(output, "Wodby Cloud") {
+		t.Fatalf("cluster get output should include Wodby Cloud integration: %s", output)
+	}
+	for _, unwanted := range []string{"integration id:", "701"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("cluster get output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
 func TestProviderListSendsSupportedFilters(t *testing.T) {
 	var requestedPath string
 	var requestedQuery string
@@ -801,7 +1619,16 @@ func TestInstanceListEnrichesReadableRelations(t *testing.T) {
 				},
 			})
 		case "/v1/apps/11":
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 11, "title": "Drupal"})
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":    11,
+				"title": "Drupal",
+				"stackRev": map[string]interface{}{
+					"stack": map[string]interface{}{
+						"id":    7,
+						"title": "Drupal Stack",
+					},
+				},
+			})
 		case "/v1/envs/22":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 22, "title": "Prod"})
 		case "/v1/clusters/33":
@@ -821,15 +1648,284 @@ func TestInstanceListEnrichesReadableRelations(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"app", "env", "cluster", "domain", "Drupal", "Prod", "Primary", "example.com"} {
+	for _, expected := range []string{"app", "stack", "env", "cluster", "domain", "Drupal", "Drupal Stack", "Prod", "Primary", "example.com"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("output should include %q: %s", expected, output)
 		}
 	}
-	for _, unwanted := range []string{"appId", "envId", "clusterId", "mainDomain", "11", "22", "33"} {
+	for _, unwanted := range []string{"appId", "stackId", "envId", "clusterId", "mainDomain", "11", "7", "22", "33"} {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("output should not include %q: %s", unwanted, output)
 		}
+	}
+}
+
+func TestInstanceGetEnrichesStackThroughAppRelation(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/app-instances/1":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     1,
+				"name":   "prod",
+				"title":  "Production",
+				"status": "running",
+				"appId":  11,
+			})
+		case "/v1/apps/11":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":    11,
+				"title": "Drupal",
+				"stackRev": map[string]interface{}{
+					"stack": map[string]interface{}{
+						"id":    7,
+						"title": "Drupal Stack",
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"get", "1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"app:", "Drupal", "app id:", "11", "stack:", "Drupal Stack", "stack id:", "7"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("instance get output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"appId:", "stackId:"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("instance get output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
+func TestTaskLogsShowStepNamesDurationsAndNoLogs(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/tasks/42":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id": 42,
+				"jobs": []map[string]interface{}{
+					{
+						"steps": []map[string]interface{}{
+							{
+								"id":        "step-1",
+								"name":      "Prepare",
+								"startedAt": "2026-01-02T03:00:00Z",
+								"endedAt":   "2026-01-02T03:01:30Z",
+							},
+							{
+								"id":        "step-2",
+								"title":     "Deploy",
+								"startedAt": "2026-01-02T03:02:00Z",
+								"endedAt":   "2026-01-02T03:04:00Z",
+							},
+						},
+					},
+				},
+			})
+		case "/v1/task-steps/step-1/logs":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"lines": []map[string]interface{}{
+					{"level": "info", "message": "ready"},
+				},
+			})
+		case "/v1/task-steps/step-2/logs":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"lines": []map[string]interface{}{},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newTaskCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"logs", "42"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"== Prepare (1m 30s) ==", "[info] ready", "== Deploy (2m) ==", "no logs"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("task logs output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"== step step-1 ==", "== step step-2 =="} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("task logs output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
+func TestTaskLogsWithMultipleJobsShowsSummaryWithoutFetchingLogs(t *testing.T) {
+	var out bytes.Buffer
+	var logRequests int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/tasks/42":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id": 42,
+				"jobs": []map[string]interface{}{
+					{
+						"id":        "job-1",
+						"title":     "Build",
+						"status":    "done",
+						"startedAt": "2026-01-02T03:00:00Z",
+						"endedAt":   "2026-01-02T03:02:00Z",
+						"steps": []map[string]interface{}{
+							{"id": "step-1", "name": "Prepare"},
+						},
+					},
+					{
+						"id":        "job-2",
+						"title":     "Deploy",
+						"status":    "pending",
+						"startedAt": "2026-01-02T03:03:00Z",
+						"endedAt":   "2026-01-02T03:05:00Z",
+						"steps": []map[string]interface{}{
+							{"id": "step-2", "name": "Apply"},
+						},
+					},
+				},
+			})
+		case "/v1/task-steps/step-1/logs", "/v1/task-steps/step-2/logs":
+			logRequests++
+			t.Fatalf("logs should not be fetched without --job or --all-jobs")
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newTaskCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"logs", "42"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"task has 2 jobs; pass --job to show logs, or --all-jobs to show everything", "id", "name", "status", "duration", "steps", "job-1", "Build", "done", "2m", "job-2", "Deploy", "pending"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("task logs summary should include %q: %s", expected, output)
+		}
+	}
+	if logRequests != 0 {
+		t.Fatalf("logRequests = %d, want 0", logRequests)
+	}
+}
+
+func TestTaskLogsWithJobFilterFetchesSelectedJobOnly(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/tasks/42":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id": 42,
+				"jobs": []map[string]interface{}{
+					{
+						"id":        "job-1",
+						"title":     "Build",
+						"startedAt": "2026-01-02T03:00:00Z",
+						"endedAt":   "2026-01-02T03:02:00Z",
+						"steps": []map[string]interface{}{
+							{"id": "step-1", "name": "Prepare"},
+						},
+					},
+					{
+						"id":        "job-2",
+						"title":     "Deploy",
+						"startedAt": "2026-01-02T03:03:00Z",
+						"endedAt":   "2026-01-02T03:05:00Z",
+						"steps": []map[string]interface{}{
+							{
+								"id":        "step-2",
+								"name":      "Apply",
+								"startedAt": "2026-01-02T03:03:00Z",
+								"endedAt":   "2026-01-02T03:03:30Z",
+							},
+						},
+					},
+				},
+			})
+		case "/v1/task-steps/step-2/logs":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"lines": []map[string]interface{}{
+					{"message": "applied"},
+				},
+			})
+		case "/v1/task-steps/step-1/logs":
+			t.Fatalf("unselected job logs should not be fetched")
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newTaskCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"logs", "42", "--job", "Deploy"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"== job Deploy [job-2] (2m) ==", "== Apply (30s) ==", "applied"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("task logs output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, "Prepare") || strings.Contains(output, "Build") {
+		t.Fatalf("task logs output should not include unselected job details: %s", output)
+	}
+}
+
+func TestTaskLogsWithoutStepsPrintsNoLogs(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/tasks/42" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":   42,
+			"jobs": []map[string]interface{}{},
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newTaskCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"logs", "42"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if output := strings.TrimSpace(out.String()); output != "no logs" {
+		t.Fatalf("task logs output = %q, want no logs", output)
 	}
 }
 

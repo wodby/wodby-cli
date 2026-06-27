@@ -1,6 +1,7 @@
 package ops
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -8,33 +9,40 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
+	"github.com/wodby/wodby-cli/pkg/api/rest"
 )
 
 var (
 	orgColumns            = []string{"id", "name", "title", "domain"}
+	memberColumns         = []string{"id", "member", "email", "role", "status"}
 	projectColumns        = []string{"id", "name", "title"}
 	envColumns            = []string{"id", "name", "title", "type"}
 	databaseColumns       = []string{"id", "name", "title", "status", "kind", "type", "version", "env", "integration", "region", "zone"}
 	clusterColumns        = []string{"id", "name", "title", "status", "integration", "region", "zone", "version", "serverless"}
+	clusterGetColumns     = []string{"id", "name", "title", "status", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "publicIp", "serverless", "instances"}
 	integrationColumns    = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
 	providerColumns       = []string{"id", "name", "title", "status", "public", "revId"}
-	stackColumns          = []string{"id", "name", "title", "status", "public", "revId", "latestRevNumber"}
+	stackColumns          = []string{"id", "name", "title", "status", "public", "revId", "latestRevNumber", "createdAt", "updatedAt"}
+	stackGetColumns       = append(append([]string{}, stackColumns...), "services")
 	catalogServiceColumns = []string{"id", "name", "title", "type", "status", "public", "external", "revId", "latestRevNumber"}
-	appColumns            = []string{"id", "name", "title", "status", "clusterApp"}
-	instanceColumns       = []string{"id", "name", "title", "status", "app", "env", "cluster", "domain"}
+	appColumns            = []string{"id", "name", "title", "status", "stack", "clusterApp"}
+	appGetColumns         = append(append([]string{}, appColumns...), "instances")
+	instanceColumns       = []string{"id", "name", "title", "status", "app", "stack", "env", "cluster", "domain"}
 	serviceColumns        = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
 	routeColumns          = []string{"id", "host", "path", "pathType", "action", "status", "service", "port", "main", "primary", "disabled"}
 	buildColumns          = []string{"id", "number", "status", "instance", "service", "task", "gitRefType", "gitRef", "commitHash", "createdAt"}
 	deploymentColumns     = []string{"id", "number", "status", "instance", "task", "skipRollback", "createdAt", "startedAt", "endedAt"}
 	backupColumns         = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "task", "createdAt"}
 	importColumns         = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "createdAt"}
-	taskColumns           = []string{"id", "name", "title", "status", "progress", "app", "instance", "createdAt", "startedAt", "endedAt"}
+	taskColumns           = []string{"id", "title", "status", "author", "createdAt", "duration"}
+	taskGetColumns        = []string{"id", "title", "status", "author", "app", "instance", "service", "database", "databaseDb", "createdAt", "duration", "jobs"}
 	operationColumns      = []string{"success", "task"}
 )
 
 func Commands() []*cobra.Command {
 	return []*cobra.Command{
 		newOrgCommand(),
+		newMemberCommand(),
 		newProjectCommand(),
 		newEnvCommand(),
 		newDatabaseCommand(),
@@ -78,6 +86,42 @@ func newOrgCommand() *cobra.Command {
 		},
 	})
 
+	return cmd
+}
+
+func newMemberCommand() *cobra.Command {
+	out := outputOptions{}
+	cmd := &cobra.Command{
+		Use:     "member",
+		Aliases: []string{"members"},
+		Short:   "Manage organization members",
+	}
+	addOutputFlag(cmd, &out)
+
+	var orgID string
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List organization members",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
+			if err != nil {
+				return err
+			}
+			query := url.Values{"orgId": []string{resolvedOrgID}}
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/org-memberships", query, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, memberColumns)
+		},
+	}
+	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
+
+	cmd.AddCommand(listCmd)
 	return cmd
 }
 
@@ -507,7 +551,7 @@ func newClusterCommand() *cobra.Command {
 		Short: "Get cluster",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return getAndPrint(cmd, out, "/clusters/"+args[0], clusterColumns)
+			return getAndPrintWithInstances(cmd, out, "/clusters/"+args[0], clusterGetColumns, "clusterId", args[0])
 		},
 	}
 
@@ -818,7 +862,15 @@ func newProviderCommand() *cobra.Command {
 }
 
 func newStackCommand() *cobra.Command {
-	return newCatalogCommand("stack", "stacks", "Manage stacks", "/stacks", stackColumns, false)
+	out := outputOptions{}
+	cmd := &cobra.Command{
+		Use:     "stack",
+		Aliases: []string{"stacks"},
+		Short:   "Manage stacks",
+	}
+	addOutputFlag(cmd, &out)
+	cmd.AddCommand(newCatalogListCommand("list", "List stacks", "/stacks", stackColumns, out, false), newGetCommand("get ID", "Get stack", "/stacks/", stackGetColumns, out))
+	return cmd
 }
 
 func newServiceCommand() *cobra.Command {
@@ -914,7 +966,7 @@ func newAppCommand() *cobra.Command {
 		Short: "Get app",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return getAndPrint(cmd, out, "/apps/"+args[0], appColumns)
+			return getAndPrintWithInstances(cmd, out, "/apps/"+args[0], appGetColumns, "appId", args[0])
 		},
 	}
 	statusCmd := &cobra.Command{
@@ -1735,7 +1787,7 @@ func newTaskCommand() *cobra.Command {
 	listCmd.Flags().IntVar(&page, "page", 0, "Page number")
 	listCmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
 
-	getCmd := newGetCommand("get ID", "Get task", "/tasks/", taskColumns, out)
+	getCmd := newTaskGetCommand(out)
 	waitCmd := &cobra.Command{
 		Use:   "wait ID",
 		Short: "Wait for task",
@@ -1755,6 +1807,8 @@ func newTaskCommand() *cobra.Command {
 	}
 	waitCmd.Flags().Duration("timeout", 10*time.Minute, "Maximum time to wait")
 
+	var logJob string
+	var logAllJobs bool
 	logsCmd := &cobra.Command{
 		Use:   "logs ID",
 		Short: "Show task step logs",
@@ -1764,14 +1818,68 @@ func newTaskCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return printTaskLogs(cmd.Context(), cmd, client, out, args[0])
+			return printTaskLogs(cmd.Context(), cmd, client, out, args[0], logJob, logAllJobs)
 		},
 	}
+	logsCmd.Flags().StringVar(&logJob, "job", "", "Job ID or name to show logs for")
+	logsCmd.Flags().BoolVar(&logAllJobs, "all-jobs", false, "Show logs for all jobs when a task has multiple jobs")
 
 	cancelCmd := newTaskCancelCommand(out)
 	repeatCmd := newTaskRepeatCommand(out)
 	cmd.AddCommand(listCmd, getCmd, waitCmd, logsCmd, cancelCmd, repeatCmd)
 	return cmd
+}
+
+func newTaskGetCommand(out outputOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "get ID",
+		Short: "Get task",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/tasks/"+args[0], nil, &result); err != nil {
+				return err
+			}
+			return printClientGetResult(cmd, client, out, result, taskGetColumnsFor(result))
+		},
+	}
+}
+
+func taskGetColumnsFor(value interface{}) []string {
+	rows := asRows(normalizeItem(value))
+	if len(rows) == 0 {
+		return taskGetColumns
+	}
+
+	columns := make([]string, 0, len(taskGetColumns))
+	for _, column := range taskGetColumns {
+		if isOptionalTaskRelationColumn(column) && !displayColumnPresent(rows[0], column) {
+			continue
+		}
+		columns = append(columns, column)
+	}
+	return columns
+}
+
+func isOptionalTaskRelationColumn(column string) bool {
+	switch column {
+	case "app", "instance", "service", "database", "databaseDb", "jobs":
+		return true
+	default:
+		return false
+	}
+}
+
+func displayColumnPresent(row map[string]interface{}, column string) bool {
+	if formatColumnValue(row, column) != "" {
+		return true
+	}
+	relation, ok := relationColumnFor(column)
+	return ok && firstRelationID(row, relation) != ""
 }
 
 func newTaskCancelCommand(out outputOptions) *cobra.Command {
@@ -1941,6 +2049,47 @@ func getAndPrint(cmd *cobra.Command, out outputOptions, path string, columns []s
 		return err
 	}
 	return printClientGetResult(cmd, client, out, result, columns)
+}
+
+func getAndPrintWithInstances(cmd *cobra.Command, out outputOptions, path string, columns []string, filterName string, filterValue string) error {
+	client, err := newRESTClient()
+	if err != nil {
+		return err
+	}
+	var result interface{}
+	if err := client.Get(cmd.Context(), path, nil, &result); err != nil {
+		return err
+	}
+	if out.output != outputJSON {
+		enrichInstancesSummary(cmd.Context(), client, normalizeItem(result), filterName, filterValue)
+	}
+	return printClientGetResult(cmd, client, out, result, columns)
+}
+
+func enrichInstancesSummary(ctx context.Context, client *rest.Client, value interface{}, filterName string, filterValue string) {
+	rows := asRows(value)
+	if len(rows) == 0 || firstNonNilPath(rows[0], "instances", "appInstances") != nil {
+		return
+	}
+
+	if filterValue == "" {
+		filterValue = firstScalarPath(rows[0], "id")
+	}
+	if filterValue == "" {
+		return
+	}
+
+	query := url.Values{filterName: []string{filterValue}}
+	addQuery(query, "orgId", firstScalarPath(rows[0], "orgId", "org.id"))
+	if filterName == "clusterId" {
+		query.Set("clusterApp", "false")
+	}
+
+	var result interface{}
+	if err := client.Get(ctx, "/app-instances", query, &result); err != nil {
+		return
+	}
+	rows[0]["appInstances"] = normalizeItems(result)
 }
 
 func optionalInt(value string) interface{} {

@@ -47,6 +47,7 @@ type relationColumn struct {
 	idPaths           []string
 	idScalarPaths     []string
 	pathPrefix        string
+	pathPrefixes      []string
 	titlePaths        []string
 	allowNumericTitle bool
 }
@@ -56,10 +57,10 @@ var relationColumns = map[string]relationColumn{
 		title:         "app",
 		objectKey:     "app",
 		idTitle:       "app id",
-		idPaths:       []string{"appId", "app.id"},
-		idScalarPaths: []string{"app"},
+		idPaths:       []string{"appId", "app.id", "appInstance.appId", "appInstance.app.id", "instance.appId", "instance.app.id", "origin.appId", "origin.app.id"},
+		idScalarPaths: []string{"app", "appInstance.app", "instance.app", "origin.app"},
 		pathPrefix:    "/apps/",
-		titlePaths:    []string{"appTitle", "app.title", "app", "appName", "app.name"},
+		titlePaths:    []string{"appTitle", "app.title", "app", "appName", "app.name", "appInstance.appTitle", "appInstance.app.title", "appInstance.app.name", "instance.appTitle", "instance.app.title", "instance.app.name", "origin.appTitle", "origin.app.title", "origin.app.name"},
 	},
 	"env": {
 		title:         "env",
@@ -79,45 +80,58 @@ var relationColumns = map[string]relationColumn{
 		pathPrefix:    "/clusters/",
 		titlePaths:    []string{"clusterTitle", "cluster.title", "cluster", "clusterName", "cluster.name"},
 	},
+	"stack": {
+		title:         "stack",
+		objectKey:     "stack",
+		idTitle:       "stack id",
+		idPaths:       []string{"stackId", "stack.id", "stackRev.stackId", "stackRev.stack.id", "stackRevision.stackId", "stackRevision.stack.id", "app.stackId", "app.stack.id", "app.stackRev.stackId", "app.stackRev.stack.id", "app.stackRevision.stackId", "app.stackRevision.stack.id", "appStackId", "appStack.id", "appInstance.stackId", "appInstance.stack.id", "appInstance.app.stackId", "appInstance.app.stack.id", "appInstance.app.stackRev.stackId", "appInstance.app.stackRev.stack.id", "appInstance.app.stackRevision.stackId", "appInstance.app.stackRevision.stack.id", "instance.stackId", "instance.stack.id", "instance.app.stackId", "instance.app.stack.id", "instance.app.stackRev.stackId", "instance.app.stackRev.stack.id", "instance.app.stackRevision.stackId", "instance.app.stackRevision.stack.id"},
+		idScalarPaths: []string{"stack", "stackRev.stack", "stackRevision.stack", "app.stack", "app.stackRev.stack", "app.stackRevision.stack", "appInstance.stack", "appInstance.app.stack", "appInstance.app.stackRev.stack", "appInstance.app.stackRevision.stack", "instance.stack", "instance.app.stack", "instance.app.stackRev.stack", "instance.app.stackRevision.stack"},
+		pathPrefix:    "/stacks/",
+		titlePaths:    []string{"stackTitle", "stack.title", "stack", "stackName", "stack.name", "stackRev.stackTitle", "stackRev.stack.title", "stackRev.stack.name", "stackRevision.stackTitle", "stackRevision.stack.title", "stackRevision.stack.name", "app.stackTitle", "app.stack.title", "app.stack.name", "app.stackRev.stackTitle", "app.stackRev.stack.title", "app.stackRev.stack.name", "app.stackRevision.stackTitle", "app.stackRevision.stack.title", "app.stackRevision.stack.name", "appInstance.stackTitle", "appInstance.stack.title", "appInstance.stack.name", "appInstance.app.stackTitle", "appInstance.app.stack.title", "appInstance.app.stack.name", "appInstance.app.stackRev.stackTitle", "appInstance.app.stackRev.stack.title", "appInstance.app.stackRev.stack.name", "appInstance.app.stackRevision.stackTitle", "appInstance.app.stackRevision.stack.title", "appInstance.app.stackRevision.stack.name", "instance.stackTitle", "instance.stack.title", "instance.stack.name", "instance.app.stackTitle", "instance.app.stack.title", "instance.app.stack.name", "instance.app.stackRev.stackTitle", "instance.app.stackRev.stack.title", "instance.app.stackRev.stack.name", "instance.app.stackRevision.stackTitle", "instance.app.stackRevision.stack.title", "instance.app.stackRevision.stack.name"},
+	},
 	"service": {
 		title:         "service",
 		objectKey:     "appService",
 		idTitle:       "service id",
-		idPaths:       []string{"appServiceId", "appService.id", "serviceId", "service.id"},
-		idScalarPaths: []string{"appService", "service"},
+		idPaths:       []string{"appServiceId", "appService.id", "serviceId", "service.id", "origin.appServiceId", "origin.appService.id", "origin.serviceId", "origin.service.id"},
+		idScalarPaths: []string{"appService", "service", "origin.appService", "origin.service"},
 		pathPrefix:    "/app-services/",
-		titlePaths:    []string{"appServiceTitle", "appService.title", "serviceTitle", "service.title", "appService", "service", "appServiceName", "appService.name", "serviceName", "service.name"},
+		titlePaths:    []string{"appServiceTitle", "appService.title", "serviceTitle", "service.title", "appService", "service", "appServiceName", "appService.name", "serviceName", "service.name", "origin.appServiceTitle", "origin.appService.title", "origin.appService.name", "origin.serviceTitle", "origin.service.title", "origin.service.name"},
 	},
 	"instance": {
 		title:         "instance",
 		objectKey:     "appInstance",
 		idTitle:       "instance id",
-		idPaths:       []string{"appInstanceId", "appInstance.id", "instanceId", "instance.id"},
-		idScalarPaths: []string{"appInstance", "instance"},
+		idPaths:       []string{"appInstanceId", "appInstance.id", "instanceId", "instance.id", "origin.appInstanceId", "origin.appInstance.id", "origin.instanceId", "origin.instance.id"},
+		idScalarPaths: []string{"appInstance", "instance", "origin.appInstance", "origin.instance"},
 		pathPrefix:    "/app-instances/",
-		titlePaths:    []string{"appInstanceTitle", "appInstance.title", "instanceTitle", "instance.title", "appInstance", "instance", "appInstanceName", "appInstance.name", "instanceName", "instance.name"},
+		titlePaths:    []string{"appInstanceTitle", "appInstance.title", "instanceTitle", "instance.title", "appInstance", "instance", "appInstanceName", "appInstance.name", "instanceName", "instance.name", "origin.appInstanceTitle", "origin.appInstance.title", "origin.appInstance.name", "origin.instanceTitle", "origin.instance.title", "origin.instance.name"},
 	},
 	"database": {
 		title:         "database",
 		objectKey:     "database",
 		idTitle:       "database id",
-		idPaths:       []string{"databaseId", "database.id"},
-		idScalarPaths: []string{"database"},
+		idPaths:       []string{"databaseId", "database.id", "origin.databaseId", "origin.database.id"},
+		idScalarPaths: []string{"database", "origin.database"},
 		pathPrefix:    "/databases/",
-		titlePaths:    []string{"databaseTitle", "database.title", "database", "databaseName", "database.name"},
+		titlePaths:    []string{"databaseTitle", "database.title", "database", "databaseName", "database.name", "origin.databaseTitle", "origin.database.title", "origin.database.name"},
 	},
 	"databaseDb": {
 		title:         "database db",
 		idTitle:       "database db id",
-		idPaths:       []string{"databaseDbId", "databaseDb.id", "databaseDBId", "databaseDB.id", "dbId", "db.id"},
-		idScalarPaths: []string{"databaseDb", "databaseDB", "db"},
-		titlePaths:    []string{"databaseDbTitle", "databaseDb.title", "databaseDBTitle", "databaseDB.title", "dbTitle", "db.title", "databaseDb", "databaseDB", "db", "databaseDbName", "databaseDb.name", "databaseDBName", "databaseDB.name", "dbName", "db.name"},
+		idPaths:       []string{"databaseDbId", "databaseDb.id", "databaseDBId", "databaseDB.id", "dbId", "db.id", "origin.databaseDbId", "origin.databaseDb.id", "origin.databaseDBId", "origin.databaseDB.id", "origin.dbId", "origin.db.id"},
+		idScalarPaths: []string{"databaseDb", "databaseDB", "db", "origin.databaseDb", "origin.databaseDB", "origin.db"},
+		titlePaths:    []string{"databaseDbTitle", "databaseDb.title", "databaseDBTitle", "databaseDB.title", "dbTitle", "db.title", "databaseDb", "databaseDB", "db", "databaseDbName", "databaseDb.name", "databaseDBName", "databaseDB.name", "dbName", "db.name", "origin.databaseDbTitle", "origin.databaseDb.title", "origin.databaseDb.name", "origin.databaseDBTitle", "origin.databaseDB.title", "origin.databaseDB.name", "origin.dbTitle", "origin.db.title", "origin.db.name"},
 	},
 	"port": {
 		title:             "port",
+		objectKey:         "port",
 		idTitle:           "port id",
 		idPaths:           []string{"portId", "port.id"},
-		titlePaths:        []string{"portNumber", "port.number", "port", "portName", "port.name", "portTitle", "port.title", "port.port"},
+		idScalarPaths:     []string{"port"},
+		pathPrefix:        "/ports/",
+		pathPrefixes:      []string{"/app-service-ports/"},
+		titlePaths:        []string{"portNumber", "portNumber.number", "port.number", "port.port", "port", "number", "portName", "port.name", "portTitle", "port.title"},
 		allowNumericTitle: true,
 	},
 	"task": {
@@ -128,6 +142,15 @@ var relationColumns = map[string]relationColumn{
 		idScalarPaths: []string{"task"},
 		pathPrefix:    "/tasks/",
 		titlePaths:    []string{"taskTitle", "task.title", "task", "taskName", "task.name"},
+	},
+	"author": {
+		title:         "author",
+		objectKey:     "author",
+		idTitle:       "author id",
+		idPaths:       []string{"authorId", "author.id", "createdById", "createdBy.id", "createdByUserId", "createdByUser.id", "createdByMembershipId", "createdByMembership.id", "createdByOrgMembershipId", "createdByOrgMembership.id", "orgMembershipId", "orgMembership.id", "membershipId", "membership.id"},
+		idScalarPaths: []string{"author", "createdBy", "createdByUser", "createdByMembership", "createdByOrgMembership", "orgMembership", "membership"},
+		pathPrefix:    "/org-memberships/",
+		titlePaths:    []string{"authorName", "author.name", "author.title", "author.email", "author.user.name", "author.user.email", "createdByName", "createdBy.name", "createdBy.email", "createdBy.user.name", "createdBy.user.email", "createdByUser.name", "createdByUser.email", "createdByMembership.name", "createdByMembership.email", "createdByMembership.user.name", "createdByMembership.user.email", "createdByOrgMembership.name", "createdByOrgMembership.email", "createdByOrgMembership.user.name", "createdByOrgMembership.user.email", "orgMembership.name", "orgMembership.email", "orgMembership.user.name", "orgMembership.user.email", "membership.name", "membership.email", "membership.user.name", "membership.user.email"},
 	},
 }
 
@@ -317,7 +340,7 @@ func enrichDisplayRelations(ctx context.Context, client *rest.Client, value inte
 		}
 
 		relation, ok := displayRelationFor(column)
-		if !ok || relation.pathPrefix == "" {
+		if !ok || len(relationPathPrefixes(relation)) == 0 {
 			continue
 		}
 		for _, row := range rows {
@@ -329,7 +352,7 @@ func enrichDisplayRelations(ctx context.Context, client *rest.Client, value inte
 				continue
 			}
 
-			related, ok := fetchDisplayRelation(ctx, client, cache, relation.pathPrefix, id)
+			related, ok := fetchDisplayRelationForRelation(ctx, client, cache, relation, id)
 			if !ok {
 				continue
 			}
@@ -341,6 +364,24 @@ func enrichDisplayRelations(ctx context.Context, client *rest.Client, value inte
 	}
 
 	return nil
+}
+
+func relationPathPrefixes(relation relationColumn) []string {
+	prefixes := make([]string, 0, 1+len(relation.pathPrefixes))
+	if relation.pathPrefix != "" {
+		prefixes = append(prefixes, relation.pathPrefix)
+	}
+	prefixes = append(prefixes, relation.pathPrefixes...)
+	return prefixes
+}
+
+func fetchDisplayRelationForRelation(ctx context.Context, client *rest.Client, cache map[string]map[string]interface{}, relation relationColumn, id string) (map[string]interface{}, bool) {
+	for _, pathPrefix := range relationPathPrefixes(relation) {
+		if related, ok := fetchDisplayRelation(ctx, client, cache, pathPrefix, id); ok {
+			return related, true
+		}
+	}
+	return nil, false
 }
 
 func fetchDisplayRelation(ctx context.Context, client *rest.Client, cache map[string]map[string]interface{}, pathPrefix string, id string) (map[string]interface{}, bool) {
@@ -464,11 +505,18 @@ func printTable(cmd *cobra.Command, value interface{}, columns []string) {
 	for _, row := range rows {
 		values := make([]string, 0, len(columns))
 		for _, column := range columns {
-			values = append(values, formatColumnValue(row, column))
+			values = append(values, formatTableColumnValue(row, column))
 		}
 		fmt.Fprintln(writer, strings.Join(values, "\t"))
 	}
 	_ = writer.Flush()
+}
+
+func formatTableColumnValue(row map[string]interface{}, column string) string {
+	if isTimeColumn(column) {
+		return formatRelativeDisplayTime(row[column])
+	}
+	return formatColumnValue(row, column)
 }
 
 func printVerticalTable(cmd *cobra.Command, value interface{}, columns []string, showRelationIDs bool) {
@@ -507,6 +555,9 @@ type verticalRow struct {
 func verticalExtraRows(row map[string]interface{}, column string, displayedValue string) []verticalRow {
 	switch column {
 	case "integration", "integrationId":
+		if clusterIntegrationSpecialLabel(row) != "" {
+			return nil
+		}
 		return extraIDRows(row, displayedValue, relationColumn{
 			idTitle: "integration id",
 			idPaths: []string{"integrationId", "integration.id"},
@@ -611,12 +662,171 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		return formatProviderColumn(row)
 	case "domain", "mainDomain":
 		return firstScalarPath(row, "domain", "mainDomain")
+	case "author", "authorId":
+		return formatAuthorColumn(row)
+	case "member":
+		return formatOrgMembershipLabel(row)
+	case "email":
+		return firstScalarPath(row, "email", "user.email", "account.email", "profile.email")
+	case "role":
+		return firstScalarPath(row, "role", "orgRole", "organizationRole", "membershipRole")
+	case "duration":
+		return formatDurationColumn(row)
+	case "services":
+		return formatServicesColumn(row)
+	case "instances":
+		return formatInstancesColumn(row)
+	case "kubernetesVersion":
+		return firstScalarPath(row, "kubernetesVersion", "kubernetes.version", "version")
+	case "infraVersion":
+		return firstScalarPath(row, "infraVersion", "infrastructureVersion", "infra.version", "infrastructure.version")
+	case "publicIp":
+		return firstScalarPath(row, "publicIp", "publicIP", "publicIPAddress", "publicIpAddress", "publicAddress")
+	case "jobs":
+		return formatTaskJobsColumn(row)
 	default:
 		if relation, ok := relationColumnFor(column); ok {
 			return formatRelationColumn(row, relation)
 		}
+		if isTimeColumn(column) {
+			return formatDisplayTime(row[column])
+		}
 		return formatValue(row[column])
 	}
+}
+
+func isTimeColumn(column string) bool {
+	return strings.HasSuffix(column, "At") || strings.HasSuffix(column, "_at")
+}
+
+func formatDisplayTime(value interface{}) string {
+	t, ok := parseDisplayTime(value)
+	if !ok {
+		return formatValue(value)
+	}
+	return t.Format("2006-01-02 15:04")
+}
+
+func formatRelativeDisplayTime(value interface{}) string {
+	t, ok := parseDisplayTime(value)
+	if !ok {
+		return formatValue(value)
+	}
+	return formatRelativeTime(t, time.Now())
+}
+
+func formatRelativeTime(t time.Time, now time.Time) string {
+	duration := now.Sub(t)
+	if duration < 0 {
+		return "in " + formatRelativeDuration(-duration)
+	}
+	if duration < time.Second {
+		return "just now"
+	}
+	return formatRelativeDuration(duration) + " ago"
+}
+
+func formatRelativeDuration(duration time.Duration) string {
+	switch {
+	case duration < time.Minute:
+		seconds := int(duration / time.Second)
+		if seconds < 1 {
+			seconds = 1
+		}
+		return fmt.Sprintf("%ds", seconds)
+	case duration < time.Hour:
+		return fmt.Sprintf("%dm", int(duration/time.Minute))
+	case duration < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(duration/time.Hour))
+	case duration < 30*24*time.Hour:
+		return fmt.Sprintf("%dd", int(duration/(24*time.Hour)))
+	case duration < 365*24*time.Hour:
+		return fmt.Sprintf("%dmo", int(duration/(30*24*time.Hour)))
+	default:
+		return fmt.Sprintf("%dy", int(duration/(365*24*time.Hour)))
+	}
+}
+
+func parseDisplayTime(value interface{}) (time.Time, bool) {
+	switch v := value.(type) {
+	case time.Time:
+		if v.IsZero() {
+			return time.Time{}, false
+		}
+		return v, true
+	case string:
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return time.Time{}, false
+		}
+		for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+			t, err := time.Parse(layout, v)
+			if err == nil && !t.IsZero() {
+				return t, true
+			}
+		}
+		for _, layout := range []string{
+			"2006-01-02T15:04:05.999999999",
+			"2006-01-02T15:04:05",
+			"2006-01-02T15:04",
+			"2006-01-02 15:04:05",
+			"2006-01-02 15:04",
+		} {
+			t, err := time.ParseInLocation(layout, v, time.Local)
+			if err == nil && !t.IsZero() {
+				return t, true
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
+func formatDurationColumn(row map[string]interface{}) string {
+	startedAt, ok := parseDisplayTime(valueAtPath(row, "startedAt"))
+	if !ok {
+		return ""
+	}
+
+	endedAt, ok := parseDisplayTime(valueAtPath(row, "endedAt"))
+	if !ok {
+		endedAt = time.Now()
+	}
+
+	duration := endedAt.Sub(startedAt)
+	if duration < 0 {
+		return ""
+	}
+	return formatDisplayDuration(duration)
+}
+
+func formatDisplayDuration(duration time.Duration) string {
+	if duration < time.Second {
+		return "<1s"
+	}
+
+	duration = duration.Round(time.Second)
+	days := int64(duration / (24 * time.Hour))
+	duration -= time.Duration(days) * 24 * time.Hour
+	hours := int64(duration / time.Hour)
+	duration -= time.Duration(hours) * time.Hour
+	minutes := int64(duration / time.Minute)
+	duration -= time.Duration(minutes) * time.Minute
+	seconds := int64(duration / time.Second)
+
+	parts := make([]string, 0, 2)
+	addPart := func(value int64, unit string) {
+		if value != 0 && len(parts) < 2 {
+			parts = append(parts, fmt.Sprintf("%d%s", value, unit))
+		}
+	}
+	addPart(days, "d")
+	addPart(hours, "h")
+	addPart(minutes, "m")
+	addPart(seconds, "s")
+	if len(parts) == 0 {
+		return "0s"
+	}
+	return strings.Join(parts, " ")
 }
 
 func relationColumnFor(column string) (relationColumn, bool) {
@@ -627,6 +837,8 @@ func relationColumnFor(column string) (relationColumn, bool) {
 		return relationColumns["env"], true
 	case "cluster", "clusterId":
 		return relationColumns["cluster"], true
+	case "stack", "stackId":
+		return relationColumns["stack"], true
 	case "service", "appService", "appServiceId", "serviceId":
 		return relationColumns["service"], true
 	case "instance", "appInstance", "appInstanceId", "instanceId":
@@ -639,6 +851,8 @@ func relationColumnFor(column string) (relationColumn, bool) {
 		return relationColumns["port"], true
 	case "task", "taskId":
 		return relationColumns["task"], true
+	case "author", "authorId", "createdBy", "createdById", "orgMembership", "orgMembershipId", "membership", "membershipId":
+		return relationColumns["author"], true
 	default:
 		return relationColumn{}, false
 	}
@@ -739,6 +953,10 @@ func formatValue(value interface{}) string {
 }
 
 func formatIntegrationColumn(row map[string]interface{}) string {
+	if label := clusterIntegrationSpecialLabel(row); label != "" {
+		return label
+	}
+
 	title := firstTitlePath(
 		row,
 		"integrationTitle",
@@ -791,6 +1009,308 @@ func formatIntegrationColumn(row map[string]interface{}) string {
 	}
 
 	return title
+}
+
+func clusterIntegrationSpecialLabel(row map[string]interface{}) string {
+	if truthyPath(row, "wodby", "isWodby", "wodbyCloud", "isWodbyCloud") {
+		return "Wodby Cloud"
+	}
+	if truthyPath(row, "k3s", "isK3s") {
+		return "k3s"
+	}
+	if truthyPath(row, "demo", "isDemo") {
+		return "Demo"
+	}
+	if !looksLikeClusterRow(row) {
+		return ""
+	}
+
+	for _, path := range []string{
+		"clusterType",
+		"clusterKind",
+		"clusterProvider",
+		"clusterProviderType",
+		"type",
+		"kind",
+		"provider",
+		"providerType",
+		"integrationKind",
+		"integration.kind",
+		"integration.type",
+		"integration.provider",
+		"integration.providerType",
+	} {
+		switch normalizeDisplayToken(firstScalarPath(row, path)) {
+		case "wodby", "wodbycloud":
+			return "Wodby Cloud"
+		case "k3s":
+			return "k3s"
+		case "demo":
+			return "Demo"
+		}
+	}
+
+	return ""
+}
+
+func looksLikeClusterRow(row map[string]interface{}) bool {
+	for _, key := range []string{"serverless", "clusterType", "clusterKind", "clusterProvider", "clusterProviderType"} {
+		if _, ok := row[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func truthyPath(row map[string]interface{}, paths ...string) bool {
+	for _, path := range paths {
+		switch v := valueAtPath(row, path).(type) {
+		case bool:
+			if v {
+				return true
+			}
+		case string:
+			switch strings.ToLower(strings.TrimSpace(v)) {
+			case "true", "yes", "1":
+				return true
+			}
+		case json.Number:
+			if v.String() == "1" {
+				return true
+			}
+		case float64:
+			if v == 1 {
+				return true
+			}
+		case int:
+			if v == 1 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeDisplayToken(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "-", "")
+	value = strings.ReplaceAll(value, "_", "")
+	value = strings.ReplaceAll(value, " ", "")
+	return value
+}
+
+func formatServicesColumn(row map[string]interface{}) string {
+	value := firstNonNilPath(row, "services", "stackServices", "catalogServices")
+	if value == nil {
+		return ""
+	}
+
+	labels := serviceLabels(value)
+	if len(labels) != 0 {
+		return strings.Join(labels, ", ")
+	}
+	return formatValue(value)
+}
+
+func firstNonNilPath(row map[string]interface{}, paths ...string) interface{} {
+	for _, path := range paths {
+		value := valueAtPath(row, path)
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func serviceLabels(value interface{}) []string {
+	switch v := value.(type) {
+	case []interface{}:
+		labels := make([]string, 0, len(v))
+		for _, item := range v {
+			if label := serviceLabel(item); label != "" {
+				labels = append(labels, label)
+			}
+		}
+		return labels
+	case []map[string]interface{}:
+		labels := make([]string, 0, len(v))
+		for _, item := range v {
+			if label := serviceLabel(item); label != "" {
+				labels = append(labels, label)
+			}
+		}
+		return labels
+	default:
+		if label := serviceLabel(value); label != "" {
+			return []string{label}
+		}
+		return nil
+	}
+}
+
+func serviceLabel(value interface{}) string {
+	m, ok := value.(map[string]interface{})
+	if !ok {
+		return scalarString(value)
+	}
+	return firstTitlePath(
+		m,
+		"title",
+		"name",
+		"serviceTitle",
+		"service.title",
+		"service.name",
+		"catalogServiceTitle",
+		"catalogService.title",
+		"catalogService.name",
+		"appServiceTitle",
+		"appService.title",
+		"appService.name",
+	)
+}
+
+func formatInstancesColumn(row map[string]interface{}) string {
+	value := firstNonNilPath(row, "instances", "appInstances")
+	if value == nil {
+		return ""
+	}
+
+	labels := instanceLabels(value)
+	if len(labels) == 0 {
+		return "none"
+	}
+	return strings.Join(labels, ", ")
+}
+
+func instanceLabels(value interface{}) []string {
+	switch v := value.(type) {
+	case []interface{}:
+		labels := make([]string, 0, len(v))
+		for _, item := range v {
+			if label := instanceLabel(item); label != "" {
+				labels = append(labels, label)
+			}
+		}
+		return labels
+	case []map[string]interface{}:
+		labels := make([]string, 0, len(v))
+		for _, item := range v {
+			if label := instanceLabel(item); label != "" {
+				labels = append(labels, label)
+			}
+		}
+		return labels
+	default:
+		if label := instanceLabel(value); label != "" {
+			return []string{label}
+		}
+		return nil
+	}
+}
+
+func instanceLabel(value interface{}) string {
+	m, ok := value.(map[string]interface{})
+	if !ok {
+		return scalarString(value)
+	}
+
+	title := firstTitlePath(
+		m,
+		"title",
+		"name",
+		"appInstanceTitle",
+		"appInstance.title",
+		"appInstance.name",
+		"instanceTitle",
+		"instance.title",
+		"instance.name",
+	)
+	if title == "" {
+		title = firstScalarPath(m, "domain", "mainDomain")
+	}
+	if title == "" {
+		title = firstScalarPath(m, "id", "appInstanceId", "appInstance.id", "instanceId", "instance.id")
+	}
+	if title == "" {
+		return ""
+	}
+
+	id := firstScalarPath(m, "id", "appInstanceId", "appInstance.id", "instanceId", "instance.id")
+	status := firstScalarPath(m, "status", "appInstance.status", "instance.status")
+	details := make([]string, 0, 2)
+	if id != "" && id != title {
+		details = append(details, fmt.Sprintf("[%s]", id))
+	}
+	if status != "" {
+		details = append(details, fmt.Sprintf("(%s)", status))
+	}
+	if len(details) == 0 {
+		return title
+	}
+	return title + " " + strings.Join(details, " ")
+}
+
+func formatAuthorColumn(row map[string]interface{}) string {
+	for _, path := range []string{"author", "createdBy", "createdByUser", "createdByMembership", "createdByOrgMembership", "orgMembership", "membership", "user"} {
+		if m, ok := valueAtPath(row, path).(map[string]interface{}); ok {
+			if label := formatOrgMembershipLabel(m); label != "" {
+				return label
+			}
+		}
+	}
+
+	name := firstTitlePath(
+		row,
+		"authorName",
+		"author",
+		"createdByName",
+		"createdBy",
+		"createdByUserName",
+		"userName",
+		"user",
+	)
+	email := firstScalarPath(
+		row,
+		"authorEmail",
+		"author.email",
+		"author.user.email",
+		"createdByEmail",
+		"createdBy.email",
+		"createdBy.user.email",
+		"createdByUser.email",
+		"userEmail",
+		"user.email",
+	)
+	return joinNameEmail(name, email)
+}
+
+func formatOrgMembershipLabel(row map[string]interface{}) string {
+	name := firstTitlePath(
+		row,
+		"member",
+		"name",
+		"title",
+		"fullName",
+		"displayName",
+		"user.name",
+		"user.fullName",
+		"user.displayName",
+		"account.name",
+		"profile.name",
+	)
+	email := firstScalarPath(row, "email", "user.email", "account.email", "profile.email")
+	return joinNameEmail(name, email)
+}
+
+func joinNameEmail(name string, email string) string {
+	switch {
+	case name != "" && email != "" && name != email:
+		return fmt.Sprintf("%s <%s>", name, email)
+	case name != "":
+		return name
+	default:
+		return email
+	}
 }
 
 func formatProviderColumn(row map[string]interface{}) string {

@@ -21,7 +21,7 @@ var (
 	databaseDbColumns     = []string{"id", "name", "status", "charset", "collation", "database", "createdAt"}
 	databaseUserColumns   = []string{"id", "username", "hostname", "status", "database", "dbs", "createdAt"}
 	clusterColumns        = []string{"id", "name", "title", "status", "integration", "region", "zone", "version", "nodes", "singleNode", "scalable", "serverless"}
-	clusterGetColumns     = []string{"id", "name", "title", "status", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "scalable", "serverless", "instances"}
+	clusterGetColumns     = []string{"id", "name", "title", "status", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "scalable", "serverless"}
 	infraAppColumns       = []string{"id", "name", "title", "status", "stack", "infraAppInstanceId"}
 	integrationColumns    = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
 	providerColumns       = []string{"id", "name", "title", "status", "public", "revId"}
@@ -38,7 +38,9 @@ var (
 	backupColumns         = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "task", "createdAt"}
 	importColumns         = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "createdAt"}
 	taskColumns           = []string{"id", "title", "status", "author", "createdAt", "duration"}
-	taskGetColumns        = []string{"id", "title", "status", "author", "app", "instance", "service", "database", "databaseDb", "createdAt", "duration", "jobs"}
+	taskGetColumns        = []string{"id", "title", "status", "author", "app", "instance", "service", "database", "databaseDb", "createdAt", "duration"}
+	taskJobColumns        = []string{"id", "name", "status", "duration", "steps"}
+	taskStepColumns       = []string{"id", "name", "status", "duration", "job"}
 	operationColumns      = []string{"success", "task"}
 )
 
@@ -761,7 +763,7 @@ func newClusterCommand() *cobra.Command {
 		Short: "Get cluster",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return getAndPrintWithInstances(cmd, out, "/clusters/"+args[0], clusterGetColumns, "clusterId", args[0])
+			return getAndPrint(cmd, out, "/clusters/"+args[0], clusterGetColumns)
 		},
 	}
 
@@ -1519,7 +1521,7 @@ func newAppServiceCommand(use string, aliases []string, short string, mode insta
 		},
 	}
 	if mode == instanceFilterFlag {
-		listCmd.Flags().StringVar(&instanceID, "instance", "", "App instance ID")
+		listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
 	}
 
 	getCmd := &cobra.Command{
@@ -1649,7 +1651,7 @@ func newAppRouteCommand(use string, aliases []string, short string, mode instanc
 		},
 	}
 	if mode == instanceFilterFlag {
-		listCmd.Flags().StringVar(&instanceID, "instance", "", "App instance ID")
+		listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
 	}
 
 	getCmd := &cobra.Command{
@@ -1850,7 +1852,7 @@ func newBuildCommand() *cobra.Command {
 			return printClientResult(cmd, client, out, result, buildColumns)
 		},
 	}
-	listCmd.Flags().StringVar(&instanceID, "instance", "", "App instance ID")
+	listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
 	listCmd.Flags().IntVar(&page, "page", 0, "Page number")
 	listCmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
 
@@ -1933,7 +1935,7 @@ func newDeploymentCommand() *cobra.Command {
 			return printClientResult(cmd, client, out, result, deploymentColumns)
 		},
 	}
-	listCmd.Flags().StringVar(&instanceID, "instance", "", "App instance ID")
+	listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
 	listCmd.Flags().IntVar(&page, "page", 0, "Page number")
 	listCmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
 
@@ -2249,7 +2251,7 @@ func newTaskCommand() *cobra.Command {
 	listCmd.Flags().StringVar(&statuses, "statuses", "", "Comma-separated statuses")
 	listCmd.Flags().StringVar(&search, "search", "", "Search query")
 	listCmd.Flags().StringVar(&appID, "app", "", "App ID")
-	listCmd.Flags().StringVar(&instanceID, "instance", "", "App instance ID")
+	listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
 	listCmd.Flags().BoolVar(&withoutOrigin, "without-origin", false, "Only tasks without origin")
 	listCmd.Flags().IntVar(&page, "page", 0, "Page number")
 	listCmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
@@ -2293,7 +2295,7 @@ func newTaskCommand() *cobra.Command {
 
 	cancelCmd := newTaskCancelCommand(out)
 	repeatCmd := newTaskRepeatCommand(out)
-	cmd.AddCommand(listCmd, getCmd, waitCmd, logsCmd, cancelCmd, repeatCmd)
+	cmd.AddCommand(listCmd, getCmd, waitCmd, logsCmd, newTaskJobCommand(out), newTaskStepCommand(out), cancelCmd, repeatCmd)
 	return cmd
 }
 
@@ -2334,7 +2336,7 @@ func taskGetColumnsFor(value interface{}) []string {
 
 func isOptionalTaskRelationColumn(column string) bool {
 	switch column {
-	case "app", "instance", "service", "database", "databaseDb", "jobs":
+	case "app", "instance", "service", "database", "databaseDb":
 		return true
 	default:
 		return false
@@ -2347,6 +2349,202 @@ func displayColumnPresent(row map[string]interface{}, column string) bool {
 	}
 	relation, ok := relationColumnFor(column)
 	return ok && firstRelationID(row, relation) != ""
+}
+
+func newTaskJobCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "job",
+		Aliases: []string{"jobs"},
+		Short:   "Show task jobs",
+	}
+
+	listCmd := &cobra.Command{
+		Use:   "list TASK_ID",
+		Short: "List task jobs",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			task, err := fetchTask(cmd.Context(), client, args[0])
+			if err != nil {
+				return err
+			}
+			return printResult(cmd, out, taskJobRows(task), taskJobColumns)
+		},
+	}
+
+	getCmd := &cobra.Command{
+		Use:   "get TASK_ID JOB",
+		Short: "Get task job",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			task, err := fetchTask(cmd.Context(), client, args[0])
+			if err != nil {
+				return err
+			}
+			job, ok := findTaskJob(taskLogJobs(task), args[1])
+			if !ok {
+				return errors.Errorf("job %q not found", args[1])
+			}
+			return printGetResult(cmd, out, taskJobRow(job), taskJobColumns)
+		},
+	}
+
+	cmd.AddCommand(listCmd, getCmd)
+	return cmd
+}
+
+func newTaskStepCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "step",
+		Aliases: []string{"steps"},
+		Short:   "Show task steps",
+	}
+
+	listCmd := &cobra.Command{
+		Use:   "list TASK_ID",
+		Short: "List task steps",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			task, err := fetchTask(cmd.Context(), client, args[0])
+			if err != nil {
+				return err
+			}
+			return printResult(cmd, out, taskStepRows(task), taskStepColumns)
+		},
+	}
+
+	getCmd := &cobra.Command{
+		Use:   "get TASK_ID STEP",
+		Short: "Get task step",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			task, err := fetchTask(cmd.Context(), client, args[0])
+			if err != nil {
+				return err
+			}
+			step, job, ok := findTaskStep(taskLogJobs(task), args[1])
+			if !ok {
+				return errors.Errorf("step %q not found", args[1])
+			}
+			return printGetResult(cmd, out, taskStepRow(step, job), taskStepColumns)
+		},
+	}
+
+	logsCmd := &cobra.Command{
+		Use:   "logs STEP_ID",
+		Short: "Show task step logs",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/task-steps/"+args[0]+"/logs", url.Values{}, &result); err != nil {
+				return err
+			}
+			if out.output == outputJSON {
+				return printJSON(cmd, result)
+			}
+			lines := logLines(result)
+			if len(lines) == 0 {
+				printNoLogs(cmd, out)
+				return nil
+			}
+			for _, line := range lines {
+				cmd.Println(line)
+			}
+			return nil
+		},
+	}
+
+	cmd.AddCommand(listCmd, getCmd, logsCmd)
+	return cmd
+}
+
+func fetchTask(ctx context.Context, client *rest.Client, id string) (interface{}, error) {
+	var result interface{}
+	if err := client.Get(ctx, "/tasks/"+id, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func taskJobRows(task interface{}) []map[string]interface{} {
+	jobs := taskLogJobs(task)
+	rows := make([]map[string]interface{}, 0, len(jobs))
+	for _, job := range jobs {
+		rows = append(rows, taskJobRow(job))
+	}
+	return rows
+}
+
+func taskJobRow(job taskLogJob) map[string]interface{} {
+	return map[string]interface{}{
+		"id":       job.id,
+		"name":     jobLogNameOrFallback(job),
+		"status":   job.status,
+		"duration": job.duration,
+		"steps":    len(job.steps),
+	}
+}
+
+func taskStepRows(task interface{}) []map[string]interface{} {
+	jobs := taskLogJobs(task)
+	rows := make([]map[string]interface{}, 0)
+	for _, job := range jobs {
+		for _, step := range job.steps {
+			rows = append(rows, taskStepRow(step, job))
+		}
+	}
+	return rows
+}
+
+func taskStepRow(step taskLogStep, job taskLogJob) map[string]interface{} {
+	return map[string]interface{}{
+		"id":       step.id,
+		"name":     stepLogNameOrFallback(step),
+		"status":   step.status,
+		"duration": step.duration,
+		"job":      jobLogNameWithID(job),
+	}
+}
+
+func findTaskJob(jobs []taskLogJob, filter string) (taskLogJob, bool) {
+	filter = normalizeDisplayToken(filter)
+	for _, job := range jobs {
+		if normalizeDisplayToken(job.id) == filter || normalizeDisplayToken(job.name) == filter || normalizeDisplayToken(jobLogNameOrFallback(job)) == filter {
+			return job, true
+		}
+	}
+	return taskLogJob{}, false
+}
+
+func findTaskStep(jobs []taskLogJob, filter string) (taskLogStep, taskLogJob, bool) {
+	filter = normalizeDisplayToken(filter)
+	for _, job := range jobs {
+		for _, step := range job.steps {
+			if normalizeDisplayToken(step.id) == filter || normalizeDisplayToken(step.name) == filter || normalizeDisplayToken(stepLogNameOrFallback(step)) == filter {
+				return step, job, true
+			}
+		}
+	}
+	return taskLogStep{}, taskLogJob{}, false
 }
 
 func newTaskCancelCommand(out outputOptions) *cobra.Command {
@@ -2450,7 +2648,7 @@ func newFilteredListCommand(use string, short string, path string, columns []str
 			return printClientResult(cmd, client, out, result, columns)
 		},
 	}
-	cmd.Flags().StringVar(&instanceID, "instance", "", "App instance ID")
+	cmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
 	cmd.Flags().StringVar(&serviceID, "service", "", "App service ID")
 	cmd.Flags().StringVar(&databaseID, "database", "", "Database ID")
 	cmd.Flags().StringVar(&databaseDBID, "database-db", "", "DB ID")

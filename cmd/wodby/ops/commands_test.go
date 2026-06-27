@@ -111,6 +111,9 @@ func TestDefaultTaskColumnsUseCompactListShape(t *testing.T) {
 			t.Fatalf("taskGetColumns should include %q: %s", expected, getColumns)
 		}
 	}
+	if strings.Contains(getColumns, "jobs") {
+		t.Fatalf("taskGetColumns should not include jobs: %s", getColumns)
+	}
 }
 
 func TestStackColumnsShowDatesAndGetShowsServices(t *testing.T) {
@@ -146,10 +149,13 @@ func TestClusterGetColumnsShowAdditionalDetails(t *testing.T) {
 	}
 
 	getColumns := strings.Join(clusterGetColumns, ",")
-	for _, expected := range []string{"kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "scalable", "instances"} {
+	for _, expected := range []string{"kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "scalable"} {
 		if !strings.Contains(getColumns, expected) {
 			t.Fatalf("clusterGetColumns should include %q: %s", expected, getColumns)
 		}
+	}
+	if strings.Contains(getColumns, "instances") {
+		t.Fatalf("clusterGetColumns should not include instances: %s", getColumns)
 	}
 }
 
@@ -547,15 +553,125 @@ func TestTaskGetDerivesAppFromAppInstance(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"app:", "Drupal", "app id:", "11", "instance:", "Prod", "instance id:", "7", "service:", "PHP", "service id:", "22", "database:", "Postgres", "database id:", "33", "db:", "Main DB", "db id:", "44", "duration:", "2m", "jobs:", "Build [job-1] (done, 2m, 2 steps)", "Prepare [step-1] (done, 30s)", "Deploy [step-2] (done, 1m 30s)"} {
+	for _, expected := range []string{"app:", "Drupal", "app id:", "11", "instance:", "Prod", "instance id:", "7", "service:", "PHP", "service id:", "22", "database:", "Postgres", "database id:", "33", "db:", "Main DB", "db id:", "44", "duration:", "2m"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("task get output should include %q: %s", expected, output)
 		}
 	}
-	for _, unwanted := range []string{"appServiceId:", "databaseId:", "databaseDbId:"} {
+	for _, unwanted := range []string{"appServiceId:", "databaseId:", "databaseDbId:", "jobs:", "Build [job-1]", "Prepare [step-1]", "Deploy [step-2]"} {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("task get output should not include %q: %s", unwanted, output)
 		}
+	}
+}
+
+func TestTaskCommandExposesJobAndStepSubcommands(t *testing.T) {
+	task := newTaskCommand()
+	names := make(map[string]bool)
+	for _, cmd := range task.Commands() {
+		names[cmd.Name()] = true
+	}
+
+	for _, name := range []string{"list", "get", "wait", "logs", "job", "step", "cancel", "repeat"} {
+		if !names[name] {
+			t.Fatalf("missing task subcommand %q", name)
+		}
+	}
+}
+
+func TestTaskJobAndStepCommandsUseTaskPayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/tasks/42" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id": 42,
+			"jobs": []map[string]interface{}{
+				{
+					"id":        "job-1",
+					"title":     "Build",
+					"status":    "done",
+					"startedAt": "2026-01-02T03:00:00Z",
+					"endedAt":   "2026-01-02T03:02:00Z",
+					"steps": []map[string]interface{}{
+						{"id": "step-1", "name": "Prepare", "status": "done"},
+					},
+				},
+				{
+					"id":        "job-2",
+					"title":     "Deploy",
+					"status":    "running",
+					"startedAt": "2026-01-02T03:03:00Z",
+					"endedAt":   "2026-01-02T03:05:00Z",
+					"steps": []map[string]interface{}{
+						{
+							"id":        "step-2",
+							"name":      "Apply",
+							"status":    "running",
+							"startedAt": "2026-01-02T03:03:00Z",
+							"endedAt":   "2026-01-02T03:03:30Z",
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	for _, test := range []struct {
+		name     string
+		args     []string
+		expected []string
+	}{
+		{name: "job list", args: []string{"job", "list", "42"}, expected: []string{"id", "name", "status", "duration", "steps", "job-1", "Build", "done", "2m", "job-2", "Deploy", "running"}},
+		{name: "job get", args: []string{"job", "get", "42", "Deploy"}, expected: []string{"id:", "job-2", "name:", "Deploy", "status:", "running", "duration:", "2m", "steps:", "1"}},
+		{name: "step list", args: []string{"step", "list", "42"}, expected: []string{"id", "name", "status", "duration", "job", "step-1", "Prepare", "Build [job-1]", "step-2", "Apply", "30s", "Deploy [job-2]"}},
+		{name: "step get", args: []string{"step", "get", "42", "step-2"}, expected: []string{"id:", "step-2", "name:", "Apply", "status:", "running", "duration:", "30s", "job:", "Deploy [job-2]"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var out bytes.Buffer
+			cmd := newTaskCommand()
+			cmd.SetOut(&out)
+			cmd.SetArgs(test.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			output := out.String()
+			for _, expected := range test.expected {
+				if !strings.Contains(output, expected) {
+					t.Fatalf("output should include %q: %s", expected, output)
+				}
+			}
+		})
+	}
+}
+
+func TestTaskStepLogsFetchesStepLogs(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/task-steps/step-2/logs" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"lines": []map[string]interface{}{
+				{"level": "info", "message": "applied"},
+			},
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newTaskCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"step", "logs", "step-2"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if output := out.String(); !strings.Contains(output, "[info] applied") {
+		t.Fatalf("step logs output should include log line: %s", output)
 	}
 }
 
@@ -1239,6 +1355,47 @@ func TestTopLevelApsListUsesInstanceFlag(t *testing.T) {
 	}
 	if requestedQuery != "appInstanceId=21" {
 		t.Fatalf("query = %q, want appInstanceId=21", requestedQuery)
+	}
+}
+
+func TestInstanceFlagSupportsShortI(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		cmd       *cobra.Command
+		args      []string
+		wantPath  string
+		wantQuery string
+	}{
+		{name: "route", cmd: newAppRouteCommand("route", nil, "Manage app routes", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-routes", wantQuery: "appInstanceId=21"},
+		{name: "aps", cmd: newAppServiceCommand("aps", nil, "Manage app services", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-services", wantQuery: "appInstanceId=21"},
+		{name: "build", cmd: newBuildCommand(), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-builds", wantQuery: "appInstanceId=21"},
+		{name: "task", cmd: newTaskCommand(), args: []string{"list", "-i", "21"}, wantPath: "/v1/tasks", wantQuery: "appInstanceId=21"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var requestedPath string
+			var requestedQuery string
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestedPath = r.URL.Path
+				requestedQuery = r.URL.RawQuery
+				_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
+			}))
+			defer server.Close()
+			configureTestAPI(t, server.URL+"/v1")
+
+			test.cmd.SetOut(io.Discard)
+			test.cmd.SetArgs(test.args)
+			if err := test.cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+
+			if requestedPath != test.wantPath {
+				t.Fatalf("path = %q, want %s", requestedPath, test.wantPath)
+			}
+			if requestedQuery != test.wantQuery {
+				t.Fatalf("query = %q, want %s", requestedQuery, test.wantQuery)
+			}
+		})
 	}
 }
 
@@ -2005,20 +2162,6 @@ func TestClusterGetShowsVersionInfraIPsAndNodes(t *testing.T) {
 				"singleNode":            false,
 				"serverless":            false,
 			})
-		case "/v1/app-instances":
-			if got := r.URL.Query().Get("clusterId"); got != "101" {
-				t.Fatalf("clusterId = %q, want 101", got)
-			}
-			if got := r.URL.Query().Get("clusterApp"); got != "false" {
-				t.Fatalf("clusterApp = %q, want false", got)
-			}
-			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
-				{
-					"id":     21,
-					"title":  "Production",
-					"status": "running",
-				},
-			})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -2034,10 +2177,13 @@ func TestClusterGetShowsVersionInfraIPsAndNodes(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"kubernetes version:", "1.31", "infra version:", "2026.06", "ips:", "203.0.113.10", "nodes:", "2/5", "single node:", "false", "scalable:", "true", "instances:", "Production [21] (running)"} {
+	for _, expected := range []string{"kubernetes version:", "1.31", "infra version:", "2026.06", "ips:", "203.0.113.10", "nodes:", "2/5", "single node:", "false", "scalable:", "true"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("cluster get output should include %q: %s", expected, output)
 		}
+	}
+	if strings.Contains(output, "instances:") {
+		t.Fatalf("cluster get output should not include instances: %s", output)
 	}
 	if strings.Contains(output, "version:") && !strings.Contains(output, "kubernetes version:") {
 		t.Fatalf("cluster get output should use kubernetes version title: %s", output)

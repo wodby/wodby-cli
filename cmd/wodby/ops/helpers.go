@@ -676,6 +676,9 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 	case "role":
 		return firstScalarPath(row, "role", "orgRole", "organizationRole", "membershipRole")
 	case "duration":
+		if duration := firstScalarPath(row, "duration"); duration != "" {
+			return duration
+		}
 		return formatDurationColumn(row)
 	case "services":
 		return formatServicesColumn(row)

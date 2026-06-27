@@ -169,6 +169,16 @@ func addBodyFlags(cmd *cobra.Command, opts *bodyOptions) {
 	cmd.Flags().StringVarP(&opts.file, "file", "f", "", "Path to JSON request body")
 }
 
+func defaultToList(cmd *cobra.Command, listCmd *cobra.Command) {
+	cmd.Args = listCmd.Args
+	cmd.Run = listCmd.Run
+	cmd.RunE = listCmd.RunE
+	cmd.Flags().AddFlagSet(listCmd.Flags())
+	if listUse := strings.TrimSpace(listCmd.Use); strings.HasPrefix(listUse, "list ") {
+		cmd.Use += " " + strings.TrimSpace(strings.TrimPrefix(listUse, "list"))
+	}
+}
+
 func newRESTClient() (*rest.Client, error) {
 	if viper.GetString("api_key") == "" && viper.GetString("access_token") == "" {
 		return nil, errors.New("either api-key or access-token must be specified")

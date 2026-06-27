@@ -127,6 +127,7 @@ func newMemberCommand() *cobra.Command {
 	}
 	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
 
+	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd)
 	return cmd
 }
@@ -171,6 +172,7 @@ func newProjectCommand() *cobra.Command {
 		},
 	}
 
+	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, getCmd)
 	return cmd
 }
@@ -215,6 +217,7 @@ func newEnvCommand() *cobra.Command {
 		},
 	}
 
+	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, getCmd, newEnvCreateCommand(out), newEnvUpdateCommand(out), newDeleteCommand("delete ID", "Delete environment", "/envs/", envColumns, out))
 	return cmd
 }
@@ -366,6 +369,7 @@ func newDatabaseCommand() *cobra.Command {
 		},
 	}
 
+	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, getCmd, newDatabaseCreateCommand(out), newDatabaseUpdateCommand(out), newDeleteCommand("delete ID", "Delete database", "/databases/", databaseColumns, out))
 	cmd.AddCommand(newDatabaseDbCommand(), newDatabaseUserCommand())
 	return cmd
@@ -399,6 +403,7 @@ func newDatabaseDbCommand() *cobra.Command {
 	}
 
 	getCmd := newGetCommand("get ID", "Get DB", "/database-dbs/", databaseDbColumns, out)
+	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, getCmd, newDatabaseDbCreateCommand(out), newDeleteCommand("delete ID", "Delete DB", "/database-dbs/", databaseDbColumns, out))
 	return cmd
 }
@@ -475,6 +480,7 @@ func newDatabaseUserCommand() *cobra.Command {
 		},
 	}
 
+	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, newDatabaseUserCreateCommand(out), newDatabaseUserDBsCommand(out), newDeleteCommand("delete ID", "Delete database user", "/database-users/", databaseUserColumns, out))
 	return cmd
 }
@@ -767,6 +773,7 @@ func newClusterCommand() *cobra.Command {
 		},
 	}
 
+	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, getCmd, newClusterAppCommand(), newClusterCreateCommand(out), newClusterUpdateCommand(out), newDeleteCommand("delete ID", "Delete cluster", "/clusters/", clusterColumns, out))
 	return cmd
 }
@@ -809,6 +816,7 @@ func newClusterAppCommand() *cobra.Command {
 	listCmd.Flags().IntVar(&page, "page", 0, "Page number")
 	listCmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
 
+	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd)
 	return cmd
 }
@@ -1034,6 +1042,7 @@ func newIntegrationCommand() *cobra.Command {
 		},
 	}
 
+	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, getCmd, newIntegrationCreateCommand(out), newIntegrationUpdateCommand(out), newDeleteCommand("delete ID", "Delete integration", "/integrations/", integrationColumns, out))
 	return cmd
 }
@@ -1172,7 +1181,9 @@ func newStackCommand() *cobra.Command {
 		Short:   "Manage stacks",
 	}
 	addOutputFlag(cmd, &out)
-	cmd.AddCommand(newCatalogListCommand("list", "List stacks", "/stacks", stackColumns, out, false), newGetCommand("get ID", "Get stack", "/stacks/", stackGetColumns, out))
+	listCmd := newCatalogListCommand("list", "List stacks", "/stacks", stackColumns, out, false)
+	defaultToList(cmd, listCmd)
+	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get stack", "/stacks/", stackGetColumns, out))
 	return cmd
 }
 
@@ -1188,7 +1199,9 @@ func newCatalogCommand(use string, alias string, short string, path string, colu
 		Short:   short,
 	}
 	addOutputFlag(cmd, &out)
-	cmd.AddCommand(newCatalogListCommand("list", "List "+alias, path, columns, out, excludePublic), newGetCommand("get ID", "Get "+use, path+"/", columns, out))
+	listCmd := newCatalogListCommand("list", "List "+alias, path, columns, out, excludePublic)
+	defaultToList(cmd, listCmd)
+	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get "+use, path+"/", columns, out))
 	return cmd
 }
 
@@ -1284,6 +1297,7 @@ func newAppCommand() *cobra.Command {
 		},
 	}
 
+	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, getCmd, statusCmd)
 	cmd.AddCommand(newAppInstanceCommand("instance", "Manage app instances"))
 	return cmd
@@ -1346,6 +1360,7 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 		},
 	}
 
+	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, getCmd, statusCmd)
 	cmd.AddCommand(newAppServiceCommand("service", []string{"services"}, "Manage app services", instanceFilterArg))
 	cmd.AddCommand(newAppRouteCommand("route", []string{"routes"}, "Manage app instance routes", instanceFilterArg))
@@ -1361,7 +1376,9 @@ func newInstanceBuildCommand() *cobra.Command {
 		Short:   "Manage app instance builds",
 	}
 	addOutputFlag(cmd, &out)
-	cmd.AddCommand(newInstancePaginatedListCommand("list INSTANCE_ID", "List builds", "/app-builds", buildColumns, out), newGetCommand("get ID", "Get build", "/app-builds/", buildColumns, out), newBuildDeployCommand(out))
+	listCmd := newInstancePaginatedListCommand("list INSTANCE_ID", "List builds", "/app-builds", buildColumns, out)
+	defaultToList(cmd, listCmd)
+	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get build", "/app-builds/", buildColumns, out), newBuildDeployCommand(out))
 	return cmd
 }
 
@@ -1393,7 +1410,9 @@ func newInstanceDeploymentCommand() *cobra.Command {
 	}
 	waitCmd.Flags().Duration("timeout", 10*time.Minute, "Maximum time to wait")
 
-	cmd.AddCommand(newInstancePaginatedListCommand("list INSTANCE_ID", "List deployments", "/app-deployments", deploymentColumns, out), newGetCommand("get ID", "Get deployment", "/app-deployments/", deploymentColumns, out), waitCmd, newDeploymentCreateCommand(out), newDeploymentRedeployCommand(out))
+	listCmd := newInstancePaginatedListCommand("list INSTANCE_ID", "List deployments", "/app-deployments", deploymentColumns, out)
+	defaultToList(cmd, listCmd)
+	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get deployment", "/app-deployments/", deploymentColumns, out), waitCmd, newDeploymentCreateCommand(out), newDeploymentRedeployCommand(out))
 	return cmd
 }
 
@@ -1405,7 +1424,9 @@ func newInstanceBackupCommand() *cobra.Command {
 		Short:   "Manage app instance backups",
 	}
 	addOutputFlag(cmd, &out)
-	cmd.AddCommand(newInstanceFilteredListCommand("list INSTANCE_ID", "List backups", "/backups", backupColumns, out, true), newGetCommand("get ID", "Get backup", "/backups/", backupColumns, out), newBackupCreateCommand(out))
+	listCmd := newInstanceFilteredListCommand("list INSTANCE_ID", "List backups", "/backups", backupColumns, out, true)
+	defaultToList(cmd, listCmd)
+	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get backup", "/backups/", backupColumns, out), newBackupCreateCommand(out))
 	return cmd
 }
 
@@ -1417,7 +1438,9 @@ func newInstanceImportCommand() *cobra.Command {
 		Short:   "Manage app instance imports",
 	}
 	addOutputFlag(cmd, &out)
-	cmd.AddCommand(newInstanceFilteredListCommand("list INSTANCE_ID", "List imports", "/imports", importColumns, out, false), newGetCommand("get ID", "Get import", "/imports/", importColumns, out), newImportCreateCommand(out))
+	listCmd := newInstanceFilteredListCommand("list INSTANCE_ID", "List imports", "/imports", importColumns, out, false)
+	defaultToList(cmd, listCmd)
+	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get import", "/imports/", importColumns, out), newImportCreateCommand(out))
 	return cmd
 }
 
@@ -1523,6 +1546,7 @@ func newAppServiceCommand(use string, aliases []string, short string, mode insta
 	if mode == instanceFilterFlag {
 		listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
 	}
+	defaultToList(cmd, listCmd)
 
 	getCmd := &cobra.Command{
 		Use:   "get ID",
@@ -1653,6 +1677,7 @@ func newAppRouteCommand(use string, aliases []string, short string, mode instanc
 	if mode == instanceFilterFlag {
 		listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
 	}
+	defaultToList(cmd, listCmd)
 
 	getCmd := &cobra.Command{
 		Use:   "get ID",
@@ -1855,6 +1880,7 @@ func newBuildCommand() *cobra.Command {
 	listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
 	listCmd.Flags().IntVar(&page, "page", 0, "Page number")
 	listCmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
+	defaultToList(cmd, listCmd)
 
 	getCmd := &cobra.Command{
 		Use:   "get ID",
@@ -1938,6 +1964,7 @@ func newDeploymentCommand() *cobra.Command {
 	listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
 	listCmd.Flags().IntVar(&page, "page", 0, "Page number")
 	listCmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
+	defaultToList(cmd, listCmd)
 
 	getCmd := &cobra.Command{
 		Use:   "get ID",
@@ -2071,7 +2098,9 @@ func newBackupCommand() *cobra.Command {
 		Short: "Manage backups",
 	}
 	addOutputFlag(cmd, &out)
-	cmd.AddCommand(newFilteredListCommand("list", "List backups", "/backups", backupColumns, out, true), newGetCommand("get ID", "Get backup", "/backups/", backupColumns, out), newBackupCreateCommand(out))
+	listCmd := newFilteredListCommand("list", "List backups", "/backups", backupColumns, out, true)
+	defaultToList(cmd, listCmd)
+	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get backup", "/backups/", backupColumns, out), newBackupCreateCommand(out))
 	return cmd
 }
 
@@ -2141,7 +2170,9 @@ func newImportCommand() *cobra.Command {
 		Short: "Manage imports",
 	}
 	addOutputFlag(cmd, &out)
-	cmd.AddCommand(newFilteredListCommand("list", "List imports", "/imports", importColumns, out, false), newGetCommand("get ID", "Get import", "/imports/", importColumns, out), newImportCreateCommand(out))
+	listCmd := newFilteredListCommand("list", "List imports", "/imports", importColumns, out, false)
+	defaultToList(cmd, listCmd)
+	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get import", "/imports/", importColumns, out), newImportCreateCommand(out))
 	return cmd
 }
 
@@ -2255,6 +2286,7 @@ func newTaskCommand() *cobra.Command {
 	listCmd.Flags().BoolVar(&withoutOrigin, "without-origin", false, "Only tasks without origin")
 	listCmd.Flags().IntVar(&page, "page", 0, "Page number")
 	listCmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
+	defaultToList(cmd, listCmd)
 
 	getCmd := newTaskGetCommand(out)
 	waitCmd := &cobra.Command{
@@ -2374,6 +2406,7 @@ func newTaskJobCommand(out outputOptions) *cobra.Command {
 			return printResult(cmd, out, taskJobRows(task), taskJobColumns)
 		},
 	}
+	defaultToList(cmd, listCmd)
 
 	getCmd := &cobra.Command{
 		Use:   "get TASK_ID JOB",
@@ -2423,6 +2456,7 @@ func newTaskStepCommand(out outputOptions) *cobra.Command {
 			return printResult(cmd, out, taskStepRows(task), taskStepColumns)
 		},
 	}
+	defaultToList(cmd, listCmd)
 
 	getCmd := &cobra.Command{
 		Use:   "get TASK_ID STEP",

@@ -597,6 +597,8 @@ func tableColumnTitle(column string) string {
 		return "provider"
 	case "domain", "mainDomain":
 		return "domain"
+	case "infraAppInstanceId":
+		return "instance id"
 	default:
 		if relation, ok := relationColumnFor(column); ok {
 			return relation.title
@@ -684,6 +686,10 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		return firstScalarPath(row, "publicIp", "publicIP", "publicIPAddress", "publicIpAddress", "publicAddress")
 	case "jobs":
 		return formatTaskJobsColumn(row)
+	case "outdated":
+		return formatOutdatedColumn(row)
+	case "infraAppInstanceId":
+		return formatInfraAppInstanceIDColumn(row)
 	default:
 		if relation, ok := relationColumnFor(column); ok {
 			return formatRelationColumn(row, relation)
@@ -950,6 +956,108 @@ func formatValue(value interface{}) string {
 	default:
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+func formatOutdatedColumn(row map[string]interface{}) string {
+	value := firstNonNilPath(
+		row,
+		"outdated",
+		"isOutdated",
+		"stackOutdated",
+		"isStackOutdated",
+		"instanceOutdated",
+		"isInstanceOutdated",
+		"appInstanceOutdated",
+		"isAppInstanceOutdated",
+		"needsUpdate",
+		"needsUpgrade",
+		"updateAvailable",
+	)
+	if value != nil {
+		return formatValue(value)
+	}
+
+	currentRev := firstScalarPath(
+		row,
+		"revNumber",
+		"revisionNumber",
+		"currentRevNumber",
+		"currentRevisionNumber",
+		"stackRevNumber",
+		"stackRevisionNumber",
+		"stackRev.number",
+		"stackRev.revNumber",
+		"stackRev.revision",
+		"stackRevision.number",
+		"stackRevision.revNumber",
+		"stackRevision.revision",
+		"app.stackRev.number",
+		"app.stackRev.revNumber",
+		"app.stackRev.revision",
+		"app.stackRevision.number",
+		"app.stackRevision.revNumber",
+		"app.stackRevision.revision",
+	)
+	latestRev := firstScalarPath(
+		row,
+		"latestRevNumber",
+		"latestRevisionNumber",
+		"stack.latestRevNumber",
+		"stack.latestRevisionNumber",
+		"stackRev.stack.latestRevNumber",
+		"stackRevision.stack.latestRevNumber",
+		"app.stack.latestRevNumber",
+		"app.stack.latestRevisionNumber",
+		"app.stackRev.stack.latestRevNumber",
+		"app.stackRevision.stack.latestRevNumber",
+	)
+	current, currentOK := parseRevisionNumber(currentRev)
+	latest, latestOK := parseRevisionNumber(latestRev)
+	if currentOK && latestOK {
+		return strconv.FormatBool(latest > current)
+	}
+
+	return ""
+}
+
+func formatInfraAppInstanceIDColumn(row map[string]interface{}) string {
+	if id := firstScalarPath(
+		row,
+		"infraAppInstanceId",
+		"clusterAppInstanceId",
+		"appInstanceId",
+		"appInstance.id",
+		"instanceId",
+		"instance.id",
+	); id != "" {
+		return id
+	}
+
+	for _, path := range []string{"appInstances", "instances"} {
+		if id := firstInstanceID(valueAtPath(row, path)); id != "" {
+			return id
+		}
+	}
+
+	return ""
+}
+
+func firstInstanceID(value interface{}) string {
+	for _, row := range asRows(value) {
+		if id := firstScalarPath(row, "id", "appInstanceId", "appInstance.id", "instanceId", "instance.id"); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func parseRevisionNumber(value string) (int, bool) {
+	value = strings.TrimSpace(strings.TrimPrefix(value, "#"))
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.Atoi(value)
+	return parsed, err == nil
 }
 
 func formatIntegrationColumn(row map[string]interface{}) string {

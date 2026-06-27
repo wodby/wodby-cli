@@ -20,14 +20,15 @@ var (
 	databaseColumns       = []string{"id", "name", "title", "status", "kind", "type", "version", "env", "integration", "region", "zone"}
 	clusterColumns        = []string{"id", "name", "title", "status", "integration", "region", "zone", "version", "serverless"}
 	clusterGetColumns     = []string{"id", "name", "title", "status", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "publicIp", "serverless", "instances"}
+	infraAppColumns       = []string{"id", "name", "title", "status", "stack", "infraAppInstanceId"}
 	integrationColumns    = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
 	providerColumns       = []string{"id", "name", "title", "status", "public", "revId"}
-	stackColumns          = []string{"id", "name", "title", "status", "public", "revId", "latestRevNumber", "createdAt", "updatedAt"}
+	stackColumns          = []string{"id", "name", "title", "status", "public", "revId", "latestRevNumber", "outdated", "createdAt", "updatedAt"}
 	stackGetColumns       = append(append([]string{}, stackColumns...), "services")
 	catalogServiceColumns = []string{"id", "name", "title", "type", "status", "public", "external", "revId", "latestRevNumber"}
 	appColumns            = []string{"id", "name", "title", "status", "stack", "clusterApp"}
 	appGetColumns         = append(append([]string{}, appColumns...), "instances")
-	instanceColumns       = []string{"id", "name", "title", "status", "app", "stack", "env", "cluster", "domain"}
+	instanceColumns       = []string{"id", "name", "title", "status", "outdated", "app", "stack", "env", "cluster", "domain"}
 	serviceColumns        = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
 	routeColumns          = []string{"id", "host", "path", "pathType", "action", "status", "service", "port", "main", "primary", "disabled"}
 	buildColumns          = []string{"id", "number", "status", "instance", "service", "task", "gitRefType", "gitRef", "commitHash", "createdAt"}
@@ -58,7 +59,6 @@ func Commands() []*cobra.Command {
 		newBackupCommand(),
 		newImportCommand(),
 		newTaskCommand(),
-		newAppRouteCommand("route", "Manage app routes"),
 	}
 }
 
@@ -555,8 +555,99 @@ func newClusterCommand() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(listCmd, getCmd, newClusterCreateCommand(out), newClusterUpdateCommand(out), newDeleteCommand("delete ID", "Delete cluster", "/clusters/", clusterColumns, out))
+	cmd.AddCommand(listCmd, getCmd, newClusterInfraAppCommand(), newClusterCreateCommand(out), newClusterUpdateCommand(out), newDeleteCommand("delete ID", "Delete cluster", "/clusters/", clusterColumns, out))
 	return cmd
+}
+
+func newClusterInfraAppCommand() *cobra.Command {
+	out := outputOptions{}
+	cmd := &cobra.Command{
+		Use:     "infra-app",
+		Aliases: []string{"infra-apps"},
+		Short:   "Manage cluster infra apps",
+	}
+	addOutputFlag(cmd, &out)
+
+	var page, pageSize int
+	listCmd := &cobra.Command{
+		Use:   "list CLUSTER_ID",
+		Short: "List cluster infra apps",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			clusterID := args[0]
+			query := url.Values{
+				"clusterId":  []string{clusterID},
+				"clusterApp": []string{"true"},
+			}
+			addPagination(query, page, pageSize)
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/apps", query, &result); err != nil {
+				return err
+			}
+			if out.output != outputJSON {
+				enrichInfraAppInstanceIDs(cmd.Context(), client, normalizeItems(result), clusterID)
+			}
+			return printClientResult(cmd, client, out, result, infraAppColumns)
+		},
+	}
+	listCmd.Flags().IntVar(&page, "page", 0, "Page number")
+	listCmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
+
+	cmd.AddCommand(listCmd)
+	return cmd
+}
+
+func enrichInfraAppInstanceIDs(ctx context.Context, client *rest.Client, value interface{}, clusterID string) {
+	rows := asRows(value)
+	if len(rows) == 0 {
+		return
+	}
+
+	needsInstanceID := false
+	for _, row := range rows {
+		if formatInfraAppInstanceIDColumn(row) == "" {
+			needsInstanceID = true
+			break
+		}
+	}
+	if !needsInstanceID {
+		return
+	}
+
+	query := url.Values{
+		"clusterId":  []string{clusterID},
+		"clusterApp": []string{"true"},
+	}
+	var result interface{}
+	if err := client.Get(ctx, "/app-instances", query, &result); err != nil {
+		return
+	}
+
+	instancesByAppID := map[string]map[string]interface{}{}
+	for _, instance := range responseRows(result) {
+		appID := firstRelationID(instance, relationColumns["app"])
+		if appID != "" {
+			instancesByAppID[appID] = instance
+		}
+	}
+
+	for _, row := range rows {
+		if formatInfraAppInstanceIDColumn(row) != "" {
+			continue
+		}
+		appID := firstScalarPath(row, "id", "appId", "app.id")
+		instance := instancesByAppID[appID]
+		if instance == nil {
+			continue
+		}
+		if instanceID := firstScalarPath(instance, "id", "appInstanceId", "appInstance.id", "instanceId", "instance.id"); instanceID != "" {
+			row["infraAppInstanceId"] = instanceID
+		}
+	}
 }
 
 func newClusterCreateCommand(out outputOptions) *cobra.Command {
@@ -980,8 +1071,6 @@ func newAppCommand() *cobra.Command {
 
 	cmd.AddCommand(listCmd, getCmd, statusCmd)
 	cmd.AddCommand(newAppInstanceCommand("instance", "Manage app instances"))
-	cmd.AddCommand(newAppServiceCommand())
-	cmd.AddCommand(newAppRouteCommand("route", "Manage app routes"))
 	return cmd
 }
 
@@ -1043,25 +1132,26 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 	}
 
 	cmd.AddCommand(listCmd, getCmd, statusCmd)
+	cmd.AddCommand(newAppServiceCommand())
+	cmd.AddCommand(newAppRouteCommand("route", "Manage app instance routes"))
 	return cmd
 }
 
 func newAppServiceCommand() *cobra.Command {
 	out := outputOptions{}
 	cmd := &cobra.Command{
-		Use:   "service",
-		Short: "Manage app services",
+		Use:     "service",
+		Aliases: []string{"services"},
+		Short:   "Manage app services",
 	}
 	addOutputFlag(cmd, &out)
 
-	var instanceID string
 	listCmd := &cobra.Command{
-		Use:   "list",
+		Use:   "list INSTANCE_ID",
 		Short: "List app services",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := requireFlag(instanceID, "--instance"); err != nil {
-				return err
-			}
+			instanceID := args[0]
 			query := url.Values{"appInstanceId": []string{instanceID}}
 			client, err := newRESTClient()
 			if err != nil {
@@ -1074,7 +1164,6 @@ func newAppServiceCommand() *cobra.Command {
 			return printClientResult(cmd, client, out, result, serviceColumns)
 		},
 	}
-	listCmd.Flags().StringVar(&instanceID, "instance", "", "App instance ID")
 
 	getCmd := &cobra.Command{
 		Use:   "get ID",
@@ -1172,19 +1261,18 @@ func newAppServiceActionCommand(out outputOptions) *cobra.Command {
 func newAppRouteCommand(use string, short string) *cobra.Command {
 	out := outputOptions{}
 	cmd := &cobra.Command{
-		Use:   use,
-		Short: short,
+		Use:     use,
+		Aliases: []string{"routes"},
+		Short:   short,
 	}
 	addOutputFlag(cmd, &out)
 
-	var instanceID string
 	listCmd := &cobra.Command{
-		Use:   "list",
+		Use:   "list INSTANCE_ID",
 		Short: "List app routes",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := requireFlag(instanceID, "--instance"); err != nil {
-				return err
-			}
+			instanceID := args[0]
 			query := url.Values{"appInstanceId": []string{instanceID}}
 			client, err := newRESTClient()
 			if err != nil {
@@ -1197,7 +1285,6 @@ func newAppRouteCommand(use string, short string) *cobra.Command {
 			return printClientResult(cmd, client, out, result, routeColumns)
 		},
 	}
-	listCmd.Flags().StringVar(&instanceID, "instance", "", "App instance ID")
 
 	getCmd := &cobra.Command{
 		Use:   "get ID",

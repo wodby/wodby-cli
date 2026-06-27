@@ -40,7 +40,6 @@ func TestCommandsExposeTopLevelOperationalSurface(t *testing.T) {
 		"backup",
 		"import",
 		"task",
-		"route",
 	} {
 		if !names[name] {
 			t.Fatalf("missing command %q", name)
@@ -260,10 +259,52 @@ func TestTableColumnTitlesAreHumanReadable(t *testing.T) {
 		"revId":              "rev id",
 		"pathType":           "path type",
 		"databaseDb":         "database db",
+		"infraAppInstanceId": "instance id",
 	} {
 		if got := tableColumnTitle(column); got != expected {
 			t.Fatalf("tableColumnTitle(%q) = %q, want %q", column, got, expected)
 		}
+	}
+}
+
+func TestOutdatedColumnFormatsFlagsAndRevisionDrift(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		row  map[string]interface{}
+		want string
+	}{
+		{
+			name: "explicit false",
+			row:  map[string]interface{}{"outdated": false},
+			want: "false",
+		},
+		{
+			name: "stack flag",
+			row:  map[string]interface{}{"stackOutdated": true},
+			want: "true",
+		},
+		{
+			name: "revision behind",
+			row: map[string]interface{}{
+				"stackRev": map[string]interface{}{"number": 2},
+				"stack":    map[string]interface{}{"latestRevNumber": 3},
+			},
+			want: "true",
+		},
+		{
+			name: "revision current",
+			row: map[string]interface{}{
+				"stackRevision": map[string]interface{}{"revNumber": 3},
+				"stack":         map[string]interface{}{"latestRevNumber": 3},
+			},
+			want: "false",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := formatColumnValue(test.row, "outdated"); got != test.want {
+				t.Fatalf("formatColumnValue(outdated) = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 
@@ -711,9 +752,28 @@ func TestAppCommandExposesCanonicalNestedResources(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	for _, name := range []string{"list", "get", "status", "instance", "service", "route"} {
+	for _, name := range []string{"list", "get", "status", "instance"} {
 		if !names[name] {
 			t.Fatalf("missing app subcommand %q", name)
+		}
+	}
+	for _, name := range []string{"service", "route"} {
+		if names[name] {
+			t.Fatalf("app should not expose instance subcommand %q", name)
+		}
+	}
+}
+
+func TestInstanceCommandExposesCanonicalNestedResources(t *testing.T) {
+	instance := newAppInstanceCommand("instance", "Manage app instances")
+	names := make(map[string]bool)
+	for _, cmd := range instance.Commands() {
+		names[cmd.Name()] = true
+	}
+
+	for _, name := range []string{"list", "get", "status", "service", "route"} {
+		if !names[name] {
+			t.Fatalf("missing instance subcommand %q", name)
 		}
 	}
 }
@@ -891,9 +951,9 @@ func TestRouteListEnrichesPortNumber(t *testing.T) {
 	defer server.Close()
 	configureTestAPI(t, server.URL+"/v1")
 
-	cmd := newAppRouteCommand("route", "Manage app routes")
+	cmd := newAppInstanceCommand("instance", "Manage app instances")
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"list", "--instance", "21"})
+	cmd.SetArgs([]string{"route", "list", "21"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -953,6 +1013,7 @@ func TestStackListShowsCreatedAndUpdatedDatesWithoutServices(t *testing.T) {
 					"public":          true,
 					"revId":           11,
 					"latestRevNumber": 3,
+					"outdated":        true,
 					"createdAt":       createdAt,
 					"updatedAt":       updatedAt,
 					"services": []map[string]interface{}{
@@ -973,7 +1034,7 @@ func TestStackListShowsCreatedAndUpdatedDatesWithoutServices(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"created at", "updated at", "2h ago", "30m ago"} {
+	for _, expected := range []string{"outdated", "created at", "updated at", "2h ago", "30m ago"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("stack list output should include %q: %s", expected, output)
 		}
@@ -1000,6 +1061,7 @@ func TestStackGetShowsServicesAndDates(t *testing.T) {
 			"public":          true,
 			"revId":           11,
 			"latestRevNumber": 3,
+			"outdated":        false,
 			"createdAt":       "2026-01-02T03:04:05Z",
 			"updatedAt":       "2026-01-03T04:05:06Z",
 			"services": []map[string]interface{}{
@@ -1019,7 +1081,7 @@ func TestStackGetShowsServicesAndDates(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"created at:", "updated at:", "services:", "2026-01-02 03:04", "2026-01-03 04:05", "PHP, Nginx"} {
+	for _, expected := range []string{"outdated:", "false", "created at:", "updated at:", "services:", "2026-01-02 03:04", "2026-01-03 04:05", "PHP, Nginx"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("stack get output should include %q: %s", expected, output)
 		}
@@ -1334,6 +1396,20 @@ func TestClusterListEnrichesIntegrationTitleWithProviderTitle(t *testing.T) {
 	}
 }
 
+func TestClusterCommandExposesInfraAppSubcommand(t *testing.T) {
+	cluster := newClusterCommand()
+	names := make(map[string]bool)
+	for _, cmd := range cluster.Commands() {
+		names[cmd.Name()] = true
+	}
+
+	for _, name := range []string{"list", "get", "infra-app", "create", "update", "delete"} {
+		if !names[name] {
+			t.Fatalf("missing cluster subcommand %q", name)
+		}
+	}
+}
+
 func TestClusterGetShowsVersionInfraAndPublicIP(t *testing.T) {
 	var out bytes.Buffer
 
@@ -1389,6 +1465,71 @@ func TestClusterGetShowsVersionInfraAndPublicIP(t *testing.T) {
 	}
 	if strings.Contains(output, "version:") && !strings.Contains(output, "kubernetes version:") {
 		t.Fatalf("cluster get output should use kubernetes version title: %s", output)
+	}
+}
+
+func TestClusterInfraAppListShowsSingleInstanceID(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apps":
+			if got := r.URL.Query().Get("clusterId"); got != "101" {
+				t.Fatalf("clusterId = %q, want 101", got)
+			}
+			if got := r.URL.Query().Get("clusterApp"); got != "true" {
+				t.Fatalf("clusterApp = %q, want true", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":     11,
+					"name":   "varnish",
+					"title":  "Varnish",
+					"status": "running",
+					"stack": map[string]interface{}{
+						"id":    7,
+						"title": "Varnish Stack",
+					},
+				},
+			})
+		case "/v1/app-instances":
+			if got := r.URL.Query().Get("clusterId"); got != "101" {
+				t.Fatalf("clusterId = %q, want 101", got)
+			}
+			if got := r.URL.Query().Get("clusterApp"); got != "true" {
+				t.Fatalf("clusterApp = %q, want true", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":     21,
+					"appId":  11,
+					"status": "running",
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newClusterCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"infra-app", "list", "101"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"instance id", "21", "Varnish", "Varnish Stack"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("cluster infra app output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"appId", "instances", "appInstances"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("cluster infra app output should not include %q: %s", unwanted, output)
+		}
 	}
 }
 
@@ -1612,6 +1753,7 @@ func TestInstanceListEnrichesReadableRelations(t *testing.T) {
 					"name":       "prod",
 					"title":      "Production",
 					"status":     "running",
+					"outdated":   true,
 					"appId":      11,
 					"envId":      22,
 					"clusterId":  33,
@@ -1648,7 +1790,7 @@ func TestInstanceListEnrichesReadableRelations(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"app", "stack", "env", "cluster", "domain", "Drupal", "Drupal Stack", "Prod", "Primary", "example.com"} {
+	for _, expected := range []string{"outdated", "app", "stack", "env", "cluster", "domain", "Drupal", "Drupal Stack", "Prod", "Primary", "example.com"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("output should include %q: %s", expected, output)
 		}

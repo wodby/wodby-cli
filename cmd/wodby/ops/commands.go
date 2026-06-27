@@ -8,7 +8,6 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-	"github.com/wodby/wodby-cli/pkg/docker"
 )
 
 var (
@@ -25,9 +24,9 @@ var (
 	instanceColumns       = []string{"id", "name", "title", "status", "app", "env", "cluster", "domain"}
 	serviceColumns        = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
 	routeColumns          = []string{"id", "host", "path", "pathType", "action", "status", "service", "port", "main", "primary", "disabled"}
-	buildColumns          = []string{"id", "number", "status", "instance", "service", "gitRefType", "gitRef", "commitHash", "createdAt"}
-	deploymentColumns     = []string{"id", "number", "status", "instance", "skipRollback", "createdAt", "startedAt", "endedAt"}
-	backupColumns         = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "createdAt"}
+	buildColumns          = []string{"id", "number", "status", "instance", "service", "task", "gitRefType", "gitRef", "commitHash", "createdAt"}
+	deploymentColumns     = []string{"id", "number", "status", "instance", "task", "skipRollback", "createdAt", "startedAt", "endedAt"}
+	backupColumns         = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "task", "createdAt"}
 	importColumns         = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "createdAt"}
 	taskColumns           = []string{"id", "name", "title", "status", "progress", "app", "instance", "createdAt", "startedAt", "endedAt"}
 	operationColumns      = []string{"success", "task"}
@@ -75,7 +74,7 @@ func newOrgCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/orgs", nil, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, orgColumns)
+			return printClientResult(cmd, client, out, result, orgColumns)
 		},
 	})
 
@@ -108,7 +107,7 @@ func newProjectCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/projects", query, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, projectColumns)
+			return printClientResult(cmd, client, out, result, projectColumns)
 		},
 	}
 	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
@@ -152,7 +151,7 @@ func newEnvCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/envs", query, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, envColumns)
+			return printClientResult(cmd, client, out, result, envColumns)
 		},
 	}
 	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
@@ -215,7 +214,7 @@ func newEnvCreateCommand(out outputOptions) *cobra.Command {
 			if err := client.Post(cmd.Context(), "/envs", nil, requestBody, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, envColumns)
+			return printClientResult(cmd, client, out, result, envColumns)
 		},
 	}
 	addBodyFlags(cmd, &body)
@@ -262,7 +261,7 @@ func newEnvUpdateCommand(out outputOptions) *cobra.Command {
 			if err := client.Put(cmd.Context(), "/envs/"+args[0], nil, requestBody, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, envColumns)
+			return printClientResult(cmd, client, out, result, envColumns)
 		},
 	}
 	addBodyFlags(cmd, &body)
@@ -301,7 +300,7 @@ func newDatabaseCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/databases", query, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, databaseColumns)
+			return printClientResult(cmd, client, out, result, databaseColumns)
 		},
 	}
 	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
@@ -409,7 +408,7 @@ func newDatabaseCreateCommand(out outputOptions) *cobra.Command {
 			if err := client.Post(cmd.Context(), "/databases", nil, requestBody, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, databaseColumns)
+			return printClientResult(cmd, client, out, result, databaseColumns)
 		},
 	}
 	addBodyFlags(cmd, &body)
@@ -459,7 +458,7 @@ func newDatabaseUpdateCommand(out outputOptions) *cobra.Command {
 			if err := client.Put(cmd.Context(), "/databases/"+args[0], nil, requestBody, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, databaseColumns)
+			return printClientResult(cmd, client, out, result, databaseColumns)
 		},
 	}
 	addBodyFlags(cmd, &body)
@@ -496,7 +495,7 @@ func newClusterCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/clusters", query, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, clusterColumns)
+			return printClientResult(cmd, client, out, result, clusterColumns)
 		},
 	}
 	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
@@ -586,7 +585,7 @@ func newClusterCreateCommand(out outputOptions) *cobra.Command {
 			if err := client.Post(cmd.Context(), "/clusters", nil, requestBody, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, clusterColumns)
+			return printClientResult(cmd, client, out, result, clusterColumns)
 		},
 	}
 	addBodyFlags(cmd, &body)
@@ -635,7 +634,7 @@ func newClusterUpdateCommand(out outputOptions) *cobra.Command {
 			if err := client.Put(cmd.Context(), "/clusters/"+args[0], nil, requestBody, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, clusterColumns)
+			return printClientResult(cmd, client, out, result, clusterColumns)
 		},
 	}
 	addBodyFlags(cmd, &body)
@@ -672,7 +671,7 @@ func newIntegrationCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/integrations", query, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, integrationColumns)
+			return printClientResult(cmd, client, out, result, integrationColumns)
 		},
 	}
 	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
@@ -749,7 +748,7 @@ func newIntegrationCreateCommand(out outputOptions) *cobra.Command {
 			if err := client.Post(cmd.Context(), "/integrations", nil, requestBody, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, integrationColumns)
+			return printClientResult(cmd, client, out, result, integrationColumns)
 		},
 	}
 	addBodyFlags(cmd, &body)
@@ -803,7 +802,7 @@ func newIntegrationUpdateCommand(out outputOptions) *cobra.Command {
 			if err := client.Put(cmd.Context(), "/integrations/"+args[0], nil, requestBody, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, integrationColumns)
+			return printClientResult(cmd, client, out, result, integrationColumns)
 		},
 	}
 	addBodyFlags(cmd, &body)
@@ -861,7 +860,7 @@ func newCatalogListCommand(use string, short string, path string, columns []stri
 			if err := client.Get(cmd.Context(), path, query, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, columns)
+			return printClientResult(cmd, client, out, result, columns)
 		},
 	}
 	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID")
@@ -903,7 +902,7 @@ func newAppCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/apps", query, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, appColumns)
+			return printClientResult(cmd, client, out, result, appColumns)
 		},
 	}
 	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
@@ -965,7 +964,7 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 			if err := client.Get(cmd.Context(), "/app-instances", query, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, instanceColumns)
+			return printClientResult(cmd, client, out, result, instanceColumns)
 		},
 	}
 	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
@@ -1020,7 +1019,7 @@ func newAppServiceCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/app-services", query, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, serviceColumns)
+			return printClientResult(cmd, client, out, result, serviceColumns)
 		},
 	}
 	listCmd.Flags().StringVar(&instanceID, "instance", "", "App instance ID")
@@ -1077,7 +1076,7 @@ func newAppServiceUpdateCommand(out outputOptions) *cobra.Command {
 			if err := client.Put(cmd.Context(), "/app-services/"+args[0], nil, requestBody, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, serviceColumns)
+			return printClientResult(cmd, client, out, result, serviceColumns)
 		},
 	}
 	addBodyFlags(cmd, &body)
@@ -1111,7 +1110,7 @@ func newAppServiceActionCommand(out outputOptions) *cobra.Command {
 				}
 				columns = taskColumns
 			}
-			return printResult(cmd, out, result, columns)
+			return printClientResult(cmd, client, out, result, columns)
 		},
 	}
 	addWaitFlags(cmd, &wait)
@@ -1143,7 +1142,7 @@ func newAppRouteCommand(use string, short string) *cobra.Command {
 			if err := client.Get(cmd.Context(), "/app-routes", query, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, routeColumns)
+			return printClientResult(cmd, client, out, result, routeColumns)
 		},
 	}
 	listCmd.Flags().StringVar(&instanceID, "instance", "", "App instance ID")
@@ -1208,7 +1207,7 @@ func newAppRouteCreateCommand(out outputOptions) *cobra.Command {
 			if err := client.Post(cmd.Context(), "/app-routes", nil, requestBody, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, routeColumns)
+			return printClientResult(cmd, client, out, result, routeColumns)
 		},
 	}
 	addBodyFlags(cmd, &body)
@@ -1280,7 +1279,7 @@ func newAppRouteUpdateCommand(out outputOptions) *cobra.Command {
 			if err := client.Put(cmd.Context(), "/app-routes/"+args[0], nil, requestBody, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, routeColumns)
+			return printClientResult(cmd, client, out, result, routeColumns)
 		},
 	}
 	addBodyFlags(cmd, &body)
@@ -1329,7 +1328,7 @@ func newBuildCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/app-builds", query, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, buildColumns)
+			return printClientResult(cmd, client, out, result, buildColumns)
 		},
 	}
 	listCmd.Flags().StringVar(&instanceID, "instance", "", "App instance ID")
@@ -1345,7 +1344,7 @@ func newBuildCommand() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(listCmd, getCmd, newBuildDeployCommand(out), newBuildVoidCommand(out), newBuildRegistryLoginCommand())
+	cmd.AddCommand(listCmd, getCmd, newBuildDeployCommand(out))
 	return cmd
 }
 
@@ -1373,67 +1372,10 @@ func newBuildDeployCommand(out outputOptions) *cobra.Command {
 					}
 				}
 			}
-			return printResult(cmd, out, result, deploymentColumns)
+			return printClientResult(cmd, client, out, result, deploymentColumns)
 		},
 	}
 	addWaitFlags(cmd, &wait)
-	return cmd
-}
-
-func newBuildVoidCommand(out outputOptions) *cobra.Command {
-	var yes bool
-	cmd := &cobra.Command{
-		Use:   "void ID",
-		Short: "Void build images",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := confirm(cmd, yes, "Void build images?"); err != nil {
-				return err
-			}
-			client, err := newRESTClient()
-			if err != nil {
-				return err
-			}
-			var result interface{}
-			if err := client.Post(cmd.Context(), "/app-builds/"+args[0]+"/void", nil, nil, &result); err != nil {
-				return err
-			}
-			return printResult(cmd, out, result, buildColumns)
-		},
-	}
-	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Confirm without prompting")
-	return cmd
-}
-
-func newBuildRegistryLoginCommand() *cobra.Command {
-	var host string
-	cmd := &cobra.Command{
-		Use:   "registry-login ID",
-		Short: "Log Docker in to a build registry",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := requireFlag(host, "--host"); err != nil {
-				return err
-			}
-			client, err := newRESTClient()
-			if err != nil {
-				return err
-			}
-			var credentials struct {
-				Username string `json:"username"`
-				Password string `json:"password"`
-			}
-			if err := client.Get(cmd.Context(), "/app-builds/"+args[0]+"/docker-registry-credentials", nil, &credentials); err != nil {
-				return err
-			}
-			if err := docker.NewClient().Login(host, credentials.Username, credentials.Password); err != nil {
-				return err
-			}
-			cmd.Printf("Logged in to %s\n", host)
-			return nil
-		},
-	}
-	cmd.Flags().StringVar(&host, "host", "", "Docker registry host")
 	return cmd
 }
 
@@ -1469,7 +1411,7 @@ func newDeploymentCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/app-deployments", query, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, deploymentColumns)
+			return printClientResult(cmd, client, out, result, deploymentColumns)
 		},
 	}
 	listCmd.Flags().StringVar(&instanceID, "instance", "", "App instance ID")
@@ -1498,7 +1440,7 @@ func newDeploymentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, deploymentColumns)
+			return printClientResult(cmd, client, out, result, deploymentColumns)
 		},
 	}
 	waitCmd.Flags().Duration("timeout", 10*time.Minute, "Maximum time to wait")
@@ -1558,7 +1500,7 @@ func newDeploymentCreateCommand(out outputOptions) *cobra.Command {
 					}
 				}
 			}
-			return printResult(cmd, out, result, deploymentColumns)
+			return printClientResult(cmd, client, out, result, deploymentColumns)
 		},
 	}
 	addBodyFlags(cmd, &body)
@@ -1594,7 +1536,7 @@ func newDeploymentRedeployCommand(out outputOptions) *cobra.Command {
 					}
 				}
 			}
-			return printResult(cmd, out, result, deploymentColumns)
+			return printClientResult(cmd, client, out, result, deploymentColumns)
 		},
 	}
 	addWaitFlags(cmd, &wait)
@@ -1657,7 +1599,7 @@ func newBackupCreateCommand(out outputOptions) *cobra.Command {
 				}
 				columns = taskColumns
 			}
-			return printResult(cmd, out, result, columns)
+			return printClientResult(cmd, client, out, result, columns)
 		},
 	}
 	addBodyFlags(cmd, &body)
@@ -1725,7 +1667,7 @@ func newImportCreateCommand(out outputOptions) *cobra.Command {
 				}
 				columns = taskColumns
 			}
-			return printResult(cmd, out, result, columns)
+			return printClientResult(cmd, client, out, result, columns)
 		},
 	}
 	addBodyFlags(cmd, &body)
@@ -1779,7 +1721,7 @@ func newTaskCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/tasks", query, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, taskColumns)
+			return printClientResult(cmd, client, out, result, taskColumns)
 		},
 	}
 	listCmd.Flags().StringVar(&scope, "scope", "", "Task scope: project_and_org, org_only, or user_only")
@@ -1808,7 +1750,7 @@ func newTaskCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, taskColumns)
+			return printClientResult(cmd, client, out, result, taskColumns)
 		},
 	}
 	waitCmd.Flags().Duration("timeout", 10*time.Minute, "Maximum time to wait")
@@ -1859,7 +1801,7 @@ func newTaskCancelCommand(out outputOptions) *cobra.Command {
 				}
 				columns = taskColumns
 			}
-			return printResult(cmd, out, result, columns)
+			return printClientResult(cmd, client, out, result, columns)
 		},
 	}
 	addWaitFlags(cmd, &wait)
@@ -1899,7 +1841,7 @@ func newTaskRepeatCommand(out outputOptions) *cobra.Command {
 				}
 				columns = taskColumns
 			}
-			return printResult(cmd, out, result, columns)
+			return printClientResult(cmd, client, out, result, columns)
 		},
 	}
 	addBodyFlags(cmd, &body)
@@ -1930,7 +1872,7 @@ func newFilteredListCommand(use string, short string, path string, columns []str
 			if err := client.Get(cmd.Context(), path, query, &result); err != nil {
 				return err
 			}
-			return printResult(cmd, out, result, columns)
+			return printClientResult(cmd, client, out, result, columns)
 		},
 	}
 	cmd.Flags().StringVar(&instanceID, "instance", "", "App instance ID")
@@ -1970,7 +1912,7 @@ func newDeleteCommand(use string, short string, pathPrefix string, columns []str
 				}
 				resultColumns = taskColumns
 			}
-			return printResult(cmd, out, result, resultColumns)
+			return printClientResult(cmd, client, out, result, resultColumns)
 		},
 	}
 	addWaitFlags(cmd, &wait)
@@ -1998,7 +1940,7 @@ func getAndPrint(cmd *cobra.Command, out outputOptions, path string, columns []s
 	if err := client.Get(cmd.Context(), path, nil, &result); err != nil {
 		return err
 	}
-	return printGetResult(cmd, out, result, columns)
+	return printClientGetResult(cmd, client, out, result, columns)
 }
 
 func optionalInt(value string) interface{} {

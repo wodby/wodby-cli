@@ -149,6 +149,30 @@ func TestTableColumnsShowProviderTitleWithVersionAndRev(t *testing.T) {
 	}
 }
 
+func TestTableColumnTitlesAreHumanReadable(t *testing.T) {
+	for column, expected := range map[string]string{
+		"skipRollback":       "skip rollback",
+		"createdAt":          "created at",
+		"startedAt":          "started at",
+		"endedAt":            "ended at",
+		"gitRefType":         "git ref type",
+		"gitRef":             "git ref",
+		"commitHash":         "commit hash",
+		"clusterApp":         "cluster app",
+		"needsRebuild":       "needs rebuild",
+		"needsRedeploy":      "needs redeploy",
+		"configurationReady": "configuration ready",
+		"latestRevNumber":    "latest rev number",
+		"revId":              "rev id",
+		"pathType":           "path type",
+		"databaseDb":         "database db",
+	} {
+		if got := tableColumnTitle(column); got != expected {
+			t.Fatalf("tableColumnTitle(%q) = %q, want %q", column, got, expected)
+		}
+	}
+}
+
 func TestTableColumnsShowAppInstanceRelations(t *testing.T) {
 	var out bytes.Buffer
 	cmd := &cobra.Command{}
@@ -189,7 +213,7 @@ func TestTableColumnsShowAppInstanceRelations(t *testing.T) {
 	}
 }
 
-func TestGetResultUsesVerticalTableWithRelationIDs(t *testing.T) {
+func TestGetResultUsesVerticalTableWithRelationIDRows(t *testing.T) {
 	var out bytes.Buffer
 	cmd := &cobra.Command{}
 	cmd.SetOut(&out)
@@ -214,13 +238,96 @@ func TestGetResultUsesVerticalTableWithRelationIDs(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"id:", "name:", "app:", "Drupal (id: 11)", "app id:", "11", "env:", "Prod (id: 22)", "env id:", "22", "domain:", "example.com"} {
+	for _, expected := range []string{"id:", "name:", "app:", "Drupal", "app id:", "11", "env:", "Prod", "env id:", "22", "domain:", "example.com"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("vertical output should include %q: %s", expected, output)
 		}
 	}
-	if strings.Contains(output, "appId:") || strings.Contains(output, "envId:") || strings.Contains(output, "mainDomain:") {
-		t.Fatalf("vertical output should use readable keys: %s", output)
+	for _, unwanted := range []string{"Drupal (id: 11)", "Prod (id: 22)", "appId:", "envId:", "mainDomain:"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("vertical output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
+func TestGetResultShowsTaskWithTaskIDRow(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	err := printGetResult(cmd, outputOptions{output: outputTable}, map[string]interface{}{
+		"id":     1,
+		"number": 12,
+		"status": "done",
+		"task": map[string]interface{}{
+			"id":    99,
+			"title": "Deploy app",
+		},
+	}, deploymentColumns)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"task:", "Deploy app", "task id:", "99"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("vertical output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, "taskId:") {
+		t.Fatalf("vertical output should use readable task id key: %s", output)
+	}
+}
+
+func TestRelationColumnsDoNotFallbackToIDs(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	printTable(cmd, []interface{}{
+		map[string]interface{}{
+			"id":        1,
+			"name":      "prod",
+			"appId":     11,
+			"envId":     22,
+			"clusterId": 33,
+			"taskId":    44,
+		},
+	}, append(instanceColumns, "task"))
+
+	output := out.String()
+	for _, unwanted := range []string{"11", "22", "33", "44"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("relation columns should not fallback to IDs: %s", output)
+		}
+	}
+}
+
+func TestListVerticalOutputDoesNotShowRelationIDRows(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	err := printResult(cmd, outputOptions{output: outputVertical}, []interface{}{
+		map[string]interface{}{
+			"id":     1,
+			"number": 12,
+			"task": map[string]interface{}{
+				"id":    44,
+				"title": "Deploy app",
+			},
+		},
+	}, deploymentColumns)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "task:") || !strings.Contains(output, "Deploy app") {
+		t.Fatalf("vertical list output should include readable task details: %s", output)
+	}
+	if strings.Contains(output, "task id:") || strings.Contains(output, "44") {
+		t.Fatalf("vertical list output should not include task id rows: %s", output)
 	}
 }
 
@@ -271,6 +378,45 @@ func TestDatabaseCommandExposesBasicOperations(t *testing.T) {
 	for _, name := range []string{"list", "get", "create", "update", "delete"} {
 		if !names[name] {
 			t.Fatalf("missing database subcommand %q", name)
+		}
+	}
+}
+
+func TestBuildCommandExposesSupportedOperations(t *testing.T) {
+	build := newBuildCommand()
+	names := make(map[string]bool)
+	for _, cmd := range build.Commands() {
+		names[cmd.Name()] = true
+	}
+
+	for _, name := range []string{"list", "get", "deploy"} {
+		if !names[name] {
+			t.Fatalf("missing build subcommand %q", name)
+		}
+	}
+	for _, name := range []string{"void", "registry-login"} {
+		if names[name] {
+			t.Fatalf("unexpected build subcommand %q", name)
+		}
+	}
+}
+
+func TestLongRunningResourceColumnsIncludeTask(t *testing.T) {
+	for name, columns := range map[string][]string{
+		"build":      buildColumns,
+		"deployment": deploymentColumns,
+		"backup":     backupColumns,
+		"import":     importColumns,
+	} {
+		found := false
+		for _, column := range columns {
+			if column == "task" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("%s columns should include task details", name)
 		}
 	}
 }
@@ -429,6 +575,107 @@ func TestClusterCreateUsesPublicAPIShape(t *testing.T) {
 	}
 }
 
+func TestClusterListDoesNotFailWhenIntegrationEnrichmentFails(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/clusters":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":            101,
+					"name":          "prod",
+					"title":         "Production",
+					"status":        "running",
+					"integrationId": 7,
+				},
+			})
+		case "/v1/integrations/7":
+			http.NotFound(w, r)
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newClusterCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "--org", "123"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"id", "name", "title", "integration", "101", "prod", "Production"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, "integrationId") {
+		t.Fatalf("output should not include integrationId: %s", output)
+	}
+}
+
+func TestClusterListEnrichesIntegrationTitleWithProviderTitle(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/clusters":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{
+						"id":            101,
+						"name":          "prod",
+						"title":         "Production",
+						"status":        "running",
+						"integrationId": 7,
+					},
+				},
+			})
+		case "/v1/integrations/7":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"item": map[string]interface{}{
+					"id":            7,
+					"title":         "Production AWS",
+					"providerRevId": 9,
+				},
+			})
+		case "/v1/providers":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{
+						"id":      3,
+						"title":   "Amazon Web Services",
+						"version": "2.1.0",
+						"revId":   9,
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newClusterCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "--org", "123"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Production AWS (Amazon Web Services)") {
+		t.Fatalf("output should include integration and provider titles: %s", output)
+	}
+	if strings.Contains(output, "integrationId") || strings.Contains(output, "providerRevId") {
+		t.Fatalf("output should not include raw integration/provider ID columns: %s", output)
+	}
+}
+
 func TestProviderListSendsSupportedFilters(t *testing.T) {
 	var requestedPath string
 	var requestedQuery string
@@ -469,6 +716,56 @@ func TestProviderListSendsSupportedFilters(t *testing.T) {
 	}
 }
 
+func TestIntegrationListEnrichesProviderFromRevisionID(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/integrations":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":            1,
+					"name":          "aws-prod",
+					"title":         "AWS Prod",
+					"scope":         "project",
+					"status":        "ready",
+					"providerRevId": 7,
+				},
+			})
+		case "/v1/providers":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{
+						"id":      3,
+						"title":   "Amazon Web Services",
+						"version": "2.1.0",
+						"revId":   7,
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newIntegrationCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "--org", "123"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Amazon Web Services (2.1.0 #7)") {
+		t.Fatalf("output should include provider title, version, and revision: %s", output)
+	}
+	if strings.Contains(output, "providerRevId") || strings.Contains(output, "providerId") {
+		t.Fatalf("output should not include provider ID columns: %s", output)
+	}
+}
+
 func TestInstanceListExcludesClusterAppsByDefault(t *testing.T) {
 	query := executeInstanceListQuery(t, "list", "--org", "123")
 
@@ -482,6 +779,57 @@ func TestInstanceListCanFilterClusterApps(t *testing.T) {
 
 	if got := query.Get("clusterApp"); got != "true" {
 		t.Fatalf("clusterApp = %q, want true", got)
+	}
+}
+
+func TestInstanceListEnrichesReadableRelations(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/app-instances":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":         1,
+					"name":       "prod",
+					"title":      "Production",
+					"status":     "running",
+					"appId":      11,
+					"envId":      22,
+					"clusterId":  33,
+					"mainDomain": "example.com",
+				},
+			})
+		case "/v1/apps/11":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 11, "title": "Drupal"})
+		case "/v1/envs/22":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 22, "title": "Prod"})
+		case "/v1/clusters/33":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 33, "title": "Primary"})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "--org", "123"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"app", "env", "cluster", "domain", "Drupal", "Prod", "Primary", "example.com"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"appId", "envId", "clusterId", "mainDomain", "11", "22", "33"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("output should not include %q: %s", unwanted, output)
+		}
 	}
 }
 

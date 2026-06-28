@@ -170,12 +170,8 @@ func addBodyFlags(cmd *cobra.Command, opts *bodyOptions) {
 }
 
 func defaultToList(cmd *cobra.Command, listCmd *cobra.Command) {
-	cmd.Args = listCmd.Args
-	cmd.Run = listCmd.Run
-	cmd.RunE = listCmd.RunE
-	cmd.Flags().AddFlagSet(listCmd.Flags())
-	if listUse := strings.TrimSpace(listCmd.Use); strings.HasPrefix(listUse, "list ") {
-		cmd.Use += " " + strings.TrimSpace(strings.TrimPrefix(listUse, "list"))
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		return errors.Errorf("subcommand is required; use %q explicitly", listCmd.Name())
 	}
 }
 

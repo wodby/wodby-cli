@@ -50,6 +50,31 @@ func TestCommandsExposeTopLevelOperationalSurface(t *testing.T) {
 	}
 }
 
+func TestListSubcommandMustBeExplicit(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		cmd  *cobra.Command
+		args []string
+	}{
+		{name: "app", cmd: newAppCommand()},
+		{name: "task", cmd: newTaskCommand()},
+		{name: "instance build", cmd: newAppInstanceCommand("instance", "Manage app instances"), args: []string{"build"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.cmd.SetOut(io.Discard)
+			test.cmd.SetErr(io.Discard)
+			test.cmd.SetArgs(test.args)
+			err := test.cmd.Execute()
+			if err == nil {
+				t.Fatal("Execute() error = nil, want explicit subcommand error")
+			}
+			if !strings.Contains(err.Error(), `use "list" explicitly`) {
+				t.Fatalf("Execute() error = %q, want explicit list error", err)
+			}
+		})
+	}
+}
+
 func TestDefaultTableColumnsOmitOrgID(t *testing.T) {
 	for name, columns := range map[string][]string{
 		"project":      projectColumns,
@@ -1602,17 +1627,11 @@ func TestInstanceFlagSupportsShortI(t *testing.T) {
 	}
 }
 
-func TestCommandsDefaultToListSubcommand(t *testing.T) {
-	type request struct {
-		path  string
-		query string
-	}
-
+func TestCommandsDoNotDefaultToListSubcommand(t *testing.T) {
 	tests := []struct {
 		name string
 		cmd  func() *cobra.Command
 		args []string
-		want []request
 	}{
 		{
 			name: "route",
@@ -1620,7 +1639,6 @@ func TestCommandsDefaultToListSubcommand(t *testing.T) {
 				return newAppRouteCommand("route", nil, "Manage app routes", instanceFilterFlag)
 			},
 			args: []string{"-i", "21"},
-			want: []request{{path: "/v1/app-routes", query: "appInstanceId=21"}},
 		},
 		{
 			name: "aps",
@@ -1628,118 +1646,90 @@ func TestCommandsDefaultToListSubcommand(t *testing.T) {
 				return newAppServiceCommand("aps", nil, "Manage app services", instanceFilterFlag)
 			},
 			args: []string{"-i", "21"},
-			want: []request{{path: "/v1/app-services", query: "appInstanceId=21"}},
 		},
 		{
 			name: "build",
 			cmd:  newBuildCommand,
 			args: []string{"-i", "21"},
-			want: []request{{path: "/v1/app-builds", query: "appInstanceId=21"}},
 		},
 		{
 			name: "deployment",
 			cmd:  newDeploymentCommand,
 			args: []string{"-i", "21"},
-			want: []request{{path: "/v1/app-deployments", query: "appInstanceId=21"}},
 		},
 		{
 			name: "backup",
 			cmd:  newBackupCommand,
 			args: []string{"-i", "21"},
-			want: []request{{path: "/v1/backups", query: "appInstanceId=21"}},
 		},
 		{
 			name: "import",
 			cmd:  newImportCommand,
 			args: []string{"-i", "21"},
-			want: []request{{path: "/v1/imports", query: "appInstanceId=21"}},
 		},
 		{
 			name: "task",
 			cmd:  newTaskCommand,
 			args: []string{"-i", "21"},
-			want: []request{{path: "/v1/tasks", query: "appInstanceId=21"}},
 		},
 		{
 			name: "database db",
 			cmd:  newDatabaseCommand,
 			args: []string{"db", "33"},
-			want: []request{{path: "/v1/database-dbs", query: "databaseId=33"}},
 		},
 		{
 			name: "database user",
 			cmd:  newDatabaseCommand,
 			args: []string{"user", "33"},
-			want: []request{{path: "/v1/database-users", query: "databaseId=33"}},
 		},
 		{
 			name: "cluster app",
 			cmd:  newClusterCommand,
 			args: []string{"app", "101"},
-			want: []request{{path: "/v1/apps", query: "clusterApp=true&clusterId=101"}},
 		},
 		{
 			name: "instance backup",
 			cmd:  func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
 			args: []string{"backup", "21"},
-			want: []request{{path: "/v1/backups", query: "appInstanceId=21"}},
 		},
 		{
 			name: "instance import",
 			cmd:  func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
 			args: []string{"import", "21"},
-			want: []request{{path: "/v1/imports", query: "appInstanceId=21"}},
 		},
 		{
 			name: "task job",
 			cmd:  newTaskCommand,
 			args: []string{"job", "42"},
-			want: []request{{path: "/v1/tasks/42"}},
 		},
 		{
 			name: "task step",
 			cmd:  newTaskCommand,
 			args: []string{"step", "42"},
-			want: []request{{path: "/v1/tasks/42"}},
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			var got []request
+			var requests int
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				got = append(got, request{path: r.URL.Path, query: r.URL.RawQuery})
-				if r.URL.Path == "/v1/tasks/42" {
-					_ = json.NewEncoder(w).Encode(map[string]interface{}{
-						"id": 42,
-						"jobs": []map[string]interface{}{
-							{
-								"id":     "job-1",
-								"name":   "Build",
-								"status": "done",
-								"steps": []map[string]interface{}{
-									{"id": "step-1", "name": "Prepare", "status": "done"},
-								},
-							},
-						},
-					})
-					return
-				}
-				_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
+				requests++
+				t.Fatalf("unexpected API request %s?%s", r.URL.Path, r.URL.RawQuery)
 			}))
 			defer server.Close()
 			configureTestAPI(t, server.URL+"/v1")
 
 			cmd := test.cmd()
 			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
 			cmd.SetArgs(test.args)
-			if err := cmd.Execute(); err != nil {
-				t.Fatal(err)
+			if err := cmd.Execute(); err == nil {
+				t.Fatal("Execute() error = nil, want explicit subcommand error")
 			}
 
-			if fmt.Sprint(got) != fmt.Sprint(test.want) {
-				t.Fatalf("requests = %#v, want %#v", got, test.want)
+			if requests != 0 {
+				t.Fatalf("requests = %d, want 0", requests)
 			}
 		})
 	}

@@ -1911,5 +1911,22 @@ func firstTaskID(value interface{}) string {
 	if !ok {
 		return ""
 	}
-	return formatValue(m["taskId"])
+	return firstScalarPath(m, "taskId", "task.id", "task")
+}
+
+func resourceOrOperationColumns(value interface{}, resourceColumns []string) []string {
+	m, ok := value.(map[string]interface{})
+	if !ok {
+		return resourceColumns
+	}
+	if _, ok := m["taskId"]; ok {
+		return operationColumns
+	}
+	if _, ok := m["task"]; ok {
+		return operationColumns
+	}
+	if _, ok := m["success"]; ok {
+		return operationColumns
+	}
+	return resourceColumns
 }

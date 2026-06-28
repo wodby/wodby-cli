@@ -1298,8 +1298,83 @@ func newAppCommand() *cobra.Command {
 	}
 
 	defaultToList(cmd, listCmd)
-	cmd.AddCommand(listCmd, getCmd, statusCmd)
+	cmd.AddCommand(listCmd, getCmd, statusCmd, newAppCreateCommand(out))
 	cmd.AddCommand(newAppInstanceCommand("instance", "Manage app instances"))
+	return cmd
+}
+
+func newAppCreateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	wait := waitOptions{}
+	var orgID, projectID, stackID, stackRevID, name, title string
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create app",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if err := requireFlag(name, "--name"); err != nil {
+					return err
+				}
+				if err := requireFlag(title, "--title"); err != nil {
+					return err
+				}
+				resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
+				if err != nil {
+					return err
+				}
+				values := map[string]interface{}{
+					"name":  name,
+					"title": title,
+				}
+				if err := addOptionalInt(values, "orgId", resolvedOrgID, "--org"); err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "projectId", projectID, "--project"); err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "stackId", stackID, "--stack"); err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "stackRevId", stackRevID, "--stack-rev"); err != nil {
+					return err
+				}
+				if value, ok := changedBool(cmd, "cluster-app"); ok {
+					values["clusterApp"] = value
+				}
+				requestBody = values
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), "/apps", nil, requestBody, &result); err != nil {
+				return err
+			}
+			columns := resourceOrOperationColumns(result, appColumns)
+			if wait.wait && firstTaskID(result) != "" {
+				result, err = waitForTask(cmd.Context(), client, firstTaskID(result), wait.timeout)
+				if err != nil {
+					return err
+				}
+				columns = taskColumns
+			}
+			return printClientResult(cmd, client, out, result, columns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	addWaitFlags(cmd, &wait)
+	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
+	cmd.Flags().StringVar(&projectID, "project", "", "Project ID")
+	cmd.Flags().StringVar(&stackID, "stack", "", "Stack ID")
+	cmd.Flags().StringVar(&stackRevID, "stack-rev", "", "Stack revision ID")
+	cmd.Flags().StringVar(&name, "name", "", "App machine name")
+	cmd.Flags().StringVar(&title, "title", "", "App title")
+	cmd.Flags().Bool("cluster-app", false, "Create a cluster app")
 	return cmd
 }
 
@@ -1361,10 +1436,106 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 	}
 
 	defaultToList(cmd, listCmd)
-	cmd.AddCommand(listCmd, getCmd, statusCmd)
+	cmd.AddCommand(listCmd, getCmd, statusCmd, newAppInstanceCreateCommand(out))
 	cmd.AddCommand(newAppServiceCommand("service", []string{"services"}, "Manage app services", instanceFilterArg))
 	cmd.AddCommand(newAppRouteCommand("route", []string{"routes"}, "Manage app instance routes", instanceFilterArg))
 	cmd.AddCommand(newInstanceBuildCommand(), newInstanceDeploymentCommand(), newInstanceBackupCommand(), newInstanceImportCommand())
+	return cmd
+}
+
+func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	wait := waitOptions{}
+	var appID, envID, clusterID, stackID, stackRevID, name, title, domain, region, zone string
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create app instance",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if err := requireFlag(appID, "--app"); err != nil {
+					return err
+				}
+				if err := requireFlag(envID, "--env"); err != nil {
+					return err
+				}
+				if err := requireFlag(clusterID, "--cluster"); err != nil {
+					return err
+				}
+				if err := requireFlag(name, "--name"); err != nil {
+					return err
+				}
+				if err := requireFlag(title, "--title"); err != nil {
+					return err
+				}
+				appIDNumber, err := strconv.Atoi(appID)
+				if err != nil {
+					return errors.Wrap(err, "invalid --app")
+				}
+				envIDNumber, err := strconv.Atoi(envID)
+				if err != nil {
+					return errors.Wrap(err, "invalid --env")
+				}
+				clusterIDNumber, err := strconv.Atoi(clusterID)
+				if err != nil {
+					return errors.Wrap(err, "invalid --cluster")
+				}
+				values := map[string]interface{}{
+					"appId":     appIDNumber,
+					"envId":     envIDNumber,
+					"clusterId": clusterIDNumber,
+					"name":      name,
+					"title":     title,
+				}
+				if err := addOptionalInt(values, "stackId", stackID, "--stack"); err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "stackRevId", stackRevID, "--stack-rev"); err != nil {
+					return err
+				}
+				addOptionalString(values, "mainDomain", domain)
+				addOptionalString(values, "region", region)
+				addOptionalString(values, "zone", zone)
+				if value, ok := changedBool(cmd, "cluster-app"); ok {
+					values["clusterApp"] = value
+				}
+				requestBody = values
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), "/app-instances", nil, requestBody, &result); err != nil {
+				return err
+			}
+			columns := resourceOrOperationColumns(result, instanceColumns)
+			if wait.wait && firstTaskID(result) != "" {
+				result, err = waitForTask(cmd.Context(), client, firstTaskID(result), wait.timeout)
+				if err != nil {
+					return err
+				}
+				columns = taskColumns
+			}
+			return printClientResult(cmd, client, out, result, columns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	addWaitFlags(cmd, &wait)
+	cmd.Flags().StringVar(&appID, "app", "", "App ID")
+	cmd.Flags().StringVar(&envID, "env", "", "Environment ID")
+	cmd.Flags().StringVar(&clusterID, "cluster", "", "Cluster ID")
+	cmd.Flags().StringVar(&stackID, "stack", "", "Stack ID")
+	cmd.Flags().StringVar(&stackRevID, "stack-rev", "", "Stack revision ID")
+	cmd.Flags().StringVar(&name, "name", "", "App instance machine name")
+	cmd.Flags().StringVar(&title, "title", "", "App instance title")
+	cmd.Flags().StringVar(&domain, "domain", "", "Main domain")
+	cmd.Flags().StringVar(&region, "region", "", "Provider region")
+	cmd.Flags().StringVar(&zone, "zone", "", "Provider zone")
+	cmd.Flags().Bool("cluster-app", false, "Create a cluster app instance")
 	return cmd
 }
 

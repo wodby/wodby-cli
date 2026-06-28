@@ -880,7 +880,7 @@ func TestAppCommandExposesCanonicalNestedResources(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	for _, name := range []string{"list", "get", "status", "instance"} {
+	for _, name := range []string{"list", "get", "status", "create", "instance"} {
 		if !names[name] {
 			t.Fatalf("missing app subcommand %q", name)
 		}
@@ -899,10 +899,149 @@ func TestInstanceCommandExposesCanonicalNestedResources(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	for _, name := range []string{"list", "get", "status", "service", "route", "build", "deployment", "backup", "import"} {
+	for _, name := range []string{"list", "get", "status", "create", "service", "route", "build", "deployment", "backup", "import"} {
 		if !names[name] {
 			t.Fatalf("missing instance subcommand %q", name)
 		}
+	}
+}
+
+func TestAppCreateUsesPublicAPIShape(t *testing.T) {
+	var requestedMethod string
+	var requestedPath string
+	var body map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedMethod = r.Method
+		requestedPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":    101,
+			"name":  "drupal",
+			"title": "Drupal",
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{
+		"create",
+		"--org", "10",
+		"--project", "12",
+		"--stack", "7",
+		"--stack-rev", "70",
+		"--name", "drupal",
+		"--title", "Drupal",
+		"--cluster-app",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if requestedMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", requestedMethod)
+	}
+	if requestedPath != "/v1/apps" {
+		t.Fatalf("path = %q, want /v1/apps", requestedPath)
+	}
+	if body["orgId"] != float64(10) {
+		t.Fatalf("orgId = %#v, want 10", body["orgId"])
+	}
+	if body["projectId"] != float64(12) {
+		t.Fatalf("projectId = %#v, want 12", body["projectId"])
+	}
+	if body["stackId"] != float64(7) {
+		t.Fatalf("stackId = %#v, want 7", body["stackId"])
+	}
+	if body["stackRevId"] != float64(70) {
+		t.Fatalf("stackRevId = %#v, want 70", body["stackRevId"])
+	}
+	if body["name"] != "drupal" || body["title"] != "Drupal" {
+		t.Fatalf("name/title body = %#v", body)
+	}
+	if body["clusterApp"] != true {
+		t.Fatalf("clusterApp = %#v, want true", body["clusterApp"])
+	}
+}
+
+func TestAppInstanceCreateUsesPublicAPIShape(t *testing.T) {
+	var requestedMethod string
+	var requestedPath string
+	var body map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedMethod = r.Method
+		requestedPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":    101,
+			"name":  "prod",
+			"title": "Production",
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{
+		"create",
+		"--app", "11",
+		"--env", "22",
+		"--cluster", "33",
+		"--stack", "7",
+		"--stack-rev", "70",
+		"--name", "prod",
+		"--title", "Production",
+		"--domain", "example.com",
+		"--region", "us",
+		"--zone", "us-a",
+		"--cluster-app",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if requestedMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", requestedMethod)
+	}
+	if requestedPath != "/v1/app-instances" {
+		t.Fatalf("path = %q, want /v1/app-instances", requestedPath)
+	}
+	if body["appId"] != float64(11) {
+		t.Fatalf("appId = %#v, want 11", body["appId"])
+	}
+	if body["envId"] != float64(22) {
+		t.Fatalf("envId = %#v, want 22", body["envId"])
+	}
+	if body["clusterId"] != float64(33) {
+		t.Fatalf("clusterId = %#v, want 33", body["clusterId"])
+	}
+	if body["stackId"] != float64(7) {
+		t.Fatalf("stackId = %#v, want 7", body["stackId"])
+	}
+	if body["stackRevId"] != float64(70) {
+		t.Fatalf("stackRevId = %#v, want 70", body["stackRevId"])
+	}
+	if body["name"] != "prod" || body["title"] != "Production" {
+		t.Fatalf("name/title body = %#v", body)
+	}
+	if body["mainDomain"] != "example.com" {
+		t.Fatalf("mainDomain = %#v, want example.com", body["mainDomain"])
+	}
+	if body["region"] != "us" || body["zone"] != "us-a" {
+		t.Fatalf("region/zone body = %#v", body)
+	}
+	if body["clusterApp"] != true {
+		t.Fatalf("clusterApp = %#v, want true", body["clusterApp"])
 	}
 }
 

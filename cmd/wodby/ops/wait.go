@@ -218,7 +218,7 @@ func fetchTaskStepLogs(ctx context.Context, client *rest.Client, stepID string) 
 		}
 		downloaded[key] = value
 	}
-	downloaded["lines"] = splitLogText(content)
+	downloaded["lines"] = logLinesFromText(content)
 	return downloaded, nil
 }
 
@@ -496,22 +496,23 @@ func jobLogTitleFromEntry(entry map[string]interface{}) string {
 		status:   formatValue(entry["status"]),
 		duration: formatValue(entry["duration"]),
 	}
-	title := jobLogNameWithID(job)
-	if job.duration != "" {
-		title += " (" + job.duration + ")"
-	}
-	return title
+	return logTitleWithDetails(jobLogNameWithID(job), job.status, job.duration)
 }
 
 func stepLogTitle(entry map[string]interface{}) string {
 	step := taskLogStep{
 		id:       formatValue(entry["stepId"]),
 		name:     formatValue(entry["stepName"]),
+		status:   formatValue(entry["status"]),
 		duration: formatValue(entry["duration"]),
 	}
-	title := stepLogNameOrFallback(step)
-	if step.duration != "" {
-		title += " (" + step.duration + ")"
+	return logTitleWithDetails(stepLogNameOrFallback(step), step.status, step.duration)
+}
+
+func logTitleWithDetails(title string, details ...string) string {
+	parts := compactNonEmpty(details...)
+	if len(parts) != 0 {
+		return title + " (" + strings.Join(parts, ", ") + ")"
 	}
 	return title
 }
@@ -585,11 +586,11 @@ func logLines(value interface{}) []string {
 	case nil:
 		return nil
 	case string:
-		return splitLogText(v)
+		return logLinesFromText(v)
 	case []string:
 		lines := make([]string, 0, len(v))
 		for _, item := range v {
-			lines = append(lines, splitLogText(item)...)
+			lines = append(lines, logLinesFromText(item)...)
 		}
 		return lines
 	case []interface{}:
@@ -615,8 +616,70 @@ func logLines(value interface{}) []string {
 		}
 		return nil
 	default:
-		return splitLogText(formatValue(v))
+		return logLinesFromText(formatValue(v))
 	}
+}
+
+func logLinesFromText(value string) []string {
+	if lines := logLinesFromJSONText(value); len(lines) != 0 {
+		return lines
+	}
+	return splitLogText(value)
+}
+
+func logLinesFromJSONText(value string) []string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+
+	if decoded, ok := decodeJSONString(trimmed); ok {
+		if lines := logLinesFromDecodedJSON(decoded); len(lines) != 0 {
+			return lines
+		}
+	}
+
+	rawLines := splitLogText(value)
+	lines := make([]string, 0, len(rawLines))
+	decodedAny := false
+	for _, rawLine := range rawLines {
+		decoded, ok := decodeJSONString(strings.TrimSpace(rawLine))
+		if !ok {
+			return nil
+		}
+		lineValues := logLinesFromDecodedJSON(decoded)
+		if len(lineValues) != 0 {
+			decodedAny = true
+			lines = append(lines, lineValues...)
+		}
+	}
+	if !decodedAny {
+		return nil
+	}
+	return lines
+}
+
+func logLinesFromDecodedJSON(value interface{}) []string {
+	switch value.(type) {
+	case map[string]interface{}, []interface{}, []map[string]interface{}:
+		return logLines(value)
+	default:
+		return splitLogText(formatValue(value))
+	}
+}
+
+func decodeJSONString(value string) (interface{}, bool) {
+	var decoded interface{}
+	decoder := json.NewDecoder(strings.NewReader(value))
+	decoder.UseNumber()
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil, false
+	}
+	var trailing interface{}
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, false
+	}
+	return decoded, true
 }
 
 func splitLogText(value string) []string {
@@ -637,9 +700,12 @@ func logLine(line map[string]interface{}) string {
 	if message == "" {
 		return ""
 	}
-	level := firstScalarPath(line, "level", "severity")
-	if level == "" {
-		return message
+	message = strings.TrimRight(message, "\r\n")
+	level := firstScalarPath(line, "level", "severity", "stream")
+	timestamp := firstScalarPath(line, "timestamp", "time", "ts", "createdAt")
+	labels := compactNonEmpty(timestamp, level)
+	if len(labels) != 0 {
+		return fmt.Sprintf("[%s] %s", strings.Join(labels, "] ["), message)
 	}
-	return fmt.Sprintf("[%s] %s", level, message)
+	return message
 }

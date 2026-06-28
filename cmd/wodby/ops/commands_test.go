@@ -689,7 +689,10 @@ func TestTaskStepLogsDownloadsSignedURLWithoutAPIKey(t *testing.T) {
 		if got := r.Header.Get("X-ACCESS-TOKEN"); got != "" {
 			t.Fatalf("signed URL request should not include X-ACCESS-TOKEN, got %q", got)
 		}
-		_, _ = w.Write([]byte("persisted line 1\npersisted line 2\n"))
+		_, _ = w.Write([]byte(`[
+			{"time":"2026-06-28T00:00:01Z","stream":"stdout","log":"persisted line 1\n"},
+			{"level":"error","message":"persisted line 2"}
+		]`))
 	}))
 	defer logServer.Close()
 
@@ -716,10 +719,23 @@ func TestTaskStepLogsDownloadsSignedURLWithoutAPIKey(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"persisted line 1", "persisted line 2"} {
+	for _, expected := range []string{"[2026-06-28T00:00:01Z] [stdout] persisted line 1", "[error] persisted line 2"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("step logs output should include %q: %s", expected, output)
 		}
+	}
+	if strings.Contains(output, `"message"`) || strings.Contains(output, `"log"`) {
+		t.Fatalf("step logs output should not include raw JSON records: %s", output)
+	}
+}
+
+func TestLogLinesFormatsNewlineDelimitedJSON(t *testing.T) {
+	lines := logLines(`{"level":"info","message":"first"}
+{"stream":"stderr","log":"second\n"}`)
+
+	want := []string{"[info] first", "[stderr] second"}
+	if fmt.Sprint(lines) != fmt.Sprint(want) {
+		t.Fatalf("logLines() = %#v, want %#v", lines, want)
 	}
 }
 
@@ -3024,12 +3040,14 @@ func TestTaskLogsShowStepNamesDurationsAndNoLogs(t *testing.T) {
 							{
 								"id":        "step-1",
 								"name":      "Prepare",
+								"status":    "running",
 								"startedAt": "2026-01-02T03:00:00Z",
 								"endedAt":   "2026-01-02T03:01:30Z",
 							},
 							{
 								"id":        "step-2",
 								"title":     "Deploy",
+								"status":    "failed",
 								"startedAt": "2026-01-02T03:02:00Z",
 								"endedAt":   "2026-01-02T03:04:00Z",
 							},
@@ -3070,7 +3088,7 @@ func TestTaskLogsShowStepNamesDurationsAndNoLogs(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"== Prepare (1m 30s) ==", "[info] ready", "== Deploy (2m) ==", "no logs"} {
+	for _, expected := range []string{"== Prepare (running, 1m 30s) ==", "[info] ready", "== Deploy (failed, 2m) ==", "no logs"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("task logs output should include %q: %s", expected, output)
 		}
@@ -3163,12 +3181,14 @@ func TestTaskLogsWithJobFilterFetchesSelectedJobOnly(t *testing.T) {
 					{
 						"id":        "job-2",
 						"title":     "Deploy",
+						"status":    "running",
 						"startedAt": "2026-01-02T03:03:00Z",
 						"endedAt":   "2026-01-02T03:05:00Z",
 						"steps": []map[string]interface{}{
 							{
 								"id":        "step-2",
 								"name":      "Apply",
+								"status":    "done",
 								"startedAt": "2026-01-02T03:03:00Z",
 								"endedAt":   "2026-01-02T03:03:30Z",
 							},
@@ -3199,7 +3219,7 @@ func TestTaskLogsWithJobFilterFetchesSelectedJobOnly(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"== job Deploy [job-2] (2m) ==", "== Apply (30s) ==", "applied"} {
+	for _, expected := range []string{"== job Deploy [job-2] (running, 2m) ==", "== Apply (done, 30s) ==", "applied"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("task logs output should include %q: %s", expected, output)
 		}

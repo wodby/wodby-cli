@@ -654,7 +654,11 @@ func TestTaskStepLogsFetchesStepLogs(t *testing.T) {
 		if r.URL.Path != "/v1/task-steps/step-2/logs" {
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
+		if got := r.URL.Query().Get("delivery"); got != "auto" {
+			t.Fatalf("delivery = %q, want auto", got)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "pending",
 			"lines": []map[string]interface{}{
 				{"level": "info", "message": "applied"},
 			},
@@ -672,6 +676,50 @@ func TestTaskStepLogsFetchesStepLogs(t *testing.T) {
 
 	if output := out.String(); !strings.Contains(output, "[info] applied") {
 		t.Fatalf("step logs output should include log line: %s", output)
+	}
+}
+
+func TestTaskStepLogsDownloadsSignedURLWithoutAPIKey(t *testing.T) {
+	var out bytes.Buffer
+
+	logServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-API-KEY"); got != "" {
+			t.Fatalf("signed URL request should not include X-API-KEY, got %q", got)
+		}
+		if got := r.Header.Get("X-ACCESS-TOKEN"); got != "" {
+			t.Fatalf("signed URL request should not include X-ACCESS-TOKEN, got %q", got)
+		}
+		_, _ = w.Write([]byte("persisted line 1\npersisted line 2\n"))
+	}))
+	defer logServer.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/task-steps/step-2/logs" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("delivery"); got != "auto" {
+			t.Fatalf("delivery = %q, want auto", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "persisted",
+			"url":    logServer.URL + "/logs/object",
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newTaskCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"step", "logs", "step-2"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"persisted line 1", "persisted line 2"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("step logs output should include %q: %s", expected, output)
+		}
 	}
 }
 
@@ -2990,14 +3038,22 @@ func TestTaskLogsShowStepNamesDurationsAndNoLogs(t *testing.T) {
 				},
 			})
 		case "/v1/task-steps/step-1/logs":
+			if got := r.URL.Query().Get("delivery"); got != "auto" {
+				t.Fatalf("delivery = %q, want auto", got)
+			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"lines": []map[string]interface{}{
+				"status": "pending",
+				"items": []map[string]interface{}{
 					{"level": "info", "message": "ready"},
 				},
 			})
 		case "/v1/task-steps/step-2/logs":
+			if got := r.URL.Query().Get("delivery"); got != "auto" {
+				t.Fatalf("delivery = %q, want auto", got)
+			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"lines": []map[string]interface{}{},
+				"status": "empty",
+				"lines":  []map[string]interface{}{},
 			})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)

@@ -2659,8 +2659,8 @@ func newTaskStepCommand(out outputOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var result interface{}
-			if err := client.Get(cmd.Context(), "/task-steps/"+args[0]+"/logs", url.Values{}, &result); err != nil {
+			result, err := fetchTaskStepLogs(cmd.Context(), client, args[0])
+			if err != nil {
 				return err
 			}
 			if out.output == outputJSON {

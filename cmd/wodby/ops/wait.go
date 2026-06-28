@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"text/tabwriter"
@@ -164,7 +166,9 @@ func fetchTaskJobLogs(ctx context.Context, client *rest.Client, jobs []taskLogJo
 		for _, step := range job.steps {
 			var logsValue interface{}
 			if step.id != "" {
-				if err := client.Get(ctx, "/task-steps/"+step.id+"/logs", url.Values{}, &logsValue); err != nil {
+				var err error
+				logsValue, err = fetchTaskStepLogs(ctx, client, step.id)
+				if err != nil {
 					return nil, err
 				}
 			}
@@ -185,6 +189,59 @@ func fetchTaskJobLogs(ctx context.Context, client *rest.Client, jobs []taskLogJo
 		})
 	}
 	return logs, nil
+}
+
+func fetchTaskStepLogs(ctx context.Context, client *rest.Client, stepID string) (interface{}, error) {
+	query := url.Values{"delivery": []string{"auto"}}
+	var result interface{}
+	if err := client.Get(ctx, "/task-steps/"+stepID+"/logs", query, &result); err != nil {
+		return nil, err
+	}
+
+	response, ok := result.(map[string]interface{})
+	if !ok {
+		return result, nil
+	}
+	signedURL := firstScalarPath(response, "url")
+	if signedURL == "" {
+		return result, nil
+	}
+
+	content, err := downloadSignedLogURL(ctx, signedURL)
+	if err != nil {
+		return nil, err
+	}
+	downloaded := make(map[string]interface{}, len(response)+1)
+	for key, value := range response {
+		if key == "url" {
+			continue
+		}
+		downloaded[key] = value
+	}
+	downloaded["lines"] = splitLogText(content)
+	return downloaded, nil
+}
+
+func downloadSignedLogURL(ctx context.Context, signedURL string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, signedURL, nil)
+	if err != nil {
+		return "", errors.WithStack(err)
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", errors.Wrap(err, "download log object")
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return "", errors.Errorf("download log object returned status %d", resp.StatusCode)
+	}
+	content, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", errors.WithStack(err)
+	}
+	return string(content), nil
 }
 
 func printTaskJobSummary(cmd *cobra.Command, output outputOptions, jobs []taskLogJob) {
@@ -524,30 +581,65 @@ func numericPathValue(row map[string]interface{}, path string) (float64, bool) {
 }
 
 func logLines(value interface{}) []string {
-	rows := asRows(value)
-	if len(rows) == 0 {
+	switch v := value.(type) {
+	case nil:
 		return nil
-	}
-
-	rawLines, ok := rows[0]["lines"].([]interface{})
-	if !ok {
+	case string:
+		return splitLogText(v)
+	case []string:
+		lines := make([]string, 0, len(v))
+		for _, item := range v {
+			lines = append(lines, splitLogText(item)...)
+		}
+		return lines
+	case []interface{}:
+		lines := make([]string, 0, len(v))
+		for _, item := range v {
+			lines = append(lines, logLines(item)...)
+		}
+		return lines
+	case []map[string]interface{}:
+		lines := make([]string, 0, len(v))
+		for _, item := range v {
+			lines = append(lines, logLines(item)...)
+		}
+		return lines
+	case map[string]interface{}:
+		for _, key := range []string{"lines", "logs", "items", "results", "item", "result", "data", "messages", "entries"} {
+			if nested, ok := v[key]; ok {
+				return logLines(nested)
+			}
+		}
+		if line := logLine(v); line != "" {
+			return []string{line}
+		}
 		return nil
+	default:
+		return splitLogText(formatValue(v))
 	}
+}
 
-	lines := make([]string, 0, len(rawLines))
-	for _, rawLine := range rawLines {
-		line, ok := rawLine.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		level := formatValue(line["level"])
-		message := formatValue(line["message"])
-		if level == "" {
-			lines = append(lines, message)
-		} else {
-			lines = append(lines, fmt.Sprintf("[%s] %s", level, message))
+func splitLogText(value string) []string {
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	value = strings.ReplaceAll(value, "\r", "\n")
+	parts := strings.Split(value, "\n")
+	lines := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			lines = append(lines, part)
 		}
 	}
-
 	return lines
+}
+
+func logLine(line map[string]interface{}) string {
+	message := firstScalarPath(line, "message", "msg", "text", "line", "content", "log")
+	if message == "" {
+		return ""
+	}
+	level := firstScalarPath(line, "level", "severity")
+	if level == "" {
+		return message
+	}
+	return fmt.Sprintf("[%s] %s", level, message)
 }

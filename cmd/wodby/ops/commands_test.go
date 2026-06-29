@@ -2330,7 +2330,7 @@ func TestDatabaseNestedCommandsExposeBasicOperations(t *testing.T) {
 		expected []string
 	}{
 		{name: "db", cmd: newDatabaseDbCommand(), expected: []string{"list", "get", "create", "delete"}},
-		{name: "user", cmd: newDatabaseUserCommand(), expected: []string{"list", "create", "dbs", "delete"}},
+		{name: "user", cmd: newDatabaseUserCommand(), expected: []string{"list", "get", "create", "dbs", "delete"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			names := make(map[string]bool)
@@ -2588,6 +2588,88 @@ func TestDatabaseUserListUsesDatabaseFilter(t *testing.T) {
 
 	if len(requests) == 0 || requests[0] != "/v1/database-users?databaseId=33" {
 		t.Fatalf("first request = %#v, want /v1/database-users?databaseId=33", requests)
+	}
+}
+
+func TestDatabaseUserGetSelectsUserFromDatabaseList(t *testing.T) {
+	var out bytes.Buffer
+	var requests []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.Path+"?"+r.URL.RawQuery)
+		switch r.URL.Path {
+		case "/v1/database-users":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": 54, "name": "reader", "databaseId": 33},
+					{
+						"id":         55,
+						"name":       "editor",
+						"hostname":   "%",
+						"status":     "active",
+						"databaseId": 33,
+						"databaseDbs": []map[string]interface{}{
+							{"id": 44, "name": "main"},
+						},
+					},
+				},
+			})
+		case "/v1/databases/33":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 33, "title": "Postgres"})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newDatabaseCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"user", "get", "33", "55"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(requests) == 0 || requests[0] != "/v1/database-users?databaseId=33" {
+		t.Fatalf("first request = %#v, want /v1/database-users?databaseId=33", requests)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"id:", "55", "username:", "editor", "hostname:", "%", "status:", "active", "database:", "Postgres", "database id:", "33", "dbs:", "main"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("database user get output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"reader", "databaseId:"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("database user get output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
+func TestDatabaseUserGetReturnsNotFoundForMissingUser(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/database-users":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 54, "name": "reader", "databaseId": 33},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newDatabaseCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"user", "get", "33", "55"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected missing database user error")
+	}
+	if !strings.Contains(err.Error(), `database user "55" not found in database "33"`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

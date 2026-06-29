@@ -487,8 +487,31 @@ func newDatabaseUserCommand() *cobra.Command {
 		},
 	}
 
+	getCmd := &cobra.Command{
+		Use:   "get DATABASE_ID USER_ID",
+		Short: "Get database user",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			query := url.Values{"databaseId": []string{args[0]}}
+			rows, err := fetchRows(cmd.Context(), client, "/database-users", query)
+			if err != nil {
+				return err
+			}
+			for _, row := range rows {
+				if firstScalarPath(row, "id") == args[1] {
+					return printClientGetResult(cmd, client, out, row, databaseUserColumns)
+				}
+			}
+			return errors.Errorf("database user %q not found in database %q", args[1], args[0])
+		},
+	}
+
 	defaultToList(cmd, listCmd)
-	cmd.AddCommand(listCmd, newDatabaseUserCreateCommand(out), newDatabaseUserDBsCommand(out), newDeleteCommand("delete ID", "Delete database user", "/database-users/", databaseUserColumns, out))
+	cmd.AddCommand(listCmd, getCmd, newDatabaseUserCreateCommand(out), newDatabaseUserDBsCommand(out), newDeleteCommand("delete ID", "Delete database user", "/database-users/", databaseUserColumns, out))
 	return cmd
 }
 

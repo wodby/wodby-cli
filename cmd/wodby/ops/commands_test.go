@@ -39,6 +39,7 @@ func TestCommandsExposeTopLevelOperationalSurface(t *testing.T) {
 		"instance",
 		"aps",
 		"route",
+		"port",
 		"build",
 		"deployment",
 		"backup",
@@ -108,6 +109,7 @@ func TestDefaultTableColumnsUseReadableRelations(t *testing.T) {
 		"databaseUser": databaseUserColumns,
 		"instance":     instanceColumns,
 		"route":        routeColumns,
+		"port":         appPortColumns,
 		"build":        buildColumns,
 		"deployment":   deploymentColumns,
 		"backup":       backupColumns,
@@ -1072,7 +1074,7 @@ func TestAppCommandExposesCanonicalNestedResources(t *testing.T) {
 			t.Fatalf("missing app subcommand %q", name)
 		}
 	}
-	for _, name := range []string{"service", "route"} {
+	for _, name := range []string{"service", "route", "port"} {
 		if names[name] {
 			t.Fatalf("app should not expose instance subcommand %q", name)
 		}
@@ -1086,7 +1088,7 @@ func TestInstanceCommandExposesCanonicalNestedResources(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	for _, name := range []string{"list", "get", "status", "create", "service", "route", "build", "deployment", "backup", "import"} {
+	for _, name := range []string{"list", "get", "status", "create", "service", "route", "port", "build", "deployment", "backup", "import"} {
 		if !names[name] {
 			t.Fatalf("missing instance subcommand %q", name)
 		}
@@ -1630,6 +1632,58 @@ func TestRouteListEnrichesPortNumber(t *testing.T) {
 	}
 }
 
+func TestPortListShowsReadableRelations(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/app-ports":
+			if got := r.URL.Query().Get("appInstanceId"); got != "21" {
+				t.Fatalf("appInstanceId = %q, want 21", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":            55,
+					"name":          "http",
+					"number":        8080,
+					"protocol":      "http",
+					"private":       false,
+					"appServiceId":  22,
+					"appInstanceId": 21,
+					"createdAt":     "2026-01-02T03:04:05Z",
+				},
+			})
+		case "/v1/app-services/22":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 22, "title": "Nginx"})
+		case "/v1/app-instances/21":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 21, "title": "Production"})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"port", "list", "21"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"number", "protocol", "service", "instance", "8080", "http", "Nginx", "Production"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("port list output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"appServiceId", "appInstanceId"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("port list output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
 func TestTopLevelRouteListUsesInstanceFlag(t *testing.T) {
 	var requestedPath string
 	var requestedQuery string
@@ -1651,6 +1705,33 @@ func TestTopLevelRouteListUsesInstanceFlag(t *testing.T) {
 
 	if requestedPath != "/v1/app-routes" {
 		t.Fatalf("path = %q, want /v1/app-routes", requestedPath)
+	}
+	if requestedQuery != "appInstanceId=21" {
+		t.Fatalf("query = %q, want appInstanceId=21", requestedQuery)
+	}
+}
+
+func TestTopLevelPortListUsesInstanceFlag(t *testing.T) {
+	var requestedPath string
+	var requestedQuery string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		requestedQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppPortCommand("port", []string{"ports"}, "Manage app ports", instanceFilterFlag)
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"list", "--instance", "21"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if requestedPath != "/v1/app-ports" {
+		t.Fatalf("path = %q, want /v1/app-ports", requestedPath)
 	}
 	if requestedQuery != "appInstanceId=21" {
 		t.Fatalf("query = %q, want appInstanceId=21", requestedQuery)
@@ -1694,6 +1775,7 @@ func TestInstanceFlagSupportsShortI(t *testing.T) {
 	}{
 		{name: "route", cmd: newAppRouteCommand("route", nil, "Manage app routes", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-routes", wantQuery: "appInstanceId=21"},
 		{name: "aps", cmd: newAppServiceCommand("aps", nil, "Manage app services", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-services", wantQuery: "appInstanceId=21"},
+		{name: "port", cmd: newAppPortCommand("port", nil, "Manage app ports", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-ports", wantQuery: "appInstanceId=21"},
 		{name: "build", cmd: newBuildCommand(), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-builds", wantQuery: "appInstanceId=21"},
 		{name: "task", cmd: newTaskCommand(), args: []string{"list", "-i", "21"}, wantPath: "/v1/tasks", wantQuery: "appInstanceId=21"},
 	} {

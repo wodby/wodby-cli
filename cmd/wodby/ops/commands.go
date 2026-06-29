@@ -33,6 +33,7 @@ var (
 	instanceColumns       = []string{"id", "name", "title", "status", "outdated", "app", "stack", "env", "cluster", "domain"}
 	serviceColumns        = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
 	routeColumns          = []string{"id", "host", "path", "pathType", "action", "status", "service", "port", "main", "primary", "disabled"}
+	appPortColumns        = []string{"id", "name", "number", "protocol", "private", "service", "instance", "createdAt"}
 	buildColumns          = []string{"id", "number", "status", "instance", "service", "task", "gitRefType", "gitRef", "commitHash", "createdAt"}
 	deploymentColumns     = []string{"id", "number", "status", "instance", "task", "skipRollback", "createdAt", "startedAt", "endedAt"}
 	backupColumns         = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "task", "createdAt"}
@@ -60,6 +61,7 @@ func Commands() []*cobra.Command {
 		newAppInstanceCommand("instance", "Manage app instances"),
 		newAppServiceCommand("aps", []string{"app-service", "app-services"}, "Manage app services", instanceFilterFlag),
 		newAppRouteCommand("route", []string{"routes"}, "Manage app routes", instanceFilterFlag),
+		newAppPortCommand("port", []string{"ports"}, "Manage app ports", instanceFilterFlag),
 		newBuildCommand(),
 		newDeploymentCommand(),
 		newBackupCommand(),
@@ -1450,6 +1452,7 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 	cmd.AddCommand(listCmd, getCmd, statusCmd, newAppInstanceCreateCommand(out))
 	cmd.AddCommand(newAppServiceCommand("service", []string{"services"}, "Manage app services", instanceFilterArg))
 	cmd.AddCommand(newAppRouteCommand("route", []string{"routes"}, "Manage app instance routes", instanceFilterArg))
+	cmd.AddCommand(newAppPortCommand("port", []string{"ports"}, "Manage app instance ports", instanceFilterArg))
 	cmd.AddCommand(newInstanceBuildCommand(), newInstanceDeploymentCommand(), newInstanceBackupCommand(), newInstanceImportCommand())
 	return cmd
 }
@@ -1871,6 +1874,57 @@ func newAppRouteCommand(use string, aliases []string, short string, mode instanc
 	}
 
 	cmd.AddCommand(listCmd, getCmd, newAppRouteCreateCommand(out), newAppRouteUpdateCommand(out), newDeleteCommand("delete ID", "Delete app route", "/app-routes/", routeColumns, out))
+	return cmd
+}
+
+func newAppPortCommand(use string, aliases []string, short string, mode instanceFilterMode) *cobra.Command {
+	out := outputOptions{}
+	cmd := &cobra.Command{
+		Use:     use,
+		Aliases: aliases,
+		Short:   short,
+	}
+	addOutputFlag(cmd, &out)
+
+	var instanceID string
+	listCmd := &cobra.Command{
+		Use:   instanceScopedListUse("list", mode),
+		Short: "List app ports",
+		Args:  instanceScopedListArgs(mode),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if mode == instanceFilterArg {
+				instanceID = args[0]
+			}
+			if err := requireFlag(instanceID, "--instance"); err != nil {
+				return err
+			}
+			query := url.Values{"appInstanceId": []string{instanceID}}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/app-ports", query, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, appPortColumns)
+		},
+	}
+	if mode == instanceFilterFlag {
+		listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
+	}
+	defaultToList(cmd, listCmd)
+
+	getCmd := &cobra.Command{
+		Use:   "get ID",
+		Short: "Get app port",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return getAndPrint(cmd, out, "/app-ports/"+args[0], appPortColumns)
+		},
+	}
+
+	cmd.AddCommand(listCmd, getCmd)
 	return cmd
 }
 

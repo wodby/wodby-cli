@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
@@ -30,7 +32,9 @@ var (
 	catalogServiceColumns = []string{"id", "name", "title", "type", "status", "public", "external", "revId", "latestRevNumber"}
 	appColumns            = []string{"id", "name", "title", "status", "stack", "clusterApp"}
 	appGetColumns         = append(append([]string{}, appColumns...), "instances")
+	appStatusColumns      = []string{"id", "title", "status", "instances", "serviceStatus", "routeStatus", "latestBuild", "latestDeployment", "needs"}
 	instanceColumns       = []string{"id", "name", "title", "status", "outdated", "app", "stack", "env", "cluster", "domain"}
+	instanceStatusColumns = []string{"id", "title", "status", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
 	serviceColumns        = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
 	routeColumns          = []string{"id", "host", "path", "pathType", "action", "status", "service", "port", "main", "primary", "disabled"}
 	appPortColumns        = []string{"id", "name", "number", "protocol", "private", "service", "instance", "createdAt"}
@@ -1306,7 +1310,15 @@ func newAppCommand() *cobra.Command {
 		Short: "Show app status",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return getAndPrint(cmd, out, "/apps/"+args[0], appColumns)
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			result, err := buildAppStatus(cmd.Context(), client, args[0])
+			if err != nil {
+				return err
+			}
+			return printClientGetResult(cmd, client, out, result, appStatusColumns)
 		},
 	}
 
@@ -1444,7 +1456,15 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 		Short: "Show app instance status",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return getAndPrint(cmd, out, "/app-instances/"+args[0], instanceColumns)
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			result, err := buildInstanceStatus(cmd.Context(), client, args[0], nil)
+			if err != nil {
+				return err
+			}
+			return printClientGetResult(cmd, client, out, result, instanceStatusColumns)
 		},
 	}
 
@@ -1551,6 +1571,276 @@ func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&zone, "zone", "", "Provider zone")
 	cmd.Flags().Bool("cluster-app", false, "Create a cluster app instance")
 	return cmd
+}
+
+func buildAppStatus(ctx context.Context, client *rest.Client, appID string) (map[string]interface{}, error) {
+	var app interface{}
+	if err := client.Get(ctx, "/apps/"+appID, nil, &app); err != nil {
+		return nil, err
+	}
+	row := cloneFirstRow(normalizeItem(app))
+	if row == nil {
+		return nil, errors.New("app response did not include an item")
+	}
+
+	query := url.Values{"appId": []string{appID}}
+	addQuery(query, "orgId", firstScalarPath(row, "orgId", "org.id"))
+	var instancesResult interface{}
+	if err := client.Get(ctx, "/app-instances", query, &instancesResult); err != nil {
+		return nil, err
+	}
+
+	instanceStatuses := make([]interface{}, 0)
+	services := make([]map[string]interface{}, 0)
+	routes := make([]map[string]interface{}, 0)
+	builds := make([]map[string]interface{}, 0)
+	deployments := make([]map[string]interface{}, 0)
+	for _, instance := range responseRows(instancesResult) {
+		instanceID := firstScalarPath(instance, "id", "appInstanceId", "appInstance.id", "instanceId", "instance.id")
+		if instanceID == "" {
+			continue
+		}
+		status, err := buildInstanceStatus(ctx, client, instanceID, instance)
+		if err != nil {
+			return nil, err
+		}
+		instanceStatuses = append(instanceStatuses, status)
+		services = append(services, responseRows(status["services"])...)
+		routes = append(routes, responseRows(status["routes"])...)
+		builds = append(builds, responseRows(status["builds"])...)
+		deployments = append(deployments, responseRows(status["deployments"])...)
+	}
+
+	row["instances"] = instanceStatuses
+	row["services"] = services
+	row["routes"] = routes
+	row["builds"] = builds
+	row["deployments"] = deployments
+	row["serviceStatus"] = summarizeStatusRows(services, "services")
+	row["routeStatus"] = summarizeStatusRows(routes, "routes")
+	row["latestBuild"] = summarizeBuild(latestByTime(builds))
+	row["latestDeployment"] = summarizeDeployment(latestByTime(deployments))
+	row["needs"] = summarizeOperationalNeeds(services, routes)
+	return row, nil
+}
+
+func buildInstanceStatus(ctx context.Context, client *rest.Client, instanceID string, base map[string]interface{}) (map[string]interface{}, error) {
+	row := cloneRow(base)
+	if row == nil {
+		var instance interface{}
+		if err := client.Get(ctx, "/app-instances/"+instanceID, nil, &instance); err != nil {
+			return nil, err
+		}
+		row = cloneFirstRow(normalizeItem(instance))
+		if row == nil {
+			return nil, errors.New("app instance response did not include an item")
+		}
+	}
+
+	services, err := fetchRows(ctx, client, "/app-services", url.Values{"appInstanceId": []string{instanceID}})
+	if err != nil {
+		return nil, err
+	}
+	routes, err := fetchRows(ctx, client, "/app-routes", url.Values{"appInstanceId": []string{instanceID}})
+	if err != nil {
+		return nil, err
+	}
+	ports, err := fetchRows(ctx, client, "/app-ports", url.Values{"appInstanceId": []string{instanceID}})
+	if err != nil {
+		return nil, err
+	}
+	builds, err := fetchRows(ctx, client, "/app-builds", url.Values{"appInstanceId": []string{instanceID}, "pageSize": []string{"1"}})
+	if err != nil {
+		return nil, err
+	}
+	deployments, err := fetchRows(ctx, client, "/app-deployments", url.Values{"appInstanceId": []string{instanceID}, "pageSize": []string{"1"}})
+	if err != nil {
+		return nil, err
+	}
+
+	row["services"] = services
+	row["routes"] = routes
+	row["ports"] = ports
+	row["builds"] = builds
+	row["deployments"] = deployments
+	row["serviceStatus"] = summarizeStatusRows(services, "services")
+	row["routeStatus"] = summarizeStatusRows(routes, "routes")
+	row["portStatus"] = summarizeCountRows(ports, "ports")
+	row["latestBuild"] = summarizeBuild(latestByTime(builds))
+	row["latestDeployment"] = summarizeDeployment(latestByTime(deployments))
+	row["needs"] = summarizeOperationalNeeds(services, routes)
+	return row, nil
+}
+
+func fetchRows(ctx context.Context, client *rest.Client, path string, query url.Values) ([]map[string]interface{}, error) {
+	var result interface{}
+	if err := client.Get(ctx, path, query, &result); err != nil {
+		return nil, err
+	}
+	return responseRows(result), nil
+}
+
+func cloneFirstRow(value interface{}) map[string]interface{} {
+	rows := asRows(value)
+	if len(rows) == 0 {
+		return nil
+	}
+	return cloneRow(rows[0])
+}
+
+func cloneRow(row map[string]interface{}) map[string]interface{} {
+	if row == nil {
+		return nil
+	}
+	clone := make(map[string]interface{}, len(row))
+	for key, value := range row {
+		clone[key] = value
+	}
+	return clone
+}
+
+func summarizeStatusRows(rows []map[string]interface{}, label string) string {
+	if len(rows) == 0 {
+		return "no " + label
+	}
+
+	counts := map[string]int{}
+	for _, row := range rows {
+		status := firstScalarPath(row, "status")
+		if status == "" {
+			status = "unknown"
+		}
+		if truthyPath(row, "disabled") {
+			status = "disabled"
+		}
+		counts[status]++
+	}
+
+	if len(counts) == 1 {
+		for status, count := range counts {
+			return fmt.Sprintf("%d %s %s", count, label, status)
+		}
+	}
+
+	keys := make([]string, 0, len(counts))
+	for status := range counts {
+		keys = append(keys, status)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, status := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", status, counts[status]))
+	}
+	return fmt.Sprintf("%d %s (%s)", len(rows), label, strings.Join(parts, ", "))
+}
+
+func summarizeCountRows(rows []map[string]interface{}, label string) string {
+	if len(rows) == 0 {
+		return "no " + label
+	}
+	return fmt.Sprintf("%d %s", len(rows), label)
+}
+
+func summarizeBuild(row map[string]interface{}) string {
+	if row == nil {
+		return "none"
+	}
+	number := firstScalarPath(row, "number")
+	status := firstScalarPath(row, "status")
+	gitRef := firstScalarPath(row, "gitRef")
+	commit := firstScalarPath(row, "commitHash")
+	if len(commit) > 8 {
+		commit = commit[:8]
+	}
+	parts := compactNonEmpty(prefixIfNotEmpty("#", number), status, gitRef, commit)
+	if len(parts) == 0 {
+		return firstScalarPath(row, "id")
+	}
+	return strings.Join(parts, " ")
+}
+
+func summarizeDeployment(row map[string]interface{}) string {
+	if row == nil {
+		return "none"
+	}
+	number := firstScalarPath(row, "number")
+	status := firstScalarPath(row, "status")
+	parts := compactNonEmpty(prefixIfNotEmpty("#", number), status, formatDurationColumn(row))
+	if len(parts) == 0 {
+		return firstScalarPath(row, "id")
+	}
+	return strings.Join(parts, " ")
+}
+
+func latestByTime(rows []map[string]interface{}) map[string]interface{} {
+	var latest map[string]interface{}
+	var latestTime time.Time
+	for _, row := range rows {
+		t, ok := parseDisplayTime(valueAtPath(row, "createdAt"))
+		if !ok {
+			t, ok = parseDisplayTime(valueAtPath(row, "startedAt"))
+		}
+		if latest == nil || (ok && t.After(latestTime)) {
+			latest = row
+			if ok {
+				latestTime = t
+			}
+		}
+	}
+	return latest
+}
+
+func summarizeOperationalNeeds(services []map[string]interface{}, routes []map[string]interface{}) string {
+	needs := make([]string, 0)
+	addNeed := func(count int, label string) {
+		if count == 0 {
+			return
+		}
+		needs = append(needs, fmt.Sprintf("%d %s", count, label))
+	}
+
+	needsRebuild := 0
+	needsRedeploy := 0
+	configPending := 0
+	disabledServices := 0
+	for _, service := range services {
+		if truthyPath(service, "needsRebuild") {
+			needsRebuild++
+		}
+		if truthyPath(service, "needsRedeploy") {
+			needsRedeploy++
+		}
+		if value := firstNonNilPath(service, "configurationReady"); value != nil && !truthyPath(service, "configurationReady") {
+			configPending++
+		}
+		if truthyPath(service, "disabled") {
+			disabledServices++
+		}
+	}
+
+	disabledRoutes := 0
+	for _, route := range routes {
+		if truthyPath(route, "disabled") {
+			disabledRoutes++
+		}
+	}
+
+	addNeed(needsRebuild, "services need rebuild")
+	addNeed(needsRedeploy, "services need redeploy")
+	addNeed(configPending, "services config pending")
+	addNeed(disabledServices, "services disabled")
+	addNeed(disabledRoutes, "routes disabled")
+	if len(needs) == 0 {
+		return "none"
+	}
+	return strings.Join(needs, ", ")
+}
+
+func prefixIfNotEmpty(prefix string, value string) string {
+	if value == "" {
+		return ""
+	}
+	return prefix + value
 }
 
 func newInstanceBuildCommand() *cobra.Command {

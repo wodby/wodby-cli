@@ -1580,6 +1580,148 @@ func TestAppGetShowsStackFromEmbeddedInstanceRelation(t *testing.T) {
 	}
 }
 
+func TestAppStatusComposesInstanceOperationalSummary(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apps/1":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     1,
+				"title":  "Drupal",
+				"status": "running",
+				"orgId":  123,
+			})
+		case "/v1/app-instances":
+			if got := r.URL.Query().Get("appId"); got != "1" {
+				t.Fatalf("appId = %q, want 1", got)
+			}
+			if got := r.URL.Query().Get("orgId"); got != "123" {
+				t.Fatalf("orgId = %q, want 123", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 21, "title": "Production", "status": "running"},
+			})
+		case "/v1/app-services":
+			if got := r.URL.Query().Get("appInstanceId"); got != "21" {
+				t.Fatalf("app service appInstanceId = %q, want 21", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 31, "title": "PHP", "status": "ok", "needsRebuild": true},
+			})
+		case "/v1/app-routes":
+			if got := r.URL.Query().Get("appInstanceId"); got != "21" {
+				t.Fatalf("route appInstanceId = %q, want 21", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 41, "host": "example.com", "status": "active"},
+			})
+		case "/v1/app-ports":
+			if got := r.URL.Query().Get("appInstanceId"); got != "21" {
+				t.Fatalf("port appInstanceId = %q, want 21", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 51, "number": 8080},
+			})
+		case "/v1/app-builds":
+			if got := r.URL.Query().Get("pageSize"); got != "1" {
+				t.Fatalf("build pageSize = %q, want 1", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": 61, "number": 5, "status": "completed", "gitRef": "main", "commitHash": "abcdef123456", "createdAt": "2026-01-02T03:04:05Z"},
+				},
+			})
+		case "/v1/app-deployments":
+			if got := r.URL.Query().Get("pageSize"); got != "1" {
+				t.Fatalf("deployment pageSize = %q, want 1", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": 71, "number": 4, "status": "completed", "startedAt": "2026-01-02T03:04:00Z", "endedAt": "2026-01-02T03:06:00Z", "createdAt": "2026-01-02T03:03:00Z"},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"status", "1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"instances:", "Production [21] (running)", "service status:", "1 services ok", "route status:", "1 routes active", "latest build:", "#5 completed main abcdef12", "latest deployment:", "#4 completed 2m", "needs:", "1 services need rebuild"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("app status output should include %q: %s", expected, output)
+		}
+	}
+}
+
+func TestInstanceStatusComposesOperationalSummary(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/app-instances/21":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     21,
+				"title":  "Production",
+				"status": "running",
+			})
+		case "/v1/app-services":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 31, "title": "PHP", "status": "ok", "needsRedeploy": true},
+				{"id": 32, "title": "Cron", "status": "ok", "disabled": true},
+			})
+		case "/v1/app-routes":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 41, "host": "example.com", "status": "active", "disabled": true},
+			})
+		case "/v1/app-ports":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 51, "number": 8080},
+				{"id": 52, "number": 8443},
+			})
+		case "/v1/app-builds":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": 61, "number": 5, "status": "completed", "gitRef": "main", "commitHash": "abcdef123456", "createdAt": "2026-01-02T03:04:05Z"},
+				},
+			})
+		case "/v1/app-deployments":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": 71, "number": 4, "status": "completed", "startedAt": "2026-01-02T03:04:00Z", "endedAt": "2026-01-02T03:06:00Z", "createdAt": "2026-01-02T03:03:00Z"},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"status", "21"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"service status:", "2 services (disabled=1, ok=1)", "route status:", "1 routes disabled", "port status:", "2 ports", "latest build:", "#5 completed main abcdef12", "latest deployment:", "#4 completed 2m", "needs:", "1 services need redeploy, 1 services disabled, 1 routes disabled"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("instance status output should include %q: %s", expected, output)
+		}
+	}
+}
+
 func TestRouteListEnrichesPortNumber(t *testing.T) {
 	var out bytes.Buffer
 

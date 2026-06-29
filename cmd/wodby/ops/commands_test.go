@@ -2526,7 +2526,7 @@ func TestClusterGetShowsVersionInfraIPsAndNodes(t *testing.T) {
 	}
 }
 
-func TestClusterAppListShowsSingleInstanceID(t *testing.T) {
+func TestClusterAppListShowsInstanceIDAndStackFromInstance(t *testing.T) {
 	var out bytes.Buffer
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2544,10 +2544,6 @@ func TestClusterAppListShowsSingleInstanceID(t *testing.T) {
 					"name":   "varnish",
 					"title":  "Varnish",
 					"status": "running",
-					"stack": map[string]interface{}{
-						"id":    7,
-						"title": "Varnish Stack",
-					},
 				},
 			})
 		case "/v1/app-instances":
@@ -2559,11 +2555,14 @@ func TestClusterAppListShowsSingleInstanceID(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
 				{
-					"id":     21,
-					"appId":  11,
-					"status": "running",
+					"id":      21,
+					"appId":   11,
+					"status":  "running",
+					"stackId": 7,
 				},
 			})
+		case "/v1/stacks/7":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 7, "title": "Varnish Stack"})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -2579,12 +2578,12 @@ func TestClusterAppListShowsSingleInstanceID(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"instance id", "21", "Varnish", "Varnish Stack"} {
+	for _, expected := range []string{"id", "21", "Varnish", "Varnish Stack"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("cluster infra app output should include %q: %s", expected, output)
 		}
 	}
-	for _, unwanted := range []string{"appId", "instances", "appInstances"} {
+	for _, unwanted := range []string{"instance id", "appId", "instances", "appInstances", " 11 "} {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("cluster infra app output should not include %q: %s", unwanted, output)
 		}

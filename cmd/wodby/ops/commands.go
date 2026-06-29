@@ -22,7 +22,7 @@ var (
 	databaseUserColumns   = []string{"id", "username", "hostname", "status", "database", "dbs", "createdAt"}
 	clusterColumns        = []string{"id", "name", "title", "status", "integration", "region", "zone", "version", "nodes", "singleNode", "scalable", "serverless"}
 	clusterGetColumns     = []string{"id", "name", "title", "status", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "scalable", "serverless"}
-	infraAppColumns       = []string{"id", "name", "title", "status", "stack", "infraAppInstanceId"}
+	infraAppColumns       = []string{"id", "name", "title", "status", "stack"}
 	integrationColumns    = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
 	providerColumns       = []string{"id", "name", "title", "status", "public", "revId"}
 	stackColumns          = []string{"id", "name", "title", "status", "public", "revId", "latestRevNumber", "outdated", "createdAt", "updatedAt"}
@@ -808,7 +808,7 @@ func newClusterAppCommand() *cobra.Command {
 				return err
 			}
 			if out.output != outputJSON {
-				enrichInfraAppInstanceIDs(cmd.Context(), client, normalizeItems(result), clusterID)
+				enrichInfraAppRows(cmd.Context(), client, normalizeItems(result), clusterID)
 			}
 			return printClientResult(cmd, client, out, result, infraAppColumns)
 		},
@@ -821,20 +821,24 @@ func newClusterAppCommand() *cobra.Command {
 	return cmd
 }
 
-func enrichInfraAppInstanceIDs(ctx context.Context, client *rest.Client, value interface{}, clusterID string) {
+func enrichInfraAppRows(ctx context.Context, client *rest.Client, value interface{}, clusterID string) {
 	rows := asRows(value)
 	if len(rows) == 0 {
 		return
 	}
 
-	needsInstanceID := false
-	for _, row := range rows {
-		if formatInfraAppInstanceIDColumn(row) == "" {
-			needsInstanceID = true
-			break
+	appIDs := make([]string, len(rows))
+	needsInstanceData := false
+	for index, row := range rows {
+		appIDs[index] = firstScalarPath(row, "id", "appId", "app.id")
+		if instanceID := formatInfraAppInstanceIDColumn(row); instanceID != "" {
+			row["id"] = instanceID
+		}
+		if formatInfraAppInstanceIDColumn(row) == "" || !hasStackReference(row) {
+			needsInstanceData = true
 		}
 	}
-	if !needsInstanceID {
+	if !needsInstanceData {
 		return
 	}
 
@@ -855,17 +859,24 @@ func enrichInfraAppInstanceIDs(ctx context.Context, client *rest.Client, value i
 		}
 	}
 
-	for _, row := range rows {
-		if formatInfraAppInstanceIDColumn(row) != "" {
-			continue
-		}
-		appID := firstScalarPath(row, "id", "appId", "app.id")
+	for index, row := range rows {
+		appID := appIDs[index]
 		instance := instancesByAppID[appID]
 		if instance == nil {
 			continue
 		}
 		if instanceID := firstScalarPath(instance, "id", "appInstanceId", "appInstance.id", "instanceId", "instance.id"); instanceID != "" {
-			row["infraAppInstanceId"] = instanceID
+			row["id"] = instanceID
+		}
+		if hasStackReference(row) {
+			continue
+		}
+		if stack := firstStackObject(instance); stack != nil {
+			row["stack"] = stack
+			continue
+		}
+		if stackID := firstRelationID(instance, relationColumns["stack"]); stackID != "" {
+			row["stackId"] = stackID
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -793,6 +794,103 @@ func TestJSONOutputKeepsRawTaskData(t *testing.T) {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("json output should not include display value %q: %s", unwanted, output)
 		}
+	}
+}
+
+func TestJSONOutputUsesStdoutByDefault(t *testing.T) {
+	cmd := &cobra.Command{}
+	var printErr error
+
+	stdout, stderr := captureProcessOutput(t, func() {
+		printErr = printJSON(cmd, map[string]interface{}{"id": 1})
+	})
+	if printErr != nil {
+		t.Fatal(printErr)
+	}
+	if !strings.Contains(stdout, `"id": 1`) {
+		t.Fatalf("stdout should include JSON output, got stdout=%q stderr=%q", stdout, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+}
+
+func TestInheritedOutputFlagControlsCopiedOutputOptions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/stacks":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": 1, "name": "drupal", "title": "Drupal"},
+				},
+			})
+		case "/v1/tasks/42":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":       42,
+				"title":    "Deploy",
+				"progress": 87,
+			})
+		case "/v1/app-builds":
+			if got := r.URL.Query().Get("appInstanceId"); got != "21" {
+				t.Fatalf("appInstanceId = %q, want 21", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": 101, "number": 1, "commitMessage": "Build PHP"},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	for _, test := range []struct {
+		name       string
+		cmd        *cobra.Command
+		args       []string
+		want       string
+		unexpected string
+	}{
+		{
+			name:       "catalog list",
+			cmd:        newStackCommand(),
+			args:       []string{"list", "-o", "json"},
+			want:       `"items"`,
+			unexpected: "id  name",
+		},
+		{
+			name:       "generic get",
+			cmd:        newTaskCommand(),
+			args:       []string{"get", "42", "-o", "json"},
+			want:       `"progress": 87`,
+			unexpected: "id:",
+		},
+		{
+			name:       "instance nested list",
+			cmd:        newAppInstanceCommand("instance", "Manage app instances"),
+			args:       []string{"build", "list", "21", "-o", "json"},
+			want:       `"commitMessage": "Build PHP"`,
+			unexpected: "commit message",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var out bytes.Buffer
+			cmd := test.cmd
+			cmd.SetOut(&out)
+			cmd.SetArgs(test.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			output := out.String()
+			if !strings.Contains(output, test.want) {
+				t.Fatalf("json output should include %q: %s", test.want, output)
+			}
+			if strings.Contains(output, test.unexpected) {
+				t.Fatalf("json output should not include table output %q: %s", test.unexpected, output)
+			}
+		})
 	}
 }
 
@@ -1762,6 +1860,40 @@ func TestInstanceBackupAndImportListUseInstanceArg(t *testing.T) {
 	want := []string{"/v1/backups?appInstanceId=21", "/v1/imports?appInstanceId=21"}
 	if strings.Join(requests, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests = %#v, want %#v", requests, want)
+	}
+}
+
+func TestBackupAndImportListRequireScope(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		cmd  *cobra.Command
+	}{
+		{name: "backup", cmd: newBackupCommand()},
+		{name: "import", cmd: newImportCommand()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var requests int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				t.Fatalf("unexpected API request %s?%s", r.URL.Path, r.URL.RawQuery)
+			}))
+			defer server.Close()
+			configureTestAPI(t, server.URL+"/v1")
+
+			test.cmd.SetOut(io.Discard)
+			test.cmd.SetErr(io.Discard)
+			test.cmd.SetArgs([]string{"list"})
+			err := test.cmd.Execute()
+			if err == nil {
+				t.Fatal("Execute() error = nil, want required scope error")
+			}
+			if !strings.Contains(err.Error(), "one of --instance, --service, --database, or --database-db is required") {
+				t.Fatalf("Execute() error = %q, want required scope error", err)
+			}
+			if requests != 0 {
+				t.Fatalf("requests = %d, want 0", requests)
+			}
+		})
 	}
 }
 
@@ -3271,6 +3403,41 @@ func executeInstanceListQuery(t *testing.T, args ...string) url.Values {
 		t.Fatalf("path = %q, want /v1/app-instances", requestedPath)
 	}
 	return requestedQuery
+}
+
+func captureProcessOutput(t *testing.T, run func()) (string, string) {
+	t.Helper()
+
+	stdoutReader, stdoutWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderrReader, stderrWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oldStdout := os.Stdout
+	oldStderr := os.Stderr
+	os.Stdout = stdoutWriter
+	os.Stderr = stderrWriter
+	run()
+	_ = stdoutWriter.Close()
+	_ = stderrWriter.Close()
+	os.Stdout = oldStdout
+	os.Stderr = oldStderr
+
+	stdout, err := io.ReadAll(stdoutReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := io.ReadAll(stderrReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = stdoutReader.Close()
+	_ = stderrReader.Close()
+	return string(stdout), string(stderr)
 }
 
 func configureTestAPI(t *testing.T, endpoint string) {

@@ -105,27 +105,27 @@ func printTaskLogs(ctx context.Context, cmd *cobra.Command, client *rest.Client,
 	if err != nil {
 		return err
 	}
-	if output.output == outputJSON {
+	if outputFormat(cmd, output) == outputJSON {
 		content, err := json.MarshalIndent(logs, "", "  ")
 		if err != nil {
 			return errors.WithStack(err)
 		}
-		cmd.Println(string(content))
+		fmt.Fprintln(cmd.OutOrStdout(), string(content))
 		return nil
 	}
 
 	showJobHeaders := len(selectedJobs) > 1 || jobFilter != "" || allJobs
 	for jobIndex, entry := range logs {
 		if jobIndex > 0 {
-			cmd.Println()
+			fmt.Fprintln(cmd.OutOrStdout())
 		}
 		m := entry.(map[string]interface{})
 		if showJobHeaders {
-			cmd.Printf("== job %s ==\n", jobLogTitleFromEntry(m))
+			fmt.Fprintf(cmd.OutOrStdout(), "== job %s ==\n", jobLogTitleFromEntry(m))
 		}
 		stepLogs, ok := m["steps"].([]interface{})
 		if !ok || len(stepLogs) == 0 {
-			cmd.Println("no logs")
+			fmt.Fprintln(cmd.OutOrStdout(), "no logs")
 			continue
 		}
 		for stepIndex, stepEntry := range stepLogs {
@@ -134,16 +134,16 @@ func printTaskLogs(ctx context.Context, cmd *cobra.Command, client *rest.Client,
 				continue
 			}
 			if stepIndex > 0 {
-				cmd.Println()
+				fmt.Fprintln(cmd.OutOrStdout())
 			}
-			cmd.Printf("== %s ==\n", stepLogTitle(stepMap))
+			fmt.Fprintf(cmd.OutOrStdout(), "== %s ==\n", stepLogTitle(stepMap))
 			lines := logLines(stepMap["logs"])
 			if len(lines) == 0 {
-				cmd.Println("no logs")
+				fmt.Fprintln(cmd.OutOrStdout(), "no logs")
 				continue
 			}
 			for _, line := range lines {
-				cmd.Println(line)
+				fmt.Fprintln(cmd.OutOrStdout(), line)
 			}
 		}
 	}
@@ -152,11 +152,11 @@ func printTaskLogs(ctx context.Context, cmd *cobra.Command, client *rest.Client,
 }
 
 func printNoLogs(cmd *cobra.Command, output outputOptions) {
-	if output.output == outputJSON {
-		cmd.Println("[]")
+	if outputFormat(cmd, output) == outputJSON {
+		fmt.Fprintln(cmd.OutOrStdout(), "[]")
 		return
 	}
-	cmd.Println("no logs")
+	fmt.Fprintln(cmd.OutOrStdout(), "no logs")
 }
 
 func fetchTaskJobLogs(ctx context.Context, client *rest.Client, jobs []taskLogJob) ([]interface{}, error) {
@@ -246,21 +246,21 @@ func downloadSignedLogURL(ctx context.Context, signedURL string) (string, error)
 
 func printTaskJobSummary(cmd *cobra.Command, output outputOptions, jobs []taskLogJob) {
 	message := fmt.Sprintf("task has %d jobs; pass --job to show logs, or --all-jobs to show everything", len(jobs))
-	if output.output == outputJSON {
+	if outputFormat(cmd, output) == outputJSON {
 		content, err := json.MarshalIndent(map[string]interface{}{
 			"message": message,
 			"jobs":    taskJobSummaries(jobs),
 		}, "", "  ")
 		if err != nil {
-			cmd.Println(message)
+			fmt.Fprintln(cmd.OutOrStdout(), message)
 			return
 		}
-		cmd.Println(string(content))
+		fmt.Fprintln(cmd.OutOrStdout(), string(content))
 		return
 	}
 
-	cmd.Println(message)
-	cmd.Println()
+	fmt.Fprintln(cmd.OutOrStdout(), message)
+	fmt.Fprintln(cmd.OutOrStdout())
 	writer := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 	fmt.Fprintln(writer, "id\tname\tstatus\tduration\tsteps")
 	for _, job := range jobs {

@@ -807,7 +807,7 @@ func newClusterAppCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/apps", query, &result); err != nil {
 				return err
 			}
-			if out.output != outputJSON {
+			if outputFormat(cmd, out) != outputJSON {
 				enrichInfraAppRows(cmd.Context(), client, normalizeItems(result), clusterID)
 			}
 			return printClientResult(cmd, client, out, result, infraAppColumns)
@@ -1281,7 +1281,7 @@ func newAppCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/apps", query, &result); err != nil {
 				return err
 			}
-			if out.output != outputJSON {
+			if outputFormat(cmd, out) != outputJSON {
 				enrichAppStacksFromInstances(cmd.Context(), client, normalizeItems(result), query)
 			}
 			return printClientResult(cmd, client, out, result, appColumns)
@@ -2674,7 +2674,7 @@ func newTaskStepCommand(out outputOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if out.output == outputJSON {
+			if outputFormat(cmd, out) == outputJSON {
 				return printJSON(cmd, result)
 			}
 			lines := logLines(result)
@@ -2683,7 +2683,7 @@ func newTaskStepCommand(out outputOptions) *cobra.Command {
 				return nil
 			}
 			for _, line := range lines {
-				cmd.Println(line)
+				fmt.Fprintln(cmd.OutOrStdout(), line)
 			}
 			return nil
 		},
@@ -2845,6 +2845,9 @@ func newFilteredListCommand(use string, short string, path string, columns []str
 		Use:   use,
 		Short: short,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if instanceID == "" && serviceID == "" && databaseID == "" && databaseDBID == "" {
+				return errors.New("one of --instance, --service, --database, or --database-db is required")
+			}
 			query := url.Values{}
 			addQuery(query, "appInstanceId", instanceID)
 			addQuery(query, "appServiceId", serviceID)
@@ -2941,7 +2944,7 @@ func getAndPrintWithInstances(cmd *cobra.Command, out outputOptions, path string
 	if err := client.Get(cmd.Context(), path, nil, &result); err != nil {
 		return err
 	}
-	if out.output != outputJSON {
+	if outputFormat(cmd, out) != outputJSON {
 		enrichInstancesSummary(cmd.Context(), client, normalizeItem(result), filterName, filterValue)
 	}
 	return printClientGetResult(cmd, client, out, result, columns)

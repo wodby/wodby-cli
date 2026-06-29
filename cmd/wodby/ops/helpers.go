@@ -159,6 +159,13 @@ func addOutputFlag(cmd *cobra.Command, opts *outputOptions) {
 	cmd.PersistentFlags().StringVarP(&opts.output, "output", "o", outputTable, "Output format: table, vertical, or json")
 }
 
+func outputFormat(cmd *cobra.Command, opts outputOptions) string {
+	if flag := cmd.Flag("output"); flag != nil {
+		return flag.Value.String()
+	}
+	return opts.output
+}
+
 func addWaitFlags(cmd *cobra.Command, opts *waitOptions) {
 	cmd.Flags().BoolVar(&opts.wait, "wait", false, "Wait for the created task or deployment to finish")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", 10*time.Minute, "Maximum time to wait")
@@ -226,7 +233,8 @@ func readBody(opts bodyOptions) (interface{}, bool, error) {
 }
 
 func printResult(cmd *cobra.Command, opts outputOptions, value interface{}, columns []string) error {
-	switch opts.output {
+	output := outputFormat(cmd, opts)
+	switch output {
 	case outputJSON:
 		return printJSON(cmd, value)
 	case outputTable:
@@ -236,25 +244,26 @@ func printResult(cmd *cobra.Command, opts outputOptions, value interface{}, colu
 		printVerticalTable(cmd, normalizeItems(value), columns, false)
 		return nil
 	default:
-		return errors.Errorf("unsupported output format %q", opts.output)
+		return errors.Errorf("unsupported output format %q", output)
 	}
 }
 
 func printGetResult(cmd *cobra.Command, opts outputOptions, value interface{}, columns []string) error {
-	switch opts.output {
+	output := outputFormat(cmd, opts)
+	switch output {
 	case outputJSON:
 		return printJSON(cmd, value)
 	case outputTable, outputVertical:
 		printVerticalTable(cmd, normalizeItem(value), columns, true)
 		return nil
 	default:
-		return errors.Errorf("unsupported output format %q", opts.output)
+		return errors.Errorf("unsupported output format %q", output)
 	}
 }
 
 func printClientResult(cmd *cobra.Command, client *rest.Client, opts outputOptions, value interface{}, columns []string) error {
 	items := normalizeItems(value)
-	if opts.output != outputJSON && isCollection(items) {
+	if outputFormat(cmd, opts) != outputJSON && isCollection(items) {
 		if err := enrichDisplayRelations(cmd.Context(), client, items, columns); err != nil {
 			return err
 		}
@@ -263,7 +272,7 @@ func printClientResult(cmd *cobra.Command, client *rest.Client, opts outputOptio
 }
 
 func printClientGetResult(cmd *cobra.Command, client *rest.Client, opts outputOptions, value interface{}, columns []string) error {
-	if opts.output != outputJSON {
+	if outputFormat(cmd, opts) != outputJSON {
 		if err := enrichDisplayRelations(cmd.Context(), client, normalizeItem(value), columns); err != nil {
 			return err
 		}
@@ -276,7 +285,7 @@ func printJSON(cmd *cobra.Command, value interface{}) error {
 	if err != nil {
 		return errors.WithStack(err)
 	}
-	cmd.Println(string(content))
+	fmt.Fprintln(cmd.OutOrStdout(), string(content))
 	return nil
 }
 
@@ -1839,7 +1848,7 @@ func confirm(cmd *cobra.Command, yes bool, message string) error {
 	if yes {
 		return nil
 	}
-	cmd.Print(message + " [y/N] ")
+	fmt.Fprint(cmd.OutOrStdout(), message+" [y/N] ")
 	var answer string
 	if _, err := fmt.Fscan(cmd.InOrStdin(), &answer); err != nil {
 		return errors.WithStack(err)

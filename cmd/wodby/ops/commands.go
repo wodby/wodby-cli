@@ -16,7 +16,7 @@ import (
 
 var (
 	orgColumns            = []string{"id", "name", "title", "domain"}
-	memberColumns         = []string{"id", "member", "email", "role", "status"}
+	memberColumns         = []string{"id", "member", "email", "role", "status", "joinedAt"}
 	projectColumns        = []string{"id", "name", "title"}
 	envColumns            = []string{"id", "name", "title", "type"}
 	databaseColumns       = []string{"id", "name", "title", "status", "kind", "type", "version", "env", "integration", "service", "region", "zone"}
@@ -27,18 +27,19 @@ var (
 	infraAppColumns       = []string{"id", "name", "title", "status", "stack"}
 	integrationColumns    = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
 	providerColumns       = []string{"id", "name", "title", "status", "public", "revId"}
-	stackColumns          = []string{"id", "name", "title", "status", "public", "revId", "latestRevNumber", "outdated", "createdAt", "updatedAt"}
+	stackColumns          = []string{"id", "name", "title", "status", "public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "outdated", "createdAt", "updatedAt"}
 	stackGetColumns       = append(append([]string{}, stackColumns...), "services")
 	catalogServiceColumns = []string{"id", "name", "title", "type", "status", "public", "external", "revId", "latestRevNumber"}
 	appColumns            = []string{"id", "name", "title", "status", "stack", "clusterApp"}
-	appGetColumns         = append(append([]string{}, appColumns...), "instances")
+	appGetColumns         = append(append([]string{}, appColumns...), "instances", "createdAt", "updatedAt")
 	appStatusColumns      = []string{"id", "title", "status", "instances", "serviceStatus", "routeStatus", "latestBuild", "latestDeployment", "needs"}
 	instanceColumns       = []string{"id", "name", "title", "status", "outdated", "app", "stack", "env", "cluster", "domain"}
+	instanceGetColumns    = append(append([]string{}, instanceColumns...), "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
 	instanceStatusColumns = []string{"id", "title", "status", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
 	serviceColumns        = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
-	routeColumns          = []string{"id", "host", "path", "pathType", "action", "status", "service", "port", "main", "primary", "disabled"}
+	routeColumns          = []string{"id", "host", "path", "pathType", "action", "status", "service", "port", "main", "primary", "private", "disabled", "lastSyncedAt", "createdAt"}
 	appPortColumns        = []string{"id", "name", "number", "protocol", "private", "service", "instance", "createdAt"}
-	buildColumns          = []string{"id", "number", "status", "instance", "service", "task", "gitRefType", "gitRef", "commitHash", "createdAt"}
+	buildColumns          = []string{"id", "number", "status", "instance", "service", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "createdAt", "startedAt", "endedAt", "duration"}
 	deploymentColumns     = []string{"id", "number", "status", "instance", "task", "skipRollback", "createdAt", "startedAt", "endedAt"}
 	backupColumns         = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "task", "createdAt"}
 	importColumns         = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "createdAt"}
@@ -1448,7 +1449,15 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 		Short: "Get app instance",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return getAndPrint(cmd, out, "/app-instances/"+args[0], instanceColumns)
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			result, err := buildInstanceStatus(cmd.Context(), client, args[0], nil)
+			if err != nil {
+				return err
+			}
+			return printClientGetResult(cmd, client, out, result, instanceGetColumns)
 		},
 	}
 	statusCmd := &cobra.Command{

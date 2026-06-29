@@ -146,7 +146,7 @@ func TestDefaultTaskColumnsUseCompactListShape(t *testing.T) {
 
 func TestStackColumnsShowDatesAndGetShowsServices(t *testing.T) {
 	listColumns := strings.Join(stackColumns, ",")
-	for _, expected := range []string{"createdAt", "updatedAt"} {
+	for _, expected := range []string{"currentRevNumber", "currentVersion", "createdAt", "updatedAt"} {
 		if !strings.Contains(listColumns, expected) {
 			t.Fatalf("stackColumns should include %q: %s", expected, listColumns)
 		}
@@ -156,7 +156,7 @@ func TestStackColumnsShowDatesAndGetShowsServices(t *testing.T) {
 	}
 
 	getColumns := strings.Join(stackGetColumns, ",")
-	for _, expected := range []string{"createdAt", "updatedAt", "services"} {
+	for _, expected := range []string{"currentRevNumber", "currentVersion", "createdAt", "updatedAt", "services"} {
 		if !strings.Contains(getColumns, expected) {
 			t.Fatalf("stackGetColumns should include %q: %s", expected, getColumns)
 		}
@@ -187,6 +187,22 @@ func TestClusterGetColumnsShowAdditionalDetails(t *testing.T) {
 	}
 }
 
+func TestAppAndInstanceGetColumnsIncludeReadDetails(t *testing.T) {
+	appGet := strings.Join(appGetColumns, ",")
+	for _, expected := range []string{"instances", "createdAt", "updatedAt"} {
+		if !strings.Contains(appGet, expected) {
+			t.Fatalf("appGetColumns should include %q: %s", expected, appGet)
+		}
+	}
+
+	instanceGet := strings.Join(instanceGetColumns, ",")
+	for _, expected := range []string{"serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt"} {
+		if !strings.Contains(instanceGet, expected) {
+			t.Fatalf("instanceGetColumns should include %q: %s", expected, instanceGet)
+		}
+	}
+}
+
 func TestMemberListShowsReadableMemberInfo(t *testing.T) {
 	var out bytes.Buffer
 
@@ -199,9 +215,10 @@ func TestMemberListShowsReadableMemberInfo(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
 			{
-				"id":     8,
-				"role":   "owner",
-				"status": "active",
+				"id":       8,
+				"role":     "owner",
+				"status":   "active",
+				"joinedAt": "2026-01-02T03:04:05Z",
 				"user": map[string]interface{}{
 					"name":  "Jane Doe",
 					"email": "jane@example.com",
@@ -220,7 +237,7 @@ func TestMemberListShowsReadableMemberInfo(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"member", "email", "role", "status", "Jane Doe <jane@example.com>", "jane@example.com", "owner", "active"} {
+	for _, expected := range []string{"member", "email", "role", "status", "joined at", "Jane Doe <jane@example.com>", "jane@example.com", "owner", "active"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("member list output should include %q: %s", expected, output)
 		}
@@ -1724,6 +1741,8 @@ func TestInstanceStatusComposesOperationalSummary(t *testing.T) {
 
 func TestRouteListEnrichesPortNumber(t *testing.T) {
 	var out bytes.Buffer
+	lastSyncedAt := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	createdAt := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1742,7 +1761,10 @@ func TestRouteListEnrichesPortNumber(t *testing.T) {
 					"appService": map[string]interface{}{
 						"title": "Nginx",
 					},
-					"portId": 55,
+					"portId":       55,
+					"private":      true,
+					"lastSyncedAt": lastSyncedAt,
+					"createdAt":    createdAt,
 				},
 			})
 		case "/v1/app-ports/55":
@@ -1762,12 +1784,12 @@ func TestRouteListEnrichesPortNumber(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"port", "8080"} {
+	for _, expected := range []string{"port", "private", "last synced at", "created at", "8080", "true", "ago"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("route list output should include %q: %s", expected, output)
 		}
 	}
-	for _, unwanted := range []string{"portId", "55"} {
+	for _, unwanted := range []string{"portId", "55", lastSyncedAt, createdAt} {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("route list output should not include %q: %s", unwanted, output)
 		}
@@ -2156,16 +2178,18 @@ func TestStackListShowsCreatedAndUpdatedDatesWithoutServices(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"items": []map[string]interface{}{
 				{
-					"id":              1,
-					"name":            "drupal",
-					"title":           "Drupal",
-					"status":          "active",
-					"public":          true,
-					"revId":           11,
-					"latestRevNumber": 3,
-					"outdated":        true,
-					"createdAt":       createdAt,
-					"updatedAt":       updatedAt,
+					"id":                    1,
+					"name":                  "drupal",
+					"title":                 "Drupal",
+					"status":                "active",
+					"public":                true,
+					"revId":                 11,
+					"originStackRevNumber":  2,
+					"originStackRevVersion": "1.2.3",
+					"latestRevNumber":       3,
+					"outdated":              true,
+					"createdAt":             createdAt,
+					"updatedAt":             updatedAt,
 					"services": []map[string]interface{}{
 						{"title": "PHP"},
 					},
@@ -2184,7 +2208,7 @@ func TestStackListShowsCreatedAndUpdatedDatesWithoutServices(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"outdated", "created at", "updated at", "2h ago", "30m ago"} {
+	for _, expected := range []string{"current rev number", "current version", "outdated", "created at", "updated at", "2", "1.2.3", "2h ago", "30m ago"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("stack list output should include %q: %s", expected, output)
 		}
@@ -2204,16 +2228,18 @@ func TestStackGetShowsServicesAndDates(t *testing.T) {
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":              1,
-			"name":            "drupal",
-			"title":           "Drupal",
-			"status":          "active",
-			"public":          true,
-			"revId":           11,
-			"latestRevNumber": 3,
-			"outdated":        false,
-			"createdAt":       "2026-01-02T03:04:05Z",
-			"updatedAt":       "2026-01-03T04:05:06Z",
+			"id":                    1,
+			"name":                  "drupal",
+			"title":                 "Drupal",
+			"status":                "active",
+			"public":                true,
+			"revId":                 11,
+			"originStackRevNumber":  2,
+			"originStackRevVersion": "1.2.3",
+			"latestRevNumber":       3,
+			"outdated":              false,
+			"createdAt":             "2026-01-02T03:04:05Z",
+			"updatedAt":             "2026-01-03T04:05:06Z",
 			"services": []map[string]interface{}{
 				{"title": "PHP"},
 				{"service": map[string]interface{}{"title": "Nginx"}},
@@ -2231,7 +2257,7 @@ func TestStackGetShowsServicesAndDates(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"outdated:", "false", "created at:", "updated at:", "services:", "2026-01-02 03:04", "2026-01-03 04:05", "PHP, Nginx"} {
+	for _, expected := range []string{"current rev number:", "2", "current version:", "1.2.3", "outdated:", "false", "created at:", "updated at:", "services:", "2026-01-02 03:04", "2026-01-03 04:05", "PHP, Nginx"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("stack get output should include %q: %s", expected, output)
 		}
@@ -2355,6 +2381,13 @@ func TestLongRunningResourceColumnsIncludeTask(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("%s columns should include task details", name)
+		}
+	}
+
+	buildColumnList := strings.Join(buildColumns, ",")
+	for _, expected := range []string{"commitMessage", "startedAt", "endedAt", "duration"} {
+		if !strings.Contains(buildColumnList, expected) {
+			t.Fatalf("buildColumns should include %q: %s", expected, buildColumnList)
 		}
 	}
 }
@@ -3297,6 +3330,10 @@ func TestInstanceGetEnrichesStackThroughAppRelation(t *testing.T) {
 					},
 				},
 			})
+		case "/v1/app-services", "/v1/app-routes", "/v1/app-ports":
+			encodeEmptyList(w)
+		case "/v1/app-builds", "/v1/app-deployments":
+			encodeEmptyItems(w)
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -3312,7 +3349,7 @@ func TestInstanceGetEnrichesStackThroughAppRelation(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"app:", "Drupal", "app id:", "11", "stack:", "Drupal Stack", "stack id:", "7"} {
+	for _, expected := range []string{"app:", "Drupal", "app id:", "11", "stack:", "Drupal Stack", "stack id:", "7", "service status:", "no services", "route status:", "no routes", "port status:", "no ports"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("instance get output should include %q: %s", expected, output)
 		}
@@ -3344,6 +3381,10 @@ func TestInstanceGetUsesStackFromInstanceRelation(t *testing.T) {
 					"title": "Drupal Stack",
 				},
 			})
+		case "/v1/app-services", "/v1/app-routes", "/v1/app-ports":
+			encodeEmptyList(w)
+		case "/v1/app-builds", "/v1/app-deployments":
+			encodeEmptyItems(w)
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -3359,7 +3400,7 @@ func TestInstanceGetUsesStackFromInstanceRelation(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"app:", "Drupal", "app id:", "11", "stack:", "Drupal Stack", "stack id:", "7"} {
+	for _, expected := range []string{"app:", "Drupal", "app id:", "11", "stack:", "Drupal Stack", "stack id:", "7", "service status:", "no services", "route status:", "no routes", "port status:", "no ports"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("instance get output should include %q: %s", expected, output)
 		}
@@ -3627,6 +3668,14 @@ func executeInstanceListQuery(t *testing.T, args ...string) url.Values {
 		t.Fatalf("path = %q, want /v1/app-instances", requestedPath)
 	}
 	return requestedQuery
+}
+
+func encodeEmptyList(w http.ResponseWriter) {
+	_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
+}
+
+func encodeEmptyItems(w http.ResponseWriter) {
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"items": []map[string]interface{}{}})
 }
 
 func captureProcessOutput(t *testing.T, run func()) (string, string) {

@@ -1243,23 +1243,20 @@ func newStackServiceCommand(out outputOptions) *cobra.Command {
 		Short:   "Manage stack services",
 	}
 
-	var stackID, stackRevID string
+	var stackID, stackRevID, stackSelectorID string
 	listCmd := &cobra.Command{
-		Use:   "list [STACK_REV_ID]",
+		Use:   "list [STACK_REV_ID|STACK_ID]",
 		Short: "List stack services",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 0 {
-				if stackRevID != "" {
-					return errors.New("use either STACK_REV_ID argument or --stack-rev, not both")
-				}
-				stackRevID = args[0]
+				stackSelectorID = args[0]
 			}
 			client, err := newRESTClient()
 			if err != nil {
 				return err
 			}
-			resolvedStackRevID, err := resolveStackServiceListStackRevID(cmd.Context(), client, stackID, stackRevID)
+			resolvedStackRevID, err := resolveStackServiceListStackRevID(cmd.Context(), client, stackID, stackRevID, stackSelectorID)
 			if err != nil {
 				return err
 			}
@@ -1279,17 +1276,36 @@ func newStackServiceCommand(out outputOptions) *cobra.Command {
 	return cmd
 }
 
-func resolveStackServiceListStackRevID(ctx context.Context, client *rest.Client, stackID string, stackRevID string) (string, error) {
-	if stackID != "" && stackRevID != "" {
-		return "", errors.New("use either --stack or --stack-rev, not both")
+func resolveStackServiceListStackRevID(ctx context.Context, client *rest.Client, stackID string, stackRevID string, stackSelectorID string) (string, error) {
+	selectors := 0
+	for _, value := range []string{stackID, stackRevID, stackSelectorID} {
+		if value != "" {
+			selectors++
+		}
+	}
+	if selectors > 1 {
+		return "", errors.New("use only one of ID argument, --stack, or --stack-rev")
 	}
 	if stackRevID != "" {
 		return stackRevID, nil
 	}
-	if stackID == "" {
-		return "", errors.New("one of --stack, --stack-rev, or STACK_REV_ID is required")
+	if stackID != "" {
+		return currentStackRevID(ctx, client, stackID)
 	}
+	if stackSelectorID != "" {
+		resolvedStackRevID, err := currentStackRevID(ctx, client, stackSelectorID)
+		if err == nil {
+			return resolvedStackRevID, nil
+		}
+		if isNotFoundAPIError(err) {
+			return stackSelectorID, nil
+		}
+		return "", err
+	}
+	return "", errors.New("one of ID argument, --stack, or --stack-rev is required")
+}
 
+func currentStackRevID(ctx context.Context, client *rest.Client, stackID string) (string, error) {
 	var stack interface{}
 	if err := client.Get(ctx, "/stacks/"+url.PathEscape(stackID), nil, &stack); err != nil {
 		return "", err
@@ -1303,6 +1319,14 @@ func resolveStackServiceListStackRevID(ctx context.Context, client *rest.Client,
 		return "", errors.Errorf("stack %q response did not include revId", stackID)
 	}
 	return resolvedStackRevID, nil
+}
+
+func isNotFoundAPIError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "404") || strings.Contains(strings.ToLower(message), "not found")
 }
 
 func newStackServiceCreateCommand(out outputOptions) *cobra.Command {

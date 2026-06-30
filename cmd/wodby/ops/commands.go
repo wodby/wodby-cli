@@ -29,6 +29,7 @@ var (
 	providerColumns       = []string{"id", "name", "title", "status", "public", "revId"}
 	stackColumns          = []string{"id", "name", "title", "status", "revision", "currentVersion", "outdated", "createdAt", "updatedAt"}
 	stackGetColumns       = []string{"id", "name", "title", "status", "public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "outdated", "createdAt", "updatedAt", "services"}
+	stackServiceColumns   = []string{"id", "name", "title", "type", "serviceRev", "replicas", "required", "disabled", "main", "updatedAt"}
 	catalogServiceColumns = []string{"id", "name", "title", "type", "status", "public", "external", "revId", "latestRevNumber"}
 	appColumns            = []string{"id", "name", "title", "status", "stack", "clusterApp"}
 	appGetColumns         = append(append([]string{}, appColumns...), "instances", "createdAt", "updatedAt")
@@ -1231,7 +1232,159 @@ func newStackCommand() *cobra.Command {
 	addOutputFlag(cmd, &out)
 	listCmd := newCatalogListCommand("list", "List stacks", "/stacks", stackColumns, out, false)
 	defaultToList(cmd, listCmd)
-	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get stack", "/stacks/", stackGetColumns, out))
+	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get stack", "/stacks/", stackGetColumns, out), newStackServiceCommand(out))
+	return cmd
+}
+
+func newStackServiceCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "service",
+		Aliases: []string{"services", "stack-service", "stack-services"},
+		Short:   "Manage stack services",
+	}
+
+	var stackRevID string
+	listCmd := &cobra.Command{
+		Use:   "list STACK_REV_ID",
+		Short: "List stack services",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 0 {
+				stackRevID = args[0]
+			}
+			if err := requireFlag(stackRevID, "--stack-rev"); err != nil {
+				return err
+			}
+			query := url.Values{"stackRevId": []string{stackRevID}}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/stack-services", query, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, stackServiceColumns)
+		},
+	}
+	listCmd.Flags().StringVar(&stackRevID, "stack-rev", "", "Stack revision ID")
+	defaultToList(cmd, listCmd)
+
+	cmd.AddCommand(listCmd, newStackServiceCreateCommand(out), newStackServiceUpdateCommand(out), newDeleteCommand("delete ID", "Delete stack service", "/stack-services/", stackServiceColumns, out))
+	return cmd
+}
+
+func newStackServiceCreateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	var stackID, serviceID, name, title string
+	var replicas int
+	var required bool
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create stack service",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if err := requireFlag(stackID, "--stack"); err != nil {
+					return err
+				}
+				if err := requireFlag(serviceID, "--service"); err != nil {
+					return err
+				}
+				if err := requireFlag(name, "--name"); err != nil {
+					return err
+				}
+				if err := requireFlag(title, "--title"); err != nil {
+					return err
+				}
+				values := map[string]interface{}{
+					"name":     name,
+					"title":    title,
+					"required": required,
+					"replicas": replicas,
+				}
+				if err := addOptionalInt(values, "stackId", stackID, "--stack"); err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "serviceId", serviceID, "--service"); err != nil {
+					return err
+				}
+				requestBody = bodyFromMap(values)
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), "/stack-services", nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, stackServiceColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().StringVar(&stackID, "stack", "", "Stack ID")
+	cmd.Flags().StringVar(&serviceID, "service", "", "Service ID")
+	cmd.Flags().StringVar(&name, "name", "", "Stack service machine name")
+	cmd.Flags().StringVar(&title, "title", "", "Stack service title")
+	cmd.Flags().BoolVar(&required, "required", false, "Make stack service required")
+	cmd.Flags().IntVar(&replicas, "replicas", 1, "Replica count")
+	return cmd
+}
+
+func newStackServiceUpdateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	cmd := &cobra.Command{
+		Use:   "update ID",
+		Short: "Update stack service",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if !hasChangedFlags(cmd.Flags(), "title", "replicas", "required", "disabled", "main") {
+					return errors.New("pass at least one update flag or provide --data/--file")
+				}
+				values := map[string]interface{}{}
+				if value, ok := changedString(cmd, "title"); ok {
+					values["title"] = value
+				}
+				if value, ok := changedInt(cmd, "replicas"); ok {
+					values["replicas"] = value
+				}
+				if value, ok := changedBool(cmd, "required"); ok {
+					values["required"] = value
+				}
+				if value, ok := changedBool(cmd, "disabled"); ok {
+					values["disabled"] = value
+				}
+				if value, ok := changedBool(cmd, "main"); ok {
+					values["main"] = value
+				}
+				requestBody = bodyFromMap(values)
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Put(cmd.Context(), "/stack-services/"+args[0], nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, stackServiceColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().String("title", "", "Stack service title")
+	cmd.Flags().Int("replicas", 0, "Replica count")
+	cmd.Flags().Bool("required", false, "Set required state")
+	cmd.Flags().Bool("disabled", false, "Set disabled state")
+	cmd.Flags().Bool("main", false, "Set main service state")
 	return cmd
 }
 

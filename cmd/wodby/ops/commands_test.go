@@ -2202,6 +2202,216 @@ func TestNewCatalogCommandsExposeBasicReadOperations(t *testing.T) {
 	}
 }
 
+func TestStackCommandExposesServiceOperations(t *testing.T) {
+	stack := newStackCommand()
+	names := make(map[string]bool)
+	var serviceCmd *cobra.Command
+	for _, cmd := range stack.Commands() {
+		names[cmd.Name()] = true
+		if cmd.Name() == "service" {
+			serviceCmd = cmd
+		}
+	}
+	for _, name := range []string{"list", "get", "service"} {
+		if !names[name] {
+			t.Fatalf("missing stack subcommand %q", name)
+		}
+	}
+	if serviceCmd == nil {
+		t.Fatal("missing stack service command")
+	}
+
+	serviceNames := make(map[string]bool)
+	for _, cmd := range serviceCmd.Commands() {
+		serviceNames[cmd.Name()] = true
+	}
+	for _, name := range []string{"list", "create", "update", "delete"} {
+		if !serviceNames[name] {
+			t.Fatalf("missing stack service subcommand %q", name)
+		}
+	}
+
+	aliases := strings.Join(serviceCmd.Aliases, ",")
+	for _, expected := range []string{"services", "stack-service", "stack-services"} {
+		if !strings.Contains(aliases, expected) {
+			t.Fatalf("stack service aliases should include %q: %s", expected, aliases)
+		}
+	}
+}
+
+func TestStackServiceListUsesStackRevisionAndFormatsServiceRevision(t *testing.T) {
+	var out bytes.Buffer
+	updatedAt := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	var requestedPath string
+	var requestedQuery string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		requestedQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+			{
+				"id":                11,
+				"name":              "php",
+				"title":             "PHP",
+				"type":              "SERVICE",
+				"serviceRevId":      12,
+				"serviceRevTitle":   "PHP",
+				"serviceRevVersion": "8.3",
+				"serviceRevNumber":  4,
+				"replicas":          2,
+				"required":          true,
+				"disabled":          false,
+				"main":              true,
+				"updatedAt":         updatedAt,
+			},
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newStackCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"services", "list", "31"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if requestedPath != "/v1/stack-services" {
+		t.Fatalf("path = %q, want /v1/stack-services", requestedPath)
+	}
+	if requestedQuery != "stackRevId=31" {
+		t.Fatalf("query = %q, want stackRevId=31", requestedQuery)
+	}
+	output := out.String()
+	for _, expected := range []string{"service rev", "PHP 8.3 #4", "replicas", "required", "disabled", "main", "updated at", "ago"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("stack service list output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"serviceRevId", "12", updatedAt} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("stack service list output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
+func TestStackServiceOperationsUseRESTEndpoints(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantMethod string
+		wantPath   string
+		assertBody func(*testing.T, map[string]interface{})
+		response   map[string]interface{}
+		wantOutput []string
+	}{
+		{
+			name:       "create",
+			args:       []string{"service", "create", "--stack", "21", "--service", "22", "--name", "php", "--title", "PHP", "--required", "--replicas", "1"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/stack-services",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				for key, want := range map[string]interface{}{"stackId": float64(21), "serviceId": float64(22), "name": "php", "title": "PHP", "required": true, "replicas": float64(1)} {
+					if body[key] != want {
+						t.Fatalf("%s = %#v, want %#v; body=%#v", key, body[key], want, body)
+					}
+				}
+			},
+			response: map[string]interface{}{
+				"id":                11,
+				"name":              "php",
+				"title":             "PHP",
+				"type":              "SERVICE",
+				"serviceRevTitle":   "PHP",
+				"serviceRevVersion": "8.3",
+			},
+			wantOutput: []string{"PHP 8.3"},
+		},
+		{
+			name:       "update",
+			args:       []string{"services", "update", "11", "--replicas", "2", "--disabled"},
+			wantMethod: http.MethodPut,
+			wantPath:   "/v1/stack-services/11",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				for key, want := range map[string]interface{}{"replicas": float64(2), "disabled": true} {
+					if body[key] != want {
+						t.Fatalf("%s = %#v, want %#v; body=%#v", key, body[key], want, body)
+					}
+				}
+				if _, ok := body["required"]; ok {
+					t.Fatalf("required should not be sent unless changed: %#v", body)
+				}
+			},
+			response: map[string]interface{}{
+				"id":                11,
+				"name":              "php",
+				"title":             "PHP",
+				"type":              "SERVICE",
+				"serviceRevTitle":   "PHP",
+				"serviceRevVersion": "8.3",
+				"replicas":          2,
+				"disabled":          true,
+			},
+			wantOutput: []string{"PHP 8.3", "true"},
+		},
+		{
+			name:       "delete",
+			args:       []string{"stack-services", "delete", "11", "-y"},
+			wantMethod: http.MethodDelete,
+			wantPath:   "/v1/stack-services/11",
+			response:   map[string]interface{}{"success": true},
+			wantOutput: []string{"success", "true"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var out bytes.Buffer
+			var gotMethod string
+			var gotPath string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotMethod = r.Method
+				gotPath = r.URL.Path
+				if test.assertBody != nil {
+					var body map[string]interface{}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Fatalf("Decode() error = %v", err)
+					}
+					test.assertBody(t, body)
+				}
+				status := http.StatusOK
+				if r.Method == http.MethodPost {
+					status = http.StatusCreated
+				}
+				w.WriteHeader(status)
+				_ = json.NewEncoder(w).Encode(test.response)
+			}))
+			defer server.Close()
+			configureTestAPI(t, server.URL+"/v1")
+
+			cmd := newStackCommand()
+			cmd.SetOut(&out)
+			cmd.SetArgs(test.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+
+			if gotMethod != test.wantMethod {
+				t.Fatalf("method = %q, want %s", gotMethod, test.wantMethod)
+			}
+			if gotPath != test.wantPath {
+				t.Fatalf("path = %q, want %s", gotPath, test.wantPath)
+			}
+			output := out.String()
+			for _, expected := range test.wantOutput {
+				if !strings.Contains(output, expected) {
+					t.Fatalf("output should include %q: %s", expected, output)
+				}
+			}
+		})
+	}
+}
+
 func TestStackListShowsCreatedAndUpdatedDatesWithoutServices(t *testing.T) {
 	var out bytes.Buffer
 	createdAt := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)

@@ -825,6 +825,8 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		return formatBuildsColumn(row)
 	case "route":
 		return formatRouteDisplayColumn(row)
+	case "serviceRev", "serviceRevision":
+		return formatServiceRevisionColumn(row)
 	case "cert", "appCert", "certificate":
 		return formatCertColumn(row)
 	case "certStatus", "certificateStatus":
@@ -1608,6 +1610,40 @@ func formatBuildsColumn(row map[string]interface{}) string {
 		return ""
 	}
 	return pluralizeCount(count, "build", "builds")
+}
+
+func formatServiceRevisionColumn(row map[string]interface{}) string {
+	title := firstTitlePath(
+		row,
+		"serviceRevTitle",
+		"serviceRevisionTitle",
+		"serviceRev.title",
+		"serviceRevision.title",
+		"serviceRevName",
+		"serviceRevisionName",
+		"serviceRev.name",
+		"serviceRevision.name",
+	)
+	version := firstScalarPath(
+		row,
+		"serviceRevVersion",
+		"serviceRevisionVersion",
+		"serviceRev.version",
+		"serviceRevision.version",
+	)
+	number := firstScalarPath(
+		row,
+		"serviceRevNumber",
+		"serviceRevisionNumber",
+		"serviceRev.number",
+		"serviceRevision.number",
+	)
+
+	parts := compactNonEmpty(title, version)
+	if number != "" {
+		parts = append(parts, "#"+strings.TrimPrefix(number, "#"))
+	}
+	return strings.Join(parts, " ")
 }
 
 func collectionCountFromPaths(row map[string]interface{}, paths []string) int {

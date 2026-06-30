@@ -37,8 +37,10 @@ var (
 	instanceGetColumns    = append(append([]string{}, instanceColumns...), "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
 	instanceStatusColumns = []string{"id", "title", "status", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
 	serviceColumns        = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
-	routeColumns          = []string{"id", "host", "path", "pathType", "action", "status", "service", "port", "cert", "certStatus", "certIssuer", "certExpiresAt", "main", "primary", "private", "disabled", "lastSyncedAt", "createdAt"}
-	appPortColumns        = []string{"id", "name", "number", "protocol", "private", "service", "instance", "createdAt"}
+	routeListColumns      = []string{"id", "service", "route", "action", "cert", "primary", "private", "status", "updatedAt"}
+	routeColumns          = []string{"id", "route", "host", "path", "pathType", "action", "status", "service", "port", "cert", "certStatus", "certIssuer", "certExpiresAt", "main", "primary", "private", "disabled", "redirectScheme", "redirectHost", "redirectPath", "redirectStatusCode", "lastSyncedAt", "createdAt", "updatedAt"}
+	appPortListColumns    = []string{"id", "service", "name", "number", "publicPort", "private", "protocol", "updatedAt"}
+	appPortColumns        = []string{"id", "name", "number", "publicPort", "protocol", "private", "service", "instance", "createdAt", "updatedAt"}
 	certColumns           = []string{"id", "host", "status", "issuer", "certType", "expiresAt", "route", "instance", "createdAt"}
 	buildListColumns      = []string{"id", "number", "service", "services", "imageCount", "gitRefType", "gitRef", "startedAt", "duration", "status"}
 	buildColumns          = []string{"id", "number", "status", "instance", "service", "services", "images", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "createdAt", "startedAt", "endedAt", "duration"}
@@ -2184,7 +2186,7 @@ func newAppRouteCommand(use string, aliases []string, short string, mode instanc
 			if err := client.Get(cmd.Context(), "/app-routes", query, &result); err != nil {
 				return err
 			}
-			return printClientResult(cmd, client, out, result, routeColumns)
+			return printClientResult(cmd, client, out, result, routeListColumns)
 		},
 	}
 	if mode == instanceFilterFlag {
@@ -2235,7 +2237,7 @@ func newAppPortCommand(use string, aliases []string, short string, mode instance
 			if err := client.Get(cmd.Context(), "/app-ports", query, &result); err != nil {
 				return err
 			}
-			return printClientResult(cmd, client, out, result, appPortColumns)
+			return printClientResult(cmd, client, out, result, appPortListColumns)
 		},
 	}
 	if mode == instanceFilterFlag {

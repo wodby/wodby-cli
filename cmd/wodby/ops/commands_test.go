@@ -1755,10 +1755,11 @@ func TestInstanceStatusComposesOperationalSummary(t *testing.T) {
 	}
 }
 
-func TestRouteListEnrichesPortNumber(t *testing.T) {
+func TestRouteListShowsCompactRouteSummary(t *testing.T) {
 	var out bytes.Buffer
 	lastSyncedAt := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
 	createdAt := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	updatedAt := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
 	certExpiresAt := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1771,7 +1772,7 @@ func TestRouteListEnrichesPortNumber(t *testing.T) {
 				{
 					"id":       1,
 					"host":     "example.com",
-					"path":     "/",
+					"path":     "/docs",
 					"pathType": "prefix",
 					"action":   "proxy",
 					"status":   "active",
@@ -1785,9 +1786,11 @@ func TestRouteListEnrichesPortNumber(t *testing.T) {
 						"expiresAt": certExpiresAt,
 					},
 					"portId":       55,
+					"primary":      true,
 					"private":      true,
 					"lastSyncedAt": lastSyncedAt,
 					"createdAt":    createdAt,
+					"updatedAt":    updatedAt,
 				},
 			})
 		case "/v1/app-ports/55":
@@ -1807,12 +1810,12 @@ func TestRouteListEnrichesPortNumber(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"port", "cert", "cert status", "cert issuer", "cert expires at", "private", "last synced at", "created at", "8080", "Let's Encrypt", "ready", "true", "ago"} {
+	for _, expected := range []string{"service", "route", "action", "cert", "primary", "private", "status", "updated at", "Nginx", "example.com/docs", "proxy", "example.com", "true", "active", "ago"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("route list output should include %q: %s", expected, output)
 		}
 	}
-	for _, unwanted := range []string{"portId", "55", lastSyncedAt, createdAt, certExpiresAt} {
+	for _, unwanted := range []string{"port", "portId", "55", "cert status", "cert issuer", "cert expires at", "last synced at", "created at", lastSyncedAt, createdAt, certExpiresAt, updatedAt} {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("route list output should not include %q: %s", unwanted, output)
 		}
@@ -1833,11 +1836,13 @@ func TestPortListShowsReadableRelations(t *testing.T) {
 					"id":            55,
 					"name":          "http",
 					"number":        8080,
+					"publicPort":    443,
 					"protocol":      "http",
 					"private":       false,
 					"appServiceId":  22,
 					"appInstanceId": 21,
 					"createdAt":     "2026-01-02T03:04:05Z",
+					"updatedAt":     time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339),
 				},
 			})
 		case "/v1/app-services/22":
@@ -1859,12 +1864,12 @@ func TestPortListShowsReadableRelations(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"number", "protocol", "service", "instance", "8080", "http", "Nginx", "Production"} {
+	for _, expected := range []string{"service", "name", "number", "public port", "private", "protocol", "updated at", "8080", "443", "http", "Nginx", "ago"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("port list output should include %q: %s", expected, output)
 		}
 	}
-	for _, unwanted := range []string{"appServiceId", "appInstanceId"} {
+	for _, unwanted := range []string{"instance", "Production", "created at", "appServiceId", "appInstanceId"} {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("port list output should not include %q: %s", unwanted, output)
 		}

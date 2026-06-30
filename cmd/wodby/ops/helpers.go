@@ -823,6 +823,8 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		return formatImagesColumn(row)
 	case "builds":
 		return formatBuildsColumn(row)
+	case "route":
+		return formatRouteDisplayColumn(row)
 	case "cert", "appCert", "certificate":
 		return formatCertColumn(row)
 	case "certStatus", "certificateStatus":
@@ -1668,6 +1670,53 @@ func formatImagesColumn(row map[string]interface{}) string {
 	}
 
 	return formatValue(fallback)
+}
+
+func formatRouteDisplayColumn(row map[string]interface{}) string {
+	if label := formattedRouteFromRow(row); label != "" {
+		return label
+	}
+	if route, ok := valueAtPath(row, "route").(map[string]interface{}); ok {
+		if label := formattedRouteFromRow(route); label != "" {
+			return label
+		}
+	}
+	if route, ok := valueAtPath(row, "appRoute").(map[string]interface{}); ok {
+		if label := formattedRouteFromRow(route); label != "" {
+			return label
+		}
+	}
+	return formatRelationColumn(row, relationColumns["route"])
+}
+
+func formattedRouteFromRow(row map[string]interface{}) string {
+	if !looksLikeAppRouteRow(row) {
+		return ""
+	}
+	host := firstScalarPath(row, "host", "hostname", "domain")
+	if host == "" {
+		return ""
+	}
+	path := firstScalarPath(row, "path")
+	if path == "" || path == "/" {
+		return host
+	}
+	if strings.HasPrefix(path, "/") {
+		return host + path
+	}
+	return host + "/" + path
+}
+
+func looksLikeAppRouteRow(row map[string]interface{}) bool {
+	if row == nil {
+		return false
+	}
+	for _, key := range []string{"path", "pathType", "action", "appServiceId", "portId", "lastSyncedAt", "redirectHost", "redirectPath", "redirectScheme", "redirectStatusCode"} {
+		if _, ok := row[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func imageCollectionPaths() []string {

@@ -37,10 +37,13 @@ var (
 	instanceGetColumns    = append(append([]string{}, instanceColumns...), "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
 	instanceStatusColumns = []string{"id", "title", "status", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
 	serviceColumns        = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
-	routeColumns          = []string{"id", "host", "path", "pathType", "action", "status", "service", "port", "main", "primary", "private", "disabled", "lastSyncedAt", "createdAt"}
+	routeColumns          = []string{"id", "host", "path", "pathType", "action", "status", "service", "port", "cert", "certStatus", "certIssuer", "certExpiresAt", "main", "primary", "private", "disabled", "lastSyncedAt", "createdAt"}
 	appPortColumns        = []string{"id", "name", "number", "protocol", "private", "service", "instance", "createdAt"}
-	buildColumns          = []string{"id", "number", "status", "instance", "service", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "createdAt", "startedAt", "endedAt", "duration"}
-	deploymentColumns     = []string{"id", "number", "status", "instance", "task", "skipRollback", "createdAt", "startedAt", "endedAt"}
+	certColumns           = []string{"id", "host", "status", "issuer", "certType", "expiresAt", "route", "instance", "createdAt"}
+	buildListColumns      = []string{"id", "number", "status", "instance", "service", "services", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "createdAt", "startedAt", "endedAt", "duration"}
+	buildColumns          = []string{"id", "number", "status", "instance", "service", "services", "images", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "createdAt", "startedAt", "endedAt", "duration"}
+	deploymentListColumns = []string{"id", "number", "status", "instance", "services", "task", "skipRollback", "createdAt", "startedAt", "endedAt"}
+	deploymentColumns     = []string{"id", "number", "status", "instance", "services", "images", "task", "skipRollback", "createdAt", "startedAt", "endedAt"}
 	backupColumns         = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "task", "createdAt"}
 	importColumns         = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "createdAt"}
 	taskColumns           = []string{"id", "title", "status", "author", "createdAt", "duration"}
@@ -67,6 +70,7 @@ func Commands() []*cobra.Command {
 		newAppServiceCommand("aps", []string{"app-service", "app-services"}, "Manage app services", instanceFilterFlag),
 		newAppRouteCommand("route", []string{"routes"}, "Manage app routes", instanceFilterFlag),
 		newAppPortCommand("port", []string{"ports"}, "Manage app ports", instanceFilterFlag),
+		newAppCertCommand("cert", []string{"certs", "certificate", "certificates"}, "Manage app certificates", instanceFilterFlag),
 		newBuildCommand(),
 		newDeploymentCommand(),
 		newBackupCommand(),
@@ -1505,6 +1509,7 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 	cmd.AddCommand(newAppServiceCommand("service", []string{"services"}, "Manage app services", instanceFilterArg))
 	cmd.AddCommand(newAppRouteCommand("route", []string{"routes"}, "Manage app instance routes", instanceFilterArg))
 	cmd.AddCommand(newAppPortCommand("port", []string{"ports"}, "Manage app instance ports", instanceFilterArg))
+	cmd.AddCommand(newAppCertCommand("cert", []string{"certs", "certificate", "certificates"}, "Manage app instance certificates", instanceFilterArg))
 	cmd.AddCommand(newInstanceBuildCommand(), newInstanceDeploymentCommand(), newInstanceBackupCommand(), newInstanceImportCommand())
 	return cmd
 }
@@ -1883,7 +1888,7 @@ func newInstanceBuildCommand() *cobra.Command {
 		Short:   "Manage app instance builds",
 	}
 	addOutputFlag(cmd, &out)
-	listCmd := newInstancePaginatedListCommand("list INSTANCE_ID", "List builds", "/app-builds", buildColumns, out)
+	listCmd := newInstancePaginatedListCommand("list INSTANCE_ID", "List builds", "/app-builds", buildListColumns, out)
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get build", "/app-builds/", buildColumns, out), newBuildDeployCommand(out))
 	return cmd
@@ -1917,7 +1922,7 @@ func newInstanceDeploymentCommand() *cobra.Command {
 	}
 	waitCmd.Flags().Duration("timeout", 10*time.Minute, "Maximum time to wait")
 
-	listCmd := newInstancePaginatedListCommand("list INSTANCE_ID", "List deployments", "/app-deployments", deploymentColumns, out)
+	listCmd := newInstancePaginatedListCommand("list INSTANCE_ID", "List deployments", "/app-deployments", deploymentListColumns, out)
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get deployment", "/app-deployments/", deploymentColumns, out), waitCmd, newDeploymentCreateCommand(out), newDeploymentRedeployCommand(out))
 	return cmd
@@ -2250,6 +2255,62 @@ func newAppPortCommand(use string, aliases []string, short string, mode instance
 	return cmd
 }
 
+func newAppCertCommand(use string, aliases []string, short string, mode instanceFilterMode) *cobra.Command {
+	out := outputOptions{}
+	cmd := &cobra.Command{
+		Use:     use,
+		Aliases: aliases,
+		Short:   short,
+	}
+	addOutputFlag(cmd, &out)
+
+	var instanceID, routeID, host, status string
+	var page, pageSize int
+	listCmd := &cobra.Command{
+		Use:   instanceScopedListUse("list", mode),
+		Short: "List app certificates",
+		Args:  instanceScopedListArgs(mode),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if mode == instanceFilterArg {
+				instanceID = args[0]
+			}
+			if err := requireFlag(instanceID, "--instance"); err != nil {
+				return err
+			}
+			query := url.Values{"appInstanceId": []string{instanceID}}
+			addQuery(query, "appRouteId", routeID)
+			addQuery(query, "host", host)
+			addQuery(query, "status", status)
+			addPagination(query, page, pageSize)
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/app-certs", query, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, certColumns)
+		},
+	}
+	if mode == instanceFilterFlag {
+		listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
+	}
+	listCmd.Flags().StringVar(&routeID, "route", "", "App route ID")
+	listCmd.Flags().StringVar(&host, "host", "", "Certificate host")
+	listCmd.Flags().StringVar(&status, "status", "", "Certificate status")
+	listCmd.Flags().IntVar(&page, "page", 0, "Page number")
+	listCmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
+	defaultToList(cmd, listCmd)
+
+	cmd.AddCommand(
+		listCmd,
+		newGetCommand("get ID", "Get app certificate", "/app-certs/", certColumns, out),
+		newDeleteCommand("delete ID", "Delete app certificate", "/app-certs/", certColumns, out),
+	)
+	return cmd
+}
+
 func instanceScopedListUse(base string, mode instanceFilterMode) string {
 	if mode == instanceFilterArg {
 		return base + " INSTANCE_ID"
@@ -2432,7 +2493,7 @@ func newBuildCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/app-builds", query, &result); err != nil {
 				return err
 			}
-			return printClientResult(cmd, client, out, result, buildColumns)
+			return printClientResult(cmd, client, out, result, buildListColumns)
 		},
 	}
 	listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
@@ -2516,7 +2577,7 @@ func newDeploymentCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/app-deployments", query, &result); err != nil {
 				return err
 			}
-			return printClientResult(cmd, client, out, result, deploymentColumns)
+			return printClientResult(cmd, client, out, result, deploymentListColumns)
 		},
 	}
 	listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")

@@ -40,6 +40,7 @@ func TestCommandsExposeTopLevelOperationalSurface(t *testing.T) {
 		"aps",
 		"route",
 		"port",
+		"cert",
 		"build",
 		"deployment",
 		"backup",
@@ -110,6 +111,7 @@ func TestDefaultTableColumnsUseReadableRelations(t *testing.T) {
 		"instance":     instanceColumns,
 		"route":        routeColumns,
 		"port":         appPortColumns,
+		"cert":         certColumns,
 		"build":        buildColumns,
 		"deployment":   deploymentColumns,
 		"backup":       backupColumns,
@@ -119,7 +121,7 @@ func TestDefaultTableColumnsUseReadableRelations(t *testing.T) {
 	} {
 		for _, column := range columns {
 			switch column {
-			case "envId", "appId", "stackId", "clusterId", "mainDomain", "appServiceId", "portId", "appInstanceId", "databaseId", "databaseDbId", "taskId", "authorId":
+			case "envId", "appId", "stackId", "clusterId", "mainDomain", "appServiceId", "portId", "appRouteId", "routeId", "appCertId", "certId", "certificateId", "appInstanceId", "databaseId", "databaseDbId", "taskId", "authorId":
 				t.Fatalf("%s columns should use readable relation names, got %q", name, column)
 			}
 		}
@@ -1107,7 +1109,7 @@ func TestInstanceCommandExposesCanonicalNestedResources(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	for _, name := range []string{"list", "get", "status", "create", "service", "route", "port", "build", "deployment", "backup", "import"} {
+	for _, name := range []string{"list", "get", "status", "create", "service", "route", "port", "cert", "build", "deployment", "backup", "import"} {
 		if !names[name] {
 			t.Fatalf("missing instance subcommand %q", name)
 		}
@@ -1745,6 +1747,7 @@ func TestRouteListEnrichesPortNumber(t *testing.T) {
 	var out bytes.Buffer
 	lastSyncedAt := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
 	createdAt := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	certExpiresAt := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1762,6 +1765,12 @@ func TestRouteListEnrichesPortNumber(t *testing.T) {
 					"status":   "active",
 					"appService": map[string]interface{}{
 						"title": "Nginx",
+					},
+					"cert": map[string]interface{}{
+						"host":      "example.com",
+						"status":    "ready",
+						"issuer":    "Let's Encrypt",
+						"expiresAt": certExpiresAt,
 					},
 					"portId":       55,
 					"private":      true,
@@ -1786,12 +1795,12 @@ func TestRouteListEnrichesPortNumber(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"port", "private", "last synced at", "created at", "8080", "true", "ago"} {
+	for _, expected := range []string{"port", "cert", "cert status", "cert issuer", "cert expires at", "private", "last synced at", "created at", "8080", "Let's Encrypt", "ready", "true", "ago"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("route list output should include %q: %s", expected, output)
 		}
 	}
-	for _, unwanted := range []string{"portId", "55", lastSyncedAt, createdAt} {
+	for _, unwanted := range []string{"portId", "55", lastSyncedAt, createdAt, certExpiresAt} {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("route list output should not include %q: %s", unwanted, output)
 		}
@@ -1942,6 +1951,7 @@ func TestInstanceFlagSupportsShortI(t *testing.T) {
 		{name: "route", cmd: newAppRouteCommand("route", nil, "Manage app routes", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-routes", wantQuery: "appInstanceId=21"},
 		{name: "aps", cmd: newAppServiceCommand("aps", nil, "Manage app services", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-services", wantQuery: "appInstanceId=21"},
 		{name: "port", cmd: newAppPortCommand("port", nil, "Manage app ports", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-ports", wantQuery: "appInstanceId=21"},
+		{name: "cert", cmd: newAppCertCommand("cert", nil, "Manage app certificates", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-certs", wantQuery: "appInstanceId=21"},
 		{name: "build", cmd: newBuildCommand(), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-builds", wantQuery: "appInstanceId=21"},
 		{name: "task", cmd: newTaskCommand(), args: []string{"list", "-i", "21"}, wantPath: "/v1/tasks", wantQuery: "appInstanceId=21"},
 	} {
@@ -1990,6 +2000,13 @@ func TestCommandsDoNotDefaultToListSubcommand(t *testing.T) {
 			name: "aps",
 			cmd: func() *cobra.Command {
 				return newAppServiceCommand("aps", nil, "Manage app services", instanceFilterFlag)
+			},
+			args: []string{"-i", "21"},
+		},
+		{
+			name: "cert",
+			cmd: func() *cobra.Command {
+				return newAppCertCommand("cert", nil, "Manage app certificates", instanceFilterFlag)
 			},
 			args: []string{"-i", "21"},
 		},
@@ -2387,9 +2404,254 @@ func TestLongRunningResourceColumnsIncludeTask(t *testing.T) {
 	}
 
 	buildColumnList := strings.Join(buildColumns, ",")
-	for _, expected := range []string{"commitMessage", "startedAt", "endedAt", "duration"} {
+	for _, expected := range []string{"services", "images", "commitMessage", "startedAt", "endedAt", "duration"} {
 		if !strings.Contains(buildColumnList, expected) {
 			t.Fatalf("buildColumns should include %q: %s", expected, buildColumnList)
+		}
+	}
+	buildListColumnList := strings.Join(buildListColumns, ",")
+	if strings.Contains(buildListColumnList, "images") {
+		t.Fatalf("buildListColumns should not include images: %s", buildListColumnList)
+	}
+
+	deploymentColumnList := strings.Join(deploymentColumns, ",")
+	for _, expected := range []string{"services", "images"} {
+		if !strings.Contains(deploymentColumnList, expected) {
+			t.Fatalf("deploymentColumns should include %q: %s", expected, deploymentColumnList)
+		}
+	}
+	deploymentListColumnList := strings.Join(deploymentListColumns, ",")
+	if !strings.Contains(deploymentListColumnList, "services") || strings.Contains(deploymentListColumnList, "images") {
+		t.Fatalf("deploymentListColumns should include service count but not images: %s", deploymentListColumnList)
+	}
+}
+
+func TestBuildAndDeploymentColumnsShowServicesAndImages(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	row := map[string]interface{}{
+		"id":     1,
+		"number": 7,
+		"status": "completed",
+		"services": []interface{}{
+			map[string]interface{}{
+				"appService": map[string]interface{}{"title": "PHP"},
+				"image":      "registry.example.com/app:php-7",
+			},
+			map[string]interface{}{
+				"name":  "nginx",
+				"image": "registry.example.com/app:nginx-7",
+			},
+		},
+	}
+
+	printTable(cmd, []interface{}{row}, buildColumns)
+	output := out.String()
+	for _, expected := range []string{"services", "images", "PHP", "nginx", "PHP=registry.example.com/app:php-7", "nginx=registry.example.com/app:nginx-7"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("build output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, `{"appService"`) {
+		t.Fatalf("build output should not include raw service JSON: %s", output)
+	}
+}
+
+func TestBuildGetShowsServicesAndImages(t *testing.T) {
+	var out bytes.Buffer
+	requests := map[string]int{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests[r.URL.Path]++
+		switch r.URL.Path {
+		case "/v1/app-builds/101":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     101,
+				"number": 7,
+				"status": "completed",
+				"task": map[string]interface{}{
+					"id":    44,
+					"title": "Build",
+				},
+				"appServiceBuilds": []map[string]interface{}{
+					{
+						"appServiceId": 22,
+						"image":        "registry.example.com/app:php-7",
+						"status":       "completed",
+					},
+					{
+						"appServiceId": 33,
+						"image":        "registry.example.com/app:nginx-7",
+						"status":       "completed",
+					},
+				},
+			})
+		case "/v1/app-services/22":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 22, "title": "PHP"})
+		case "/v1/app-services/33":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 33, "title": "Nginx"})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newBuildCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"get", "101"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if requests["/v1/app-builds/101"] != 1 {
+		t.Fatalf("build get requests = %d, want 1", requests["/v1/app-builds/101"])
+	}
+	for _, path := range []string{"/v1/app-services/22", "/v1/app-services/33"} {
+		if requests[path] != 1 {
+			t.Fatalf("%s requests = %d, want 1", path, requests[path])
+		}
+	}
+	output := out.String()
+	for _, expected := range []string{"services:", "PHP, Nginx", "images:", "PHP=registry.example.com/app:php-7", "Nginx=registry.example.com/app:nginx-7", "task:", "Build"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("build get output should include %q: %s", expected, output)
+		}
+	}
+}
+
+func TestDeploymentGetShowsServicesAndImages(t *testing.T) {
+	var out bytes.Buffer
+	requests := map[string]int{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests[r.URL.Path]++
+		switch r.URL.Path {
+		case "/v1/app-deployments/303":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     303,
+				"number": 7,
+				"status": "completed",
+				"appServiceDeployments": []map[string]interface{}{
+					{
+						"appServiceId":      22,
+						"appServiceBuildId": 2201,
+						"status":            "completed",
+					},
+					{
+						"appServiceId":      33,
+						"appServiceBuildId": 3301,
+						"status":            "completed",
+					},
+				},
+				"builds": []map[string]interface{}{
+					{
+						"id": 101,
+						"appServiceBuilds": []map[string]interface{}{
+							{
+								"id":           2201,
+								"appServiceId": 22,
+								"image":        "registry.example.com/app:php-7",
+							},
+							{
+								"id":           3301,
+								"appServiceId": 33,
+								"image":        "registry.example.com/app:nginx-7",
+							},
+						},
+					},
+				},
+			})
+		case "/v1/app-services/22":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 22, "title": "PHP"})
+		case "/v1/app-services/33":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 33, "title": "Nginx"})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newDeploymentCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"get", "303"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if requests["/v1/app-deployments/303"] != 1 {
+		t.Fatalf("deployment get requests = %d, want 1", requests["/v1/app-deployments/303"])
+	}
+	for _, path := range []string{"/v1/app-services/22", "/v1/app-services/33"} {
+		if requests[path] != 1 {
+			t.Fatalf("%s requests = %d, want 1", path, requests[path])
+		}
+	}
+	output := out.String()
+	for _, expected := range []string{"services:", "PHP, Nginx", "images:", "PHP=registry.example.com/app:php-7", "Nginx=registry.example.com/app:nginx-7"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("deployment get output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, `{"appService"`) || strings.Contains(output, `"appServiceId"`) {
+		t.Fatalf("deployment get output should not include raw service JSON: %s", output)
+	}
+}
+
+func TestDeploymentListShowsServiceCountWithoutImages(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/app-deployments" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("appInstanceId"); got != "21" {
+			t.Fatalf("appInstanceId = %q, want 21", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"items": []map[string]interface{}{
+				{
+					"id":     303,
+					"number": 7,
+					"status": "completed",
+					"appServiceDeployments": []map[string]interface{}{
+						{"appServiceId": 22, "appServiceBuildId": 2201},
+						{"appServiceId": 33, "appServiceBuildId": 3301},
+					},
+					"builds": []map[string]interface{}{
+						{
+							"appServiceBuilds": []map[string]interface{}{
+								{"id": 2201, "appServiceId": 22, "image": "registry.example.com/app:php-7"},
+								{"id": 3301, "appServiceId": 33, "image": "registry.example.com/app:nginx-7"},
+							},
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newDeploymentCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "-i", "21"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"services", "2 services"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("deployment list output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"images", "registry.example.com/app:php-7", "registry.example.com/app:nginx-7"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("deployment list output should not include %q: %s", unwanted, output)
 		}
 	}
 }

@@ -135,6 +135,25 @@ var relationColumns = map[string]relationColumn{
 		titlePaths:        []string{"portNumber", "portNumber.number", "port.number", "port.port", "port", "number", "portName", "port.name", "portTitle", "port.title"},
 		allowNumericTitle: true,
 	},
+	"route": {
+		title:         "route",
+		objectKey:     "route",
+		idTitle:       "route id",
+		idPaths:       []string{"appRouteId", "appRoute.id", "routeId", "route.id"},
+		idScalarPaths: []string{"appRoute", "route"},
+		pathPrefix:    "/app-routes/",
+		titlePaths:    []string{"appRouteHost", "appRoute.host", "appRoute.hostname", "routeHost", "route.host", "route.hostname", "host", "hostname", "domain", "url", "appRoute", "route"},
+	},
+	"cert": {
+		title:         "cert",
+		objectKey:     "cert",
+		idTitle:       "cert id",
+		idPaths:       []string{"appCertId", "appCert.id", "certId", "cert.id", "certificateId", "certificate.id"},
+		idScalarPaths: []string{"appCert", "cert", "certificate"},
+		pathPrefix:    "/app-certs/",
+		pathPrefixes:  []string{"/certs/", "/certificates/"},
+		titlePaths:    []string{"appCertHost", "appCert.host", "appCert.hostname", "certHost", "cert.host", "cert.hostname", "certificateHost", "certificate.host", "certificate.hostname", "commonName", "cert.commonName", "certificate.commonName", "host", "hostname", "domain", "appCert", "cert", "certificate"},
+	},
 	"task": {
 		title:         "task",
 		objectKey:     "task",
@@ -348,6 +367,9 @@ func enrichDisplayRelations(ctx context.Context, client *rest.Client, value inte
 	providersByRev := make(map[string]map[string]interface{})
 	providersLoaded := false
 	for _, column := range columns {
+		if (column == "services" || column == "images") && !usesCompactServiceCount(columns) {
+			enrichNestedServiceRelations(ctx, client, rows, cache)
+		}
 		if isProviderColumn(column) {
 			for _, row := range rows {
 				enrichProviderRelation(ctx, client, row, cache, providersByRev, &providersLoaded)
@@ -380,6 +402,66 @@ func enrichDisplayRelations(ctx context.Context, client *rest.Client, value inte
 	}
 
 	return nil
+}
+
+func usesCompactServiceCount(columns []string) bool {
+	return sameColumns(columns, buildListColumns) || sameColumns(columns, deploymentListColumns)
+}
+
+func sameColumns(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func enrichNestedServiceRelations(ctx context.Context, client *rest.Client, rows []map[string]interface{}, cache map[string]map[string]interface{}) {
+	relation := relationColumns["service"]
+	for _, row := range rows {
+		for _, path := range serviceCollectionPaths() {
+			for _, item := range asRows(valueAtPath(row, path)) {
+				if formatRelationColumn(item, relation) != "" {
+					continue
+				}
+				id := firstRelationID(item, relation)
+				if id == "" {
+					continue
+				}
+				related, ok := fetchDisplayRelationForRelation(ctx, client, cache, relation, id)
+				if !ok {
+					continue
+				}
+				item[relation.objectKey] = related
+			}
+		}
+	}
+}
+
+func serviceCollectionPaths() []string {
+	return []string{
+		"services",
+		"appServices",
+		"buildServices",
+		"deploymentServices",
+		"builtServices",
+		"deployedServices",
+		"appServiceBuilds",
+		"appServiceDeployments",
+		"serviceBuilds",
+		"serviceDeployments",
+		"appBuildServices",
+		"appDeploymentServices",
+		"build.services",
+		"deployment.services",
+		"appBuild.services",
+		"appDeployment.services",
+		"config.services",
+	}
 }
 
 func relationPathPrefixes(relation relationColumn) []string {
@@ -530,9 +612,26 @@ func printTable(cmd *cobra.Command, value interface{}, columns []string) {
 
 func formatTableColumnValue(row map[string]interface{}, column string) string {
 	if isTimeColumn(column) {
-		return formatRelativeDisplayTime(row[column])
+		return formatRelativeDisplayTime(timeColumnValue(row, column))
+	}
+	if column == "services" {
+		if count := serviceCount(row); count != 0 {
+			return pluralizeCount(count, "service", "services")
+		}
 	}
 	return formatColumnValue(row, column)
+}
+
+func timeColumnValue(row map[string]interface{}, column string) interface{} {
+	if value := row[column]; value != nil {
+		return value
+	}
+	switch column {
+	case "certExpiresAt", "certificateExpiresAt", "expiresAt":
+		return certTimeColumnValue(row, column)
+	default:
+		return nil
+	}
 }
 
 func printVerticalTable(cmd *cobra.Command, value interface{}, columns []string, showRelationIDs bool) {
@@ -697,6 +796,22 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		return formatDurationColumn(row)
 	case "services":
 		return formatServicesColumn(row)
+	case "images":
+		return formatImagesColumn(row)
+	case "cert", "appCert", "certificate":
+		return formatCertColumn(row)
+	case "certStatus", "certificateStatus":
+		return firstScalarPath(row, "certStatus", "certificateStatus", "tlsStatus", "appCertStatus", "appCert.status", "cert.status", "certificate.status")
+	case "issuer", "certIssuer", "certificateIssuer":
+		return formatCertIssuerColumn(row)
+	case "certType", "certificateType":
+		return firstScalarPath(row, "certType", "certificateType", "appCertType", "type", "kind", "appCert.type", "appCert.kind", "cert.type", "cert.kind", "certificate.type", "certificate.kind")
+	case "certExpiresAt", "certificateExpiresAt", "expiresAt":
+		return formatDisplayTime(certTimeColumnValue(row, column))
+	case "host":
+		return firstScalarPath(row, "host", "hostname", "domain", "commonName", "appCert.host", "appCert.hostname", "appCert.commonName", "cert.host", "cert.hostname", "cert.commonName", "certificate.host", "certificate.hostname", "certificate.commonName")
+	case "domains":
+		return formatDomainsColumn(row)
 	case "instances":
 		return formatInstancesColumn(row)
 	case "dbs":
@@ -896,6 +1011,10 @@ func relationColumnFor(column string) (relationColumn, bool) {
 		return relationColumns["databaseDb"], true
 	case "port", "portId":
 		return relationColumns["port"], true
+	case "route", "appRoute", "appRouteId", "routeId":
+		return relationColumns["route"], true
+	case "cert", "appCert", "appCertId", "certificate", "certificateId", "certId":
+		return relationColumns["cert"], true
 	case "task", "taskId":
 		return relationColumns["task"], true
 	case "author", "authorId", "createdBy", "createdById", "orgMembership", "orgMembershipId", "membership", "membershipId":
@@ -1268,7 +1387,27 @@ func normalizeDisplayToken(value string) string {
 }
 
 func formatServicesColumn(row map[string]interface{}) string {
-	value := firstNonNilPath(row, "services", "stackServices", "catalogServices")
+	value := firstNonNilPath(row,
+		"services",
+		"appServices",
+		"buildServices",
+		"deploymentServices",
+		"builtServices",
+		"deployedServices",
+		"appServiceBuilds",
+		"appServiceDeployments",
+		"serviceBuilds",
+		"serviceDeployments",
+		"appBuildServices",
+		"appDeploymentServices",
+		"build.services",
+		"deployment.services",
+		"appBuild.services",
+		"appDeployment.services",
+		"config.services",
+		"stackServices",
+		"catalogServices",
+	)
 	if value == nil {
 		return ""
 	}
@@ -1278,6 +1417,369 @@ func formatServicesColumn(row map[string]interface{}) string {
 		return strings.Join(labels, ", ")
 	}
 	return formatValue(value)
+}
+
+func serviceCount(row map[string]interface{}) int {
+	for _, path := range serviceCollectionPaths() {
+		rows := asRows(valueAtPath(row, path))
+		if len(rows) != 0 {
+			return len(rows)
+		}
+	}
+	return 0
+}
+
+func pluralizeCount(count int, singular string, plural string) string {
+	if count == 1 {
+		return fmt.Sprintf("%d %s", count, singular)
+	}
+	return fmt.Sprintf("%d %s", count, plural)
+}
+
+func formatImagesColumn(row map[string]interface{}) string {
+	if labels := deploymentImageLabels(row); len(labels) != 0 {
+		return strings.Join(labels, ", ")
+	}
+
+	var fallback interface{}
+	for _, path := range imageCollectionPaths() {
+		value := valueAtPath(row, path)
+		if value == nil {
+			continue
+		}
+
+		if fallback == nil {
+			fallback = value
+		}
+		labels := imageLabels(value)
+		if len(labels) != 0 {
+			return strings.Join(labels, ", ")
+		}
+	}
+
+	return formatValue(fallback)
+}
+
+func imageCollectionPaths() []string {
+	return []string{
+		"images",
+		"appImages",
+		"buildImages",
+		"deploymentImages",
+		"builtImages",
+		"deployedImages",
+		"serviceImages",
+		"appBuildImages",
+		"appDeploymentImages",
+		"build.images",
+		"deployment.images",
+		"appBuild.images",
+		"appDeployment.images",
+		"appServiceBuilds",
+		"serviceBuilds",
+		"builds",
+		"appBuilds",
+		"build",
+		"appBuild",
+		"appServiceDeployments",
+		"serviceDeployments",
+		"services",
+		"appServices",
+		"buildServices",
+		"deploymentServices",
+		"builtServices",
+		"deployedServices",
+		"appBuildServices",
+		"appDeploymentServices",
+		"build.services",
+		"deployment.services",
+		"appBuild.services",
+		"appDeployment.services",
+	}
+}
+
+func deploymentImageLabels(row map[string]interface{}) []string {
+	buildImagesByID := map[string]string{}
+	buildImagesByServiceID := map[string]string{}
+	for _, build := range asRows(firstNonNilPath(row, "builds", "appBuilds", "build", "appBuild")) {
+		for _, serviceBuild := range asRows(firstNonNilPath(build, "appServiceBuilds", "serviceBuilds", "services")) {
+			image := imageReference(serviceBuild)
+			if image == "" {
+				continue
+			}
+			if id := firstScalarPath(serviceBuild, "id", "appServiceBuildId", "serviceBuildId"); id != "" {
+				buildImagesByID[id] = image
+			}
+			if serviceID := firstRelationID(serviceBuild, relationColumns["service"]); serviceID != "" {
+				buildImagesByServiceID[serviceID] = image
+			}
+		}
+	}
+
+	if len(buildImagesByID) == 0 && len(buildImagesByServiceID) == 0 {
+		return nil
+	}
+
+	serviceDeployments := firstNonNilPath(row, "appServiceDeployments", "serviceDeployments", "deploymentServices", "appDeploymentServices", "services")
+	labels := make([]string, 0)
+	for _, deployment := range asRows(serviceDeployments) {
+		image := ""
+		if buildID := firstScalarPath(deployment, "appServiceBuildId", "appServiceBuild.id", "serviceBuildId", "serviceBuild.id"); buildID != "" {
+			image = buildImagesByID[buildID]
+		}
+		if image == "" {
+			serviceID := firstRelationID(deployment, relationColumns["service"])
+			image = buildImagesByServiceID[serviceID]
+		}
+		if image == "" {
+			continue
+		}
+		if service := serviceLabel(deployment); service != "" && service != image {
+			labels = append(labels, service+"="+image)
+			continue
+		}
+		labels = append(labels, image)
+	}
+	return labels
+}
+
+func imageLabels(value interface{}) []string {
+	switch v := value.(type) {
+	case []interface{}:
+		labels := make([]string, 0, len(v))
+		for _, item := range v {
+			if label := imageLabel(item); label != "" {
+				labels = append(labels, label)
+			}
+		}
+		return labels
+	case []map[string]interface{}:
+		labels := make([]string, 0, len(v))
+		for _, item := range v {
+			if label := imageLabel(item); label != "" {
+				labels = append(labels, label)
+			}
+		}
+		return labels
+	case []string:
+		labels := make([]string, 0, len(v))
+		for _, item := range v {
+			if item = strings.TrimSpace(item); item != "" {
+				labels = append(labels, item)
+			}
+		}
+		return labels
+	default:
+		if label := imageLabel(value); label != "" {
+			return []string{label}
+		}
+		return nil
+	}
+}
+
+func imageLabel(value interface{}) string {
+	m, ok := value.(map[string]interface{})
+	if !ok {
+		return scalarString(value)
+	}
+
+	if nested := firstNonNilPath(m, "images", "appImages", "builtImages", "deployedImages", "serviceImages", "appServiceBuilds", "serviceBuilds"); nested != nil {
+		if labels := imageLabels(nested); len(labels) != 0 {
+			service := serviceLabel(value)
+			if service != "" {
+				for index, label := range labels {
+					if !strings.Contains(label, "=") {
+						labels[index] = service + "=" + label
+					}
+				}
+			}
+			return strings.Join(labels, ", ")
+		}
+	}
+
+	image := imageReference(m)
+	if image == "" {
+		return ""
+	}
+
+	if service := serviceLabel(value); service != "" && service != image {
+		return service + "=" + image
+	}
+	return image
+}
+
+func imageReference(row map[string]interface{}) string {
+	return firstScalarPath(
+		row,
+		"image",
+		"image.image",
+		"image.name",
+		"image.ref",
+		"image.reference",
+		"image.url",
+		"builtImage",
+		"builtImage.image",
+		"builtImage.name",
+		"builtImage.ref",
+		"builtImage.reference",
+		"deployedImage",
+		"deployedImage.image",
+		"deployedImage.name",
+		"deployedImage.ref",
+		"deployedImage.reference",
+		"targetImage",
+		"containerImage",
+		"dockerImage",
+		"imageRef",
+		"imageReference",
+		"repositoryTag",
+		"tag",
+		"ref",
+		"reference",
+	)
+}
+
+func formatCertColumn(row map[string]interface{}) string {
+	title := firstTitlePath(
+		row,
+		"appCertTitle",
+		"appCert.title",
+		"appCert.name",
+		"certTitle",
+		"cert.title",
+		"cert.name",
+		"certificateTitle",
+		"certificate.title",
+		"certificate.name",
+		"appCert.commonName",
+		"cert.commonName",
+		"certificate.commonName",
+		"appCert.host",
+		"appCert.hostname",
+		"cert.host",
+		"cert.hostname",
+		"certificate.host",
+		"certificate.hostname",
+	)
+	if title == "" {
+		title = firstScalarPath(
+			row,
+			"appCertHost",
+			"certHost",
+			"certificateHost",
+			"commonName",
+		)
+	}
+	if title == "" {
+		return ""
+	}
+
+	details := compactNonEmpty(formatCertStatusColumn(row), formatCertIssuerColumn(row))
+	if len(details) == 0 {
+		return title
+	}
+	return fmt.Sprintf("%s (%s)", title, strings.Join(details, ", "))
+}
+
+func formatCertStatusColumn(row map[string]interface{}) string {
+	return firstScalarPath(row, "certStatus", "certificateStatus", "tlsStatus", "appCertStatus", "appCert.status", "cert.status", "certificate.status")
+}
+
+func formatCertIssuerColumn(row map[string]interface{}) string {
+	return firstTitlePath(
+		row,
+		"certIssuer",
+		"certificateIssuer",
+		"issuerTitle",
+		"issuer.title",
+		"issuer.name",
+		"issuer",
+		"appCert.issuerTitle",
+		"appCert.issuer.title",
+		"appCert.issuer.name",
+		"appCert.issuer",
+		"cert.issuerTitle",
+		"cert.issuer.title",
+		"cert.issuer.name",
+		"cert.issuer",
+		"certificate.issuerTitle",
+		"certificate.issuer.title",
+		"certificate.issuer.name",
+		"certificate.issuer",
+	)
+}
+
+func certTimeColumnValue(row map[string]interface{}, column string) interface{} {
+	paths := []string{column}
+	switch column {
+	case "certExpiresAt", "certificateExpiresAt":
+		paths = append(paths,
+			"certExpiresAt",
+			"certificateExpiresAt",
+			"cert.expiresAt",
+			"certificate.expiresAt",
+			"appCert.expiresAt",
+			"cert.notAfter",
+			"certificate.notAfter",
+			"appCert.notAfter",
+			"cert.validUntil",
+			"certificate.validUntil",
+			"appCert.validUntil",
+		)
+	case "expiresAt":
+		paths = append(paths,
+			"notAfter",
+			"validUntil",
+			"validTo",
+			"certExpiresAt",
+			"certificateExpiresAt",
+			"appCert.expiresAt",
+			"cert.expiresAt",
+			"certificate.expiresAt",
+			"appCert.notAfter",
+			"cert.notAfter",
+			"certificate.notAfter",
+		)
+	}
+	return firstNonNilPath(row, paths...)
+}
+
+func formatDomainsColumn(row map[string]interface{}) string {
+	value := firstNonNilPath(
+		row,
+		"domains",
+		"domainNames",
+		"dnsNames",
+		"altNames",
+		"subjectAltNames",
+		"sans",
+		"appCert.domains",
+		"appCert.domainNames",
+		"appCert.dnsNames",
+		"appCert.altNames",
+		"cert.domains",
+		"cert.domainNames",
+		"cert.dnsNames",
+		"cert.altNames",
+		"certificate.domains",
+		"certificate.domainNames",
+		"certificate.dnsNames",
+		"certificate.altNames",
+	)
+	switch v := value.(type) {
+	case []interface{}:
+		values := make([]string, 0, len(v))
+		for _, item := range v {
+			if formatted := scalarString(item); formatted != "" {
+				values = append(values, formatted)
+			}
+		}
+		return strings.Join(values, ", ")
+	case []string:
+		return strings.Join(v, ", ")
+	default:
+		return scalarString(v)
+	}
 }
 
 func firstNonNilPath(row map[string]interface{}, paths ...string) interface{} {
@@ -1334,6 +1836,24 @@ func serviceLabel(value interface{}) string {
 		"appServiceTitle",
 		"appService.title",
 		"appService.name",
+		"builtServiceTitle",
+		"builtService.title",
+		"builtService.name",
+		"deployedServiceTitle",
+		"deployedService.title",
+		"deployedService.name",
+		"buildServiceTitle",
+		"buildService.title",
+		"buildService.name",
+		"appServiceBuildTitle",
+		"appServiceBuild.title",
+		"appServiceBuild.name",
+		"deploymentServiceTitle",
+		"deploymentService.title",
+		"deploymentService.name",
+		"appServiceDeploymentTitle",
+		"appServiceDeployment.title",
+		"appServiceDeployment.name",
 	)
 }
 

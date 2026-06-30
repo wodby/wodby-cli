@@ -15,46 +15,69 @@ import (
 )
 
 var (
-	orgColumns            = []string{"id", "name", "title", "domain"}
-	memberColumns         = []string{"id", "member", "email", "role", "status", "joinedAt"}
-	projectColumns        = []string{"id", "name", "title"}
-	envColumns            = []string{"id", "name", "title", "type"}
-	databaseColumns       = []string{"id", "name", "title", "status", "kind", "type", "version", "env", "integration", "service", "region", "zone"}
-	databaseDbColumns     = []string{"id", "name", "status", "charset", "collation", "database", "createdAt"}
-	databaseUserColumns   = []string{"id", "username", "hostname", "status", "database", "dbs", "createdAt"}
-	clusterColumns        = []string{"id", "name", "title", "status", "integration", "region", "zone", "version", "nodes", "singleNode", "scalable", "serverless"}
-	clusterGetColumns     = []string{"id", "name", "title", "status", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "scalable", "serverless"}
-	infraAppColumns       = []string{"id", "name", "title", "status", "stack"}
-	integrationColumns    = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
-	providerColumns       = []string{"id", "name", "title", "status", "public", "revId"}
-	stackColumns          = []string{"id", "name", "title", "status", "revision", "currentVersion", "outdated", "createdAt", "updatedAt"}
-	stackGetColumns       = []string{"id", "name", "title", "status", "public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "outdated", "createdAt", "updatedAt", "services"}
-	stackServiceColumns   = []string{"id", "name", "title", "type", "serviceRev", "replicas", "required", "disabled", "main", "updatedAt"}
-	catalogServiceColumns = []string{"id", "name", "title", "type", "status", "public", "external", "revId", "latestRevNumber"}
-	appColumns            = []string{"id", "name", "title", "status", "stack", "clusterApp"}
-	appGetColumns         = append(append([]string{}, appColumns...), "instances", "createdAt", "updatedAt")
-	appStatusColumns      = []string{"id", "title", "status", "instances", "serviceStatus", "routeStatus", "latestBuild", "latestDeployment", "needs"}
-	instanceColumns       = []string{"id", "name", "title", "status", "outdated", "app", "stack", "env", "cluster", "domain"}
-	instanceGetColumns    = append(append([]string{}, instanceColumns...), "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
-	instanceStatusColumns = []string{"id", "title", "status", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
-	serviceColumns        = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
-	routeListColumns      = []string{"id", "service", "route", "action", "cert", "primary", "private", "status", "updatedAt"}
-	routeColumns          = []string{"id", "route", "host", "path", "pathType", "action", "status", "service", "port", "cert", "certStatus", "certIssuer", "certExpiresAt", "main", "primary", "private", "disabled", "redirectScheme", "redirectHost", "redirectPath", "redirectStatusCode", "lastSyncedAt", "createdAt", "updatedAt"}
-	appPortListColumns    = []string{"id", "service", "name", "number", "publicPort", "private", "protocol", "updatedAt"}
-	appPortColumns        = []string{"id", "name", "number", "publicPort", "protocol", "private", "service", "instance", "createdAt", "updatedAt"}
-	certColumns           = []string{"id", "host", "status", "issuer", "certType", "expiresAt", "route", "instance", "createdAt"}
-	buildListColumns      = []string{"id", "number", "service", "services", "imageCount", "gitRefType", "gitRef", "startedAt", "duration", "status"}
-	buildColumns          = []string{"id", "number", "status", "instance", "service", "services", "images", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "createdAt", "startedAt", "endedAt", "duration"}
-	deploymentListColumns = []string{"id", "number", "services", "builds", "startedAt", "duration", "status"}
-	deploymentColumns     = []string{"id", "number", "status", "instance", "services", "images", "task", "skipRollback", "createdAt", "startedAt", "endedAt", "duration"}
-	backupColumns         = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "task", "createdAt"}
-	importListColumns     = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "startedAt", "duration"}
-	importColumns         = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "backup", "createdAt", "updatedAt", "startedAt", "endedAt", "duration"}
-	taskColumns           = []string{"id", "title", "status", "progress", "projects", "author", "startedAt", "duration"}
-	taskGetColumns        = []string{"id", "title", "status", "progress", "projects", "author", "app", "instance", "service", "database", "databaseDb", "originTask", "repeatedTask", "spawnedTasks", "createdAt", "startedAt", "endedAt", "duration"}
-	taskJobColumns        = []string{"id", "name", "status", "logStatus", "system", "startedAt", "duration", "steps"}
-	taskStepColumns       = []string{"id", "name", "status", "logStatus", "system", "startedAt", "duration", "job"}
-	operationColumns      = []string{"success", "task"}
+	orgColumns                      = []string{"id", "name", "title", "domain"}
+	memberColumns                   = []string{"id", "member", "email", "role", "status", "joinedAt"}
+	projectColumns                  = []string{"id", "name", "title"}
+	envColumns                      = []string{"id", "name", "title", "type"}
+	databaseColumns                 = []string{"id", "name", "title", "status", "kind", "type", "version", "env", "integration", "service", "region", "zone"}
+	databaseDbColumns               = []string{"id", "name", "status", "charset", "collation", "database", "createdAt"}
+	databaseUserColumns             = []string{"id", "username", "hostname", "status", "database", "dbs", "createdAt"}
+	clusterColumns                  = []string{"id", "name", "title", "status", "integration", "region", "zone", "version", "nodes", "singleNode", "scalable", "serverless"}
+	clusterGetColumns               = []string{"id", "name", "title", "status", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "scalable", "serverless"}
+	infraAppColumns                 = []string{"id", "name", "title", "status", "stack"}
+	integrationColumns              = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
+	providerColumns                 = []string{"id", "name", "title", "status", "public", "revId"}
+	stackColumns                    = []string{"id", "name", "title", "status", "revision", "currentVersion", "outdated", "createdAt", "updatedAt"}
+	stackGetColumns                 = []string{"id", "name", "title", "status", "public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "outdated", "createdAt", "updatedAt", "services"}
+	stackServiceColumns             = []string{"id", "name", "title", "type", "serviceRev", "replicas", "required", "disabled", "main", "updatedAt"}
+	stackServiceEnvColumns          = []string{"id", "name", "value", "secret", "envType", "workload", "container", "createdAt"}
+	stackServiceValueColumns        = []string{"id", "name", "value", "secret", "envType", "createdAt"}
+	stackServiceTokenColumns        = []string{"id", "name", "value", "regex", "secret", "envType", "createdAt"}
+	stackServiceAnnotationColumns   = []string{"id", "name", "value", "envType", "createdAt"}
+	stackServiceIntegrationColumns  = []string{"id", "name", "integration"}
+	stackServiceLinkColumns         = []string{"id", "name", "linkedStackService"}
+	stackServiceVolumeColumns       = []string{"id", "name", "size"}
+	stackServiceSettingColumns      = []string{"id", "name", "value"}
+	stackServiceConfigColumns       = []string{"id", "name", "disabled", "config"}
+	stackServiceOptionColumns       = []string{"id", "version", "default", "disabled"}
+	stackServiceCronScheduleColumns = []string{"id", "name", "title", "crontab", "command", "workload", "envType", "disabled", "updatedAt"}
+	catalogServiceColumns           = []string{"id", "name", "title", "type", "status", "public", "external", "revId", "latestRevNumber"}
+	appColumns                      = []string{"id", "name", "title", "status", "stack", "clusterApp"}
+	appGetColumns                   = append(append([]string{}, appColumns...), "instances", "createdAt", "updatedAt")
+	appStatusColumns                = []string{"id", "title", "status", "instances", "serviceStatus", "routeStatus", "latestBuild", "latestDeployment", "needs"}
+	instanceColumns                 = []string{"id", "name", "title", "status", "outdated", "app", "stack", "env", "cluster", "domain"}
+	instanceGetColumns              = append(append([]string{}, instanceColumns...), "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
+	instanceStatusColumns           = []string{"id", "title", "status", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
+	serviceColumns                  = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
+	appServiceEnvColumns            = []string{"id", "name", "value", "secret", "runtime", "build", "envType", "workload", "container", "source", "createdAt"}
+	appServiceValueColumns          = []string{"id", "name", "value", "secret", "source", "createdAt"}
+	appServiceTokenColumns          = []string{"id", "name", "value", "secret", "envType", "createdAt"}
+	appServiceAnnotationColumns     = []string{"id", "name", "value", "envType", "source", "createdAt"}
+	appServiceIntegrationColumns    = []string{"id", "name", "integration", "createdAt", "updatedAt"}
+	appServiceSettingColumns        = []string{"id", "name", "value", "var", "runtime", "build", "fromSettingId"}
+	appServiceConfigColumns         = []string{"id", "name", "title", "disabled", "config"}
+	appServiceLinkColumns           = []string{"id", "name", "linkedService"}
+	appServiceContainerColumns      = []string{"id", "workload", "name", "requestCPU", "requestMem", "limitCPU", "limitMem"}
+	appServiceCronScheduleColumns   = []string{"id", "title", "crontab", "command", "workload", "envType", "disabled", "updatedAt"}
+	appServiceCronJobColumns        = []string{"id", "title", "status", "service", "scheduleId", "task", "createdAt"}
+	logStreamColumns                = []string{"id"}
+	routeListColumns                = []string{"id", "service", "route", "action", "cert", "primary", "private", "status", "updatedAt"}
+	routeColumns                    = []string{"id", "route", "host", "path", "pathType", "action", "status", "service", "port", "cert", "certStatus", "certIssuer", "certExpiresAt", "main", "primary", "private", "disabled", "redirectScheme", "redirectHost", "redirectPath", "redirectStatusCode", "lastSyncedAt", "createdAt", "updatedAt"}
+	appPortListColumns              = []string{"id", "service", "name", "number", "publicPort", "private", "protocol", "updatedAt"}
+	appPortColumns                  = []string{"id", "name", "number", "publicPort", "protocol", "private", "service", "instance", "createdAt", "updatedAt"}
+	certColumns                     = []string{"id", "host", "status", "issuer", "certType", "expiresAt", "route", "instance", "createdAt"}
+	buildListColumns                = []string{"id", "number", "service", "services", "imageCount", "gitRefType", "gitRef", "startedAt", "duration", "status"}
+	buildColumns                    = []string{"id", "number", "status", "instance", "service", "services", "images", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "createdAt", "startedAt", "endedAt", "duration"}
+	deploymentListColumns           = []string{"id", "number", "services", "builds", "startedAt", "duration", "status"}
+	deploymentColumns               = []string{"id", "number", "status", "instance", "services", "images", "task", "skipRollback", "createdAt", "startedAt", "endedAt", "duration"}
+	backupColumns                   = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "task", "createdAt"}
+	importListColumns               = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "startedAt", "duration"}
+	importColumns                   = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "backup", "createdAt", "updatedAt", "startedAt", "endedAt", "duration"}
+	taskColumns                     = []string{"id", "title", "status", "progress", "projects", "author", "startedAt", "duration"}
+	taskGetColumns                  = []string{"id", "title", "status", "progress", "projects", "author", "app", "instance", "service", "database", "databaseDb", "originTask", "repeatedTask", "spawnedTasks", "createdAt", "startedAt", "endedAt", "duration"}
+	taskJobColumns                  = []string{"id", "name", "status", "logStatus", "system", "startedAt", "duration", "steps"}
+	taskStepColumns                 = []string{"id", "name", "status", "logStatus", "system", "startedAt", "duration", "job"}
+	operationColumns                = []string{"success", "task"}
 )
 
 func Commands() []*cobra.Command {
@@ -1272,7 +1295,24 @@ func newStackServiceCommand(out outputOptions) *cobra.Command {
 	listCmd.Flags().StringVar(&stackRevID, "stack-rev", "", "Stack revision ID")
 	defaultToList(cmd, listCmd)
 
-	cmd.AddCommand(listCmd, newStackServiceCreateCommand(out), newStackServiceUpdateCommand(out), newDeleteCommand("delete ID", "Delete stack service", "/stack-services/", stackServiceColumns, out))
+	cmd.AddCommand(
+		listCmd,
+		newStackServiceCreateCommand(out),
+		newStackServiceUpdateCommand(out),
+		newDeleteCommand("delete ID", "Delete stack service", "/stack-services/", stackServiceColumns, out),
+		newStackServiceEnvVarCommand(out),
+		newStackServiceHelmValueCommand(out),
+		newStackServiceTokenCommand(out),
+		newStackServiceAnnotationCommand(out),
+		newStackServiceIntegrationCommand(out),
+		newStackServiceLinkCommand(out),
+		newStackServiceVolumeCommand(out),
+		newStackServiceSettingCommand(out),
+		newStackServiceConfigCommand(out),
+		newStackServiceResourcesCommand(out),
+		newStackServiceOptionsCommand(out),
+		newStackServiceCronScheduleCommand(out),
+	)
 	return cmd
 }
 
@@ -1327,6 +1367,271 @@ func isNotFoundAPIError(err error) bool {
 	}
 	message := err.Error()
 	return strings.Contains(message, "404") || strings.Contains(strings.ToLower(message), "not found")
+}
+
+type jsonFlagKind string
+
+const (
+	jsonFlagString jsonFlagKind = "string"
+	jsonFlagInt    jsonFlagKind = "int"
+	jsonFlagBool   jsonFlagKind = "bool"
+)
+
+type jsonFlagSpec struct {
+	name           string
+	jsonName       string
+	usage          string
+	kind           jsonFlagKind
+	required       bool
+	always         bool
+	requireChanged bool
+}
+
+func stringJSONFlag(name string, jsonName string, usage string, required bool) jsonFlagSpec {
+	return jsonFlagSpec{name: name, jsonName: jsonName, usage: usage, kind: jsonFlagString, required: required}
+}
+
+func intJSONFlag(name string, jsonName string, usage string, required bool) jsonFlagSpec {
+	return jsonFlagSpec{name: name, jsonName: jsonName, usage: usage, kind: jsonFlagInt, required: required}
+}
+
+func boolJSONFlag(name string, jsonName string, usage string, always bool) jsonFlagSpec {
+	return jsonFlagSpec{name: name, jsonName: jsonName, usage: usage, kind: jsonFlagBool, always: always}
+}
+
+func requiredChangedBoolJSONFlag(name string, jsonName string, usage string) jsonFlagSpec {
+	return jsonFlagSpec{name: name, jsonName: jsonName, usage: usage, kind: jsonFlagBool, requireChanged: true}
+}
+
+func addJSONFlagSpecs(cmd *cobra.Command, specs []jsonFlagSpec) {
+	for _, spec := range specs {
+		switch spec.kind {
+		case jsonFlagString:
+			cmd.Flags().String(spec.name, "", spec.usage)
+		case jsonFlagInt:
+			cmd.Flags().Int(spec.name, 0, spec.usage)
+		case jsonFlagBool:
+			cmd.Flags().Bool(spec.name, false, spec.usage)
+		}
+	}
+}
+
+func readBodyOrJSONFlags(cmd *cobra.Command, opts bodyOptions, specs []jsonFlagSpec, requireAnyChanged bool) (interface{}, error) {
+	requestBody, hasBody, err := readBody(opts)
+	if err != nil {
+		return nil, err
+	}
+	if hasBody {
+		return requestBody, nil
+	}
+	return bodyFromJSONFlagSpecs(cmd, specs, requireAnyChanged)
+}
+
+func bodyFromJSONFlagSpecs(cmd *cobra.Command, specs []jsonFlagSpec, requireAnyChanged bool) (map[string]interface{}, error) {
+	values := map[string]interface{}{}
+	changed := false
+	for _, spec := range specs {
+		if spec.jsonName == "" {
+			spec.jsonName = spec.name
+		}
+		flagName := "--" + spec.name
+		if spec.requireChanged && !cmd.Flags().Changed(spec.name) {
+			return nil, errors.Errorf("%s is required", flagName)
+		}
+		include := spec.always || spec.required || cmd.Flags().Changed(spec.name)
+		if !include {
+			continue
+		}
+		if cmd.Flags().Changed(spec.name) || spec.always || spec.required {
+			changed = true
+		}
+
+		switch spec.kind {
+		case jsonFlagString:
+			value, _ := cmd.Flags().GetString(spec.name)
+			if spec.required {
+				if err := requireFlag(value, flagName); err != nil {
+					return nil, err
+				}
+			}
+			values[spec.jsonName] = value
+		case jsonFlagInt:
+			value, _ := cmd.Flags().GetInt(spec.name)
+			if spec.required {
+				if err := requireIntFlag(value, flagName); err != nil {
+					return nil, err
+				}
+			}
+			values[spec.jsonName] = value
+		case jsonFlagBool:
+			value, _ := cmd.Flags().GetBool(spec.name)
+			values[spec.jsonName] = value
+		}
+	}
+	if requireAnyChanged && !changed {
+		return nil, errors.New("pass at least one update flag or provide --data/--file")
+	}
+	return values, nil
+}
+
+func escapedPath(pattern string, values ...string) string {
+	escaped := make([]interface{}, 0, len(values))
+	for _, value := range values {
+		escaped = append(escaped, url.PathEscape(value))
+	}
+	return fmt.Sprintf(pattern, escaped...)
+}
+
+func newServiceChildListCommand(use string, short string, pathPattern string, columns []string, out outputOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), escapedPath(pathPattern, args[0]), nil, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, columns)
+		},
+	}
+}
+
+func newServiceChildCreateCommand(use string, short string, pathPattern string, columns []string, out outputOptions, specs []jsonFlagSpec) *cobra.Command {
+	body := bodyOptions{}
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, err := readBodyOrJSONFlags(cmd, body, specs, false)
+			if err != nil {
+				return err
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), escapedPath(pathPattern, args[0]), nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, columns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	addJSONFlagSpecs(cmd, specs)
+	return cmd
+}
+
+func newServiceChildUpdateCommand(use string, short string, pathPattern string, columns []string, out outputOptions, specs []jsonFlagSpec) *cobra.Command {
+	body := bodyOptions{}
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, err := readBodyOrJSONFlags(cmd, body, specs, true)
+			if err != nil {
+				return err
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Put(cmd.Context(), escapedPath(pathPattern, args[0]), nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, columns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	addJSONFlagSpecs(cmd, specs)
+	return cmd
+}
+
+func newServiceChildSetCommand(use string, short string, pathPattern string, columns []string, out outputOptions, specs []jsonFlagSpec) *cobra.Command {
+	body := bodyOptions{}
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, err := readBodyOrJSONFlags(cmd, body, specs, true)
+			if err != nil {
+				return err
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Put(cmd.Context(), escapedPath(pathPattern, args[0], args[1]), nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, columns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	addJSONFlagSpecs(cmd, specs)
+	return cmd
+}
+
+func newServiceChildDirectSetCommand(use string, short string, pathPattern string, columns []string, out outputOptions, specs []jsonFlagSpec) *cobra.Command {
+	body := bodyOptions{}
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, err := readBodyOrJSONFlags(cmd, body, specs, true)
+			if err != nil {
+				return err
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Put(cmd.Context(), escapedPath(pathPattern, args[0]), nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, columns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	addJSONFlagSpecs(cmd, specs)
+	return cmd
+}
+
+func newServiceChildDeleteCommand(short string, pathPattern string, out outputOptions) *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "delete ID",
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := confirm(cmd, yes, short+"?"); err != nil {
+				return err
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Delete(cmd.Context(), escapedPath(pathPattern, args[0]), nil, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, operationColumns)
+		},
+	}
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Confirm without prompting")
+	return cmd
 }
 
 func newStackServiceCreateCommand(out outputOptions) *cobra.Command {
@@ -1441,6 +1746,297 @@ func newStackServiceUpdateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().Bool("disabled", false, "Set disabled state")
 	cmd.Flags().Bool("main", false, "Set main service state")
 	return cmd
+}
+
+func newStackServiceEnvVarCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "env-var",
+		Aliases: []string{"env-vars"},
+		Short:   "Manage stack service environment variables",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List stack service environment variables", "/stack-services/%s/env-vars", stackServiceEnvColumns, out),
+		newServiceChildCreateCommand("create SERVICE_ID", "Create stack service environment variable", "/stack-services/%s/env-vars", stackServiceEnvColumns, out, []jsonFlagSpec{
+			stringJSONFlag("workload", "workload", "Workload name", false),
+			stringJSONFlag("container", "container", "Container name", false),
+			stringJSONFlag("name", "name", "Environment variable name", true),
+			stringJSONFlag("value", "value", "Environment variable value", true),
+			boolJSONFlag("secret", "secret", "Store the value as a secret", true),
+			stringJSONFlag("env-type", "envType", "Environment type", false),
+		}),
+		newServiceChildUpdateCommand("update ID", "Update stack service environment variable", "/stack-service-env-vars/%s", stackServiceEnvColumns, out, []jsonFlagSpec{
+			stringJSONFlag("value", "value", "Environment variable value", true),
+			requiredChangedBoolJSONFlag("secret", "secret", "Whether the value is secret"),
+		}),
+		newServiceChildDeleteCommand("Delete stack service environment variable", "/stack-service-env-vars/%s", out),
+	)
+	return cmd
+}
+
+func newStackServiceHelmValueCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "helm-value",
+		Aliases: []string{"helm-values"},
+		Short:   "Manage stack service Helm values",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List stack service Helm values", "/stack-services/%s/helm-values", stackServiceValueColumns, out),
+		newServiceChildCreateCommand("create SERVICE_ID", "Create stack service Helm value", "/stack-services/%s/helm-values", stackServiceValueColumns, out, []jsonFlagSpec{
+			stringJSONFlag("name", "name", "Helm value name", true),
+			stringJSONFlag("value", "value", "Helm value", true),
+			boolJSONFlag("secret", "secret", "Store the value as a secret", true),
+			stringJSONFlag("env-type", "envType", "Environment type", false),
+		}),
+		newServiceChildUpdateCommand("update ID", "Update stack service Helm value", "/stack-service-helm-values/%s", stackServiceValueColumns, out, []jsonFlagSpec{
+			stringJSONFlag("value", "value", "Helm value", true),
+			requiredChangedBoolJSONFlag("secret", "secret", "Whether the value is secret"),
+		}),
+		newServiceChildDeleteCommand("Delete stack service Helm value", "/stack-service-helm-values/%s", out),
+	)
+	return cmd
+}
+
+func newStackServiceTokenCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "token",
+		Aliases: []string{"tokens"},
+		Short:   "Manage stack service tokens",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List stack service tokens", "/stack-services/%s/tokens", stackServiceTokenColumns, out),
+		newServiceChildCreateCommand("create SERVICE_ID", "Create stack service token", "/stack-services/%s/tokens", stackServiceTokenColumns, out, []jsonFlagSpec{
+			stringJSONFlag("name", "name", "Token name", true),
+			stringJSONFlag("value", "value", "Token value", false),
+			boolJSONFlag("secret", "secret", "Store the value as a secret", true),
+			stringJSONFlag("regex", "regex", "Token generation regex", false),
+			stringJSONFlag("env-type", "envType", "Environment type", false),
+		}),
+		newServiceChildUpdateCommand("update ID", "Update stack service token", "/stack-service-tokens/%s", stackServiceTokenColumns, out, []jsonFlagSpec{
+			stringJSONFlag("value", "value", "Token value", false),
+			requiredChangedBoolJSONFlag("secret", "secret", "Whether the value is secret"),
+			stringJSONFlag("regex", "regex", "Token generation regex", false),
+		}),
+		newServiceChildDeleteCommand("Delete stack service token", "/stack-service-tokens/%s", out),
+	)
+	return cmd
+}
+
+func newStackServiceAnnotationCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "annotation",
+		Aliases: []string{"annotations"},
+		Short:   "Manage stack service annotations",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List stack service annotations", "/stack-services/%s/annotations", stackServiceAnnotationColumns, out),
+		newServiceChildCreateCommand("create SERVICE_ID", "Create stack service annotation", "/stack-services/%s/annotations", stackServiceAnnotationColumns, out, []jsonFlagSpec{
+			stringJSONFlag("name", "name", "Annotation name", true),
+			stringJSONFlag("value", "value", "Annotation value", true),
+			stringJSONFlag("env-type", "envType", "Environment type", false),
+		}),
+		newServiceChildDeleteCommand("Delete stack service annotation", "/stack-service-annotations/%s", out),
+	)
+	return cmd
+}
+
+func newStackServiceIntegrationCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "integration",
+		Aliases: []string{"integrations"},
+		Short:   "Manage stack service integrations",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List stack service integrations", "/stack-services/%s/integrations", stackServiceIntegrationColumns, out),
+		newServiceChildCreateCommand("create SERVICE_ID", "Create stack service integration", "/stack-services/%s/integrations", stackServiceIntegrationColumns, out, []jsonFlagSpec{
+			stringJSONFlag("name", "name", "Integration slot name", true),
+			intJSONFlag("integration", "integrationId", "Integration ID", true),
+		}),
+		newServiceChildDeleteCommand("Delete stack service integration", "/stack-service-integrations/%s", out),
+	)
+	return cmd
+}
+
+func newStackServiceLinkCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "link",
+		Aliases: []string{"links"},
+		Short:   "Manage stack service links",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List stack service links", "/stack-services/%s/links", stackServiceLinkColumns, out),
+		newServiceChildSetCommand("set SERVICE_ID NAME", "Set stack service link", "/stack-services/%s/links/%s", operationColumns, out, []jsonFlagSpec{
+			intJSONFlag("linked-service", "linkedStackServiceId", "Linked stack service ID", false),
+		}),
+	)
+	return cmd
+}
+
+func newStackServiceVolumeCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "volume",
+		Aliases: []string{"volumes"},
+		Short:   "Manage stack service volumes",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List stack service volumes", "/stack-services/%s/volumes", stackServiceVolumeColumns, out),
+		newServiceChildSetCommand("set SERVICE_ID NAME", "Set stack service volume", "/stack-services/%s/volumes/%s", operationColumns, out, []jsonFlagSpec{
+			intJSONFlag("size", "size", "Volume size", false),
+		}),
+	)
+	return cmd
+}
+
+func newStackServiceSettingCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "setting",
+		Aliases: []string{"settings"},
+		Short:   "Manage stack service settings",
+	}
+	cmd.AddCommand(
+		newServiceChildSetCommand("set SERVICE_ID NAME", "Set stack service setting", "/stack-services/%s/settings/%s", operationColumns, out, []jsonFlagSpec{
+			stringJSONFlag("value", "value", "Setting value", true),
+		}),
+	)
+	return cmd
+}
+
+func newStackServiceConfigCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "config",
+		Aliases: []string{"configs"},
+		Short:   "Manage stack service configs",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List stack service configs", "/stack-services/%s/configs", stackServiceConfigColumns, out),
+		newServiceChildSetCommand("set SERVICE_ID NAME", "Set stack service config", "/stack-services/%s/configs/%s", operationColumns, out, []jsonFlagSpec{
+			stringJSONFlag("config", "config", "Config override", true),
+		}),
+	)
+	return cmd
+}
+
+func newStackServiceResourcesCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "resources",
+		Short: "Manage stack service resources",
+	}
+	cmd.AddCommand(newServiceChildDirectSetCommand("set SERVICE_ID", "Set stack service resources", "/stack-services/%s/resources", operationColumns, out, resourceJSONFlags()))
+	return cmd
+}
+
+func newStackServiceOptionsCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "options",
+		Short: "Manage stack service options",
+	}
+	cmd.AddCommand(newStackServiceOptionsSetCommand(out))
+	return cmd
+}
+
+func newStackServiceOptionsSetCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	var options []string
+	cmd := &cobra.Command{
+		Use:   "set SERVICE_ID",
+		Short: "Set stack service options",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if len(options) == 0 {
+					return errors.New("--option is required unless --data/--file is provided")
+				}
+				parsed, err := parseStackServiceOptions(options)
+				if err != nil {
+					return err
+				}
+				requestBody = map[string]interface{}{"options": parsed}
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Put(cmd.Context(), escapedPath("/stack-services/%s/options", args[0]), nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, operationColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().StringArrayVar(&options, "option", nil, "Option as VERSION:DEFAULT:DISABLED; repeatable")
+	return cmd
+}
+
+func parseStackServiceOptions(values []string) ([]map[string]interface{}, error) {
+	options := make([]map[string]interface{}, 0, len(values))
+	for _, value := range values {
+		parts := strings.Split(value, ":")
+		if len(parts) != 3 {
+			return nil, errors.Errorf("invalid --option %q; expected VERSION:DEFAULT:DISABLED", value)
+		}
+		defaultValue, err := strconv.ParseBool(parts[1])
+		if err != nil {
+			return nil, errors.Wrapf(err, "invalid default value in --option %q", value)
+		}
+		disabled, err := strconv.ParseBool(parts[2])
+		if err != nil {
+			return nil, errors.Wrapf(err, "invalid disabled value in --option %q", value)
+		}
+		if strings.TrimSpace(parts[0]) == "" {
+			return nil, errors.Errorf("invalid --option %q; version is required", value)
+		}
+		options = append(options, map[string]interface{}{
+			"version":  parts[0],
+			"default":  defaultValue,
+			"disabled": disabled,
+		})
+	}
+	return options, nil
+}
+
+func newStackServiceCronScheduleCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "cron-schedule",
+		Aliases: []string{"cron-schedules", "cron"},
+		Short:   "Manage stack service cron schedules",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List stack service cron schedules", "/stack-services/%s/cron-schedules", stackServiceCronScheduleColumns, out),
+		newServiceChildCreateCommand("create SERVICE_ID", "Create stack service cron schedule", "/stack-services/%s/cron-schedules", stackServiceCronScheduleColumns, out, []jsonFlagSpec{
+			stringJSONFlag("name", "name", "Cron schedule machine name", true),
+			stringJSONFlag("title", "title", "Cron schedule title", true),
+			stringJSONFlag("crontab", "crontab", "Crontab expression", true),
+			stringJSONFlag("command", "command", "Command to run", true),
+			stringJSONFlag("workload", "workload", "Workload name", false),
+			boolJSONFlag("disabled", "disabled", "Create the schedule disabled", false),
+			stringJSONFlag("env-type", "envType", "Environment type", false),
+		}),
+		newServiceChildUpdateCommand("update ID", "Update stack service cron schedule", "/stack-service-cron-schedules/%s", stackServiceCronScheduleColumns, out, []jsonFlagSpec{
+			boolJSONFlag("disabled", "disabled", "Set disabled state", false),
+			stringJSONFlag("title", "title", "Cron schedule title", false),
+			stringJSONFlag("crontab", "crontab", "Crontab expression", false),
+			stringJSONFlag("command", "command", "Command to run", false),
+			stringJSONFlag("workload", "workload", "Workload name", false),
+			stringJSONFlag("env-type", "envType", "Environment type", false),
+		}),
+		newServiceChildDeleteCommand("Delete stack service cron schedule", "/stack-service-cron-schedules/%s", out),
+	)
+	return cmd
+}
+
+func resourceJSONFlags() []jsonFlagSpec {
+	return []jsonFlagSpec{
+		stringJSONFlag("workload", "workload", "Workload name", false),
+		stringJSONFlag("container", "container", "Container name", false),
+		intJSONFlag("request-cpu", "requestCPU", "Requested CPU", false),
+		intJSONFlag("request-mem", "requestMem", "Requested memory", false),
+		intJSONFlag("limit-cpu", "limitCPU", "CPU limit", false),
+		intJSONFlag("limit-mem", "limitMem", "Memory limit", false),
+	}
 }
 
 func newServiceCommand() *cobra.Command {
@@ -2280,7 +2876,26 @@ func newAppServiceCommand(use string, aliases []string, short string, mode insta
 		},
 	}
 
-	cmd.AddCommand(listCmd, getCmd, newAppServiceUpdateCommand(out), newAppServiceActionCommand(out))
+	cmd.AddCommand(
+		listCmd,
+		getCmd,
+		newAppServiceUpdateCommand(out),
+		newAppServiceActionCommand(out),
+		newAppServiceEnvVarCommand(out),
+		newAppServiceHelmValueCommand(out),
+		newAppServiceTokenCommand(out),
+		newAppServiceAnnotationCommand(out),
+		newAppServiceIntegrationCommand(out),
+		newAppServiceSettingCommand(out),
+		newAppServiceConfigCommand(out),
+		newAppServiceLinkCommand(out),
+		newAppServiceContainerCommand(out),
+		newAppServiceResourcesCommand(out),
+		newAppServiceDatabaseCommand(out),
+		newAppServiceCronScheduleCommand(out),
+		newAppServiceCronJobCommand(out),
+		newAppServiceLogStreamCommand(out),
+	)
 	return cmd
 }
 
@@ -2362,6 +2977,324 @@ func newAppServiceActionCommand(out outputOptions) *cobra.Command {
 	}
 	addWaitFlags(cmd, &wait)
 	return cmd
+}
+
+func newAppServiceEnvVarCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "env-var",
+		Aliases: []string{"env-vars"},
+		Short:   "Manage app service environment variables",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List app service environment variables", "/app-services/%s/env-vars", appServiceEnvColumns, out),
+		newServiceChildCreateCommand("create SERVICE_ID", "Create app service environment variable", "/app-services/%s/env-vars", appServiceEnvColumns, out, []jsonFlagSpec{
+			stringJSONFlag("workload", "workload", "Workload name", false),
+			stringJSONFlag("container", "container", "Container name", false),
+			stringJSONFlag("name", "name", "Environment variable name", true),
+			stringJSONFlag("value", "value", "Environment variable value", true),
+			boolJSONFlag("secret", "secret", "Store the value as a secret", true),
+			boolJSONFlag("runtime", "runtime", "Expose at runtime", false),
+			boolJSONFlag("build", "build", "Expose during builds", false),
+		}),
+		newServiceChildUpdateCommand("update ID", "Update app service environment variable", "/app-service-env-vars/%s", appServiceEnvColumns, out, []jsonFlagSpec{
+			stringJSONFlag("value", "value", "Environment variable value", false),
+			requiredChangedBoolJSONFlag("secret", "secret", "Whether the value is secret"),
+			boolJSONFlag("runtime", "runtime", "Expose at runtime", false),
+			boolJSONFlag("build", "build", "Expose during builds", false),
+		}),
+		newServiceChildDeleteCommand("Delete app service environment variable", "/app-service-env-vars/%s", out),
+	)
+	return cmd
+}
+
+func newAppServiceHelmValueCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "helm-value",
+		Aliases: []string{"helm-values"},
+		Short:   "Manage app service Helm values",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List app service Helm values", "/app-services/%s/helm-values", appServiceValueColumns, out),
+		newServiceChildCreateCommand("create SERVICE_ID", "Create app service Helm value", "/app-services/%s/helm-values", appServiceValueColumns, out, []jsonFlagSpec{
+			stringJSONFlag("name", "name", "Helm value name", true),
+			stringJSONFlag("value", "value", "Helm value", true),
+			boolJSONFlag("secret", "secret", "Store the value as a secret", true),
+		}),
+		newServiceChildUpdateCommand("update ID", "Update app service Helm value", "/app-service-helm-values/%s", appServiceValueColumns, out, []jsonFlagSpec{
+			stringJSONFlag("value", "value", "Helm value", true),
+			requiredChangedBoolJSONFlag("secret", "secret", "Whether the value is secret"),
+		}),
+		newServiceChildDeleteCommand("Delete app service Helm value", "/app-service-helm-values/%s", out),
+	)
+	return cmd
+}
+
+func newAppServiceTokenCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "token",
+		Aliases: []string{"tokens"},
+		Short:   "Manage app service tokens",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List app service tokens", "/app-services/%s/tokens", appServiceTokenColumns, out),
+		newServiceChildCreateCommand("create SERVICE_ID", "Create app service token", "/app-services/%s/tokens", appServiceTokenColumns, out, []jsonFlagSpec{
+			stringJSONFlag("name", "name", "Token name", true),
+			stringJSONFlag("value", "value", "Token value", true),
+			boolJSONFlag("secret", "secret", "Store the value as a secret", true),
+		}),
+		newServiceChildUpdateCommand("update ID", "Update app service token", "/app-service-tokens/%s", appServiceTokenColumns, out, []jsonFlagSpec{
+			stringJSONFlag("value", "value", "Token value", true),
+			requiredChangedBoolJSONFlag("secret", "secret", "Whether the value is secret"),
+		}),
+		newServiceChildDeleteCommand("Delete app service token", "/app-service-tokens/%s", out),
+	)
+	return cmd
+}
+
+func newAppServiceAnnotationCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "annotation",
+		Aliases: []string{"annotations"},
+		Short:   "Manage app service annotations",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List app service annotations", "/app-services/%s/annotations", appServiceAnnotationColumns, out),
+		newServiceChildCreateCommand("create SERVICE_ID", "Create app service annotation", "/app-services/%s/annotations", appServiceAnnotationColumns, out, []jsonFlagSpec{
+			stringJSONFlag("name", "name", "Annotation name", true),
+			stringJSONFlag("value", "value", "Annotation value", true),
+		}),
+		newServiceChildDeleteCommand("Delete app service annotation", "/app-service-annotations/%s", out),
+	)
+	return cmd
+}
+
+func newAppServiceIntegrationCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "integration",
+		Aliases: []string{"integrations"},
+		Short:   "Manage app service integrations",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List app service integrations", "/app-services/%s/integrations", appServiceIntegrationColumns, out),
+		newServiceChildCreateCommand("create SERVICE_ID", "Create app service integration", "/app-services/%s/integrations", appServiceIntegrationColumns, out, []jsonFlagSpec{
+			stringJSONFlag("name", "name", "Integration slot name", true),
+			intJSONFlag("integration", "integrationId", "Integration ID", true),
+		}),
+		newServiceChildDeleteCommand("Delete app service integration", "/app-service-integrations/%s", out),
+	)
+	return cmd
+}
+
+func newAppServiceSettingCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "setting",
+		Aliases: []string{"settings"},
+		Short:   "Manage app service settings",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List app service settings", "/app-services/%s/settings", appServiceSettingColumns, out),
+		newServiceChildSetCommand("set SERVICE_ID NAME", "Set app service setting", "/app-services/%s/settings/%s", appServiceSettingColumns, out, []jsonFlagSpec{
+			stringJSONFlag("value", "value", "Setting value", true),
+		}),
+	)
+	return cmd
+}
+
+func newAppServiceConfigCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "config",
+		Aliases: []string{"configs"},
+		Short:   "Manage app service configs",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List app service configs", "/app-services/%s/configs", appServiceConfigColumns, out),
+		newServiceChildSetCommand("set SERVICE_ID NAME", "Set app service config", "/app-services/%s/configs/%s", operationColumns, out, []jsonFlagSpec{
+			stringJSONFlag("config", "config", "Config override", false),
+			boolJSONFlag("disabled", "disabled", "Set disabled state", false),
+		}),
+	)
+	return cmd
+}
+
+func newAppServiceLinkCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "link",
+		Aliases: []string{"links"},
+		Short:   "Manage app service links",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List app service links", "/app-services/%s/links", appServiceLinkColumns, out),
+		newServiceChildSetCommand("set SERVICE_ID NAME", "Set app service link", "/app-services/%s/links/%s", operationColumns, out, []jsonFlagSpec{
+			intJSONFlag("linked-service", "linkedAppServiceId", "Linked app service ID", false),
+		}),
+	)
+	return cmd
+}
+
+func newAppServiceContainerCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "container",
+		Aliases: []string{"containers"},
+		Short:   "List app service containers",
+	}
+	cmd.AddCommand(newServiceChildListCommand("list SERVICE_ID", "List app service containers", "/app-services/%s/containers", appServiceContainerColumns, out))
+	return cmd
+}
+
+func newAppServiceResourcesCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "resources",
+		Short: "Manage app service resources",
+	}
+	cmd.AddCommand(newServiceChildDirectSetCommand("set SERVICE_ID", "Set app service resources", "/app-services/%s/resources", operationColumns, out, resourceJSONFlags()))
+	return cmd
+}
+
+func newAppServiceDatabaseCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "database",
+		Short: "Manage app service database binding",
+	}
+	cmd.AddCommand(newServiceChildDirectSetCommand("set SERVICE_ID", "Set app service database binding", "/app-services/%s/database", serviceColumns, out, []jsonFlagSpec{
+		intJSONFlag("database-db", "databaseDbId", "Database DB ID", false),
+		intJSONFlag("database-user", "databaseUserId", "Database user ID", false),
+	}))
+	return cmd
+}
+
+func newAppServiceCronScheduleCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "cron-schedule",
+		Aliases: []string{"cron-schedules", "cron"},
+		Short:   "Manage app service cron schedules",
+	}
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List app service cron schedules", "/app-services/%s/cron-schedules", appServiceCronScheduleColumns, out),
+		newServiceChildCreateCommand("create SERVICE_ID", "Create app service cron schedule", "/app-services/%s/cron-schedules", appServiceCronScheduleColumns, out, []jsonFlagSpec{
+			stringJSONFlag("title", "title", "Cron schedule title", true),
+			stringJSONFlag("crontab", "crontab", "Crontab expression", true),
+			stringJSONFlag("command", "command", "Command to run", true),
+			stringJSONFlag("workload", "workload", "Workload name", false),
+		}),
+		newServiceChildUpdateCommand("update ID", "Update app service cron schedule", "/app-service-cron-schedules/%s", appServiceCronScheduleColumns, out, []jsonFlagSpec{
+			boolJSONFlag("disabled", "disabled", "Set disabled state", false),
+			stringJSONFlag("title", "title", "Cron schedule title", false),
+			stringJSONFlag("crontab", "crontab", "Crontab expression", false),
+			stringJSONFlag("command", "command", "Command to run", false),
+			stringJSONFlag("workload", "workload", "Workload name", false),
+		}),
+		newServiceChildDeleteCommand("Delete app service cron schedule", "/app-service-cron-schedules/%s", out),
+		newAppServiceCronScheduleRunCommand(out),
+	)
+	return cmd
+}
+
+func newAppServiceCronScheduleRunCommand(out outputOptions) *cobra.Command {
+	wait := waitOptions{}
+	cmd := &cobra.Command{
+		Use:   "run ID",
+		Short: "Run app service cron schedule",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), escapedPath("/app-service-cron-schedules/%s/run", args[0]), nil, nil, &result); err != nil {
+				return err
+			}
+			if wait.wait {
+				taskID := firstTaskID(result)
+				if taskID == "" {
+					rows := asRows(normalizeItem(result))
+					if len(rows) != 0 {
+						taskID = firstScalarPath(rows[0], "id")
+					}
+				}
+				if taskID != "" {
+					result, err = waitForTask(cmd.Context(), client, taskID, wait.timeout)
+					if err != nil {
+						return err
+					}
+				}
+			}
+			return printClientResult(cmd, client, out, result, taskColumns)
+		},
+	}
+	addWaitFlags(cmd, &wait)
+	return cmd
+}
+
+func newAppServiceCronJobCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "cron-job",
+		Aliases: []string{"cron-jobs"},
+		Short:   "Read app service cron jobs",
+	}
+	var scheduleID string
+	var page, pageSize int
+	listCmd := &cobra.Command{
+		Use:   "list SERVICE_ID",
+		Short: "List app service cron jobs",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query := url.Values{"appServiceId": []string{args[0]}}
+			addQuery(query, "scheduleId", scheduleID)
+			addPagination(query, page, pageSize)
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/app-service-cron-jobs", query, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, appServiceCronJobColumns)
+		},
+	}
+	listCmd.Flags().StringVar(&scheduleID, "schedule", "", "Cron schedule ID")
+	listCmd.Flags().IntVar(&page, "page", 0, "Page number")
+	listCmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
+	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get app service cron job", "/app-service-cron-jobs/", appServiceCronJobColumns, out))
+	return cmd
+}
+
+func newAppServiceLogStreamCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "log-stream",
+		Aliases: []string{"log-streams"},
+		Short:   "Manage app service log streams",
+	}
+	cmd.AddCommand(
+		newServiceChildCreateCommand("create SERVICE_ID", "Create app service log stream", "/app-services/%s/log-streams", logStreamColumns, out, []jsonFlagSpec{
+			stringJSONFlag("workload", "workload", "Workload name", false),
+			stringJSONFlag("container", "container", "Container name", false),
+		}),
+		newLogStreamActionCommand("start ID", "Start log stream", "/log-streams/%s/start", out),
+		newLogStreamActionCommand("keep-alive ID", "Keep log stream alive", "/log-streams/%s/keep-alive", out),
+		newLogStreamActionCommand("stop ID", "Stop log stream", "/log-streams/%s/stop", out),
+	)
+	return cmd
+}
+
+func newLogStreamActionCommand(use string, short string, pathPattern string, out outputOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), escapedPath(pathPattern, args[0]), nil, nil, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, operationColumns)
+		},
+	}
 }
 
 func newAppRouteCommand(use string, aliases []string, short string, mode instanceFilterMode) *cobra.Command {

@@ -1957,6 +1957,202 @@ func TestTopLevelApsListUsesInstanceFlag(t *testing.T) {
 	}
 }
 
+func TestAppServiceCommandExposesChildOperations(t *testing.T) {
+	cmd := newAppServiceCommand("aps", nil, "Manage app services", instanceFilterFlag)
+	names := make(map[string]bool)
+	for _, child := range cmd.Commands() {
+		names[child.Name()] = true
+	}
+	for _, name := range []string{
+		"list",
+		"get",
+		"update",
+		"action",
+		"env-var",
+		"helm-value",
+		"token",
+		"annotation",
+		"integration",
+		"setting",
+		"config",
+		"link",
+		"container",
+		"resources",
+		"database",
+		"cron-schedule",
+		"cron-job",
+		"log-stream",
+	} {
+		if !names[name] {
+			t.Fatalf("missing app service subcommand %q", name)
+		}
+	}
+}
+
+func TestAppServiceChildOperationsUseRESTEndpoints(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantMethod string
+		wantPath   string
+		wantQuery  string
+		assertBody func(*testing.T, map[string]interface{})
+		response   interface{}
+		wantOutput []string
+	}{
+		{
+			name:       "env create",
+			args:       []string{"env-var", "create", "21", "--name", "APP_ENV", "--value", "prod", "--runtime"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/app-services/21/env-vars",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				for key, want := range map[string]interface{}{"name": "APP_ENV", "value": "prod", "secret": false, "runtime": true} {
+					if body[key] != want {
+						t.Fatalf("%s = %#v, want %#v; body=%#v", key, body[key], want, body)
+					}
+				}
+			},
+			response:   map[string]interface{}{"id": 61, "name": "APP_ENV", "value": "prod", "runtime": true},
+			wantOutput: []string{"APP_ENV", "prod", "runtime"},
+		},
+		{
+			name:       "setting set",
+			args:       []string{"setting", "set", "21", "php_version", "--value", "8.3"},
+			wantMethod: http.MethodPut,
+			wantPath:   "/v1/app-services/21/settings/php_version",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["value"] != "8.3" {
+					t.Fatalf("value = %#v, want 8.3; body=%#v", body["value"], body)
+				}
+			},
+			response:   map[string]interface{}{"id": 62, "name": "php_version", "value": "8.3", "runtime": true, "build": false},
+			wantOutput: []string{"php_version", "8.3"},
+		},
+		{
+			name:       "resources set",
+			args:       []string{"resources", "set", "21", "--workload", "web", "--container", "php", "--request-cpu", "1", "--limit-mem", "512"},
+			wantMethod: http.MethodPut,
+			wantPath:   "/v1/app-services/21/resources",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				for key, want := range map[string]interface{}{"workload": "web", "container": "php", "requestCPU": float64(1), "limitMem": float64(512)} {
+					if body[key] != want {
+						t.Fatalf("%s = %#v, want %#v; body=%#v", key, body[key], want, body)
+					}
+				}
+			},
+			response:   map[string]interface{}{"success": true},
+			wantOutput: []string{"success", "true"},
+		},
+		{
+			name:       "database set",
+			args:       []string{"database", "set", "21", "--database-db", "33", "--database-user", "44"},
+			wantMethod: http.MethodPut,
+			wantPath:   "/v1/app-services/21/database",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				for key, want := range map[string]interface{}{"databaseDbId": float64(33), "databaseUserId": float64(44)} {
+					if body[key] != want {
+						t.Fatalf("%s = %#v, want %#v; body=%#v", key, body[key], want, body)
+					}
+				}
+			},
+			response:   map[string]interface{}{"id": 21, "title": "PHP", "status": "running", "version": "8.3"},
+			wantOutput: []string{"PHP", "running", "8.3"},
+		},
+		{
+			name:       "cron run",
+			args:       []string{"cron-schedule", "run", "81"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/app-service-cron-schedules/81/run",
+			response:   map[string]interface{}{"id": 91, "title": "Run cron", "status": "running"},
+			wantOutput: []string{"Run cron", "running"},
+		},
+		{
+			name:       "cron job list",
+			args:       []string{"cron-job", "list", "21", "--schedule", "81", "--page", "2", "--page-size", "10"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/v1/app-service-cron-jobs",
+			wantQuery:  "appServiceId=21&page=2&pageSize=10&scheduleId=81",
+			response: map[string]interface{}{
+				"items": []map[string]interface{}{{"id": 92, "title": "Run cron", "status": "succeeded", "appService": "PHP", "scheduleId": 81}},
+			},
+			wantOutput: []string{"Run cron", "succeeded", "schedule id"},
+		},
+		{
+			name:       "log stream create",
+			args:       []string{"log-stream", "create", "21", "--workload", "web", "--container", "php"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/app-services/21/log-streams",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				for key, want := range map[string]interface{}{"workload": "web", "container": "php"} {
+					if body[key] != want {
+						t.Fatalf("%s = %#v, want %#v; body=%#v", key, body[key], want, body)
+					}
+				}
+			},
+			response:   map[string]interface{}{"id": 101},
+			wantOutput: []string{"101"},
+		},
+		{
+			name:       "log stream start",
+			args:       []string{"log-stream", "start", "101"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/log-streams/101/start",
+			response:   map[string]interface{}{"success": true},
+			wantOutput: []string{"success", "true"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var out bytes.Buffer
+			var gotMethod string
+			var gotPath string
+			var gotQuery string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotMethod = r.Method
+				gotPath = r.URL.Path
+				gotQuery = r.URL.RawQuery
+				if test.assertBody != nil {
+					var body map[string]interface{}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Fatalf("Decode() error = %v", err)
+					}
+					test.assertBody(t, body)
+				}
+				if r.Method == http.MethodPost {
+					w.WriteHeader(http.StatusCreated)
+				}
+				_ = json.NewEncoder(w).Encode(test.response)
+			}))
+			defer server.Close()
+			configureTestAPI(t, server.URL+"/v1")
+
+			cmd := newAppServiceCommand("aps", nil, "Manage app services", instanceFilterFlag)
+			cmd.SetOut(&out)
+			cmd.SetArgs(test.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+
+			if gotMethod != test.wantMethod {
+				t.Fatalf("method = %q, want %s", gotMethod, test.wantMethod)
+			}
+			if gotPath != test.wantPath {
+				t.Fatalf("path = %q, want %s", gotPath, test.wantPath)
+			}
+			if test.wantQuery != "" && gotQuery != test.wantQuery {
+				t.Fatalf("query = %q, want %s", gotQuery, test.wantQuery)
+			}
+			output := out.String()
+			for _, expected := range test.wantOutput {
+				if !strings.Contains(output, expected) {
+					t.Fatalf("output should include %q: %s", expected, output)
+				}
+			}
+		})
+	}
+}
+
 func TestInstanceFlagSupportsShortI(t *testing.T) {
 	for _, test := range []struct {
 		name      string
@@ -2225,7 +2421,24 @@ func TestStackCommandExposesServiceOperations(t *testing.T) {
 	for _, cmd := range serviceCmd.Commands() {
 		serviceNames[cmd.Name()] = true
 	}
-	for _, name := range []string{"list", "create", "update", "delete"} {
+	for _, name := range []string{
+		"list",
+		"create",
+		"update",
+		"delete",
+		"env-var",
+		"helm-value",
+		"token",
+		"annotation",
+		"integration",
+		"link",
+		"volume",
+		"setting",
+		"config",
+		"resources",
+		"options",
+		"cron-schedule",
+	} {
 		if !serviceNames[name] {
 			t.Fatalf("missing stack service subcommand %q", name)
 		}
@@ -2509,6 +2722,150 @@ func TestStackServiceOperationsUseRESTEndpoints(t *testing.T) {
 					status = http.StatusCreated
 				}
 				w.WriteHeader(status)
+				_ = json.NewEncoder(w).Encode(test.response)
+			}))
+			defer server.Close()
+			configureTestAPI(t, server.URL+"/v1")
+
+			cmd := newStackCommand()
+			cmd.SetOut(&out)
+			cmd.SetArgs(test.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+
+			if gotMethod != test.wantMethod {
+				t.Fatalf("method = %q, want %s", gotMethod, test.wantMethod)
+			}
+			if gotPath != test.wantPath {
+				t.Fatalf("path = %q, want %s", gotPath, test.wantPath)
+			}
+			output := out.String()
+			for _, expected := range test.wantOutput {
+				if !strings.Contains(output, expected) {
+					t.Fatalf("output should include %q: %s", expected, output)
+				}
+			}
+		})
+	}
+}
+
+func TestStackServiceChildOperationsUseRESTEndpoints(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantMethod string
+		wantPath   string
+		assertBody func(*testing.T, map[string]interface{})
+		response   interface{}
+		wantOutput []string
+	}{
+		{
+			name:       "env list",
+			args:       []string{"service", "env-var", "list", "11"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/v1/stack-services/11/env-vars",
+			response: []map[string]interface{}{
+				{"id": 31, "name": "DATABASE_URL", "valueSecretId": 7, "envType": "RUNTIME", "createdAt": time.Now().UTC().Format(time.RFC3339)},
+			},
+			wantOutput: []string{"DATABASE_URL", "secret", "true", "env type"},
+		},
+		{
+			name:       "helm create",
+			args:       []string{"service", "helm-value", "create", "11", "--name", "image.tag", "--value", "8.3", "--secret", "--env-type", "RUNTIME"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/stack-services/11/helm-values",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				for key, want := range map[string]interface{}{"name": "image.tag", "value": "8.3", "secret": true, "envType": "RUNTIME"} {
+					if body[key] != want {
+						t.Fatalf("%s = %#v, want %#v; body=%#v", key, body[key], want, body)
+					}
+				}
+			},
+			response:   map[string]interface{}{"id": 32, "name": "image.tag", "value": "8.3", "envType": "RUNTIME"},
+			wantOutput: []string{"image.tag", "8.3"},
+		},
+		{
+			name:       "token update",
+			args:       []string{"service", "token", "update", "41", "--secret", "--regex", "[a-z0-9]+"},
+			wantMethod: http.MethodPut,
+			wantPath:   "/v1/stack-service-tokens/41",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				for key, want := range map[string]interface{}{"secret": true, "regex": "[a-z0-9]+"} {
+					if body[key] != want {
+						t.Fatalf("%s = %#v, want %#v; body=%#v", key, body[key], want, body)
+					}
+				}
+			},
+			response:   map[string]interface{}{"id": 41, "name": "TOKEN", "regex": "[a-z0-9]+", "valueSecretId": 9},
+			wantOutput: []string{"TOKEN", "[a-z0-9]+", "true"},
+		},
+		{
+			name:       "link set",
+			args:       []string{"service", "link", "set", "11", "database", "--linked-service", "12"},
+			wantMethod: http.MethodPut,
+			wantPath:   "/v1/stack-services/11/links/database",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["linkedStackServiceId"] != float64(12) {
+					t.Fatalf("linkedStackServiceId = %#v, want 12; body=%#v", body["linkedStackServiceId"], body)
+				}
+			},
+			response:   map[string]interface{}{"success": true},
+			wantOutput: []string{"success", "true"},
+		},
+		{
+			name:       "options set",
+			args:       []string{"service", "options", "set", "11", "--option", "8.3:true:false", "--option", "8.2:false:true"},
+			wantMethod: http.MethodPut,
+			wantPath:   "/v1/stack-services/11/options",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				options, ok := body["options"].([]interface{})
+				if !ok || len(options) != 2 {
+					t.Fatalf("options = %#v, want two options; body=%#v", body["options"], body)
+				}
+				first := options[0].(map[string]interface{})
+				if first["version"] != "8.3" || first["default"] != true || first["disabled"] != false {
+					t.Fatalf("first option = %#v", first)
+				}
+			},
+			response:   map[string]interface{}{"success": true},
+			wantOutput: []string{"success", "true"},
+		},
+		{
+			name:       "cron create",
+			args:       []string{"service", "cron-schedule", "create", "11", "--name", "drush", "--title", "Drush cron", "--crontab", "*/5 * * * *", "--command", "drush cron", "--env-type", "RUNTIME"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/stack-services/11/cron-schedules",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				for key, want := range map[string]interface{}{"name": "drush", "title": "Drush cron", "crontab": "*/5 * * * *", "command": "drush cron", "envType": "RUNTIME"} {
+					if body[key] != want {
+						t.Fatalf("%s = %#v, want %#v; body=%#v", key, body[key], want, body)
+					}
+				}
+			},
+			response:   map[string]interface{}{"id": 51, "name": "drush", "title": "Drush cron", "crontab": "*/5 * * * *", "command": "drush cron", "envType": "RUNTIME"},
+			wantOutput: []string{"Drush cron", "drush cron"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var out bytes.Buffer
+			var gotMethod string
+			var gotPath string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotMethod = r.Method
+				gotPath = r.URL.Path
+				if test.assertBody != nil {
+					var body map[string]interface{}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Fatalf("Decode() error = %v", err)
+					}
+					test.assertBody(t, body)
+				}
+				if r.Method == http.MethodPost {
+					w.WriteHeader(http.StatusCreated)
+				}
 				_ = json.NewEncoder(w).Encode(test.response)
 			}))
 			defer server.Close()

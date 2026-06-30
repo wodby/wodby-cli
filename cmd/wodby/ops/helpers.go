@@ -98,6 +98,23 @@ var relationColumns = map[string]relationColumn{
 		pathPrefix:    "/app-services/",
 		titlePaths:    []string{"appServiceTitle", "appService.title", "serviceTitle", "service.title", "appService", "service", "appServiceName", "appService.name", "serviceName", "service.name", "origin.appServiceTitle", "origin.appService.title", "origin.appService.name", "origin.serviceTitle", "origin.service.title", "origin.service.name"},
 	},
+	"linkedService": {
+		title:         "linked service",
+		objectKey:     "linkedAppService",
+		idTitle:       "linked service id",
+		idPaths:       []string{"linkedAppServiceId", "linkedAppService.id", "linkedServiceId", "linkedService.id"},
+		idScalarPaths: []string{"linkedAppService", "linkedService"},
+		pathPrefix:    "/app-services/",
+		titlePaths:    []string{"linkedAppServiceTitle", "linkedAppService.title", "linkedAppService.name", "linkedServiceTitle", "linkedService.title", "linkedService.name", "linkedAppService", "linkedService"},
+	},
+	"linkedStackService": {
+		title:         "linked service",
+		objectKey:     "linkedStackService",
+		idTitle:       "linked stack service id",
+		idPaths:       []string{"linkedStackServiceId", "linkedStackService.id"},
+		idScalarPaths: []string{"linkedStackService"},
+		titlePaths:    []string{"linkedStackServiceTitle", "linkedStackService.title", "linkedStackService.name", "linkedStackService"},
+	},
 	"instance": {
 		title:         "instance",
 		objectKey:     "appInstance",
@@ -802,6 +819,10 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		return firstScalarPath(row, "role", "orgRole", "organizationRole", "membershipRole")
 	case "progress":
 		return formatProgressColumn(row)
+	case "secret":
+		return formatSecretColumn(row)
+	case "source":
+		return formatSourceColumn(row)
 	case "projects":
 		return formatProjectsColumn(row)
 	case "originTask":
@@ -1032,6 +1053,10 @@ func relationColumnFor(column string) (relationColumn, bool) {
 		return relationColumns["stack"], true
 	case "service", "appService", "appServiceId", "serviceId":
 		return relationColumns["service"], true
+	case "linkedService", "linkedAppService", "linkedAppServiceId", "linkedServiceId":
+		return relationColumns["linkedService"], true
+	case "linkedStackService", "linkedStackServiceId":
+		return relationColumns["linkedStackService"], true
 	case "instance", "appInstance", "appInstanceId", "instanceId":
 		return relationColumns["instance"], true
 	case "database", "databaseId":
@@ -1250,6 +1275,50 @@ func formatProgressNumber(value float64) string {
 		return fmt.Sprintf("%d%%", int64(value))
 	}
 	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.1f", value), "0"), ".") + "%"
+}
+
+func formatSecretColumn(row map[string]interface{}) string {
+	if value := firstNonNilPath(row, "secret"); value != nil {
+		return formatValue(value)
+	}
+	if firstScalarPath(row, "valueSecretId", "secretId") != "" {
+		return "true"
+	}
+	if _, ok := row["value"]; ok {
+		return "false"
+	}
+	return ""
+}
+
+func formatSourceColumn(row map[string]interface{}) string {
+	source, ok := valueAtPath(row, "source").(map[string]interface{})
+	if !ok || source == nil {
+		return formatValue(row["source"])
+	}
+
+	labels := make([]string, 0, 6)
+	if truthyPath(source, "fromService") {
+		labels = append(labels, "service")
+	}
+	if truthyPath(source, "fromStack") {
+		labels = append(labels, "stack")
+	}
+	if truthyPath(source, "fromWodby") {
+		labels = append(labels, "wodby")
+	}
+	for _, item := range []struct {
+		label string
+		path  string
+	}{
+		{label: "setting", path: "setting"},
+		{label: "link", path: "link"},
+		{label: "integration", path: "integration"},
+	} {
+		if value := firstScalarPath(source, item.path); value != "" {
+			labels = append(labels, item.label+"="+value)
+		}
+	}
+	return strings.Join(labels, ", ")
 }
 
 func formatProjectsColumn(row map[string]interface{}) string {

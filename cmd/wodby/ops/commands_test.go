@@ -2295,6 +2295,84 @@ func TestStackServiceListUsesStackRevisionAndFormatsServiceRevision(t *testing.T
 	}
 }
 
+func TestStackServiceListAcceptsStackIDAndUsesCurrentRevision(t *testing.T) {
+	var out bytes.Buffer
+	var requests []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.Path+"?"+r.URL.RawQuery)
+		switch r.URL.Path {
+		case "/v1/stacks/21":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":    21,
+				"title": "Drupal",
+				"revId": 31,
+			})
+		case "/v1/stack-services":
+			if got := r.URL.Query().Get("stackRevId"); got != "31" {
+				t.Fatalf("stackRevId = %q, want 31", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":                11,
+					"name":              "php",
+					"title":             "PHP",
+					"type":              "SERVICE",
+					"serviceRevTitle":   "PHP",
+					"serviceRevVersion": "8.3",
+				},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newStackCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"service", "list", "--stack", "21"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	wantRequests := []string{"/v1/stacks/21?", "/v1/stack-services?stackRevId=31"}
+	if strings.Join(requests, "\n") != strings.Join(wantRequests, "\n") {
+		t.Fatalf("requests = %#v, want %#v", requests, wantRequests)
+	}
+	output := out.String()
+	for _, expected := range []string{"PHP", "PHP 8.3"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("stack service list output should include %q: %s", expected, output)
+		}
+	}
+}
+
+func TestStackServiceListRejectsAmbiguousStackSelectors(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		t.Fatalf("unexpected request path %q", r.URL.Path)
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newStackCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"service", "list", "31", "--stack", "21"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want ambiguous selector error")
+	}
+	if !strings.Contains(err.Error(), "use either --stack or --stack-rev") {
+		t.Fatalf("Execute() error = %q, want ambiguous selector error", err)
+	}
+	if requests != 0 {
+		t.Fatalf("requests = %d, want 0", requests)
+	}
+}
+
 func TestStackServiceOperationsUseRESTEndpoints(t *testing.T) {
 	tests := []struct {
 		name       string

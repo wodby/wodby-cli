@@ -1243,23 +1243,27 @@ func newStackServiceCommand(out outputOptions) *cobra.Command {
 		Short:   "Manage stack services",
 	}
 
-	var stackRevID string
+	var stackID, stackRevID string
 	listCmd := &cobra.Command{
-		Use:   "list STACK_REV_ID",
+		Use:   "list [STACK_REV_ID]",
 		Short: "List stack services",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 0 {
+				if stackRevID != "" {
+					return errors.New("use either STACK_REV_ID argument or --stack-rev, not both")
+				}
 				stackRevID = args[0]
 			}
-			if err := requireFlag(stackRevID, "--stack-rev"); err != nil {
-				return err
-			}
-			query := url.Values{"stackRevId": []string{stackRevID}}
 			client, err := newRESTClient()
 			if err != nil {
 				return err
 			}
+			resolvedStackRevID, err := resolveStackServiceListStackRevID(cmd.Context(), client, stackID, stackRevID)
+			if err != nil {
+				return err
+			}
+			query := url.Values{"stackRevId": []string{resolvedStackRevID}}
 			var result interface{}
 			if err := client.Get(cmd.Context(), "/stack-services", query, &result); err != nil {
 				return err
@@ -1267,11 +1271,38 @@ func newStackServiceCommand(out outputOptions) *cobra.Command {
 			return printClientResult(cmd, client, out, result, stackServiceColumns)
 		},
 	}
+	listCmd.Flags().StringVar(&stackID, "stack", "", "Stack ID; uses the stack current revision")
 	listCmd.Flags().StringVar(&stackRevID, "stack-rev", "", "Stack revision ID")
 	defaultToList(cmd, listCmd)
 
 	cmd.AddCommand(listCmd, newStackServiceCreateCommand(out), newStackServiceUpdateCommand(out), newDeleteCommand("delete ID", "Delete stack service", "/stack-services/", stackServiceColumns, out))
 	return cmd
+}
+
+func resolveStackServiceListStackRevID(ctx context.Context, client *rest.Client, stackID string, stackRevID string) (string, error) {
+	if stackID != "" && stackRevID != "" {
+		return "", errors.New("use either --stack or --stack-rev, not both")
+	}
+	if stackRevID != "" {
+		return stackRevID, nil
+	}
+	if stackID == "" {
+		return "", errors.New("one of --stack, --stack-rev, or STACK_REV_ID is required")
+	}
+
+	var stack interface{}
+	if err := client.Get(ctx, "/stacks/"+url.PathEscape(stackID), nil, &stack); err != nil {
+		return "", err
+	}
+	rows := asRows(normalizeItem(stack))
+	if len(rows) == 0 {
+		return "", errors.Errorf("stack %q response did not include a current revision", stackID)
+	}
+	resolvedStackRevID := firstScalarPath(rows[0], "revId", "stackRevId", "rev.id", "stackRev.id", "stackRevision.id")
+	if resolvedStackRevID == "" {
+		return "", errors.Errorf("stack %q response did not include revId", stackID)
+	}
+	return resolvedStackRevID, nil
 }
 
 func newStackServiceCreateCommand(out outputOptions) *cobra.Command {

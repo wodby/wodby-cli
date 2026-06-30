@@ -130,13 +130,13 @@ func TestDefaultTableColumnsUseReadableRelations(t *testing.T) {
 
 func TestDefaultTaskColumnsUseCompactListShape(t *testing.T) {
 	got := strings.Join(taskColumns, ",")
-	want := "id,title,status,author,createdAt,duration"
+	want := "id,title,status,progress,projects,author,startedAt,duration"
 	if got != want {
 		t.Fatalf("taskColumns = %q, want %q", got, want)
 	}
 
 	getColumns := strings.Join(taskGetColumns, ",")
-	for _, expected := range []string{"author", "app", "instance", "service", "database", "databaseDb"} {
+	for _, expected := range []string{"progress", "projects", "author", "app", "instance", "service", "database", "databaseDb", "originTask", "repeatedTask", "spawnedTasks", "startedAt", "endedAt"} {
 		if !strings.Contains(getColumns, expected) {
 			t.Fatalf("taskGetColumns should include %q: %s", expected, getColumns)
 		}
@@ -397,11 +397,11 @@ func TestTableColumnsFormatTimestampsAsRelativeAge(t *testing.T) {
 	}
 }
 
-func TestTaskColumnsShowDurationInsteadOfStartAndEndTimes(t *testing.T) {
+func TestTaskColumnsShowProgressProjectsStartedAndDuration(t *testing.T) {
 	var out bytes.Buffer
 	cmd := &cobra.Command{}
 	cmd.SetOut(&out)
-	createdAt := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	startedAt := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
 
 	printTable(cmd, []interface{}{
 		map[string]interface{}{
@@ -410,21 +410,22 @@ func TestTaskColumnsShowDurationInsteadOfStartAndEndTimes(t *testing.T) {
 			"title":       "Deploy",
 			"status":      "done",
 			"progress":    87,
-			"createdAt":   createdAt,
-			"startedAt":   "2026-01-02T03:04:05Z",
-			"endedAt":     "2026-01-02T04:06:07Z",
+			"projectIds":  []interface{}{12, 14},
+			"createdAt":   "2026-01-02T03:00:00Z",
+			"startedAt":   startedAt,
+			"endedAt":     time.Now().Add(-58 * time.Minute).UTC().Format(time.RFC3339),
 			"appInstance": map[string]interface{}{"title": "Prod"},
 			"app":         map[string]interface{}{"title": "Drupal"},
 		},
 	}, taskColumns)
 
 	output := out.String()
-	for _, expected := range []string{"id", "title", "status", "created at", "duration", "2h ago", "1h 2m"} {
+	for _, expected := range []string{"id", "title", "status", "progress", "projects", "author", "started at", "duration", "87%", "12, 14", "2h ago", "1h 2m"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("output should include %q: %s", expected, output)
 		}
 	}
-	for _, unwanted := range []string{"name", "worker-task", "progress", "app", "Drupal", "instance", "Prod", "started at", "ended at", createdAt, "2026-01-02T03:04:05Z", "2026-01-02T04:06:07Z"} {
+	for _, unwanted := range []string{"name", "worker-task", "created at", "app", "Drupal", "instance", "Prod", "ended at", startedAt, "2026-01-02T03:00:00Z"} {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("output should not include %q: %s", unwanted, output)
 		}
@@ -490,13 +491,18 @@ func TestTaskGetEnrichesAuthor(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/tasks/42":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"id":        42,
-				"title":     "Deploy",
-				"status":    "done",
-				"authorId":  8,
-				"createdAt": "2026-01-02T03:00:00Z",
-				"startedAt": "2026-01-02T03:04:00Z",
-				"endedAt":   "2026-01-02T03:06:00Z",
+				"id":             42,
+				"title":          "Deploy",
+				"status":         "done",
+				"progress":       100,
+				"projectIds":     []int{12, 14},
+				"authorId":       8,
+				"originTaskId":   41,
+				"repeatedTaskId": 39,
+				"spawnedTaskIds": []int{43, 44},
+				"createdAt":      "2026-01-02T03:00:00Z",
+				"startedAt":      "2026-01-02T03:04:00Z",
+				"endedAt":        "2026-01-02T03:06:00Z",
 			})
 		case "/v1/org-memberships/8":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -521,7 +527,7 @@ func TestTaskGetEnrichesAuthor(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"author:", "Jane Doe <jane@example.com>", "author id:", "8"} {
+	for _, expected := range []string{"progress:", "100%", "projects:", "12, 14", "author:", "Jane Doe <jane@example.com>", "author id:", "8", "origin task:", "41", "repeated task:", "39", "spawned tasks:", "43, 44", "started at:", "2026-01-02 03:04", "ended at:", "2026-01-02 03:06"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("task get output should include %q: %s", expected, output)
 		}
@@ -640,16 +646,20 @@ func TestTaskJobAndStepCommandsUseTaskPayload(t *testing.T) {
 					"id":        "job-1",
 					"title":     "Build",
 					"status":    "done",
+					"logStatus": "uploaded",
+					"system":    true,
 					"startedAt": "2026-01-02T03:00:00Z",
 					"endedAt":   "2026-01-02T03:02:00Z",
 					"steps": []map[string]interface{}{
-						{"id": "step-1", "name": "Prepare", "status": "done"},
+						{"id": "step-1", "name": "Prepare", "status": "done", "logStatus": "uploaded", "system": true, "startedAt": "2026-01-02T03:00:00Z", "endedAt": "2026-01-02T03:01:00Z"},
 					},
 				},
 				{
 					"id":        "job-2",
 					"title":     "Deploy",
 					"status":    "running",
+					"logStatus": "pending",
+					"system":    false,
 					"startedAt": "2026-01-02T03:03:00Z",
 					"endedAt":   "2026-01-02T03:05:00Z",
 					"steps": []map[string]interface{}{
@@ -657,6 +667,8 @@ func TestTaskJobAndStepCommandsUseTaskPayload(t *testing.T) {
 							"id":        "step-2",
 							"name":      "Apply",
 							"status":    "running",
+							"logStatus": "pending",
+							"system":    false,
 							"startedAt": "2026-01-02T03:03:00Z",
 							"endedAt":   "2026-01-02T03:03:30Z",
 						},
@@ -673,10 +685,10 @@ func TestTaskJobAndStepCommandsUseTaskPayload(t *testing.T) {
 		args     []string
 		expected []string
 	}{
-		{name: "job list", args: []string{"job", "list", "42"}, expected: []string{"id", "name", "status", "duration", "steps", "job-1", "Build", "done", "2m", "job-2", "Deploy", "running"}},
-		{name: "job get", args: []string{"job", "get", "42", "Deploy"}, expected: []string{"id:", "job-2", "name:", "Deploy", "status:", "running", "duration:", "2m", "steps:", "1"}},
-		{name: "step list", args: []string{"step", "list", "42"}, expected: []string{"id", "name", "status", "duration", "job", "step-1", "Prepare", "Build [job-1]", "step-2", "Apply", "30s", "Deploy [job-2]"}},
-		{name: "step get", args: []string{"step", "get", "42", "step-2"}, expected: []string{"id:", "step-2", "name:", "Apply", "status:", "running", "duration:", "30s", "job:", "Deploy [job-2]"}},
+		{name: "job list", args: []string{"job", "list", "42"}, expected: []string{"id", "name", "status", "log status", "system", "started at", "duration", "steps", "job-1", "Build", "done", "uploaded", "true", "2m", "job-2", "Deploy", "running", "pending"}},
+		{name: "job get", args: []string{"job", "get", "42", "Deploy"}, expected: []string{"id:", "job-2", "name:", "Deploy", "status:", "running", "log status:", "pending", "system:", "false", "started at:", "2026-01-02 03:03", "duration:", "2m", "steps:", "1"}},
+		{name: "step list", args: []string{"step", "list", "42"}, expected: []string{"id", "name", "status", "log status", "system", "started at", "duration", "job", "step-1", "Prepare", "uploaded", "true", "Build [job-1]", "step-2", "Apply", "30s", "Deploy [job-2]"}},
+		{name: "step get", args: []string{"step", "get", "42", "step-2"}, expected: []string{"id:", "step-2", "name:", "Apply", "status:", "running", "log status:", "pending", "system:", "false", "started at:", "2026-01-02 03:03", "duration:", "30s", "job:", "Deploy [job-2]"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var out bytes.Buffer

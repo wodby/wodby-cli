@@ -355,19 +355,25 @@ func compactNonEmpty(values ...string) []string {
 }
 
 type taskLogJob struct {
-	id       string
-	name     string
-	status   string
-	duration string
-	index    int
-	steps    []taskLogStep
+	id        string
+	name      string
+	status    string
+	logStatus string
+	system    string
+	startedAt string
+	duration  string
+	index     int
+	steps     []taskLogStep
 }
 
 type taskLogStep struct {
-	id       string
-	name     string
-	status   string
-	duration string
+	id        string
+	name      string
+	status    string
+	logStatus string
+	system    string
+	startedAt string
+	duration  string
 }
 
 func taskLogJobs(task interface{}) []taskLogJob {
@@ -380,11 +386,14 @@ func taskLogJobs(task interface{}) []taskLogJob {
 	jobs := make([]taskLogJob, 0)
 	if topLevelSteps := taskLogStepsFromValue(row["steps"]); len(topLevelSteps) != 0 {
 		jobs = append(jobs, taskLogJob{
-			index:    1,
-			name:     stepLogNameFromRow(row),
-			status:   firstScalarPath(row, "status"),
-			duration: stepLogDuration(row),
-			steps:    topLevelSteps,
+			index:     1,
+			name:      stepLogNameFromRow(row),
+			status:    firstScalarPath(row, "status"),
+			logStatus: firstScalarPath(row, "logStatus", "logsStatus"),
+			system:    firstScalarPath(row, "system"),
+			startedAt: firstScalarPath(row, "startedAt"),
+			duration:  stepLogDuration(row),
+			steps:     topLevelSteps,
 		})
 	}
 
@@ -399,12 +408,15 @@ func taskLogJobs(task interface{}) []taskLogJob {
 		}
 		index := len(jobs) + 1
 		jobs = append(jobs, taskLogJob{
-			id:       formatValue(jobMap["id"]),
-			name:     jobLogName(jobMap),
-			status:   firstScalarPath(jobMap, "status"),
-			duration: stepLogDuration(jobMap),
-			index:    index,
-			steps:    taskLogStepsFromValue(jobMap["steps"]),
+			id:        formatValue(jobMap["id"]),
+			name:      jobLogName(jobMap),
+			status:    firstScalarPath(jobMap, "status"),
+			logStatus: firstScalarPath(jobMap, "logStatus", "logsStatus"),
+			system:    firstScalarPath(jobMap, "system"),
+			startedAt: firstScalarPath(jobMap, "startedAt"),
+			duration:  stepLogDuration(jobMap),
+			index:     index,
+			steps:     taskLogStepsFromValue(jobMap["steps"]),
 		})
 	}
 	return jobs
@@ -436,10 +448,13 @@ func taskLogStepsFromValue(value interface{}) []taskLogStep {
 			continue
 		}
 		steps = append(steps, taskLogStep{
-			id:       id,
-			name:     name,
-			status:   firstScalarPath(stepMap, "status"),
-			duration: stepLogDuration(stepMap),
+			id:        id,
+			name:      name,
+			status:    firstScalarPath(stepMap, "status"),
+			logStatus: firstScalarPath(stepMap, "logStatus", "logsStatus"),
+			system:    firstScalarPath(stepMap, "system"),
+			startedAt: firstScalarPath(stepMap, "startedAt"),
+			duration:  stepLogDuration(stepMap),
 		})
 	}
 	return steps

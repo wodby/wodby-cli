@@ -46,10 +46,10 @@ var (
 	deploymentColumns     = []string{"id", "number", "status", "instance", "services", "images", "task", "skipRollback", "createdAt", "startedAt", "endedAt"}
 	backupColumns         = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "task", "createdAt"}
 	importColumns         = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "createdAt"}
-	taskColumns           = []string{"id", "title", "status", "author", "createdAt", "duration"}
-	taskGetColumns        = []string{"id", "title", "status", "author", "app", "instance", "service", "database", "databaseDb", "createdAt", "duration"}
-	taskJobColumns        = []string{"id", "name", "status", "duration", "steps"}
-	taskStepColumns       = []string{"id", "name", "status", "duration", "job"}
+	taskColumns           = []string{"id", "title", "status", "progress", "projects", "author", "startedAt", "duration"}
+	taskGetColumns        = []string{"id", "title", "status", "progress", "projects", "author", "app", "instance", "service", "database", "databaseDb", "originTask", "repeatedTask", "spawnedTasks", "createdAt", "startedAt", "endedAt", "duration"}
+	taskJobColumns        = []string{"id", "name", "status", "logStatus", "system", "startedAt", "duration", "steps"}
+	taskStepColumns       = []string{"id", "name", "status", "logStatus", "system", "startedAt", "duration", "job"}
 	operationColumns      = []string{"success", "task"}
 )
 
@@ -2987,7 +2987,7 @@ func taskGetColumnsFor(value interface{}) []string {
 
 func isOptionalTaskRelationColumn(column string) bool {
 	switch column {
-	case "app", "instance", "service", "database", "databaseDb":
+	case "app", "instance", "service", "database", "databaseDb", "projects", "originTask", "repeatedTask", "spawnedTasks":
 		return true
 	default:
 		return false
@@ -3149,11 +3149,14 @@ func taskJobRows(task interface{}) []map[string]interface{} {
 
 func taskJobRow(job taskLogJob) map[string]interface{} {
 	return map[string]interface{}{
-		"id":       job.id,
-		"name":     jobLogNameOrFallback(job),
-		"status":   job.status,
-		"duration": job.duration,
-		"steps":    len(job.steps),
+		"id":        job.id,
+		"name":      jobLogNameOrFallback(job),
+		"status":    job.status,
+		"logStatus": job.logStatus,
+		"system":    job.system,
+		"startedAt": job.startedAt,
+		"duration":  job.duration,
+		"steps":     len(job.steps),
 	}
 }
 
@@ -3170,11 +3173,14 @@ func taskStepRows(task interface{}) []map[string]interface{} {
 
 func taskStepRow(step taskLogStep, job taskLogJob) map[string]interface{} {
 	return map[string]interface{}{
-		"id":       step.id,
-		"name":     stepLogNameOrFallback(step),
-		"status":   step.status,
-		"duration": step.duration,
-		"job":      jobLogNameWithID(job),
+		"id":        step.id,
+		"name":      stepLogNameOrFallback(step),
+		"status":    step.status,
+		"logStatus": step.logStatus,
+		"system":    step.system,
+		"startedAt": step.startedAt,
+		"duration":  step.duration,
+		"job":       jobLogNameWithID(job),
 	}
 }
 

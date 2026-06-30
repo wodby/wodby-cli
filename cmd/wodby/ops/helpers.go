@@ -789,6 +789,16 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		return firstScalarPath(row, "email", "user.email", "account.email", "profile.email")
 	case "role":
 		return firstScalarPath(row, "role", "orgRole", "organizationRole", "membershipRole")
+	case "progress":
+		return formatProgressColumn(row)
+	case "projects":
+		return formatProjectsColumn(row)
+	case "originTask":
+		return firstScalarPath(row, "originTaskId", "originTask.id", "origin.id")
+	case "repeatedTask":
+		return firstScalarPath(row, "repeatedTaskId", "repeatedTask.id")
+	case "spawnedTasks":
+		return formatSpawnedTasksColumn(row)
 	case "duration":
 		if duration := firstScalarPath(row, "duration"); duration != "" {
 			return duration
@@ -1178,6 +1188,130 @@ func formatOutdatedColumn(row map[string]interface{}) string {
 	}
 
 	return ""
+}
+
+func formatProgressColumn(row map[string]interface{}) string {
+	value := firstNonNilPath(row, "progress", "taskProgress")
+	if value == nil {
+		return ""
+	}
+
+	switch v := value.(type) {
+	case json.Number:
+		if number, err := v.Float64(); err == nil {
+			return formatProgressNumber(number)
+		}
+	case float64:
+		return formatProgressNumber(v)
+	case float32:
+		return formatProgressNumber(float64(v))
+	case int:
+		return formatProgressNumber(float64(v))
+	case int64:
+		return formatProgressNumber(float64(v))
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" || strings.HasSuffix(trimmed, "%") {
+			return trimmed
+		}
+		if number, err := strconv.ParseFloat(trimmed, 64); err == nil {
+			return formatProgressNumber(number)
+		}
+	}
+	return formatValue(value)
+}
+
+func formatProgressNumber(value float64) string {
+	if value > 0 && value <= 1 {
+		value *= 100
+	}
+	if value == float64(int64(value)) {
+		return fmt.Sprintf("%d%%", int64(value))
+	}
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.1f", value), "0"), ".") + "%"
+}
+
+func formatProjectsColumn(row map[string]interface{}) string {
+	labels := make([]string, 0)
+	for _, path := range []string{"projects", "taskProjects"} {
+		for _, project := range asRows(valueAtPath(row, path)) {
+			label := firstTitlePath(project, "title", "name", "projectTitle", "projectName", "project.title", "project.name")
+			if label == "" {
+				label = firstScalarPath(project, "id", "projectId", "project.id")
+			}
+			if label != "" {
+				labels = append(labels, label)
+			}
+		}
+	}
+	if len(labels) != 0 {
+		return strings.Join(labels, ", ")
+	}
+
+	return strings.Join(scalarListValues(firstNonNilPath(row, "projectIds", "projectIDs", "projectsIds", "projectId", "project.id")), ", ")
+}
+
+func formatSpawnedTasksColumn(row map[string]interface{}) string {
+	labels := make([]string, 0)
+	for _, task := range asRows(valueAtPath(row, "spawnedTasks")) {
+		label := firstTitlePath(task, "title", "name")
+		id := firstScalarPath(task, "id")
+		if label != "" && id != "" && label != id {
+			label += " [" + id + "]"
+		}
+		if label == "" {
+			label = id
+		}
+		if label != "" {
+			labels = append(labels, label)
+		}
+	}
+	if len(labels) != 0 {
+		return strings.Join(labels, ", ")
+	}
+
+	return strings.Join(scalarListValues(firstNonNilPath(row, "spawnedTaskIds", "spawnedTaskIDs")), ", ")
+}
+
+func scalarListValues(value interface{}) []string {
+	switch v := value.(type) {
+	case nil:
+		return nil
+	case []interface{}:
+		values := make([]string, 0, len(v))
+		for _, item := range v {
+			if formatted := formatValue(item); formatted != "" {
+				values = append(values, formatted)
+			}
+		}
+		return values
+	case []string:
+		values := make([]string, 0, len(v))
+		for _, item := range v {
+			if item != "" {
+				values = append(values, item)
+			}
+		}
+		return values
+	case []int:
+		values := make([]string, 0, len(v))
+		for _, item := range v {
+			values = append(values, strconv.Itoa(item))
+		}
+		return values
+	case []float64:
+		values := make([]string, 0, len(v))
+		for _, item := range v {
+			values = append(values, strconv.FormatFloat(item, 'f', -1, 64))
+		}
+		return values
+	default:
+		formatted := formatValue(value)
+		if formatted == "" {
+			return nil
+		}
+		return strings.Split(formatted, ",")
+	}
 }
 
 func formatCurrentRevisionNumber(row map[string]interface{}) string {

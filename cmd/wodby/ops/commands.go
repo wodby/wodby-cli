@@ -40,12 +40,13 @@ var (
 	routeColumns          = []string{"id", "host", "path", "pathType", "action", "status", "service", "port", "cert", "certStatus", "certIssuer", "certExpiresAt", "main", "primary", "private", "disabled", "lastSyncedAt", "createdAt"}
 	appPortColumns        = []string{"id", "name", "number", "protocol", "private", "service", "instance", "createdAt"}
 	certColumns           = []string{"id", "host", "status", "issuer", "certType", "expiresAt", "route", "instance", "createdAt"}
-	buildListColumns      = []string{"id", "number", "status", "instance", "service", "services", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "createdAt", "startedAt", "endedAt", "duration"}
+	buildListColumns      = []string{"id", "number", "service", "services", "imageCount", "gitRefType", "gitRef", "startedAt", "duration", "status"}
 	buildColumns          = []string{"id", "number", "status", "instance", "service", "services", "images", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "createdAt", "startedAt", "endedAt", "duration"}
-	deploymentListColumns = []string{"id", "number", "status", "instance", "services", "task", "skipRollback", "createdAt", "startedAt", "endedAt"}
-	deploymentColumns     = []string{"id", "number", "status", "instance", "services", "images", "task", "skipRollback", "createdAt", "startedAt", "endedAt"}
+	deploymentListColumns = []string{"id", "number", "services", "builds", "startedAt", "duration", "status"}
+	deploymentColumns     = []string{"id", "number", "status", "instance", "services", "images", "task", "skipRollback", "createdAt", "startedAt", "endedAt", "duration"}
 	backupColumns         = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "task", "createdAt"}
-	importColumns         = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "createdAt"}
+	importListColumns     = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "startedAt", "duration"}
+	importColumns         = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "backup", "createdAt", "updatedAt", "startedAt", "endedAt", "duration"}
 	taskColumns           = []string{"id", "title", "status", "progress", "projects", "author", "startedAt", "duration"}
 	taskGetColumns        = []string{"id", "title", "status", "progress", "projects", "author", "app", "instance", "service", "database", "databaseDb", "originTask", "repeatedTask", "spawnedTasks", "createdAt", "startedAt", "endedAt", "duration"}
 	taskJobColumns        = []string{"id", "name", "status", "logStatus", "system", "startedAt", "duration", "steps"}
@@ -1950,7 +1951,7 @@ func newInstanceImportCommand() *cobra.Command {
 		Short:   "Manage app instance imports",
 	}
 	addOutputFlag(cmd, &out)
-	listCmd := newInstanceFilteredListCommand("list INSTANCE_ID", "List imports", "/imports", importColumns, out, false)
+	listCmd := newInstanceFilteredListCommand("list INSTANCE_ID", "List imports", "/imports", importListColumns, out, false)
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get import", "/imports/", importColumns, out), newImportCreateCommand(out))
 	return cmd
@@ -2789,7 +2790,7 @@ func newImportCommand() *cobra.Command {
 		Short: "Manage imports",
 	}
 	addOutputFlag(cmd, &out)
-	listCmd := newFilteredListCommand("list", "List imports", "/imports", importColumns, out, false)
+	listCmd := newFilteredListCommand("list", "List imports", "/imports", importListColumns, out, false)
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get import", "/imports/", importColumns, out), newImportCreateCommand(out))
 	return cmd

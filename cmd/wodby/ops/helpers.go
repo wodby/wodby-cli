@@ -163,6 +163,15 @@ var relationColumns = map[string]relationColumn{
 		pathPrefix:    "/tasks/",
 		titlePaths:    []string{"taskTitle", "task.title", "task", "taskName", "task.name"},
 	},
+	"backup": {
+		title:         "backup",
+		objectKey:     "backup",
+		idTitle:       "backup id",
+		idPaths:       []string{"backupId", "backup.id"},
+		idScalarPaths: []string{"backup"},
+		pathPrefix:    "/backups/",
+		titlePaths:    []string{"backupTitle", "backup.title", "backup", "backupName", "backup.name"},
+	},
 	"author": {
 		title:         "author",
 		objectKey:     "author",
@@ -716,6 +725,8 @@ func tableColumnTitle(column string) string {
 		return "instance id"
 	case "ips":
 		return "ips"
+	case "imageCount":
+		return "images"
 	default:
 		if relation, ok := relationColumnFor(column); ok {
 			return relation.title
@@ -806,8 +817,12 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		return formatDurationColumn(row)
 	case "services":
 		return formatServicesColumn(row)
+	case "imageCount":
+		return formatImageCountColumn(row)
 	case "images":
 		return formatImagesColumn(row)
+	case "builds":
+		return formatBuildsColumn(row)
 	case "cert", "appCert", "certificate":
 		return formatCertColumn(row)
 	case "certStatus", "certificateStatus":
@@ -1027,6 +1042,8 @@ func relationColumnFor(column string) (relationColumn, bool) {
 		return relationColumns["cert"], true
 	case "task", "taskId":
 		return relationColumns["task"], true
+	case "backup", "backupId":
+		return relationColumns["backup"], true
 	case "author", "authorId", "createdBy", "createdById", "orgMembership", "orgMembershipId", "membership", "membershipId":
 		return relationColumns["author"], true
 	default:
@@ -1558,6 +1575,65 @@ func serviceCount(row map[string]interface{}) int {
 		rows := asRows(valueAtPath(row, path))
 		if len(rows) != 0 {
 			return len(rows)
+		}
+	}
+	return 0
+}
+
+func formatImageCountColumn(row map[string]interface{}) string {
+	if count := collectionCountFromPaths(row, []string{
+		"imageCount",
+		"imagesCount",
+		"appServiceBuilds",
+		"serviceBuilds",
+		"images",
+		"appImages",
+		"buildImages",
+		"builtImages",
+		"serviceImages",
+	}); count != 0 {
+		return pluralizeCount(count, "image", "images")
+	}
+	if labels := deploymentImageLabels(row); len(labels) != 0 {
+		return pluralizeCount(len(labels), "image", "images")
+	}
+	return ""
+}
+
+func formatBuildsColumn(row map[string]interface{}) string {
+	count := collectionCountFromPaths(row, []string{"buildCount", "buildsCount", "builds", "appBuilds"})
+	if count == 0 {
+		return ""
+	}
+	return pluralizeCount(count, "build", "builds")
+}
+
+func collectionCountFromPaths(row map[string]interface{}, paths []string) int {
+	for _, path := range paths {
+		value := valueAtPath(row, path)
+		switch v := value.(type) {
+		case nil:
+			continue
+		case json.Number:
+			if count, err := strconv.Atoi(v.String()); err == nil {
+				return count
+			}
+		case float64:
+			return int(v)
+		case int:
+			return v
+		case []interface{}:
+			return len(v)
+		case []map[string]interface{}:
+			return len(v)
+		case []string:
+			return len(v)
+		default:
+			if formatted := scalarString(v); formatted != "" {
+				if count, err := strconv.Atoi(formatted); err == nil {
+					return count
+				}
+			}
 		}
 	}
 	return 0

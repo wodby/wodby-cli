@@ -2422,19 +2422,83 @@ func TestLongRunningResourceColumnsIncludeTask(t *testing.T) {
 		}
 	}
 	buildListColumnList := strings.Join(buildListColumns, ",")
-	if strings.Contains(buildListColumnList, "images") {
-		t.Fatalf("buildListColumns should not include images: %s", buildListColumnList)
+	for _, expected := range []string{"imageCount", "startedAt", "duration"} {
+		if !strings.Contains(buildListColumnList, expected) {
+			t.Fatalf("buildListColumns should include %q: %s", expected, buildListColumnList)
+		}
+	}
+	for _, unwanted := range []string{"images", "createdAt", "endedAt", "commitMessage"} {
+		if strings.Contains(buildListColumnList, unwanted) {
+			t.Fatalf("buildListColumns should not include %q: %s", unwanted, buildListColumnList)
+		}
 	}
 
 	deploymentColumnList := strings.Join(deploymentColumns, ",")
-	for _, expected := range []string{"services", "images"} {
+	for _, expected := range []string{"services", "images", "duration"} {
 		if !strings.Contains(deploymentColumnList, expected) {
 			t.Fatalf("deploymentColumns should include %q: %s", expected, deploymentColumnList)
 		}
 	}
 	deploymentListColumnList := strings.Join(deploymentListColumns, ",")
-	if !strings.Contains(deploymentListColumnList, "services") || strings.Contains(deploymentListColumnList, "images") {
-		t.Fatalf("deploymentListColumns should include service count but not images: %s", deploymentListColumnList)
+	for _, expected := range []string{"services", "builds", "startedAt", "duration"} {
+		if !strings.Contains(deploymentListColumnList, expected) {
+			t.Fatalf("deploymentListColumns should include %q: %s", expected, deploymentListColumnList)
+		}
+	}
+	for _, unwanted := range []string{"images", "createdAt", "endedAt", "skipRollback"} {
+		if strings.Contains(deploymentListColumnList, unwanted) {
+			t.Fatalf("deploymentListColumns should not include %q: %s", unwanted, deploymentListColumnList)
+		}
+	}
+}
+
+func TestBuildListShowsServiceAndImageCounts(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/app-builds" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("appInstanceId"); got != "21" {
+			t.Fatalf("appInstanceId = %q, want 21", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"items": []map[string]interface{}{
+				{
+					"id":        101,
+					"number":    7,
+					"status":    "completed",
+					"gitRef":    "main",
+					"startedAt": "2026-01-02T03:00:00Z",
+					"endedAt":   "2026-01-02T03:02:00Z",
+					"appServiceBuilds": []map[string]interface{}{
+						{"appServiceId": 22, "image": "registry.example.com/app:php-7"},
+						{"appServiceId": 33, "image": "registry.example.com/app:nginx-7"},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newBuildCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "-i", "21"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"services", "2 services", "images", "2 images", "started at", "duration", "2m", "completed"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("build list output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"commit message", "created at", "ended at", "registry.example.com/app:php-7", "registry.example.com/app:nginx-7"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("build list output should not include %q: %s", unwanted, output)
+		}
 	}
 }
 
@@ -2613,7 +2677,7 @@ func TestDeploymentGetShowsServicesAndImages(t *testing.T) {
 	}
 }
 
-func TestDeploymentListShowsServiceCountWithoutImages(t *testing.T) {
+func TestDeploymentListShowsServiceBuildCountsAndDurationWithoutImages(t *testing.T) {
 	var out bytes.Buffer
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2626,9 +2690,11 @@ func TestDeploymentListShowsServiceCountWithoutImages(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"items": []map[string]interface{}{
 				{
-					"id":     303,
-					"number": 7,
-					"status": "completed",
+					"id":        303,
+					"number":    7,
+					"status":    "completed",
+					"startedAt": "2026-01-02T03:00:00Z",
+					"endedAt":   "2026-01-02T03:02:00Z",
 					"appServiceDeployments": []map[string]interface{}{
 						{"appServiceId": 22, "appServiceBuildId": 2201},
 						{"appServiceId": 33, "appServiceBuildId": 3301},
@@ -2656,14 +2722,61 @@ func TestDeploymentListShowsServiceCountWithoutImages(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"services", "2 services"} {
+	for _, expected := range []string{"services", "2 services", "builds", "1 build", "started at", "duration", "2m"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("deployment list output should include %q: %s", expected, output)
 		}
 	}
-	for _, unwanted := range []string{"images", "registry.example.com/app:php-7", "registry.example.com/app:nginx-7"} {
+	for _, unwanted := range []string{"images", "created at", "ended at", "registry.example.com/app:php-7", "registry.example.com/app:nginx-7"} {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("deployment list output should not include %q: %s", unwanted, output)
+		}
+	}
+}
+
+func TestImportListUsesStartedAndDuration(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/imports" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("appInstanceId"); got != "21" {
+			t.Fatalf("appInstanceId = %q, want 21", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"items": []map[string]interface{}{
+				{
+					"id":        55,
+					"name":      "db-import",
+					"source":    "url",
+					"status":    "completed",
+					"createdAt": "2026-01-02T02:00:00Z",
+					"startedAt": "2026-01-02T03:00:00Z",
+					"endedAt":   "2026-01-02T03:04:00Z",
+				},
+			},
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newImportCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "-i", "21"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"started at", "duration", "4m", "db-import", "url", "completed"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("import list output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{"created at", "ended at", "2026-01-02T02:00:00Z"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("import list output should not include %q: %s", unwanted, output)
 		}
 	}
 }

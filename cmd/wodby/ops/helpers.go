@@ -725,8 +725,8 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		return formatTaskJobsColumn(row)
 	case "outdated":
 		return formatOutdatedColumn(row)
-	case "currentRevNumber":
-		return firstScalarPath(row, "currentRevNumber", "revNumber", "originStackRevNumber", "stackRevNumber", "stackRevisionNumber", "stackRev.number", "stackRevision.number")
+	case "currentRevNumber", "revision":
+		return formatCurrentRevisionNumber(row)
 	case "currentVersion":
 		return firstScalarPath(row, "currentVersion", "version", "originStackRevVersion", "stackRevVersion", "stackRevisionVersion", "stackRev.version", "stackRevision.version")
 	case "infraAppInstanceId":
@@ -1059,6 +1059,25 @@ func formatOutdatedColumn(row map[string]interface{}) string {
 	}
 
 	return ""
+}
+
+func formatCurrentRevisionNumber(row map[string]interface{}) string {
+	return firstScalarPath(
+		row,
+		"currentRevNumber",
+		"currentRevisionNumber",
+		"revNumber",
+		"revisionNumber",
+		"originStackRevNumber",
+		"stackRevNumber",
+		"stackRevisionNumber",
+		"stackRev.number",
+		"stackRev.revNumber",
+		"stackRev.revision",
+		"stackRevision.number",
+		"stackRevision.revNumber",
+		"stackRevision.revision",
+	)
 }
 
 func formatInfraAppInstanceIDColumn(row map[string]interface{}) string {

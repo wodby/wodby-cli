@@ -146,17 +146,19 @@ func TestDefaultTaskColumnsUseCompactListShape(t *testing.T) {
 
 func TestStackColumnsShowDatesAndGetShowsServices(t *testing.T) {
 	listColumns := strings.Join(stackColumns, ",")
-	for _, expected := range []string{"currentRevNumber", "currentVersion", "createdAt", "updatedAt"} {
+	for _, expected := range []string{"revision", "currentVersion", "createdAt", "updatedAt"} {
 		if !strings.Contains(listColumns, expected) {
 			t.Fatalf("stackColumns should include %q: %s", expected, listColumns)
 		}
 	}
-	if strings.Contains(listColumns, "services") {
-		t.Fatalf("stackColumns should not include services on list: %s", listColumns)
+	for _, unwanted := range []string{"public", "revId", "currentRevNumber", "latestRevNumber", "services"} {
+		if strings.Contains(listColumns, unwanted) {
+			t.Fatalf("stackColumns should not include %q on list: %s", unwanted, listColumns)
+		}
 	}
 
 	getColumns := strings.Join(stackGetColumns, ",")
-	for _, expected := range []string{"currentRevNumber", "currentVersion", "createdAt", "updatedAt", "services"} {
+	for _, expected := range []string{"public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "createdAt", "updatedAt", "services"} {
 		if !strings.Contains(getColumns, expected) {
 			t.Fatalf("stackGetColumns should include %q: %s", expected, getColumns)
 		}
@@ -2208,12 +2210,12 @@ func TestStackListShowsCreatedAndUpdatedDatesWithoutServices(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"current rev number", "current version", "outdated", "created at", "updated at", "2", "1.2.3", "2h ago", "30m ago"} {
+	for _, expected := range []string{"revision", "current version", "outdated", "created at", "updated at", "2", "1.2.3", "2h ago", "30m ago"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("stack list output should include %q: %s", expected, output)
 		}
 	}
-	for _, unwanted := range []string{"services", "PHP", createdAt, updatedAt} {
+	for _, unwanted := range []string{"public", "rev id", "current rev number", "latest rev number", "services", "PHP", createdAt, updatedAt} {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("stack list output should not include %q: %s", unwanted, output)
 		}

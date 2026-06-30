@@ -27,8 +27,8 @@ var (
 	infraAppColumns       = []string{"id", "name", "title", "status", "stack"}
 	integrationColumns    = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
 	providerColumns       = []string{"id", "name", "title", "status", "public", "revId"}
-	stackColumns          = []string{"id", "name", "title", "status", "public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "outdated", "createdAt", "updatedAt"}
-	stackGetColumns       = append(append([]string{}, stackColumns...), "services")
+	stackColumns          = []string{"id", "name", "title", "status", "revision", "currentVersion", "outdated", "createdAt", "updatedAt"}
+	stackGetColumns       = []string{"id", "name", "title", "status", "public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "outdated", "createdAt", "updatedAt", "services"}
 	catalogServiceColumns = []string{"id", "name", "title", "type", "status", "public", "external", "revId", "latestRevNumber"}
 	appColumns            = []string{"id", "name", "title", "status", "stack", "clusterApp"}
 	appGetColumns         = append(append([]string{}, appColumns...), "instances", "createdAt", "updatedAt")

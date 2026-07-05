@@ -148,7 +148,7 @@ func TestDefaultTaskColumnsUseCompactListShape(t *testing.T) {
 
 func TestStackColumnsShowDatesAndGetShowsServices(t *testing.T) {
 	listColumns := strings.Join(stackColumns, ",")
-	for _, expected := range []string{"revision", "currentVersion", "createdAt", "updatedAt"} {
+	for _, expected := range []string{"revision", "currentVersion", "outdated", "autoUpdates", "createdAt", "updatedAt"} {
 		if !strings.Contains(listColumns, expected) {
 			t.Fatalf("stackColumns should include %q: %s", expected, listColumns)
 		}
@@ -160,7 +160,7 @@ func TestStackColumnsShowDatesAndGetShowsServices(t *testing.T) {
 	}
 
 	getColumns := strings.Join(stackGetColumns, ",")
-	for _, expected := range []string{"public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "createdAt", "updatedAt", "services"} {
+	for _, expected := range []string{"public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "autoUpdates", "createdAt", "updatedAt", "services"} {
 		if !strings.Contains(getColumns, expected) {
 			t.Fatalf("stackGetColumns should include %q: %s", expected, getColumns)
 		}
@@ -174,14 +174,14 @@ func TestClusterGetColumnsShowAdditionalDetails(t *testing.T) {
 			t.Fatalf("clusterColumns should not include %q on list: %s", unwanted, listColumns)
 		}
 	}
-	for _, expected := range []string{"nodes", "singleNode", "scalable"} {
+	for _, expected := range []string{"autoUpdates", "nodes", "singleNode", "scalable"} {
 		if !strings.Contains(listColumns, expected) {
 			t.Fatalf("clusterColumns should include %q: %s", expected, listColumns)
 		}
 	}
 
 	getColumns := strings.Join(clusterGetColumns, ",")
-	for _, expected := range []string{"kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "scalable"} {
+	for _, expected := range []string{"autoUpdates", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "scalable"} {
 		if !strings.Contains(getColumns, expected) {
 			t.Fatalf("clusterGetColumns should include %q: %s", expected, getColumns)
 		}
@@ -200,10 +200,17 @@ func TestAppAndInstanceGetColumnsIncludeReadDetails(t *testing.T) {
 	}
 
 	instanceGet := strings.Join(instanceGetColumns, ",")
-	for _, expected := range []string{"serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt"} {
+	for _, expected := range []string{"autoUpdates", "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt"} {
 		if !strings.Contains(instanceGet, expected) {
 			t.Fatalf("instanceGetColumns should include %q: %s", expected, instanceGet)
 		}
+	}
+}
+
+func TestServiceColumnsShowAutoUpdates(t *testing.T) {
+	columns := strings.Join(catalogServiceColumns, ",")
+	if !strings.Contains(columns, "autoUpdates") {
+		t.Fatalf("catalogServiceColumns should include autoUpdates: %s", columns)
 	}
 }
 
@@ -327,6 +334,7 @@ func TestTableColumnTitlesAreHumanReadable(t *testing.T) {
 		"pathType":           "path type",
 		"databaseDb":         "db",
 		"infraAppInstanceId": "instance id",
+		"autoUpdates":        "auto updates",
 	} {
 		if got := tableColumnTitle(column); got != expected {
 			t.Fatalf("tableColumnTitle(%q) = %q, want %q", column, got, expected)
@@ -343,12 +351,12 @@ func TestOutdatedColumnFormatsFlagsAndRevisionDrift(t *testing.T) {
 		{
 			name: "explicit false",
 			row:  map[string]interface{}{"outdated": false},
-			want: "false",
+			want: "no",
 		},
 		{
 			name: "stack flag",
 			row:  map[string]interface{}{"stackOutdated": true},
-			want: "true",
+			want: "yes",
 		},
 		{
 			name: "revision behind",
@@ -356,7 +364,7 @@ func TestOutdatedColumnFormatsFlagsAndRevisionDrift(t *testing.T) {
 				"stackRev": map[string]interface{}{"number": 2},
 				"stack":    map[string]interface{}{"latestRevNumber": 3},
 			},
-			want: "true",
+			want: "yes",
 		},
 		{
 			name: "revision current",
@@ -364,12 +372,88 @@ func TestOutdatedColumnFormatsFlagsAndRevisionDrift(t *testing.T) {
 				"stackRevision": map[string]interface{}{"revNumber": 3},
 				"stack":         map[string]interface{}{"latestRevNumber": 3},
 			},
-			want: "false",
+			want: "no",
+		},
+		{
+			name: "missing value",
+			row:  map[string]interface{}{},
+			want: "no",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := formatColumnValue(test.row, "outdated"); got != test.want {
 				t.Fatalf("formatColumnValue(outdated) = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestAutoUpdatesColumnFormatsResourceSettings(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		row  map[string]interface{}
+		want string
+	}{
+		{
+			name: "service git update",
+			row: map[string]interface{}{
+				"settings": map[string]interface{}{
+					"gitAutoUpdate": map[string]interface{}{"enabled": true},
+				},
+			},
+			want: "yes",
+		},
+		{
+			name: "stack update families",
+			row: map[string]interface{}{
+				"settings": map[string]interface{}{
+					"gitAutoUpdate":             map[string]interface{}{"enabled": true},
+					"autoServiceRevisionUpdate": map[string]interface{}{"enabled": false},
+					"autoOriginStackUpdate":     map[string]interface{}{"enabled": true},
+				},
+			},
+			want: "git=yes, services=no, origin=yes",
+		},
+		{
+			name: "cluster component updates",
+			row: map[string]interface{}{
+				"settings": map[string]interface{}{
+					"autoInfrastructureUpgrade": map[string]interface{}{
+						"enabled": true,
+						"infra":   map[string]interface{}{"enabled": false},
+						"apps":    map[string]interface{}{"enabled": true},
+					},
+				},
+			},
+			want: "infra=no, apps=yes",
+		},
+		{
+			name: "cluster master disabled",
+			row: map[string]interface{}{
+				"settings": map[string]interface{}{
+					"autoInfrastructureUpgrade": map[string]interface{}{"enabled": false},
+				},
+			},
+			want: "no",
+		},
+		{
+			name: "app instance stack upgrade",
+			row: map[string]interface{}{
+				"settings": map[string]interface{}{
+					"autoStackUpgrade": map[string]interface{}{"enabled": true},
+				},
+			},
+			want: "yes",
+		},
+		{
+			name: "missing settings",
+			row:  map[string]interface{}{},
+			want: "no",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := formatColumnValue(test.row, "autoUpdates"); got != test.want {
+				t.Fatalf("formatColumnValue(autoUpdates) = %q, want %q", got, test.want)
 			}
 		})
 	}
@@ -3014,7 +3098,7 @@ func TestStackGetShowsServicesAndDates(t *testing.T) {
 			"updatedAt":             "2026-01-03T04:05:06Z",
 			"services": []map[string]interface{}{
 				{"title": "PHP"},
-				{"service": map[string]interface{}{"title": "Nginx"}},
+				{"service": map[string]interface{}{"title": "Nginx"}, "disabled": true},
 			},
 		})
 	}))
@@ -3029,10 +3113,56 @@ func TestStackGetShowsServicesAndDates(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"current rev number:", "2", "current version:", "1.2.3", "outdated:", "false", "created at:", "updated at:", "services:", "2026-01-02 03:04", "2026-01-03 04:05", "PHP, Nginx"} {
+	for _, expected := range []string{"current rev number:", "2", "current version:", "1.2.3", "outdated:", "no", "created at:", "updated at:", "services:", "2026-01-02 03:04", "2026-01-03 04:05", "2 services (1 disabled)"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("stack get output should include %q: %s", expected, output)
 		}
+	}
+}
+
+func TestStackGetFetchesServicesSummaryWhenMissingFromStack(t *testing.T) {
+	var out bytes.Buffer
+	var requests []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.Path+"?"+r.URL.RawQuery)
+		switch r.URL.Path {
+		case "/v1/stacks/1":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":    1,
+				"name":  "drupal",
+				"title": "Drupal",
+				"revId": 11,
+			})
+		case "/v1/stack-services":
+			if got := r.URL.Query().Get("stackRevId"); got != "11" {
+				t.Fatalf("stackRevId = %q, want 11", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 21, "title": "PHP", "disabled": false},
+				{"id": 22, "title": "Nginx", "disabled": false},
+				{"id": 23, "title": "Solr", "disabled": true},
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newStackCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"get", "1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	wantRequests := []string{"/v1/stacks/1?", "/v1/stack-services?stackRevId=11"}
+	if strings.Join(requests, "\n") != strings.Join(wantRequests, "\n") {
+		t.Fatalf("requests = %#v, want %#v", requests, wantRequests)
+	}
+	if output := out.String(); !strings.Contains(output, "3 services (1 disabled)") {
+		t.Fatalf("stack get output should include services summary: %s", output)
 	}
 }
 

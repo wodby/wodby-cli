@@ -23,14 +23,14 @@ var (
 	databaseDbColumns               = []string{"id", "name", "status", "charset", "collation", "database", "createdAt"}
 	databaseCharsetColumns          = []string{"name", "title", "default", "defaultCollation"}
 	databaseUserColumns             = []string{"id", "username", "hostname", "status", "database", "dbs", "createdAt"}
-	clusterColumns                  = []string{"id", "name", "title", "status", "integration", "region", "zone", "version", "nodes", "singleNode", "scalable", "serverless"}
-	clusterGetColumns               = []string{"id", "name", "title", "status", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "scalable", "serverless"}
+	clusterColumns                  = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "version", "nodes", "singleNode", "scalable", "serverless"}
+	clusterGetColumns               = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "scalable", "serverless"}
 	infraAppColumns                 = []string{"id", "name", "title", "status", "stack"}
 	integrationColumns              = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
 	providerColumns                 = []string{"id", "name", "title", "status", "public", "revId"}
 	providerRevisionColumns         = []string{"id", "name", "title", "number", "version", "provider", "createdAt"}
-	stackColumns                    = []string{"id", "name", "title", "status", "revision", "currentVersion", "outdated", "createdAt", "updatedAt"}
-	stackGetColumns                 = []string{"id", "name", "title", "status", "public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "outdated", "createdAt", "updatedAt", "services"}
+	stackColumns                    = []string{"id", "name", "title", "status", "revision", "currentVersion", "outdated", "autoUpdates", "createdAt", "updatedAt"}
+	stackGetColumns                 = []string{"id", "name", "title", "status", "public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "outdated", "autoUpdates", "createdAt", "updatedAt", "services"}
 	stackRevisionColumns            = []string{"id", "name", "title", "number", "draft", "version", "stack", "createdAt"}
 	stackServiceColumns             = []string{"id", "name", "title", "type", "serviceRev", "replicas", "required", "disabled", "main", "updatedAt"}
 	stackServiceEnvColumns          = []string{"id", "name", "value", "secret", "envType", "workload", "container", "createdAt"}
@@ -44,12 +44,12 @@ var (
 	stackServiceConfigColumns       = []string{"id", "name", "disabled", "config"}
 	stackServiceOptionColumns       = []string{"id", "version", "default", "disabled"}
 	stackServiceCronScheduleColumns = []string{"id", "name", "title", "crontab", "command", "workload", "envType", "disabled", "updatedAt"}
-	catalogServiceColumns           = []string{"id", "name", "title", "type", "status", "public", "external", "revId", "latestRevNumber"}
+	catalogServiceColumns           = []string{"id", "name", "title", "type", "status", "autoUpdates", "public", "external", "revId", "latestRevNumber"}
 	serviceRevisionColumns          = []string{"id", "name", "title", "type", "external", "number", "version", "service", "createdAt"}
 	appColumns                      = []string{"id", "name", "title", "status", "stack", "clusterApp"}
 	appGetColumns                   = append(append([]string{}, appColumns...), "instances", "createdAt", "updatedAt")
 	appStatusColumns                = []string{"id", "title", "status", "instances", "serviceStatus", "routeStatus", "latestBuild", "latestDeployment", "needs"}
-	instanceColumns                 = []string{"id", "name", "title", "status", "outdated", "app", "stack", "env", "cluster", "domain"}
+	instanceColumns                 = []string{"id", "name", "title", "status", "outdated", "autoUpdates", "app", "stack", "env", "cluster", "domain"}
 	instanceGetColumns              = append(append([]string{}, instanceColumns...), "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
 	instanceStatusColumns           = []string{"id", "title", "status", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
 	serviceColumns                  = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
@@ -1570,8 +1570,8 @@ func newStackCommand() *cobra.Command {
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(
 		listCmd,
-		newGetCommand("get ID", "Get stack", "/stacks/", stackGetColumns, out),
-		newGetByNameCommand("get-by-name NAME", "Get stack by name", "/stacks/by-name/%s", stackGetColumns, out, false, true),
+		newStackGetCommand(out),
+		newStackGetByNameCommand(out),
 		newCatalogImportFromGitCommand("import", "Import stacks from Git", "/stacks/actions/import", operationColumns, out),
 		newStackSettingsCommand(out),
 		newStackRevisionCommand(out),
@@ -1580,6 +1580,85 @@ func newStackCommand() *cobra.Command {
 		newStackServiceCommand(out),
 	)
 	return cmd
+}
+
+func newStackGetCommand(out outputOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "get ID",
+		Short: "Get stack",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return getAndPrintStack(cmd, out, "/stacks/"+url.PathEscape(args[0]), nil)
+		},
+	}
+}
+
+func newStackGetByNameCommand(out outputOptions) *cobra.Command {
+	var revNumber int
+	cmd := &cobra.Command{
+		Use:   "get-by-name NAME",
+		Short: "Get stack by name",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query := url.Values{}
+			if revNumber != 0 {
+				query.Set("revNumber", strconv.Itoa(revNumber))
+			}
+			return getAndPrintStack(cmd, out, escapedPath("/stacks/by-name/%s", args[0]), query)
+		},
+	}
+	cmd.Flags().IntVar(&revNumber, "rev", 0, "Revision number")
+	return cmd
+}
+
+func getAndPrintStack(cmd *cobra.Command, out outputOptions, path string, query url.Values) error {
+	client, err := newRESTClient()
+	if err != nil {
+		return err
+	}
+	var result interface{}
+	if err := client.Get(cmd.Context(), path, query, &result); err != nil {
+		return err
+	}
+	if outputFormat(cmd, out) != outputJSON {
+		enrichStackServicesSummary(cmd.Context(), client, normalizeItem(result))
+	}
+	return printClientGetResult(cmd, client, out, result, stackGetColumns)
+}
+
+func enrichStackServicesSummary(ctx context.Context, client *rest.Client, value interface{}) {
+	rows := asRows(value)
+	if len(rows) == 0 {
+		return
+	}
+
+	row := rows[0]
+	if services := firstNonNilPath(row, "services", "stackServices"); services != nil {
+		row["services"] = summarizeStackServices(responseRows(services))
+		return
+	}
+
+	revID := firstScalarPath(row, "revId", "stackRevId", "currentRevId", "currentStackRevId", "rev.id", "stackRev.id", "stackRevision.id")
+	if revID == "" {
+		return
+	}
+
+	query := url.Values{"stackRevId": []string{revID}}
+	var result interface{}
+	if err := client.Get(ctx, "/stack-services", query, &result); err != nil {
+		return
+	}
+	row["services"] = summarizeStackServices(responseRows(result))
+}
+
+func summarizeStackServices(rows []map[string]interface{}) string {
+	disabled := 0
+	for _, row := range rows {
+		if truthyPath(row, "disabled") {
+			disabled++
+		}
+	}
+	return fmt.Sprintf("%s (%d disabled)", pluralizeCount(len(rows), "service", "services"), disabled)
 }
 
 func newStackSettingsCommand(out outputOptions) *cobra.Command {

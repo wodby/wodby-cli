@@ -838,6 +838,8 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		return formatDurationColumn(row)
 	case "services":
 		return formatServicesColumn(row)
+	case "autoUpdates", "autoUpdate":
+		return formatAutoUpdatesColumn(row)
 	case "imageCount":
 		return formatImageCountColumn(row)
 	case "images":
@@ -1190,7 +1192,7 @@ func formatOutdatedColumn(row map[string]interface{}) string {
 		"updateAvailable",
 	)
 	if value != nil {
-		return formatValue(value)
+		return formatYesNo(value)
 	}
 
 	currentRev := firstScalarPath(
@@ -1199,6 +1201,7 @@ func formatOutdatedColumn(row map[string]interface{}) string {
 		"revisionNumber",
 		"currentRevNumber",
 		"currentRevisionNumber",
+		"originStackRevNumber",
 		"stackRevNumber",
 		"stackRevisionNumber",
 		"stackRev.number",
@@ -1230,10 +1233,143 @@ func formatOutdatedColumn(row map[string]interface{}) string {
 	current, currentOK := parseRevisionNumber(currentRev)
 	latest, latestOK := parseRevisionNumber(latestRev)
 	if currentOK && latestOK {
-		return strconv.FormatBool(latest > current)
+		return yesNo(latest > current)
 	}
 
-	return ""
+	return "no"
+}
+
+func formatYesNo(value interface{}) string {
+	switch v := value.(type) {
+	case bool:
+		return yesNo(v)
+	case json.Number:
+		return yesNo(v.String() != "0")
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "yes", "1":
+			return "yes"
+		case "false", "no", "0", "":
+			return "no"
+		default:
+			return v
+		}
+	case float64:
+		return yesNo(v != 0)
+	case int:
+		return yesNo(v != 0)
+	default:
+		return formatValue(value)
+	}
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
+}
+
+func formatAutoUpdatesColumn(row map[string]interface{}) string {
+	if value, ok := enabledScalarPath(row, "autoUpdates", "autoUpdate", "autoUpdatesEnabled", "autoUpdateEnabled"); ok {
+		return value
+	}
+	if summary := formatStackAutoUpdatesColumn(row); summary != "" {
+		return summary
+	}
+	if summary := formatClusterAutoUpdatesColumn(row); summary != "" {
+		return summary
+	}
+	if summary := formatAppInstanceAutoUpdatesColumn(row); summary != "" {
+		return summary
+	}
+	if summary := formatServiceAutoUpdatesColumn(row); summary != "" {
+		return summary
+	}
+	return "no"
+}
+
+func formatStackAutoUpdatesColumn(row map[string]interface{}) string {
+	services, servicesOK := enabledSetting(row, []string{"settings.autoServiceRevisionUpdate", "autoServiceRevisionUpdate"}, "settings.autoServiceRevisionUpdate.enabled", "autoServiceRevisionUpdate.enabled", "autoServiceRevisionUpdateEnabled")
+	origin, originOK := enabledSetting(row, []string{"settings.autoOriginStackUpdate", "autoOriginStackUpdate"}, "settings.autoOriginStackUpdate.enabled", "autoOriginStackUpdate.enabled", "autoOriginStackUpdateEnabled")
+	if !servicesOK && !originOK {
+		return ""
+	}
+	git, gitOK := enabledSetting(row, []string{"settings.gitAutoUpdate", "gitAutoUpdate"}, "settings.gitAutoUpdate.enabled", "gitAutoUpdate.enabled", "gitAutoUpdateEnabled")
+	if !gitOK {
+		git = "no"
+	}
+	if !servicesOK {
+		services = "no"
+	}
+	if !originOK {
+		origin = "no"
+	}
+	return fmt.Sprintf("git=%s, services=%s, origin=%s", git, services, origin)
+}
+
+func formatClusterAutoUpdatesColumn(row map[string]interface{}) string {
+	enabled, ok := enabledSetting(row, []string{"settings.autoInfrastructureUpgrade", "autoInfrastructureUpgrade"}, "settings.autoInfrastructureUpgrade.enabled", "autoInfrastructureUpgrade.enabled", "autoInfrastructureUpgradeEnabled")
+	if !ok {
+		return ""
+	}
+	if enabled != "yes" {
+		return "no"
+	}
+
+	infra, infraOK := enabledSetting(row, []string{"settings.autoInfrastructureUpgrade.infra", "autoInfrastructureUpgrade.infra"}, "settings.autoInfrastructureUpgrade.infra.enabled", "autoInfrastructureUpgrade.infra.enabled", "autoInfrastructureUpgradeInfraEnabled")
+	apps, appsOK := enabledSetting(row, []string{"settings.autoInfrastructureUpgrade.apps", "autoInfrastructureUpgrade.apps"}, "settings.autoInfrastructureUpgrade.apps.enabled", "autoInfrastructureUpgrade.apps.enabled", "autoInfrastructureUpgradeAppsEnabled")
+	if !infraOK && !appsOK {
+		return "yes"
+	}
+	if !infraOK {
+		infra = "no"
+	}
+	if !appsOK {
+		apps = "no"
+	}
+	return fmt.Sprintf("infra=%s, apps=%s", infra, apps)
+}
+
+func formatAppInstanceAutoUpdatesColumn(row map[string]interface{}) string {
+	enabled, ok := enabledSetting(row, []string{"settings.autoStackUpgrade", "autoStackUpgrade"}, "settings.autoStackUpgrade.enabled", "autoStackUpgrade.enabled", "autoStackUpgradeEnabled")
+	if !ok {
+		return ""
+	}
+	return enabled
+}
+
+func formatServiceAutoUpdatesColumn(row map[string]interface{}) string {
+	enabled, ok := enabledSetting(row, []string{"settings.gitAutoUpdate", "gitAutoUpdate"}, "settings.gitAutoUpdate.enabled", "gitAutoUpdate.enabled", "gitAutoUpdateEnabled")
+	if !ok {
+		return ""
+	}
+	return enabled
+}
+
+func enabledSetting(row map[string]interface{}, objectPaths []string, enabledPaths ...string) (string, bool) {
+	if enabled, ok := enabledScalarPath(row, enabledPaths...); ok {
+		return enabled, true
+	}
+	for _, path := range objectPaths {
+		if valueAtPath(row, path) != nil {
+			return "no", true
+		}
+	}
+	return "", false
+}
+
+func enabledScalarPath(row map[string]interface{}, paths ...string) (string, bool) {
+	for _, path := range paths {
+		value := valueAtPath(row, path)
+		switch value.(type) {
+		case nil, []interface{}, []map[string]interface{}, map[string]interface{}:
+			continue
+		default:
+			return formatYesNo(value), true
+		}
+	}
+	return "", false
 }
 
 func formatProgressColumn(row map[string]interface{}) string {

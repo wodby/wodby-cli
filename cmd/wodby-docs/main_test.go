@@ -101,9 +101,10 @@ func TestGenerateWritesCollapsibleCommandNav(t *testing.T) {
 	}
 
 	indexHTML := string(indexContent)
-	assertContains(t, indexHTML, `data-nav-toggle`)
-	assertContains(t, indexHTML, `aria-controls="nav-wodby_project-children" aria-label="Expand project subcommands"`)
-	assertContains(t, indexHTML, `<div class="nav-children" id="nav-wodby_project-children" hidden>`)
+	assertContains(t, indexHTML, `<details class="nav-branch" data-nav-command="wodby project">`)
+	assertContains(t, indexHTML, `<summary class="nav-summary">project</summary>`)
+	assertContains(t, indexHTML, `<a class="nav-link nav-overview" href="wodby_project.html">Overview</a>`)
+	assertNotContains(t, indexHTML, `<details class="nav-branch" data-nav-command="wodby project" open>`)
 
 	childContent, err := os.ReadFile(filepath.Join(dir, "wodby_project_list.html"))
 	if err != nil {
@@ -111,13 +112,19 @@ func TestGenerateWritesCollapsibleCommandNav(t *testing.T) {
 	}
 
 	childHTML := string(childContent)
-	assertContains(t, childHTML, `aria-controls="nav-wodby_project-children" aria-label="Collapse project subcommands"`)
-	assertContains(t, childHTML, `<div class="nav-children" id="nav-wodby_project-children">`)
+	assertContains(t, childHTML, `<details class="nav-branch" data-nav-command="wodby project" open>`)
 }
 
 func assertContains(t *testing.T, got string, want string) {
 	t.Helper()
 	if !strings.Contains(got, want) {
 		t.Fatalf("generated HTML missing %q", want)
+	}
+}
+
+func assertNotContains(t *testing.T, got string, want string) {
+	t.Helper()
+	if strings.Contains(got, want) {
+		t.Fatalf("generated HTML should not contain %q", want)
 	}
 }

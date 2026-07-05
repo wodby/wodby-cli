@@ -243,6 +243,46 @@ func newRESTClient() (*rest.Client, error) {
 	})
 }
 
+func newGraphQLClient() (*rest.Client, error) {
+	if viper.GetString("api_key") == "" && viper.GetString("access_token") == "" {
+		return nil, errors.New("either api-key or access-token must be specified")
+	}
+	endpoint, err := graphQLBaseURL(apiBaseURL())
+	if err != nil {
+		return nil, err
+	}
+	if endpoint == "" {
+		return nil, errors.New("api-base-url flag is required")
+	}
+
+	return rest.NewClient(types.APIConfig{
+		Key:         viper.GetString("api_key"),
+		AccessToken: viper.GetString("access_token"),
+		Endpoint:    endpoint,
+	})
+}
+
+func graphQLBaseURL(endpoint string) (string, error) {
+	if endpoint == "" {
+		return "", nil
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "", errors.WithStack(err)
+	}
+	path := strings.TrimRight(u.Path, "/")
+	if path == "/v1" {
+		u.Path = ""
+	} else if strings.HasSuffix(path, "/v1") {
+		u.Path = strings.TrimSuffix(path, "/v1")
+	} else {
+		u.Path = path
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	return strings.TrimRight(u.String(), "/"), nil
+}
+
 func apiBaseURL() string {
 	if endpoint := viper.GetString("api_endpoint"); endpoint != "" {
 		return endpoint
@@ -736,8 +776,12 @@ func tableColumnTitle(column string) string {
 		return "integration"
 	case "provider", "providerId", "providerRevId":
 		return "provider"
+	case "providerVersion":
+		return "version"
 	case "domain", "mainDomain":
 		return "domain"
+	case "currentVersion":
+		return "version"
 	case "infraAppInstanceId":
 		return "instance id"
 	case "ips":
@@ -807,6 +851,8 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		return formatIntegrationColumn(row)
 	case "provider", "providerId", "providerRevId":
 		return formatProviderColumn(row)
+	case "providerVersion":
+		return formatProviderVersionColumn(row)
 	case "domain", "mainDomain":
 		return firstScalarPath(row, "domain", "mainDomain")
 	case "author", "authorId":
@@ -892,6 +938,8 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		return formatTaskJobsColumn(row)
 	case "outdated":
 		return formatOutdatedColumn(row)
+	case "rollbackStatus":
+		return formatRollbackStatusColumn(row)
 	case "currentRevNumber", "revision":
 		return formatCurrentRevisionNumber(row)
 	case "currentVersion":
@@ -1295,17 +1343,46 @@ func formatStackAutoUpdatesColumn(row map[string]interface{}) string {
 	if !servicesOK && !originOK {
 		return ""
 	}
-	git, gitOK := enabledSetting(row, []string{"settings.gitAutoUpdate", "gitAutoUpdate"}, "settings.gitAutoUpdate.enabled", "gitAutoUpdate.enabled", "gitAutoUpdateEnabled")
-	if !gitOK {
-		git = "no"
-	}
 	if !servicesOK {
 		services = "no"
 	}
 	if !originOK {
 		origin = "no"
 	}
-	return fmt.Sprintf("git=%s, services=%s, origin=%s", git, services, origin)
+	parts := make([]string, 0, 3)
+	if stackHasGitSource(row) {
+		git, gitOK := enabledSetting(row, []string{"settings.gitAutoUpdate", "gitAutoUpdate"}, "settings.gitAutoUpdate.enabled", "gitAutoUpdate.enabled", "gitAutoUpdateEnabled")
+		if !gitOK {
+			git = "no"
+		}
+		parts = append(parts, "git="+git)
+	}
+	parts = append(parts, "services="+services, "origin="+origin)
+	return strings.Join(parts, ", ")
+}
+
+func stackHasGitSource(row map[string]interface{}) bool {
+	return firstScalarPath(
+		row,
+		"gitRepoId",
+		"gitRepoID",
+		"gitRepo.id",
+		"gitRepoRemoteId",
+		"gitRepoRemoteID",
+		"remoteGitRepoId",
+		"remoteGitRepoID",
+		"gitRepo.remoteGitRepoId",
+		"gitRepo.remoteGitRepoID",
+		"gitRepoRef",
+		"gitRef",
+		"gitRepo.ref",
+		"gitRepoRefType",
+		"gitRefType",
+		"gitRepo.refType",
+		"sourceGitRepoId",
+		"sourceGitRepoID",
+		"sourceGitRepo.id",
+	) != ""
 }
 
 func formatClusterAutoUpdatesColumn(row map[string]interface{}) string {
@@ -2170,13 +2247,12 @@ func formatCertColumn(row map[string]interface{}) string {
 			"commonName",
 		)
 	}
-	if title == "" {
-		return ""
-	}
-
-	details := compactNonEmpty(formatCertStatusColumn(row), formatCertIssuerColumn(row))
+	details := compactNonEmpty(formatCertIssuerColumn(row), formatCertStatusColumn(row))
 	if len(details) == 0 {
 		return title
+	}
+	if title == "" {
+		return strings.Join(details, ", ")
 	}
 	return fmt.Sprintf("%s (%s)", title, strings.Join(details, ", "))
 }
@@ -2504,8 +2580,24 @@ func formatIPsColumn(row map[string]interface{}) string {
 }
 
 func formatClusterNodesColumn(row map[string]interface{}) string {
-	current := firstScalarPath(
+	if truthyPath(row, "singleNode", "single_node", "single-node") {
+		return "1 / 1"
+	}
+
+	ready := firstScalarPath(
 		row,
+		"lastNodesReady",
+		"lastNodeReady",
+		"metrics.nodesReady",
+		"clusterMetrics.nodesReady",
+		"readyNodeCount",
+		"readyNodes",
+		"nodesReady",
+		"nodesReadyCount",
+		"nodes.ready",
+		"nodes.readyCount",
+		"node.ready",
+		"node.readyCount",
 		"currentNodeCount",
 		"nodeCount",
 		"nodesCount",
@@ -2516,8 +2608,20 @@ func formatClusterNodesColumn(row map[string]interface{}) string {
 		"node.current",
 		"node.currentCount",
 	)
-	maximum := firstScalarPath(
+	total := firstScalarPath(
 		row,
+		"lastNodesTotal",
+		"lastNodeTotal",
+		"metrics.nodesTotal",
+		"clusterMetrics.nodesTotal",
+		"totalNodeCount",
+		"totalNodes",
+		"nodesTotal",
+		"nodesTotalCount",
+		"nodes.total",
+		"nodes.totalCount",
+		"node.total",
+		"node.totalCount",
 		"maxNodeCount",
 		"nodesMax",
 		"maxNodes",
@@ -2526,19 +2630,16 @@ func formatClusterNodesColumn(row map[string]interface{}) string {
 		"node.max",
 		"node.maxCount",
 	)
-	if current == "" && maximum == "" {
-		if firstScalarPath(row, "singleNode", "single_node", "single-node") == "true" {
-			return "1/1"
-		}
+	if ready == "" && total == "" {
 		return ""
 	}
-	if current == "" {
-		return maximum
+	if ready == "" {
+		return total
 	}
-	if maximum == "" {
-		return current
+	if total == "" {
+		return ready
 	}
-	return current + "/" + maximum
+	return ready + " / " + total
 }
 
 func formatClusterScalableColumn(row map[string]interface{}) string {
@@ -2670,6 +2771,56 @@ func formatProviderColumn(row map[string]interface{}) string {
 	)
 
 	return appendVersionRev(title, version, rev)
+}
+
+func formatProviderVersionColumn(row map[string]interface{}) string {
+	version := firstScalarPath(
+		row,
+		"providerVersion",
+		"version",
+		"provider.version",
+		"providerRevision.version",
+		"providerRev.version",
+	)
+	rev := firstScalarPath(
+		row,
+		"providerRevNumber",
+		"providerRevision.number",
+		"providerRevision.revNumber",
+		"providerRevision.revision",
+		"providerRev.number",
+		"providerRev.revNumber",
+		"providerRev.revision",
+		"revNumber",
+		"latestRevNumber",
+		"revision",
+		"revId",
+		"latestRevId",
+		"providerRevision.id",
+		"providerRev.id",
+	)
+	if version == "" {
+		return rev
+	}
+	if rev == "" {
+		return version
+	}
+	if !strings.HasPrefix(rev, "#") {
+		rev = "#" + rev
+	}
+	return fmt.Sprintf("%s (%s)", version, rev)
+}
+
+func formatRollbackStatusColumn(row map[string]interface{}) string {
+	status := firstScalarPath(
+		row,
+		"rollbackStatus",
+		"rollback.status",
+		"deploymentRollbackStatus",
+		"appDeploymentRollbackStatus",
+		"rollbackState",
+	)
+	return strings.ReplaceAll(status, "_", " ")
 }
 
 func appendVersionRev(title string, version string, rev string) string {

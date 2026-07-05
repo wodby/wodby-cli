@@ -23,11 +23,11 @@ var (
 	databaseDbColumns               = []string{"id", "name", "status", "charset", "collation", "database", "createdAt"}
 	databaseCharsetColumns          = []string{"name", "title", "default", "defaultCollation"}
 	databaseUserColumns             = []string{"id", "username", "hostname", "status", "database", "dbs", "createdAt"}
-	clusterColumns                  = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "version", "nodes", "singleNode", "scalable", "serverless"}
-	clusterGetColumns               = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "scalable", "serverless"}
+	clusterColumns                  = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "version", "nodes", "singleNode"}
+	clusterGetColumns               = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode"}
 	infraAppColumns                 = []string{"id", "name", "title", "status", "stack"}
 	integrationColumns              = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
-	providerColumns                 = []string{"id", "name", "title", "status", "public", "revId"}
+	providerColumns                 = []string{"id", "name", "title", "status", "providerVersion"}
 	providerRevisionColumns         = []string{"id", "name", "title", "number", "version", "provider", "createdAt"}
 	stackColumns                    = []string{"id", "name", "title", "status", "revision", "currentVersion", "outdated", "autoUpdates", "createdAt", "updatedAt"}
 	stackGetColumns                 = []string{"id", "name", "title", "status", "public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "outdated", "autoUpdates", "createdAt", "updatedAt", "services"}
@@ -46,8 +46,8 @@ var (
 	stackServiceCronScheduleColumns = []string{"id", "name", "title", "crontab", "command", "workload", "envType", "disabled", "updatedAt"}
 	catalogServiceColumns           = []string{"id", "name", "title", "type", "status", "autoUpdates", "public", "external", "revId", "latestRevNumber"}
 	serviceRevisionColumns          = []string{"id", "name", "title", "type", "external", "number", "version", "service", "createdAt"}
-	appColumns                      = []string{"id", "name", "title", "status", "stack", "clusterApp"}
-	appGetColumns                   = append(append([]string{}, appColumns...), "instances", "createdAt", "updatedAt")
+	appColumns                      = []string{"id", "name", "title", "status", "stack", "instances"}
+	appGetColumns                   = []string{"id", "name", "title", "status", "stack", "clusterApp", "instances", "createdAt", "updatedAt"}
 	appStatusColumns                = []string{"id", "title", "status", "instances", "serviceStatus", "routeStatus", "latestBuild", "latestDeployment", "needs"}
 	instanceColumns                 = []string{"id", "name", "title", "status", "outdated", "autoUpdates", "app", "stack", "env", "cluster", "domain"}
 	instanceGetColumns              = append(append([]string{}, instanceColumns...), "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
@@ -66,14 +66,14 @@ var (
 	appServiceCronJobColumns        = []string{"id", "title", "status", "service", "scheduleId", "task", "createdAt"}
 	logStreamColumns                = []string{"id"}
 	routeListColumns                = []string{"id", "service", "route", "action", "cert", "primary", "private", "status", "updatedAt"}
-	routeColumns                    = []string{"id", "route", "host", "path", "pathType", "action", "status", "service", "port", "cert", "certStatus", "certIssuer", "certExpiresAt", "main", "primary", "private", "disabled", "redirectScheme", "redirectHost", "redirectPath", "redirectStatusCode", "lastSyncedAt", "createdAt", "updatedAt"}
+	routeColumns                    = []string{"id", "route", "host", "path", "pathType", "action", "status", "service", "port", "cert", "certExpiresAt", "main", "primary", "private", "disabled", "redirectScheme", "redirectHost", "redirectPath", "redirectStatusCode", "lastSyncedAt", "createdAt", "updatedAt"}
 	appPortListColumns              = []string{"id", "service", "name", "number", "publicPort", "private", "protocol", "updatedAt"}
 	appPortColumns                  = []string{"id", "name", "number", "publicPort", "protocol", "private", "service", "instance", "createdAt", "updatedAt"}
 	certColumns                     = []string{"id", "host", "status", "issuer", "certType", "expiresAt", "route", "instance", "createdAt"}
 	buildListColumns                = []string{"id", "number", "service", "services", "imageCount", "gitRefType", "gitRef", "startedAt", "duration", "status"}
 	buildColumns                    = []string{"id", "number", "status", "instance", "service", "services", "images", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "createdAt", "startedAt", "endedAt", "duration"}
-	deploymentListColumns           = []string{"id", "number", "services", "builds", "startedAt", "duration", "status"}
-	deploymentColumns               = []string{"id", "number", "status", "instance", "services", "images", "task", "skipRollback", "createdAt", "startedAt", "endedAt", "duration"}
+	deploymentListColumns           = []string{"id", "number", "services", "builds", "startedAt", "duration", "status", "rollbackStatus"}
+	deploymentColumns               = []string{"id", "number", "status", "rollbackStatus", "instance", "services", "images", "task", "skipRollback", "createdAt", "startedAt", "endedAt", "duration"}
 	backupColumns                   = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "task", "createdAt"}
 	importListColumns               = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "startedAt", "duration"}
 	importColumns                   = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "backup", "createdAt", "updatedAt", "startedAt", "endedAt", "duration"}
@@ -986,7 +986,7 @@ func newClusterCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/clusters", query, &result); err != nil {
 				return err
 			}
-			return printClientResult(cmd, client, out, result, clusterColumns)
+			return printClusterResult(cmd, client, out, result, clusterColumns)
 		},
 	}
 	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
@@ -998,7 +998,7 @@ func newClusterCommand() *cobra.Command {
 		Short: "Get cluster",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return getAndPrint(cmd, out, "/clusters/"+args[0], clusterGetColumns)
+			return getAndPrintCluster(cmd, out, "/clusters/"+url.PathEscape(args[0]), nil)
 		},
 	}
 
@@ -1006,7 +1006,7 @@ func newClusterCommand() *cobra.Command {
 	cmd.AddCommand(
 		listCmd,
 		getCmd,
-		newGetByNameCommand("get-by-name NAME", "Get cluster by name", "/clusters/by-name/%s", clusterGetColumns, out, true, false),
+		newClusterGetByNameCommand(out),
 		newClusterAppCommand(),
 		newClusterCreateCommand(out),
 		newClusterUpdateCommand(out),
@@ -1014,6 +1014,169 @@ func newClusterCommand() *cobra.Command {
 		newDeleteCommand("delete ID", "Delete cluster", "/clusters/", clusterColumns, out),
 	)
 	return cmd
+}
+
+func newClusterGetByNameCommand(out outputOptions) *cobra.Command {
+	var orgID string
+	cmd := &cobra.Command{
+		Use:   "get-by-name NAME",
+		Short: "Get cluster by name",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query := url.Values{}
+			addQuery(query, "orgId", orgID)
+			return getAndPrintCluster(cmd, out, escapedPath("/clusters/by-name/%s", args[0]), query)
+		},
+	}
+	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID")
+	return cmd
+}
+
+func getAndPrintCluster(cmd *cobra.Command, out outputOptions, path string, query url.Values) error {
+	client, err := newRESTClient()
+	if err != nil {
+		return err
+	}
+	var result interface{}
+	if err := client.Get(cmd.Context(), path, query, &result); err != nil {
+		return err
+	}
+	return printClusterGetResult(cmd, client, out, result, clusterGetColumns)
+}
+
+func printClusterResult(cmd *cobra.Command, client *rest.Client, out outputOptions, value interface{}, columns []string) error {
+	if outputFormat(cmd, out) != outputJSON {
+		if err := enrichClusterNodesSummary(cmd.Context(), normalizeItems(value)); err != nil {
+			return err
+		}
+	}
+	return printClientResult(cmd, client, out, value, clusterDisplayColumns(cmd, out, normalizeItems(value), columns))
+}
+
+func printClusterGetResult(cmd *cobra.Command, client *rest.Client, out outputOptions, value interface{}, columns []string) error {
+	if outputFormat(cmd, out) != outputJSON {
+		if err := enrichClusterNodesSummary(cmd.Context(), normalizeItem(value)); err != nil {
+			return err
+		}
+	}
+	return printClientGetResult(cmd, client, out, value, clusterDisplayColumns(cmd, out, normalizeItem(value), columns))
+}
+
+func enrichClusterNodesSummary(ctx context.Context, value interface{}) error {
+	rows := responseRows(value)
+	if len(rows) == 0 {
+		return nil
+	}
+
+	ids := make([]int, 0, len(rows))
+	seen := map[string]bool{}
+	for _, row := range rows {
+		id := firstScalarPath(row, "id")
+		if id == "" || seen[id] {
+			continue
+		}
+		parsed, err := strconv.Atoi(id)
+		if err != nil {
+			continue
+		}
+		ids = append(ids, parsed)
+		seen[id] = true
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	client, err := newGraphQLClient()
+	if err != nil {
+		return err
+	}
+	var result map[string]interface{}
+	if err := client.Post(ctx, "/query", nil, map[string]interface{}{
+		"query": `query ClusterNodesSummary($ids: [Int!]!) {
+			clustersMetrics(ids: $ids) {
+				id
+				nodesReady
+				nodesTotal
+			}
+		}`,
+		"variables": map[string]interface{}{"ids": ids},
+	}, &result); err != nil {
+		return err
+	}
+	if err := graphQLErrors(result); err != nil {
+		return err
+	}
+
+	metricsByID := map[string]map[string]interface{}{}
+	for _, metric := range responseRows(valueAtPath(result, "data.clustersMetrics")) {
+		id := firstScalarPath(metric, "id")
+		if id != "" {
+			metricsByID[id] = metric
+		}
+	}
+	for _, row := range rows {
+		metric := metricsByID[firstScalarPath(row, "id")]
+		if metric == nil {
+			continue
+		}
+		if ready := firstNonNilPath(metric, "nodesReady"); ready != nil {
+			row["nodesReady"] = ready
+		}
+		if total := firstNonNilPath(metric, "nodesTotal"); total != nil {
+			row["nodesTotal"] = total
+		}
+	}
+	return nil
+}
+
+func graphQLErrors(result map[string]interface{}) error {
+	values, ok := result["errors"].([]interface{})
+	if !ok || len(values) == 0 {
+		return nil
+	}
+
+	messages := make([]string, 0, len(values))
+	for _, value := range values {
+		if row, ok := value.(map[string]interface{}); ok {
+			if message := firstScalarPath(row, "message"); message != "" {
+				messages = append(messages, message)
+				continue
+			}
+		}
+		if message := scalarString(value); message != "" {
+			messages = append(messages, message)
+		}
+	}
+	if len(messages) == 0 {
+		return errors.New("GraphQL request failed")
+	}
+	return errors.Errorf("GraphQL request failed: %s", strings.Join(messages, "; "))
+}
+
+func clusterDisplayColumns(cmd *cobra.Command, out outputOptions, value interface{}, columns []string) []string {
+	if outputFormat(cmd, out) == outputJSON || clusterRowsHaveRegion(asRows(value)) {
+		return columns
+	}
+	return withoutColumn(columns, "region")
+}
+
+func clusterRowsHaveRegion(rows []map[string]interface{}) bool {
+	for _, row := range rows {
+		if formatColumnValue(row, "region") != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func withoutColumn(columns []string, column string) []string {
+	filtered := make([]string, 0, len(columns))
+	for _, existing := range columns {
+		if existing != column {
+			filtered = append(filtered, existing)
+		}
+	}
+	return filtered
 }
 
 func newClusterSettingsCommand(out outputOptions) *cobra.Command {
@@ -1054,9 +1217,7 @@ func newClusterAppCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/apps", query, &result); err != nil {
 				return err
 			}
-			if outputFormat(cmd, out) != outputJSON {
-				enrichInfraAppRows(cmd.Context(), client, normalizeItems(result), clusterID)
-			}
+			result = filterInfraAppRowsByClusterInstances(cmd.Context(), client, result, clusterID, outputFormat(cmd, out) != outputJSON)
 			return printClientResult(cmd, client, out, result, infraAppColumns)
 		},
 	}
@@ -1066,6 +1227,50 @@ func newClusterAppCommand() *cobra.Command {
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd)
 	return cmd
+}
+
+func filterInfraAppRowsByClusterInstances(ctx context.Context, client *rest.Client, value interface{}, clusterID string, enrich bool) interface{} {
+	rows := responseRows(value)
+	if len(rows) == 0 {
+		return value
+	}
+
+	instancesByAppID, ok := clusterInfraAppInstancesByAppID(ctx, client, clusterID)
+	if !ok {
+		if enrich {
+			enrichInfraAppRows(ctx, client, normalizeItems(value), clusterID)
+		}
+		return value
+	}
+
+	filtered := filterResponseItems(value, func(row map[string]interface{}) bool {
+		appID := firstScalarPath(row, "id", "appId", "app.id")
+		return appID != "" && instancesByAppID[appID] != nil
+	})
+	if enrich {
+		enrichInfraAppRowsFromInstances(normalizeItems(filtered), instancesByAppID, nil)
+	}
+	return filtered
+}
+
+func clusterInfraAppInstancesByAppID(ctx context.Context, client *rest.Client, clusterID string) (map[string]map[string]interface{}, bool) {
+	query := url.Values{
+		"clusterId":  []string{clusterID},
+		"clusterApp": []string{"true"},
+	}
+	var result interface{}
+	if err := client.Get(ctx, "/app-instances", query, &result); err != nil {
+		return nil, false
+	}
+
+	instancesByAppID := map[string]map[string]interface{}{}
+	for _, instance := range responseRows(result) {
+		appID := firstRelationID(instance, relationColumns["app"])
+		if appID != "" {
+			instancesByAppID[appID] = instance
+		}
+	}
+	return instancesByAppID, true
 }
 
 func enrichInfraAppRows(ctx context.Context, client *rest.Client, value interface{}, clusterID string) {
@@ -1105,9 +1310,16 @@ func enrichInfraAppRows(ctx context.Context, client *rest.Client, value interfac
 			instancesByAppID[appID] = instance
 		}
 	}
+	enrichInfraAppRowsFromInstances(value, instancesByAppID, appIDs)
+}
 
+func enrichInfraAppRowsFromInstances(value interface{}, instancesByAppID map[string]map[string]interface{}, appIDs []string) {
+	rows := asRows(value)
 	for index, row := range rows {
-		appID := appIDs[index]
+		appID := firstScalarPath(row, "id", "appId", "app.id")
+		if index < len(appIDs) && appIDs[index] != "" {
+			appID = appIDs[index]
+		}
 		instance := instancesByAppID[appID]
 		if instance == nil {
 			continue
@@ -1546,16 +1758,133 @@ func newIntegrationKindOptionCommand(use string, short string, pathPattern strin
 
 func newProviderCommand() *cobra.Command {
 	out := outputOptions{}
-	cmd := newCatalogCommand("provider", "providers", "Manage providers", "/providers", providerColumns, true)
+	cmd := &cobra.Command{
+		Use:     "provider",
+		Aliases: []string{"providers"},
+		Short:   "Manage providers",
+	}
+	addOutputFlag(cmd, &out)
+	listCmd := newProviderListCommand(out)
+	defaultToList(cmd, listCmd)
+	cmd.AddCommand(listCmd, newProviderGetCommand(out))
 	addProviderCommands(cmd, out)
 	return cmd
 }
 
 func addProviderCommands(cmd *cobra.Command, out outputOptions) {
 	cmd.AddCommand(
-		newGetByNameCommand("get-by-name NAME", "Get provider by name", "/providers/by-name/%s", providerColumns, out, false, false),
+		newProviderGetByNameCommand(out),
 		newGetCommand("revision ID", "Get provider revision", "/provider-revisions/", providerRevisionColumns, out),
 	)
+}
+
+func newProviderListCommand(out outputOptions) *cobra.Command {
+	var orgID, projectIDs, search string
+	var page, pageSize int
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List providers",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query := url.Values{}
+			addQuery(query, "orgId", orgID)
+			addQuery(query, "projectIds", projectIDs)
+			addQuery(query, "search", search)
+			addPagination(query, page, pageSize)
+			addBoolQuery(cmd, query, "excludePublic", "exclude-public")
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/providers", query, &result); err != nil {
+				return err
+			}
+			if outputFormat(cmd, out) != outputJSON {
+				enrichProviderRevisionSummary(cmd.Context(), client, normalizeItems(result))
+			}
+			return printClientResult(cmd, client, out, result, providerColumns)
+		},
+	}
+	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID")
+	cmd.Flags().StringVar(&projectIDs, "project", "", "Project ID or comma-separated project IDs")
+	cmd.Flags().StringVar(&search, "search", "", "Search query")
+	cmd.Flags().IntVar(&page, "page", 0, "Page number")
+	cmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
+	cmd.Flags().Bool("exclude-public", false, "Exclude public resources")
+	return cmd
+}
+
+func newProviderGetCommand(out outputOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "get ID",
+		Short: "Get provider",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return getAndPrintProvider(cmd, out, "/providers/"+url.PathEscape(args[0]), nil)
+		},
+	}
+}
+
+func newProviderGetByNameCommand(out outputOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "get-by-name NAME",
+		Short: "Get provider by name",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return getAndPrintProvider(cmd, out, escapedPath("/providers/by-name/%s", args[0]), nil)
+		},
+	}
+}
+
+func getAndPrintProvider(cmd *cobra.Command, out outputOptions, path string, query url.Values) error {
+	client, err := newRESTClient()
+	if err != nil {
+		return err
+	}
+	var result interface{}
+	if err := client.Get(cmd.Context(), path, query, &result); err != nil {
+		return err
+	}
+	if outputFormat(cmd, out) != outputJSON {
+		enrichProviderRevisionSummary(cmd.Context(), client, normalizeItem(result))
+	}
+	return printClientGetResult(cmd, client, out, result, providerColumns)
+}
+
+func enrichProviderRevisionSummary(ctx context.Context, client *rest.Client, value interface{}) {
+	rows := asRows(value)
+	if len(rows) == 0 {
+		return
+	}
+
+	cache := map[string]map[string]interface{}{}
+	for _, row := range rows {
+		if formatProviderVersionColumn(row) != "" && firstScalarPath(row, "providerRevNumber", "providerRevision.number", "providerRev.number", "revNumber", "latestRevNumber") != "" {
+			continue
+		}
+		revID := firstScalarPath(row, "providerRevId", "providerRev.id", "providerRevision.id", "revId", "latestRevId")
+		if revID == "" {
+			continue
+		}
+		revision, ok := cache[revID]
+		if !ok {
+			var result interface{}
+			if err := client.Get(ctx, "/provider-revisions/"+url.PathEscape(revID), nil, &result); err != nil {
+				cache[revID] = nil
+				continue
+			}
+			revisions := responseRows(result)
+			if len(revisions) == 0 {
+				cache[revID] = nil
+				continue
+			}
+			revision = revisions[0]
+			cache[revID] = revision
+		}
+		if revision != nil {
+			row["providerRevision"] = revision
+		}
+	}
 }
 
 func newStackCommand() *cobra.Command {
@@ -1566,7 +1895,7 @@ func newStackCommand() *cobra.Command {
 		Short:   "Manage stacks",
 	}
 	addOutputFlag(cmd, &out)
-	listCmd := newCatalogListCommand("list", "List stacks", "/stacks", stackColumns, out, false)
+	listCmd := newStackListCommand(out)
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(
 		listCmd,
@@ -1579,6 +1908,40 @@ func newStackCommand() *cobra.Command {
 		newStackUpdateFromGitCommand(out),
 		newStackServiceCommand(out),
 	)
+	return cmd
+}
+
+func newStackListCommand(out outputOptions) *cobra.Command {
+	var orgID, projectIDs, search string
+	var page, pageSize int
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List stacks",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query := url.Values{}
+			addQuery(query, "orgId", orgID)
+			addQuery(query, "projectIds", projectIDs)
+			addQuery(query, "search", search)
+			addPagination(query, page, pageSize)
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/stacks", query, &result); err != nil {
+				return err
+			}
+			if outputFormat(cmd, out) != outputJSON {
+				enrichStackRevisionSummary(cmd.Context(), client, normalizeItems(result))
+			}
+			return printClientResult(cmd, client, out, result, stackColumns)
+		},
+	}
+	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID")
+	cmd.Flags().StringVar(&projectIDs, "project", "", "Project ID or comma-separated project IDs")
+	cmd.Flags().StringVar(&search, "search", "", "Search query")
+	cmd.Flags().IntVar(&page, "page", 0, "Page number")
+	cmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
 	return cmd
 }
 
@@ -1621,9 +1984,46 @@ func getAndPrintStack(cmd *cobra.Command, out outputOptions, path string, query 
 		return err
 	}
 	if outputFormat(cmd, out) != outputJSON {
+		enrichStackRevisionSummary(cmd.Context(), client, normalizeItem(result))
 		enrichStackServicesSummary(cmd.Context(), client, normalizeItem(result))
 	}
 	return printClientGetResult(cmd, client, out, result, stackGetColumns)
+}
+
+func enrichStackRevisionSummary(ctx context.Context, client *rest.Client, value interface{}) {
+	rows := asRows(value)
+	if len(rows) == 0 {
+		return
+	}
+
+	cache := make(map[string]map[string]interface{})
+	for _, row := range rows {
+		if formatCurrentRevisionNumber(row) != "" && formatColumnValue(row, "currentVersion") != "" {
+			continue
+		}
+		revID := firstScalarPath(row, "revId", "stackRevId", "currentRevId", "currentStackRevId", "rev.id", "stackRev.id", "stackRevision.id")
+		if revID == "" {
+			continue
+		}
+		revision, ok := cache[revID]
+		if !ok {
+			var result interface{}
+			if err := client.Get(ctx, "/stack-revisions/"+url.PathEscape(revID), nil, &result); err != nil {
+				cache[revID] = nil
+				continue
+			}
+			revisions := responseRows(result)
+			if len(revisions) == 0 {
+				cache[revID] = nil
+				continue
+			}
+			revision = revisions[0]
+			cache[revID] = revision
+		}
+		if revision != nil {
+			row["stackRevision"] = revision
+		}
+	}
 }
 
 func enrichStackServicesSummary(ctx context.Context, client *rest.Client, value interface{}) {
@@ -5760,17 +6160,27 @@ func enrichAppStacksFromInstances(ctx context.Context, client *rest.Client, valu
 		return
 	}
 
+	needsInstances := false
 	needsStack := false
 	for _, row := range rows {
-		if !hasStackReference(row) && enrichAppRowWithEmbeddedInstanceStack(row, firstNonNilPath(row, "instances", "appInstances")) {
-			continue
+		instances := firstNonNilPath(row, "instances", "appInstances")
+		if instances != nil {
+			if !hasStackReference(row) {
+				enrichAppRowWithEmbeddedInstanceStack(row, instances)
+			}
+			if count, ok := appInstanceCount(instances); ok {
+				row["instances"] = count
+			} else {
+				needsInstances = true
+			}
+		} else {
+			needsInstances = true
 		}
 		if !hasStackReference(row) {
 			needsStack = true
-			break
 		}
 	}
-	if !needsStack {
+	if !needsInstances && !needsStack {
 		return
 	}
 
@@ -5785,7 +6195,24 @@ func enrichAppStacksFromInstances(ctx context.Context, client *rest.Client, valu
 	if err := client.Get(ctx, "/app-instances", query, &result); err != nil {
 		return
 	}
-	enrichAppRowsWithInstanceStacks(rows, responseRows(result))
+	instances := responseRows(result)
+	enrichAppRowsWithInstanceCounts(rows, instances)
+	if needsStack {
+		enrichAppRowsWithInstanceStacks(rows, instances)
+	}
+}
+
+func appInstanceCount(value interface{}) (int, bool) {
+	if isCollection(value) {
+		return len(responseRows(value)), true
+	}
+	if count := scalarString(value); count != "" {
+		parsed, err := strconv.Atoi(count)
+		if err == nil {
+			return parsed, true
+		}
+	}
+	return 0, false
 }
 
 func enrichAppRowWithEmbeddedInstanceStack(app map[string]interface{}, instances interface{}) bool {
@@ -5834,6 +6261,23 @@ func enrichAppRowsWithInstanceStacks(apps []map[string]interface{}, instances []
 		if stackID := stackIDsByAppID[appID]; stackID != "" {
 			app["stackId"] = stackID
 		}
+	}
+}
+
+func enrichAppRowsWithInstanceCounts(apps []map[string]interface{}, instances []map[string]interface{}) {
+	countsByAppID := map[string]int{}
+	for _, instance := range instances {
+		if appID := firstRelationID(instance, relationColumns["app"]); appID != "" {
+			countsByAppID[appID]++
+		}
+	}
+
+	for _, app := range apps {
+		appID := firstScalarPath(app, "id", "appId", "app.id")
+		if appID == "" {
+			continue
+		}
+		app["instances"] = countsByAppID[appID]
 	}
 }
 

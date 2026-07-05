@@ -1967,7 +1967,7 @@ func newStackGetByNameCommand(out outputOptions) *cobra.Command {
 			if revNumber != 0 {
 				query.Set("revNumber", strconv.Itoa(revNumber))
 			}
-			return getAndPrintStack(cmd, out, escapedPath("/stacks/by-name/%s", args[0]), query)
+			return getAndPrintStack(cmd, out, stackByNamePath(args[0]), query)
 		},
 	}
 	cmd.Flags().IntVar(&revNumber, "rev", 0, "Revision number")
@@ -2344,13 +2344,129 @@ func currentStackRevID(ctx context.Context, client *rest.Client, stackID string)
 	if err := client.Get(ctx, "/stacks/"+url.PathEscape(stackID), nil, &stack); err != nil {
 		return "", err
 	}
+	return stackCurrentRevID(stack, stackID)
+}
+
+func resolveAppID(ctx context.Context, client *rest.Client, app string, orgID string) (string, error) {
+	return resolveIDOrName(ctx, client, app, "--app", "/apps/by-name/%s", orgID, "id", "appId")
+}
+
+func resolveEnvID(ctx context.Context, client *rest.Client, env string, orgID string) (string, error) {
+	return resolveIDOrName(ctx, client, env, "--env", "/envs/by-name/%s", orgID, "id", "envId", "environmentId")
+}
+
+func resolveIDOrName(ctx context.Context, client *rest.Client, value string, flag string, byNamePath string, orgID string, idPaths ...string) (string, error) {
+	if _, err := strconv.Atoi(value); err == nil {
+		return value, nil
+	}
+
+	query := url.Values{}
+	addQuery(query, "orgId", orgID)
+	var result interface{}
+	if err := client.Get(ctx, escapedPath(byNamePath, value), query, &result); err != nil {
+		return "", errors.Wrapf(err, "resolve %s %q", flag, value)
+	}
+	rows := responseRows(result)
+	if len(rows) == 0 {
+		return "", errors.Errorf("%s %q response did not include an item", flag, value)
+	}
+	id := firstScalarPath(rows[0], idPaths...)
+	if id == "" {
+		return "", errors.Errorf("%s %q response did not include an id", flag, value)
+	}
+	return id, nil
+}
+
+func resolveCreateStackRevID(ctx context.Context, client *rest.Client, stack string, stackRevID string, orgID string) (string, error) {
+	if stackRevID != "" {
+		return stackRevID, nil
+	}
+	if stack == "" {
+		return "", errors.New("one of --stack or --stack-rev is required")
+	}
+	if _, err := strconv.Atoi(stack); err == nil {
+		resolvedStackRevID, err := currentStackRevID(ctx, client, stack)
+		if err != nil {
+			return "", errors.Wrapf(err, "resolve --stack %q", stack)
+		}
+		return resolvedStackRevID, nil
+	}
+
+	return stackNameCurrentRevID(ctx, client, stack, orgID)
+}
+
+func stackNameCurrentRevID(ctx context.Context, client *rest.Client, stack string, orgID string) (string, error) {
+	result, err := getStackByName(ctx, client, stack, orgID)
+	if err == nil {
+		return stackCurrentRevID(result, stack)
+	}
+	if !isNotFoundAPIError(err) || strings.Contains(stack, "/") {
+		return "", err
+	}
+
+	orgName, resolvedOrgID, orgErr := currentOrgName(ctx, client, orgID)
+	if orgErr != nil {
+		return "", errors.Wrap(orgErr, "resolve current organization for --stack prefix")
+	}
+	prefixedStack := orgName + "/" + stack
+	result, err = getStackByName(ctx, client, prefixedStack, firstScalar(resolvedOrgID, orgID))
+	if err != nil {
+		return "", err
+	}
+	return stackCurrentRevID(result, prefixedStack)
+}
+
+func getStackByName(ctx context.Context, client *rest.Client, stack string, orgID string) (interface{}, error) {
+	query := url.Values{}
+	addQuery(query, "orgId", orgID)
+	var result interface{}
+	if err := client.Get(ctx, stackByNamePath(stack), query, &result); err != nil {
+		return nil, errors.Wrapf(err, "resolve --stack %q", stack)
+	}
+	return result, nil
+}
+
+func currentOrgName(ctx context.Context, client *rest.Client, orgID string) (string, string, error) {
+	var result interface{}
+	if orgID != "" {
+		if err := client.Get(ctx, "/orgs/"+url.PathEscape(orgID), nil, &result); err != nil {
+			return "", "", errors.Wrapf(err, "get organization %q", orgID)
+		}
+	} else {
+		if err := client.Get(ctx, "/orgs", nil, &result); err != nil {
+			return "", "", errors.Wrap(err, "list organizations")
+		}
+	}
+
+	rows := responseRows(result)
+	if orgID == "" {
+		if len(rows) == 0 {
+			return "", "", errors.New("no organization is available for the current credentials")
+		}
+		if len(rows) > 1 {
+			return "", "", errors.New("multiple organizations are available; pass --org explicitly")
+		}
+	}
+	if len(rows) == 0 {
+		return "", "", errors.Errorf("organization %q response did not include an item", orgID)
+	}
+
+	name := firstScalarPath(rows[0], "name")
+	if name == "" {
+		return "", "", errors.Errorf("organization %q response did not include a name", orgID)
+	}
+	resolvedOrgID := firstScalarPath(rows[0], "id")
+	return name, resolvedOrgID, nil
+}
+
+func stackCurrentRevID(stack interface{}, selector string) (string, error) {
 	rows := asRows(normalizeItem(stack))
 	if len(rows) == 0 {
-		return "", errors.Errorf("stack %q response did not include a current revision", stackID)
+		return "", errors.Errorf("stack %q response did not include a current revision", selector)
 	}
-	resolvedStackRevID := firstScalarPath(rows[0], "revId", "stackRevId", "rev.id", "stackRev.id", "stackRevision.id")
+	resolvedStackRevID := firstScalarPath(rows[0], "revId", "stackRevId", "currentRevId", "currentStackRevId", "rev.id", "stackRev.id", "stackRevision.id", "currentRev.id", "currentStackRev.id", "currentStackRevision.id")
 	if resolvedStackRevID == "" {
-		return "", errors.Errorf("stack %q response did not include revId", stackID)
+		return "", errors.Errorf("stack %q response did not include revId", selector)
 	}
 	return resolvedStackRevID, nil
 }
@@ -2693,6 +2809,14 @@ func escapedPath(pattern string, values ...string) string {
 		escaped = append(escaped, url.PathEscape(value))
 	}
 	return fmt.Sprintf(pattern, escaped...)
+}
+
+func stackByNamePath(name string) string {
+	parts := strings.Split(name, "/")
+	for index, part := range parts {
+		parts[index] = url.PathEscape(part)
+	}
+	return "/stacks/by-name/" + strings.Join(parts, "/")
 }
 
 func newServiceChildListCommand(use string, short string, pathPattern string, columns []string, out outputOptions) *cobra.Command {
@@ -3429,7 +3553,7 @@ func newAppCommand() *cobra.Command {
 func newAppCreateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
 	wait := waitOptions{}
-	var orgID, projectID, envID, clusterID, stackID, stackRevID, name, title, instanceName, instanceTitle, domain, ciIntegrationID, registryIntegrationID string
+	var orgID, projectID, env, clusterID, stack, stackRevID, name, title, instanceName, instanceTitle, domain, ciIntegrationID, registryIntegrationID string
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create app",
@@ -3446,16 +3570,24 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 				if err := requireFlag(name, "--name"); err != nil {
 					return err
 				}
-				if err := requireFlag(instanceName, "--instance-name"); err != nil {
+				if err := requireFlag(instanceName, "--instance"); err != nil {
 					return err
 				}
-				if err := requireFlag(envID, "--env"); err != nil {
+				if err := requireFlag(env, "--env"); err != nil {
 					return err
 				}
-				if err := requireFlag(stackRevID, "--stack-rev"); err != nil {
+				if err := requireFlag(clusterID, "--cluster"); err != nil {
 					return err
 				}
 				resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
+				if err != nil {
+					return err
+				}
+				resolvedEnvID, err := resolveEnvID(cmd.Context(), client, env, resolvedOrgID)
+				if err != nil {
+					return err
+				}
+				resolvedStackRevID, err := resolveCreateStackRevID(cmd.Context(), client, stack, stackRevID, resolvedOrgID)
 				if err != nil {
 					return err
 				}
@@ -3472,10 +3604,10 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 				if err := addOptionalInt(values, "projectId", projectID, "--project"); err != nil {
 					return err
 				}
-				if err := addOptionalInt(values, "envId", envID, "--env"); err != nil {
+				if err := addOptionalInt(values, "envId", resolvedEnvID, "--env"); err != nil {
 					return err
 				}
-				if err := addOptionalInt(values, "stackRevId", stackRevID, "--stack-rev"); err != nil {
+				if err := addOptionalInt(values, "stackRevId", resolvedStackRevID, "--stack-rev"); err != nil {
 					return err
 				}
 				if err := addOptionalInt(values, "clusterId", clusterID, "--cluster"); err != nil {
@@ -3491,7 +3623,7 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 			}
 			var result interface{}
 			if err := client.Post(cmd.Context(), "/apps", nil, requestBody, &result); err != nil {
-				return err
+				return errors.Wrap(err, "create app")
 			}
 			columns := resourceOrOperationColumns(result, appColumns)
 			if wait.wait && firstTaskID(result) != "" {
@@ -3508,19 +3640,19 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 	addWaitFlags(cmd, &wait)
 	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
 	cmd.Flags().StringVar(&projectID, "project", "", "Project ID")
-	cmd.Flags().StringVar(&envID, "env", "", "Environment ID")
+	cmd.Flags().StringVar(&env, "env", "", "Environment ID or name")
 	cmd.Flags().StringVar(&clusterID, "cluster", "", "Cluster ID")
-	cmd.Flags().StringVar(&stackID, "stack", "", "Deprecated: use --stack-rev")
+	cmd.Flags().StringVar(&stack, "stack", "", "Stack ID or name; uses the current revision")
 	cmd.Flags().StringVar(&stackRevID, "stack-rev", "", "Stack revision ID")
 	cmd.Flags().StringVar(&name, "name", "", "App machine name")
 	cmd.Flags().StringVar(&title, "title", "", "App title")
-	cmd.Flags().StringVar(&instanceName, "instance-name", "", "Initial app instance machine name")
+	cmd.Flags().StringVar(&instanceName, "instance", "", "Initial app instance machine name")
+	cmd.Flags().StringVar(&instanceName, "instance-name", "", "Deprecated alias for --instance")
 	cmd.Flags().StringVar(&instanceTitle, "instance-title", "", "Initial app instance title")
 	cmd.Flags().StringVar(&domain, "domain", "", "Initial app instance domain")
 	cmd.Flags().StringVar(&ciIntegrationID, "ci-integration", "", "CI integration ID")
 	cmd.Flags().StringVar(&registryIntegrationID, "registry-integration", "", "Registry integration ID")
 	cmd.Flags().Bool("cluster-app", false, "Deprecated: use --cluster when creating the initial cluster app instance")
-	_ = stackID
 	return cmd
 }
 
@@ -3620,7 +3752,7 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
 	wait := waitOptions{}
-	var appID, envID, clusterID, stackID, stackRevID, name, title, instanceName, instanceTitle, domain, region, zone, ciIntegrationID, registryIntegrationID string
+	var orgID, app, env, clusterID, stack, stackRevID, name, title, instanceName, instanceTitle, domain, region, zone, ciIntegrationID, registryIntegrationID string
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create app instance",
@@ -3629,11 +3761,15 @@ func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
 			if !hasBody {
-				if err := requireFlag(appID, "--app"); err != nil {
+				if err := requireFlag(app, "--app"); err != nil {
 					return err
 				}
-				if err := requireFlag(envID, "--env"); err != nil {
+				if err := requireFlag(env, "--env"); err != nil {
 					return err
 				}
 				if err := requireFlag(clusterID, "--cluster"); err != nil {
@@ -3641,17 +3777,26 @@ func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 				}
 				resolvedInstanceName := firstScalar(instanceName, name)
 				resolvedInstanceTitle := firstScalar(instanceTitle, title)
-				if err := requireFlag(resolvedInstanceName, "--instance-name"); err != nil {
+				if err := requireFlag(resolvedInstanceName, "--instance"); err != nil {
 					return err
 				}
-				if err := requireFlag(stackRevID, "--stack-rev"); err != nil {
+				resolvedAppID, err := resolveAppID(cmd.Context(), client, app, orgID)
+				if err != nil {
 					return err
 				}
-				appIDNumber, err := strconv.Atoi(appID)
+				resolvedEnvID, err := resolveEnvID(cmd.Context(), client, env, orgID)
+				if err != nil {
+					return err
+				}
+				resolvedStackRevID, err := resolveCreateStackRevID(cmd.Context(), client, stack, stackRevID, orgID)
+				if err != nil {
+					return err
+				}
+				appIDNumber, err := strconv.Atoi(resolvedAppID)
 				if err != nil {
 					return errors.Wrap(err, "invalid --app")
 				}
-				envIDNumber, err := strconv.Atoi(envID)
+				envIDNumber, err := strconv.Atoi(resolvedEnvID)
 				if err != nil {
 					return errors.Wrap(err, "invalid --env")
 				}
@@ -3665,7 +3810,7 @@ func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 					"clusterId":    clusterIDNumber,
 					"instanceName": resolvedInstanceName,
 				}
-				if err := addOptionalInt(values, "stackRevId", stackRevID, "--stack-rev"); err != nil {
+				if err := addOptionalInt(values, "stackRevId", resolvedStackRevID, "--stack-rev"); err != nil {
 					return err
 				}
 				addOptionalString(values, "instanceTitle", resolvedInstanceTitle)
@@ -3678,13 +3823,9 @@ func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 				}
 				requestBody = values
 			}
-			client, err := newRESTClient()
-			if err != nil {
-				return err
-			}
 			var result interface{}
 			if err := client.Post(cmd.Context(), "/app-instances", nil, requestBody, &result); err != nil {
-				return err
+				return errors.Wrap(err, "create app instance")
 			}
 			columns := resourceOrOperationColumns(result, instanceColumns)
 			if wait.wait && firstTaskID(result) != "" {
@@ -3699,14 +3840,16 @@ func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 	}
 	addBodyFlags(cmd, &body)
 	addWaitFlags(cmd, &wait)
-	cmd.Flags().StringVar(&appID, "app", "", "App ID")
-	cmd.Flags().StringVar(&envID, "env", "", "Environment ID")
+	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID for resolving names")
+	cmd.Flags().StringVar(&app, "app", "", "App ID or name")
+	cmd.Flags().StringVar(&env, "env", "", "Environment ID or name")
 	cmd.Flags().StringVar(&clusterID, "cluster", "", "Cluster ID")
-	cmd.Flags().StringVar(&stackID, "stack", "", "Deprecated: use --stack-rev")
+	cmd.Flags().StringVar(&stack, "stack", "", "Stack ID or name; uses the current revision")
 	cmd.Flags().StringVar(&stackRevID, "stack-rev", "", "Stack revision ID")
-	cmd.Flags().StringVar(&name, "name", "", "Deprecated alias for --instance-name")
+	cmd.Flags().StringVar(&name, "name", "", "Deprecated alias for --instance")
 	cmd.Flags().StringVar(&title, "title", "", "Deprecated alias for --instance-title")
-	cmd.Flags().StringVar(&instanceName, "instance-name", "", "App instance machine name")
+	cmd.Flags().StringVar(&instanceName, "instance", "", "App instance machine name")
+	cmd.Flags().StringVar(&instanceName, "instance-name", "", "Deprecated alias for --instance")
 	cmd.Flags().StringVar(&instanceTitle, "instance-title", "", "App instance title")
 	cmd.Flags().StringVar(&domain, "domain", "", "App instance domain")
 	cmd.Flags().StringVar(&region, "region", "", "Deprecated")
@@ -3714,7 +3857,7 @@ func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&ciIntegrationID, "ci-integration", "", "CI integration ID")
 	cmd.Flags().StringVar(&registryIntegrationID, "registry-integration", "", "Registry integration ID")
 	cmd.Flags().Bool("cluster-app", false, "Deprecated: cluster app status is inferred from --cluster")
-	_, _, _, _ = stackID, region, zone, title
+	_, _, _ = region, zone, title
 	return cmd
 }
 

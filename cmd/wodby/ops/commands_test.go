@@ -1415,6 +1415,37 @@ func TestAppCreateUsesPublicAPIShape(t *testing.T) {
 	}
 }
 
+func TestAppCreateRequiresCluster(t *testing.T) {
+	var requests int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		t.Fatalf("unexpected request path %q", r.URL.Path)
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{
+		"create",
+		"--name", "site",
+		"--instance", "prod",
+		"--env", "prod",
+		"--stack", "drupal",
+	})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want --cluster required")
+	}
+	if !strings.Contains(err.Error(), "--cluster is required") {
+		t.Fatalf("Execute() error = %q, want --cluster required", err)
+	}
+	if requests != 0 {
+		t.Fatalf("requests = %d, want 0", requests)
+	}
+}
+
 func TestAppInstanceCreateUsesPublicAPIShape(t *testing.T) {
 	var requestedMethod string
 	var requestedPath string
@@ -1484,6 +1515,281 @@ func TestAppInstanceCreateUsesPublicAPIShape(t *testing.T) {
 		if _, ok := body[key]; ok {
 			t.Fatalf("body should not include %s: %#v", key, body)
 		}
+	}
+}
+
+func TestAppCreateResolvesEnvAndStackNames(t *testing.T) {
+	var body map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/envs/by-name/prod":
+			if got := r.URL.Query().Get("orgId"); got != "10" {
+				t.Fatalf("env orgId = %q, want 10", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":   22,
+				"name": "prod",
+			})
+		case "/v1/stacks/by-name/drupal":
+			if got := r.URL.Query().Get("orgId"); got != "10" {
+				t.Fatalf("stack orgId = %q, want 10", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":           7,
+				"name":         "drupal",
+				"currentRevId": 70,
+			})
+		case "/v1/apps":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %q, want POST", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("Decode() error = %v", err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":    101,
+				"name":  "site",
+				"title": "Site",
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{
+		"create",
+		"--org", "10",
+		"--project", "12",
+		"--env", "prod",
+		"--cluster", "33",
+		"--stack", "drupal",
+		"--name", "site",
+		"--instance", "prod",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if body["envId"] != float64(22) {
+		t.Fatalf("envId = %#v, want 22", body["envId"])
+	}
+	if body["stackRevId"] != float64(70) {
+		t.Fatalf("stackRevId = %#v, want 70", body["stackRevId"])
+	}
+	if body["instanceName"] != "prod" {
+		t.Fatalf("instanceName = %#v, want prod", body["instanceName"])
+	}
+}
+
+func TestAppCreateResolvesBareStackNameWithCurrentOrgPrefix(t *testing.T) {
+	var body map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/orgs":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 10, "name": "curorg"},
+			})
+		case "/v1/envs/by-name/prod":
+			if got := r.URL.Query().Get("orgId"); got != "10" {
+				t.Fatalf("env orgId = %q, want 10", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":   22,
+				"name": "prod",
+			})
+		case "/v1/stacks/by-name/drupal":
+			if got := r.URL.Query().Get("orgId"); got != "10" {
+				t.Fatalf("direct stack orgId = %q, want 10", got)
+			}
+			http.Error(w, "not found", http.StatusNotFound)
+		case "/v1/orgs/10":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":   10,
+				"name": "curorg",
+			})
+		case "/v1/stacks/by-name/curorg/drupal":
+			if got := r.URL.Query().Get("orgId"); got != "10" {
+				t.Fatalf("prefixed stack orgId = %q, want 10", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":           7,
+				"name":         "curorg/drupal",
+				"currentRevId": 70,
+			})
+		case "/v1/apps":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %q, want POST", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("Decode() error = %v", err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":    101,
+				"name":  "site",
+				"title": "Site",
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{
+		"create",
+		"--env", "prod",
+		"--cluster", "33",
+		"--stack", "drupal",
+		"--name", "site",
+		"--instance", "prod",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if body["orgId"] != float64(10) {
+		t.Fatalf("orgId = %#v, want 10", body["orgId"])
+	}
+	if body["stackRevId"] != float64(70) {
+		t.Fatalf("stackRevId = %#v, want 70", body["stackRevId"])
+	}
+}
+
+func TestAppCreateReportsPrefixedStackLookupError(t *testing.T) {
+	var postRequests int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/stacks/by-name/missing":
+			http.Error(w, "not found", http.StatusNotFound)
+		case "/v1/orgs/10":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":   10,
+				"name": "curorg",
+			})
+		case "/v1/stacks/by-name/curorg/missing":
+			http.Error(w, "not found", http.StatusNotFound)
+		case "/v1/apps":
+			postRequests++
+			t.Fatalf("app should not be created when stack lookup fails")
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{
+		"create",
+		"--org", "10",
+		"--env", "22",
+		"--cluster", "33",
+		"--stack", "missing",
+		"--name", "site",
+		"--instance", "prod",
+	})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want stack lookup error")
+	}
+	if !strings.Contains(err.Error(), `resolve --stack "curorg/missing"`) || !strings.Contains(err.Error(), "404") {
+		t.Fatalf("Execute() error = %q, want prefixed stack 404 context", err)
+	}
+	if postRequests != 0 {
+		t.Fatalf("postRequests = %d, want 0", postRequests)
+	}
+}
+
+func TestAppInstanceCreateResolvesAppEnvAndStackNames(t *testing.T) {
+	var body map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apps/by-name/drupal":
+			if got := r.URL.Query().Get("orgId"); got != "10" {
+				t.Fatalf("app orgId = %q, want 10", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":   11,
+				"name": "drupal",
+			})
+		case "/v1/envs/by-name/prod":
+			if got := r.URL.Query().Get("orgId"); got != "10" {
+				t.Fatalf("env orgId = %q, want 10", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":   22,
+				"name": "prod",
+			})
+		case "/v1/stacks/by-name/drupal":
+			if got := r.URL.Query().Get("orgId"); got != "10" {
+				t.Fatalf("stack orgId = %q, want 10", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":   7,
+				"name": "drupal",
+				"stackRev": map[string]interface{}{
+					"id": 70,
+				},
+			})
+		case "/v1/app-instances":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %q, want POST", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("Decode() error = %v", err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":    101,
+				"name":  "prod",
+				"title": "Production",
+			})
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{
+		"create",
+		"--org", "10",
+		"--app", "drupal",
+		"--env", "prod",
+		"--cluster", "33",
+		"--stack", "drupal",
+		"--instance", "prod",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if body["appId"] != float64(11) {
+		t.Fatalf("appId = %#v, want 11", body["appId"])
+	}
+	if body["envId"] != float64(22) {
+		t.Fatalf("envId = %#v, want 22", body["envId"])
+	}
+	if body["stackRevId"] != float64(70) {
+		t.Fatalf("stackRevId = %#v, want 70", body["stackRevId"])
+	}
+	if body["instanceName"] != "prod" {
+		t.Fatalf("instanceName = %#v, want prod", body["instanceName"])
 	}
 }
 

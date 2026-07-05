@@ -33,6 +33,7 @@ type commandLink struct {
 	Path  string
 	Name  string
 	File  string
+	NavID string
 	Short string
 }
 
@@ -235,10 +236,12 @@ func childLinks(cmd *cobra.Command) []commandLink {
 }
 
 func linkForCommand(cmd *cobra.Command) commandLink {
+	file := fileName(cmd)
 	return commandLink{
 		Path:  cmd.CommandPath(),
 		Name:  cmd.Name(),
-		File:  fileName(cmd),
+		File:  file,
+		NavID: navID(file),
 		Short: cmd.Short,
 	}
 }
@@ -286,11 +289,25 @@ func fileName(cmd *cobra.Command) string {
 	return strings.ReplaceAll(cmd.CommandPath(), " ", "_") + ".html"
 }
 
+func navID(file string) string {
+	return "nav-" + strings.TrimSuffix(file, ".html")
+}
+
 func canonicalURL(file string) string {
 	if file == "" || file == "index.html" {
 		return cliReferenceBaseURL
 	}
 	return cliReferenceBaseURL + file
+}
+
+func navExpanded(item navItem, active string) bool {
+	for _, child := range item.Children {
+		if child.Link.File == active || navExpanded(child, active) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func commandDescription(info commandInfo) string {
@@ -360,6 +377,7 @@ var pageTemplate = template.Must(template.New("manual").Funcs(template.FuncMap{
 		}
 		return dict, nil
 	},
+	"navExpanded": navExpanded,
 }).Parse(`{{define "layout"}}
 <!doctype html>
 <html lang="en">
@@ -401,6 +419,26 @@ var pageTemplate = template.Must(template.New("manual").Funcs(template.FuncMap{
       {{template "content" .}}
     </main>
   </div>
+  <script>
+    (function () {
+      document.querySelectorAll("[data-nav-toggle]").forEach(function (button) {
+        var target = document.getElementById(button.getAttribute("aria-controls"));
+        if (!target) {
+          return;
+        }
+
+        button.addEventListener("click", function () {
+          var expanded = button.getAttribute("aria-expanded") === "true";
+          var nextExpanded = !expanded;
+          var label = button.getAttribute("data-nav-label");
+
+          button.setAttribute("aria-expanded", nextExpanded ? "true" : "false");
+          button.setAttribute("aria-label", (nextExpanded ? "Collapse " : "Expand ") + label + " subcommands");
+          target.hidden = !nextExpanded;
+        });
+      });
+    }());
+  </script>
 </body>
 </html>
 {{end}}
@@ -412,14 +450,22 @@ var pageTemplate = template.Must(template.New("manual").Funcs(template.FuncMap{
 {{end}}
 
 {{define "navItem"}}
+  {{$expanded := navExpanded .Item .Active}}
   <div class="nav-item">
-    <a class="nav-link {{if eq .Active .Item.Link.File}}active{{end}}" href="{{.Item.Link.File}}">{{.Item.Link.Name}}</a>
     {{if .Item.Children}}
-      <div class="nav-children">
+      <div class="nav-row">
+        <button class="nav-toggle" type="button" aria-expanded="{{if $expanded}}true{{else}}false{{end}}" aria-controls="{{.Item.Link.NavID}}-children" aria-label="{{if $expanded}}Collapse{{else}}Expand{{end}} {{.Item.Link.Name}} subcommands" data-nav-toggle data-nav-label="{{.Item.Link.Name}}">
+          <span class="nav-toggle-icon" aria-hidden="true"></span>
+        </button>
+        <a class="nav-link {{if eq .Active .Item.Link.File}}active{{end}}" href="{{.Item.Link.File}}">{{.Item.Link.Name}}</a>
+      </div>
+      <div class="nav-children" id="{{.Item.Link.NavID}}-children"{{if not $expanded}} hidden{{end}}>
         {{range .Item.Children}}
           {{template "navItem" dict "Item" . "Active" $.Active}}
         {{end}}
       </div>
+    {{else}}
+      <a class="nav-link {{if eq .Active .Item.Link.File}}active{{end}}" href="{{.Item.Link.File}}">{{.Item.Link.Name}}</a>
     {{end}}
   </div>
 {{end}}
@@ -664,10 +710,53 @@ a:hover {
   margin: 1px 0;
 }
 
+.nav-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 2px;
+  align-items: center;
+}
+
+.nav-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 28px;
+  margin: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.nav-toggle:hover {
+  background: #eaeef2;
+}
+
+.nav-toggle-icon {
+  display: block;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid currentColor;
+  transition: transform 120ms ease;
+}
+
+.nav-toggle[aria-expanded="true"] .nav-toggle-icon {
+  transform: rotate(90deg);
+}
+
 .nav-children {
   margin-left: 14px;
   padding-left: 10px;
   border-left: 1px solid #d0d7de;
+}
+
+.nav-children[hidden] {
+  display: none;
 }
 
 .nav-link {
@@ -676,6 +765,7 @@ a:hover {
   border-radius: 6px;
   color: var(--text);
   font-size: 14px;
+  overflow-wrap: anywhere;
 }
 
 .nav-link:hover {

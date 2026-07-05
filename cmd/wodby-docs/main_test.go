@@ -89,6 +89,32 @@ func TestGenerateWritesSitemap(t *testing.T) {
 	}
 }
 
+func TestGenerateWritesCollapsibleCommandNav(t *testing.T) {
+	dir := t.TempDir()
+	if err := generate(dir); err != nil {
+		t.Fatalf("generate() error = %v", err)
+	}
+
+	indexContent, err := os.ReadFile(filepath.Join(dir, "index.html"))
+	if err != nil {
+		t.Fatalf("ReadFile(index.html) error = %v", err)
+	}
+
+	indexHTML := string(indexContent)
+	assertContains(t, indexHTML, `data-nav-toggle`)
+	assertContains(t, indexHTML, `aria-controls="nav-wodby_project-children" aria-label="Expand project subcommands"`)
+	assertContains(t, indexHTML, `<div class="nav-children" id="nav-wodby_project-children" hidden>`)
+
+	childContent, err := os.ReadFile(filepath.Join(dir, "wodby_project_list.html"))
+	if err != nil {
+		t.Fatalf("ReadFile(wodby_project_list.html) error = %v", err)
+	}
+
+	childHTML := string(childContent)
+	assertContains(t, childHTML, `aria-controls="nav-wodby_project-children" aria-label="Collapse project subcommands"`)
+	assertContains(t, childHTML, `<div class="nav-children" id="nav-wodby_project-children">`)
+}
+
 func assertContains(t *testing.T, got string, want string) {
 	t.Helper()
 	if !strings.Contains(got, want) {

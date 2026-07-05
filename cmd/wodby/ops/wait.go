@@ -17,20 +17,34 @@ import (
 )
 
 var successfulStatuses = map[string]bool{
-	"completed": true,
-	"complete":  true,
-	"success":   true,
-	"succeeded": true,
-	"ok":        true,
+	"completed":          true,
+	"complete":           true,
+	"done":               true,
+	"done-with-warnings": true,
+	"done with warnings": true,
+	"done_with_warnings": true,
+	"success":            true,
+	"succeeded":          true,
+	"ok":                 true,
 }
 
 var failedStatuses = map[string]bool{
-	"canceled":  true,
-	"cancelled": true,
-	"errored":   true,
-	"error":     true,
-	"failed":    true,
+	"backed off": true,
+	"backed-off": true,
+	"backed_off": true,
+	"canceled":   true,
+	"cancelled":  true,
+	"errored":    true,
+	"error":      true,
+	"failed":     true,
+	"timed out":  true,
+	"timed-out":  true,
+	"timed_out":  true,
+	"timeout":    true,
+	"timedout":   true,
 }
+
+const defaultTaskLogStreamTimeout = 10 * time.Minute
 
 func waitForTask(ctx context.Context, client *rest.Client, id string, timeout time.Duration) (interface{}, error) {
 	return waitForResource(ctx, client, "/tasks/"+id, timeout, "task")
@@ -71,6 +85,414 @@ func waitForResource(ctx context.Context, client *rest.Client, path string, time
 		case <-ticker.C:
 		}
 	}
+}
+
+func printOperationTaskLogs(ctx context.Context, cmd *cobra.Command, client *rest.Client, output outputOptions, value interface{}) (bool, error) {
+	if outputFormat(cmd, output) == outputJSON {
+		return false, nil
+	}
+	taskID := firstTaskID(value)
+	if taskID == "" {
+		return false, nil
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Operation started. Streaming task logs for task %s.\n\n", taskID)
+	if err := streamTaskLogs(ctx, cmd, client, taskID, defaultTaskLogStreamTimeout); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func printCreatedResourceTaskLogs(ctx context.Context, cmd *cobra.Command, client *rest.Client, output outputOptions, value interface{}, resource string, taskQueryName string) (bool, error) {
+	if outputFormat(cmd, output) == outputJSON {
+		return false, nil
+	}
+
+	resourceID := firstCreatedResourceID(value)
+	taskID := firstTaskID(value)
+	if taskID == "" && resourceID != "" {
+		var err error
+		taskID, err = fetchReferencedTaskID(ctx, client, taskQueryName, resourceID)
+		if err != nil {
+			return false, err
+		}
+	}
+	return printResolvedCreatedResourceTaskLogs(ctx, cmd, client, resource, resourceID, taskID)
+}
+
+func printAppCreateTaskLogs(ctx context.Context, cmd *cobra.Command, client *rest.Client, output outputOptions, value interface{}) (bool, error) {
+	if outputFormat(cmd, output) == outputJSON {
+		return false, nil
+	}
+
+	appID := firstCreatedResourceID(value)
+	instanceID := ""
+	taskID := firstTaskID(value)
+	if taskID == "" && appID != "" {
+		var err error
+		taskID, err = fetchReferencedTaskID(ctx, client, "appId", appID)
+		if err != nil {
+			return false, err
+		}
+	}
+	if taskID == "" && appID != "" {
+		var err error
+		instanceID, err = createdAppInstanceID(ctx, client, value, appID)
+		if err != nil {
+			return false, err
+		}
+		if instanceID != "" {
+			taskID, err = fetchReferencedTaskID(ctx, client, "appInstanceId", instanceID)
+			if err != nil {
+				return false, err
+			}
+		}
+	}
+
+	handled, err := printResolvedCreatedResourceTaskLogs(ctx, cmd, client, "app", appID, taskID)
+	if err != nil || !handled {
+		return handled, err
+	}
+	if instanceID == "" && appID != "" {
+		instanceID, err = createdAppInstanceID(ctx, client, value, appID)
+		if err != nil {
+			return true, err
+		}
+	}
+	if err := streamCreatedAppInstanceFollowUpTask(ctx, cmd, client, instanceID, taskID); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func printAppInstanceCreateTaskLogs(ctx context.Context, cmd *cobra.Command, client *rest.Client, output outputOptions, value interface{}) (bool, error) {
+	if outputFormat(cmd, output) == outputJSON {
+		return false, nil
+	}
+
+	instanceID := firstCreatedResourceID(value)
+	taskID := firstTaskID(value)
+	if taskID == "" && instanceID != "" {
+		var err error
+		taskID, err = fetchReferencedTaskID(ctx, client, "appInstanceId", instanceID)
+		if err != nil {
+			return false, err
+		}
+	}
+
+	handled, err := printResolvedCreatedResourceTaskLogs(ctx, cmd, client, "app instance", instanceID, taskID)
+	if err != nil || !handled {
+		return handled, err
+	}
+	if err := streamCreatedAppInstanceFollowUpTask(ctx, cmd, client, instanceID, taskID); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func printResolvedCreatedResourceTaskLogs(ctx context.Context, cmd *cobra.Command, client *rest.Client, resource string, resourceID string, taskID string) (bool, error) {
+	if taskID == "" {
+		return false, nil
+	}
+
+	if resourceID != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s creation started. Streaming task logs for %s %s (task %s).\n\n", humanizeColumnTitle(resource), resource, resourceID, taskID)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s creation started. Streaming task logs for task %s.\n\n", humanizeColumnTitle(resource), taskID)
+	}
+	if err := streamTaskLogs(ctx, cmd, client, taskID, defaultTaskLogStreamTimeout); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func firstCreatedResourceID(value interface{}) string {
+	rows := responseRows(value)
+	if len(rows) == 0 {
+		return ""
+	}
+	return firstScalarPath(rows[0], "id")
+}
+
+func createdAppInstanceID(ctx context.Context, client *rest.Client, value interface{}, appID string) (string, error) {
+	rows := responseRows(value)
+	if len(rows) == 0 {
+		return "", nil
+	}
+
+	app := rows[0]
+	if id := embeddedAppInstanceID(app); id != "" {
+		return id, nil
+	}
+
+	orgID := firstScalarPath(app, "orgId", "organizationId", "org.id", "organization.id")
+	if orgID == "" {
+		return "", nil
+	}
+
+	query := url.Values{
+		"appId":    []string{appID},
+		"orgId":    []string{orgID},
+		"pageSize": []string{"1"},
+	}
+	var result interface{}
+	if err := client.Get(ctx, "/app-instances", query, &result); err != nil {
+		return "", err
+	}
+
+	instanceRows := responseRows(result)
+	if len(instanceRows) == 0 {
+		return "", nil
+	}
+	return firstScalarPath(instanceRows[0], "id", "appInstanceId", "appInstance.id"), nil
+}
+
+func embeddedAppInstanceID(app map[string]interface{}) string {
+	for _, path := range []string{
+		"appInstanceId",
+		"instanceId",
+		"initialAppInstanceId",
+		"initialInstanceId",
+		"appInstance.id",
+		"instance.id",
+		"initialAppInstance.id",
+		"initialInstance.id",
+	} {
+		if id := firstScalarPath(app, path); id != "" {
+			return id
+		}
+	}
+
+	for _, path := range []string{"appInstances", "instances"} {
+		rows := responseRows(valueAtPath(app, path))
+		if len(rows) == 0 {
+			continue
+		}
+		if id := firstScalarPath(rows[0], "id", "appInstanceId", "appInstance.id"); id != "" {
+			return id
+		}
+	}
+
+	return ""
+}
+
+func streamCreatedAppInstanceFollowUpTask(ctx context.Context, cmd *cobra.Command, client *rest.Client, instanceID string, previousTaskID string) error {
+	if instanceID == "" {
+		return nil
+	}
+
+	buildID, taskID, err := latestAppInstanceOperationTask(ctx, client, "/app-builds", instanceID)
+	if err != nil {
+		return err
+	}
+	if taskID != "" && taskID != previousTaskID {
+		fmt.Fprintf(cmd.OutOrStdout(), "\nBuild started. Streaming task logs for build %s (task %s).\n\n", buildID, taskID)
+		return streamTaskLogs(ctx, cmd, client, taskID, defaultTaskLogStreamTimeout)
+	}
+
+	deploymentID, taskID, err := latestAppInstanceOperationTask(ctx, client, "/app-deployments", instanceID)
+	if err != nil {
+		return err
+	}
+	if taskID != "" && taskID != previousTaskID {
+		fmt.Fprintf(cmd.OutOrStdout(), "\nDeployment started. Streaming task logs for deployment %s (task %s).\n\n", deploymentID, taskID)
+		return streamTaskLogs(ctx, cmd, client, taskID, defaultTaskLogStreamTimeout)
+	}
+
+	return nil
+}
+
+func latestAppInstanceOperationTask(ctx context.Context, client *rest.Client, path string, instanceID string) (string, string, error) {
+	rows, err := fetchRows(ctx, client, path, url.Values{
+		"appInstanceId": []string{instanceID},
+		"pageSize":      []string{"1"},
+	})
+	if err != nil {
+		return "", "", err
+	}
+	row := latestByTime(rows)
+	if row == nil {
+		return "", "", nil
+	}
+
+	resourceID := firstScalarPath(row, "id")
+	taskID := firstScalarPath(row, "taskId", "task.id", "task")
+	return resourceID, taskID, nil
+}
+
+func fetchReferencedTaskID(ctx context.Context, client *rest.Client, queryName string, id string) (string, error) {
+	query := url.Values{
+		queryName:  []string{id},
+		"pageSize": []string{"10"},
+	}
+	var result interface{}
+	if err := client.Get(ctx, "/tasks", query, &result); err != nil {
+		return "", err
+	}
+
+	rows := responseRows(result)
+	if len(rows) == 0 {
+		return "", nil
+	}
+	for _, row := range rows {
+		taskID := firstScalarPath(row, "id", "taskId", "task.id")
+		if taskID == "" {
+			continue
+		}
+		status := strings.ToLower(firstScalarPath(row, "status"))
+		if !successfulStatuses[status] && !failedStatuses[status] {
+			return taskID, nil
+		}
+	}
+	for _, row := range rows {
+		if taskID := firstScalarPath(row, "id", "taskId", "task.id"); taskID != "" {
+			return taskID, nil
+		}
+	}
+	return "", nil
+}
+
+func streamTaskLogs(ctx context.Context, cmd *cobra.Command, client *rest.Client, taskID string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	seen := map[string]int{}
+	printedLogs := false
+	for {
+		var task interface{}
+		if err := client.Get(ctx, "/tasks/"+taskID, nil, &task); err != nil {
+			return err
+		}
+
+		printed, err := printNewTaskLogLines(ctx, cmd, client, task, seen)
+		if err != nil {
+			return err
+		}
+		printedLogs = printedLogs || printed
+
+		status := taskStatus(task)
+		if successfulStatuses[status] {
+			if !printedLogs {
+				fmt.Fprintln(cmd.OutOrStdout(), "no logs")
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "Task completed.")
+			return nil
+		}
+		if failedStatuses[status] {
+			if !printedLogs {
+				fmt.Fprintln(cmd.OutOrStdout(), "no logs")
+			}
+			return errors.Errorf("task finished with status %q", status)
+		}
+
+		select {
+		case <-ctx.Done():
+			return errors.New("timed out streaming task logs")
+		case <-ticker.C:
+		}
+	}
+}
+
+func taskStatus(task interface{}) string {
+	rows := responseRows(task)
+	if len(rows) == 0 {
+		return ""
+	}
+	return strings.ToLower(formatValue(rows[0]["status"]))
+}
+
+func printNewTaskLogLines(ctx context.Context, cmd *cobra.Command, client *rest.Client, task interface{}, seen map[string]int) (bool, error) {
+	jobs := taskLogJobs(task)
+	printedAny := false
+	for _, job := range jobs {
+		for _, step := range job.steps {
+			if step.id == "" {
+				continue
+			}
+			logsValue, err := fetchTaskStepLogs(ctx, client, step.id)
+			if err != nil {
+				if isTaskStepLogStreamEndedError(err) {
+					continue
+				}
+				return false, err
+			}
+			lines := logLines(logsValue)
+			key := taskStreamStepKey(job, step)
+			start := seen[key]
+			if start >= len(lines) {
+				continue
+			}
+			if start == 0 {
+				if printedAny || streamHasPrinted(seen) {
+					fmt.Fprintln(cmd.OutOrStdout())
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "== %s ==\n", taskStreamStepTitle(job, step, len(jobs) > 1))
+			}
+			for _, line := range lines[start:] {
+				fmt.Fprintln(cmd.OutOrStdout(), line)
+			}
+			seen[key] = len(lines)
+			printedAny = true
+		}
+	}
+	return printedAny, nil
+}
+
+func isTaskStepLogStreamEndedError(err error) bool {
+	var apiErr *rest.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+
+	message := apiErr.Message
+	if strings.TrimSpace(message) == "" {
+		message = apiErr.Response.UserMessage()
+	}
+	if strings.TrimSpace(message) == "" {
+		message = apiErr.Body
+	}
+	message = strings.ToLower(strings.TrimSpace(message))
+	for _, pattern := range []string{
+		"failed to start stream: no such stream",
+		"log stream expired",
+		"stream expired",
+		"stream ended",
+		"stream closed",
+		"stream is closed",
+		"no such stream",
+	} {
+		if strings.Contains(message, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func streamHasPrinted(seen map[string]int) bool {
+	for _, count := range seen {
+		if count != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func taskStreamStepKey(job taskLogJob, step taskLogStep) string {
+	if step.id != "" {
+		return step.id
+	}
+	return fmt.Sprintf("%d/%s", job.index, stepLogNameOrFallback(step))
+}
+
+func taskStreamStepTitle(job taskLogJob, step taskLogStep, includeJob bool) string {
+	title := stepLogNameOrFallback(step)
+	if includeJob {
+		title = jobLogNameOrFallback(job) + " / " + title
+	}
+	return logTitleWithDetails(title, step.status, step.duration)
 }
 
 func printTaskLogs(ctx context.Context, cmd *cobra.Command, client *rest.Client, output outputOptions, taskID string, jobFilter string, allJobs bool) error {

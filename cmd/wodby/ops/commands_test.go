@@ -2,6 +2,7 @@ package ops
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,6 +27,7 @@ func TestCommandsExposeTopLevelOperationalSurface(t *testing.T) {
 	}
 
 	for _, name := range []string{
+		"user",
 		"org",
 		"member",
 		"project",
@@ -238,6 +240,83 @@ func TestServiceColumnsShowAutoUpdates(t *testing.T) {
 	columns := strings.Join(catalogServiceColumns, ",")
 	if !strings.Contains(columns, "autoUpdates") {
 		t.Fatalf("catalogServiceColumns should include autoUpdates: %s", columns)
+	}
+}
+
+func TestResponseRowsTreatsEmptyWrapperAsEmpty(t *testing.T) {
+	rows := responseRows(map[string]interface{}{
+		"items":      []interface{}{},
+		"totalCount": 0,
+	})
+	if len(rows) != 0 {
+		t.Fatalf("rows = %#v, want empty", rows)
+	}
+}
+
+func TestUserCommandUsesCurrentUserEndpoints(t *testing.T) {
+	var out bytes.Buffer
+	var requested []string
+	var updateBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = append(requested, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case http.MethodGet + " /v1/user":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":    1,
+				"email": "jane@example.com",
+				"name":  "Jane Doe",
+				"twofa": true,
+				"defaultOrg": map[string]interface{}{
+					"id":    10,
+					"title": "Acme",
+				},
+				"defaultProjects": []map[string]interface{}{
+					{"id": 20, "title": "Production"},
+				},
+			})
+		case http.MethodPut + " /v1/user":
+			if err := json.NewDecoder(r.Body).Decode(&updateBody); err != nil {
+				t.Fatalf("Decode() error = %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":    1,
+				"email": "jane@example.com",
+				"name":  "Jane Smith",
+				"twofa": true,
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	getCmd := newUserCommand()
+	getCmd.SetOut(&out)
+	getCmd.SetArgs([]string{"get"})
+	if err := getCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	getOutput := out.String()
+	for _, expected := range []string{"email:", "jane@example.com", "default org:", "Acme [10]", "default projects:", "Production [20]"} {
+		if !strings.Contains(getOutput, expected) {
+			t.Fatalf("user get output should include %q: %s", expected, getOutput)
+		}
+	}
+
+	out.Reset()
+	updateCmd := newUserCommand()
+	updateCmd.SetOut(&out)
+	updateCmd.SetArgs([]string{"update", "--name", "Jane Smith"})
+	if err := updateCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if updateBody["name"] != "Jane Smith" {
+		t.Fatalf("update body = %#v, want name", updateBody)
+	}
+	if strings.Join(requested, "\n") != strings.Join([]string{"GET /v1/user", "PUT /v1/user"}, "\n") {
+		t.Fatalf("requests = %#v", requested)
 	}
 }
 
@@ -966,6 +1045,745 @@ func TestTaskStepLogsDownloadsSignedURLWithoutAPIKey(t *testing.T) {
 	}
 }
 
+func TestOperationTaskResultStreamsTaskLogs(t *testing.T) {
+	var out bytes.Buffer
+	var requests []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case http.MethodPost + " /v1/backups":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "taskId": 42})
+		case http.MethodGet + " /v1/tasks/42":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     42,
+				"title":  "Create backup",
+				"status": "completed",
+				"jobs": []map[string]interface{}{
+					{
+						"id":     "job-1",
+						"title":  "Backup",
+						"status": "completed",
+						"steps": []map[string]interface{}{
+							{"id": "step-1", "name": "Dump database", "status": "completed"},
+						},
+					},
+				},
+			})
+		case http.MethodGet + " /v1/task-steps/step-1/logs":
+			if got := r.URL.Query().Get("delivery"); got != "auto" {
+				t.Fatalf("delivery = %q, want auto", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"lines": []map[string]interface{}{
+					{"level": "info", "message": "backup created"},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newBackupCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"create", "--data", `{"integrationId":1,"bucket":"main"}`})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"Operation started. Streaming task logs for task 42.", "== Dump database (completed) ==", "[info] backup created"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("output should include %q: %s", expected, output)
+		}
+	}
+	wantRequests := []string{"POST /v1/backups", "GET /v1/tasks/42", "GET /v1/task-steps/step-1/logs"}
+	if strings.Join(requests, "\n") != strings.Join(wantRequests, "\n") {
+		t.Fatalf("requests = %#v, want %#v", requests, wantRequests)
+	}
+}
+
+func TestOperationTaskResultIgnoresEndedLogStream(t *testing.T) {
+	var out bytes.Buffer
+	var requests []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case http.MethodPost + " /v1/backups":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "taskId": 42})
+		case http.MethodGet + " /v1/tasks/42":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     42,
+				"title":  "Create backup",
+				"status": "completed",
+				"jobs": []map[string]interface{}{
+					{
+						"id":     "job-1",
+						"title":  "Backup",
+						"status": "completed",
+						"steps": []map[string]interface{}{
+							{"id": "step-1", "name": "Dump database", "status": "completed"},
+						},
+					},
+				},
+			})
+		case http.MethodGet + " /v1/task-steps/step-1/logs":
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(http.StatusGone)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"title":   "Log stream ended",
+				"detail":  "Log stream expired",
+				"message": "Log stream expired",
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newBackupCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"create", "--data", `{"integrationId":1,"bucket":"main"}`})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{"Operation started. Streaming task logs for task 42.", "no logs"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, "Log stream expired") {
+		t.Fatalf("output should not include stream-ended API error: %s", output)
+	}
+	wantRequests := []string{"POST /v1/backups", "GET /v1/tasks/42", "GET /v1/task-steps/step-1/logs"}
+	if strings.Join(requests, "\n") != strings.Join(wantRequests, "\n") {
+		t.Fatalf("requests = %#v, want %#v", requests, wantRequests)
+	}
+}
+
+func TestStreamTaskLogsStopsOnBackendDoneStatus(t *testing.T) {
+	var out bytes.Buffer
+	var requests []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case http.MethodGet + " /v1/tasks/42":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     42,
+				"title":  "Create backup",
+				"status": "done",
+				"jobs":   []map[string]interface{}{},
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	client, err := newRESTClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	if err := streamTaskLogs(context.Background(), cmd, client, "42", 50*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+
+	if output := strings.TrimSpace(out.String()); output != "no logs\nTask completed." {
+		t.Fatalf("output = %q, want no logs and completion", output)
+	}
+	wantRequests := []string{"GET /v1/tasks/42"}
+	if strings.Join(requests, "\n") != strings.Join(wantRequests, "\n") {
+		t.Fatalf("requests = %#v, want %#v", requests, wantRequests)
+	}
+}
+
+func TestCreateCommandsStreamReferencedTaskLogs(t *testing.T) {
+	tests := []struct {
+		name      string
+		command   func() *cobra.Command
+		args      []string
+		createURL string
+		queryName string
+		message   string
+	}{
+		{
+			name:      "app",
+			command:   newAppCommand,
+			args:      []string{"create", "--data", `{"orgId":10,"projectId":12,"envId":22,"clusterId":33,"stackRevId":70,"name":"site","instanceName":"prod"}`},
+			createURL: "/v1/apps",
+			queryName: "appId",
+			message:   "app creation started. Streaming task logs for app 101 (task 42).",
+		},
+		{
+			name:      "app instance",
+			command:   func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			args:      []string{"create", "--data", `{"appId":11,"envId":22,"clusterId":33,"stackRevId":70,"instanceName":"prod"}`},
+			createURL: "/v1/app-instances",
+			queryName: "appInstanceId",
+			message:   "app instance creation started. Streaming task logs for app instance 101 (task 42).",
+		},
+		{
+			name:      "cluster",
+			command:   newClusterCommand,
+			args:      []string{"create", "--data", `{"orgId":10,"integrationId":7,"name":"prod","title":"Production"}`},
+			createURL: "/v1/clusters",
+			queryName: "clusterId",
+			message:   "cluster creation started. Streaming task logs for cluster 101 (task 42).",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var out bytes.Buffer
+			var requests []string
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests = append(requests, r.Method+" "+r.URL.Path)
+				switch r.Method + " " + r.URL.Path {
+				case http.MethodPost + " " + test.createURL:
+					w.WriteHeader(http.StatusCreated)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"id":    101,
+						"name":  "site",
+						"title": "Site",
+					})
+				case http.MethodGet + " /v1/tasks":
+					if got := r.URL.Query().Get(test.queryName); got != "101" {
+						t.Fatalf("%s = %q, want 101", test.queryName, got)
+					}
+					if got := r.URL.Query().Get("pageSize"); got != "10" {
+						t.Fatalf("pageSize = %q, want 10", got)
+					}
+					_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+						{"id": 42, "title": "Create resource", "status": "running"},
+					})
+				case http.MethodGet + " /v1/tasks/42":
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"id":     42,
+						"title":  "Create resource",
+						"status": "completed",
+						"jobs": []map[string]interface{}{
+							{
+								"id":     "job-1",
+								"title":  "Create",
+								"status": "completed",
+								"steps": []map[string]interface{}{
+									{"id": "step-1", "name": "Provision resource", "status": "completed"},
+								},
+							},
+						},
+					})
+				case http.MethodGet + " /v1/task-steps/step-1/logs":
+					if got := r.URL.Query().Get("delivery"); got != "auto" {
+						t.Fatalf("delivery = %q, want auto", got)
+					}
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"lines": []map[string]interface{}{
+							{"level": "info", "message": "resource is ready"},
+						},
+					})
+				case http.MethodGet + " /v1/app-builds", http.MethodGet + " /v1/app-deployments":
+					if test.name != "app instance" {
+						t.Fatalf("unexpected follow-up request for %s: %s", test.name, r.URL.Path)
+					}
+					if got := r.URL.Query().Get("appInstanceId"); got != "101" {
+						t.Fatalf("follow-up appInstanceId = %q, want 101", got)
+					}
+					if got := r.URL.Query().Get("pageSize"); got != "1" {
+						t.Fatalf("follow-up pageSize = %q, want 1", got)
+					}
+					encodeEmptyItems(w)
+				default:
+					t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			configureTestAPI(t, server.URL+"/v1")
+
+			cmd := test.command()
+			cmd.SetOut(&out)
+			cmd.SetArgs(test.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+
+			output := out.String()
+			for _, expected := range []string{test.message, "== Provision resource (completed) ==", "[info] resource is ready", "Task completed."} {
+				if !strings.Contains(output, expected) {
+					t.Fatalf("output should include %q: %s", expected, output)
+				}
+			}
+			if strings.Contains(output, "\nid\t") {
+				t.Fatalf("output should not include the raw create result table: %s", output)
+			}
+			wantRequests := []string{"POST " + test.createURL, "GET /v1/tasks", "GET /v1/tasks/42", "GET /v1/task-steps/step-1/logs"}
+			if test.name == "app instance" {
+				wantRequests = append(wantRequests, "GET /v1/app-builds", "GET /v1/app-deployments")
+			}
+			if strings.Join(requests, "\n") != strings.Join(wantRequests, "\n") {
+				t.Fatalf("requests = %#v, want %#v", requests, wantRequests)
+			}
+		})
+	}
+}
+
+func TestAppCreateStreamsInitialInstanceTaskWhenAppTaskMissing(t *testing.T) {
+	var out bytes.Buffer
+	var requests []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case http.MethodPost + " /v1/apps":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":    101,
+				"orgId": 10,
+				"name":  "site",
+				"title": "Site",
+			})
+		case http.MethodGet + " /v1/tasks":
+			if got := r.URL.Query().Get("pageSize"); got != "10" {
+				t.Fatalf("task pageSize = %q, want 10", got)
+			}
+			switch {
+			case r.URL.Query().Get("appId") != "":
+				if got := r.URL.Query().Get("appId"); got != "101" {
+					t.Fatalf("task appId = %q, want 101", got)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"items":      []map[string]interface{}{},
+					"totalCount": 0,
+				})
+			case r.URL.Query().Get("appInstanceId") != "":
+				if got := r.URL.Query().Get("appInstanceId"); got != "202" {
+					t.Fatalf("task appInstanceId = %q, want 202", got)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"items": []map[string]interface{}{
+						{"id": 42, "title": "Create app instance", "status": "running"},
+					},
+					"totalCount": 1,
+				})
+			default:
+				t.Fatalf("task query should include appId or appInstanceId: %s", r.URL.RawQuery)
+			}
+		case http.MethodGet + " /v1/app-instances":
+			if got := r.URL.Query().Get("appId"); got != "101" {
+				t.Fatalf("instance appId = %q, want 101", got)
+			}
+			if got := r.URL.Query().Get("orgId"); got != "10" {
+				t.Fatalf("instance orgId = %q, want 10", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "1" {
+				t.Fatalf("instance pageSize = %q, want 1", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": 202, "appId": 101},
+				},
+				"totalCount": 1,
+			})
+		case http.MethodGet + " /v1/tasks/42":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     42,
+				"title":  "Create app instance",
+				"status": "completed",
+				"jobs": []map[string]interface{}{
+					{
+						"id":     "job-1",
+						"title":  "Create",
+						"status": "completed",
+						"steps": []map[string]interface{}{
+							{"id": "step-1", "name": "Provision app", "status": "completed"},
+						},
+					},
+				},
+			})
+		case http.MethodGet + " /v1/task-steps/step-1/logs":
+			if got := r.URL.Query().Get("delivery"); got != "auto" {
+				t.Fatalf("delivery = %q, want auto", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"lines": []map[string]interface{}{
+					{"level": "info", "message": "app is ready"},
+				},
+			})
+		case http.MethodGet + " /v1/app-builds", http.MethodGet + " /v1/app-deployments":
+			if got := r.URL.Query().Get("appInstanceId"); got != "202" {
+				t.Fatalf("follow-up appInstanceId = %q, want 202", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "1" {
+				t.Fatalf("follow-up pageSize = %q, want 1", got)
+			}
+			encodeEmptyItems(w)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"create", "--data", `{"orgId":10,"projectId":12,"envId":22,"clusterId":33,"stackRevId":70,"name":"site","instanceName":"prod"}`})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{
+		"app creation started. Streaming task logs for app 101 (task 42).",
+		"== Provision app (completed) ==",
+		"[info] app is ready",
+		"Task completed.",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, "\nid\t") {
+		t.Fatalf("output should not include the raw create result table: %s", output)
+	}
+	wantRequests := []string{
+		"POST /v1/apps",
+		"GET /v1/tasks",
+		"GET /v1/app-instances",
+		"GET /v1/tasks",
+		"GET /v1/tasks/42",
+		"GET /v1/task-steps/step-1/logs",
+		"GET /v1/app-builds",
+		"GET /v1/app-deployments",
+	}
+	if strings.Join(requests, "\n") != strings.Join(wantRequests, "\n") {
+		t.Fatalf("requests = %#v, want %#v", requests, wantRequests)
+	}
+}
+
+func TestAppCreateStreamsBuildTaskAfterCreationTask(t *testing.T) {
+	var out bytes.Buffer
+	var requests []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case http.MethodPost + " /v1/apps":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":    101,
+				"orgId": 10,
+				"name":  "site",
+				"title": "Site",
+			})
+		case http.MethodGet + " /v1/tasks":
+			if got := r.URL.Query().Get("appId"); got != "101" {
+				t.Fatalf("task appId = %q, want 101", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "10" {
+				t.Fatalf("task pageSize = %q, want 10", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": 42, "title": "Create app", "status": "running"},
+				},
+				"totalCount": 1,
+			})
+		case http.MethodGet + " /v1/tasks/42":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     42,
+				"title":  "Create app",
+				"status": "completed",
+				"jobs": []map[string]interface{}{
+					{
+						"id":     "job-create",
+						"title":  "Create",
+						"status": "completed",
+						"steps": []map[string]interface{}{
+							{"id": "step-create", "name": "Provision app", "status": "completed"},
+						},
+					},
+				},
+			})
+		case http.MethodGet + " /v1/task-steps/step-create/logs":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"lines": []map[string]interface{}{
+					{"level": "info", "message": "app is ready"},
+				},
+			})
+		case http.MethodGet + " /v1/app-instances":
+			if got := r.URL.Query().Get("appId"); got != "101" {
+				t.Fatalf("instance appId = %q, want 101", got)
+			}
+			if got := r.URL.Query().Get("orgId"); got != "10" {
+				t.Fatalf("instance orgId = %q, want 10", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "1" {
+				t.Fatalf("instance pageSize = %q, want 1", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": 202, "appId": 101},
+				},
+				"totalCount": 1,
+			})
+		case http.MethodGet + " /v1/app-builds":
+			if got := r.URL.Query().Get("appInstanceId"); got != "202" {
+				t.Fatalf("build appInstanceId = %q, want 202", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "1" {
+				t.Fatalf("build pageSize = %q, want 1", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": 501, "number": 1, "status": "running", "taskId": 84, "createdAt": "2026-01-02T03:04:00Z"},
+				},
+				"totalCount": 1,
+			})
+		case http.MethodGet + " /v1/app-deployments":
+			t.Fatalf("deployment should not be fetched when build task is available")
+		case http.MethodGet + " /v1/tasks/84":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     84,
+				"title":  "Build app",
+				"status": "completed",
+				"jobs": []map[string]interface{}{
+					{
+						"id":     "job-build",
+						"title":  "Build",
+						"status": "completed",
+						"steps": []map[string]interface{}{
+							{"id": "step-build", "name": "Build image", "status": "completed"},
+						},
+					},
+				},
+			})
+		case http.MethodGet + " /v1/task-steps/step-build/logs":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"lines": []map[string]interface{}{
+					{"level": "info", "message": "image built"},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"create", "--data", `{"orgId":10,"projectId":12,"envId":22,"clusterId":33,"stackRevId":70,"name":"site","instanceName":"prod"}`})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{
+		"app creation started. Streaming task logs for app 101 (task 42).",
+		"[info] app is ready",
+		"Task completed.",
+		"Build started. Streaming task logs for build 501 (task 84).",
+		"== Build image (completed) ==",
+		"[info] image built",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("output should include %q: %s", expected, output)
+		}
+	}
+	wantRequests := []string{
+		"POST /v1/apps",
+		"GET /v1/tasks",
+		"GET /v1/tasks/42",
+		"GET /v1/task-steps/step-create/logs",
+		"GET /v1/app-instances",
+		"GET /v1/app-builds",
+		"GET /v1/tasks/84",
+		"GET /v1/task-steps/step-build/logs",
+	}
+	if strings.Join(requests, "\n") != strings.Join(wantRequests, "\n") {
+		t.Fatalf("requests = %#v, want %#v", requests, wantRequests)
+	}
+}
+
+func TestAppInstanceCreateStreamsDeploymentTaskWhenNoBuildTask(t *testing.T) {
+	var out bytes.Buffer
+	var requests []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case http.MethodPost + " /v1/app-instances":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":    202,
+				"name":  "prod",
+				"title": "Production",
+			})
+		case http.MethodGet + " /v1/tasks":
+			if got := r.URL.Query().Get("appInstanceId"); got != "202" {
+				t.Fatalf("task appInstanceId = %q, want 202", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "10" {
+				t.Fatalf("task pageSize = %q, want 10", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": 42, "title": "Create app instance", "status": "running"},
+				},
+				"totalCount": 1,
+			})
+		case http.MethodGet + " /v1/tasks/42":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     42,
+				"title":  "Create app instance",
+				"status": "completed",
+				"jobs": []map[string]interface{}{
+					{
+						"id":     "job-create",
+						"title":  "Create",
+						"status": "completed",
+						"steps": []map[string]interface{}{
+							{"id": "step-create", "name": "Provision instance", "status": "completed"},
+						},
+					},
+				},
+			})
+		case http.MethodGet + " /v1/task-steps/step-create/logs":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"lines": []map[string]interface{}{
+					{"level": "info", "message": "instance is ready"},
+				},
+			})
+		case http.MethodGet + " /v1/app-builds":
+			if got := r.URL.Query().Get("appInstanceId"); got != "202" {
+				t.Fatalf("build appInstanceId = %q, want 202", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "1" {
+				t.Fatalf("build pageSize = %q, want 1", got)
+			}
+			encodeEmptyItems(w)
+		case http.MethodGet + " /v1/app-deployments":
+			if got := r.URL.Query().Get("appInstanceId"); got != "202" {
+				t.Fatalf("deployment appInstanceId = %q, want 202", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "1" {
+				t.Fatalf("deployment pageSize = %q, want 1", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": 601, "number": 1, "status": "running", "taskId": 85, "createdAt": "2026-01-02T03:05:00Z"},
+				},
+				"totalCount": 1,
+			})
+		case http.MethodGet + " /v1/tasks/85":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     85,
+				"title":  "Deploy app",
+				"status": "completed",
+				"jobs": []map[string]interface{}{
+					{
+						"id":     "job-deploy",
+						"title":  "Deploy",
+						"status": "completed",
+						"steps": []map[string]interface{}{
+							{"id": "step-deploy", "name": "Deploy services", "status": "completed"},
+						},
+					},
+				},
+			})
+		case http.MethodGet + " /v1/task-steps/step-deploy/logs":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"lines": []map[string]interface{}{
+					{"level": "info", "message": "services deployed"},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"create", "--data", `{"appId":11,"envId":22,"clusterId":33,"stackRevId":70,"instanceName":"prod"}`})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{
+		"app instance creation started. Streaming task logs for app instance 202 (task 42).",
+		"[info] instance is ready",
+		"Task completed.",
+		"Deployment started. Streaming task logs for deployment 601 (task 85).",
+		"== Deploy services (completed) ==",
+		"[info] services deployed",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("output should include %q: %s", expected, output)
+		}
+	}
+	wantRequests := []string{
+		"POST /v1/app-instances",
+		"GET /v1/tasks",
+		"GET /v1/tasks/42",
+		"GET /v1/task-steps/step-create/logs",
+		"GET /v1/app-builds",
+		"GET /v1/app-deployments",
+		"GET /v1/tasks/85",
+		"GET /v1/task-steps/step-deploy/logs",
+	}
+	if strings.Join(requests, "\n") != strings.Join(wantRequests, "\n") {
+		t.Fatalf("requests = %#v, want %#v", requests, wantRequests)
+	}
+}
+
+func TestOperationTaskResultKeepsJSONOutputRaw(t *testing.T) {
+	var out bytes.Buffer
+	var taskRequests int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/tasks/42" {
+			taskRequests++
+		}
+		if r.URL.Path != "/v1/backups" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "taskId": 42})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newBackupCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"create", "--data", `{"integrationId":1,"bucket":"main"}`, "-o", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, `"taskId": 42`) {
+		t.Fatalf("json output should include raw task id: %s", output)
+	}
+	if strings.Contains(output, "Streaming task logs") {
+		t.Fatalf("json output should not stream logs: %s", output)
+	}
+	if taskRequests != 0 {
+		t.Fatalf("task requests = %d, want 0", taskRequests)
+	}
+}
+
 func TestLogLinesFormatsNewlineDelimitedJSON(t *testing.T) {
 	lines := logLines(`{"level":"info","message":"first"}
 {"stream":"stderr","log":"second\n"}`)
@@ -1326,14 +2144,129 @@ func TestSchemaAddedCommandSurfaceIsExposed(t *testing.T) {
 		t.Fatal("missing top-level integration-kind command")
 	}
 
-	assertChildren(t, newOrgCommand(), "get", "update", "delete")
+	assertChildren(t, newUserCommand(), "get", "update")
+	assertChildren(t, newOrgCommand(), "get", "update")
 	assertChildren(t, newProjectCommand(), "get-by-name", "create", "update", "delete")
 	assertChildren(t, newDatabaseCommand(), "get-by-name", "options")
-	assertChildren(t, newClusterCommand(), "get-by-name", "settings")
+	assertChildren(t, newClusterCommand(), "get-by-name", "settings", "upgrade-infra", "upgrade-infra-apps", "delete")
 	assertChildren(t, newIntegrationCommand(), "get-by-name", "options")
 	assertChildren(t, newProviderCommand(), "get-by-name", "revision")
-	assertChildren(t, newStackCommand(), "get-by-name", "import", "settings", "revision", "publish-draft", "update-from-git")
+	assertChildren(t, newStackCommand(), "get-by-name", "import", "settings", "revision", "publish-draft", "update-from-git", "duplicate", "sync-origin")
 	assertChildren(t, newServiceCommand(), "get-by-name", "import", "settings", "revision", "options")
+}
+
+func TestStackActionCommandsUseRESTEndpoints(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantPath   string
+		assertBody func(*testing.T, map[string]interface{})
+	}{
+		{
+			name:     "duplicate",
+			args:     []string{"duplicate", "31", "--org", "10", "--project", "20"},
+			wantPath: "/v1/stacks/31/actions/duplicate",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["orgId"] != float64(10) || body["projectId"] != float64(20) {
+					t.Fatalf("body = %#v, want org/project", body)
+				}
+			},
+		},
+		{
+			name:     "sync origin",
+			args:     []string{"sync-origin", "31", "--delete-services", "--delete-service-config"},
+			wantPath: "/v1/stacks/31/actions/sync-origin",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["deleteStackServices"] != true || body["deleteStackServicesConfiguration"] != true {
+					t.Fatalf("body = %#v, want sync delete flags", body)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var out bytes.Buffer
+			var gotMethod string
+			var gotPath string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotMethod = r.Method
+				gotPath = r.URL.Path
+				var body map[string]interface{}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("Decode() error = %v", err)
+				}
+				test.assertBody(t, body)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 99, "name": "copy", "title": "Copy"})
+			}))
+			defer server.Close()
+			configureTestAPI(t, server.URL+"/v1")
+
+			cmd := newStackCommand()
+			cmd.SetOut(&out)
+			cmd.SetArgs(test.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if gotMethod != http.MethodPost {
+				t.Fatalf("method = %q, want POST", gotMethod)
+			}
+			if gotPath != test.wantPath {
+				t.Fatalf("path = %q, want %s", gotPath, test.wantPath)
+			}
+			if !strings.Contains(out.String(), "Copy") {
+				t.Fatalf("output should include duplicated/synced stack: %s", out.String())
+			}
+		})
+	}
+}
+
+func TestClusterActionAndDeleteCommandsUseRESTEndpoints(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		wantPath  string
+		wantQuery string
+	}{
+		{name: "upgrade infra", args: []string{"upgrade-infra", "31"}, wantPath: "/v1/clusters/31/actions/upgrade-infra"},
+		{name: "upgrade infra apps", args: []string{"upgrade-infra-apps", "31"}, wantPath: "/v1/clusters/31/actions/upgrade-infra-apps"},
+		{name: "delete force", args: []string{"delete", "31", "--force", "-y"}, wantPath: "/v1/clusters/31", wantQuery: "force=true"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var gotMethod string
+			var gotPath string
+			var gotQuery string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotMethod = r.Method
+				gotPath = r.URL.Path
+				gotQuery = r.URL.RawQuery
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+			}))
+			defer server.Close()
+			configureTestAPI(t, server.URL+"/v1")
+
+			cmd := newClusterCommand()
+			cmd.SetOut(io.Discard)
+			cmd.SetArgs(test.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if test.name == "delete force" && gotMethod != http.MethodDelete {
+				t.Fatalf("method = %q, want DELETE", gotMethod)
+			}
+			if test.name != "delete force" && gotMethod != http.MethodPost {
+				t.Fatalf("method = %q, want POST", gotMethod)
+			}
+			if gotPath != test.wantPath {
+				t.Fatalf("path = %q, want %s", gotPath, test.wantPath)
+			}
+			if gotQuery != test.wantQuery {
+				t.Fatalf("query = %q, want %s", gotQuery, test.wantQuery)
+			}
+		})
+	}
 }
 
 func TestAppCreateUsesPublicAPIShape(t *testing.T) {
@@ -1342,6 +2275,16 @@ func TestAppCreateUsesPublicAPIShape(t *testing.T) {
 	var body map[string]interface{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/tasks" {
+			if got := r.URL.Query().Get("appId"); got != "101" {
+				t.Fatalf("task appId = %q, want 101", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "10" {
+				t.Fatalf("task pageSize = %q, want 10", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
+			return
+		}
 		requestedMethod = r.Method
 		requestedPath = r.URL.Path
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -1452,6 +2395,16 @@ func TestAppInstanceCreateUsesPublicAPIShape(t *testing.T) {
 	var body map[string]interface{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/tasks" {
+			if got := r.URL.Query().Get("appInstanceId"); got != "101" {
+				t.Fatalf("task appInstanceId = %q, want 101", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "10" {
+				t.Fatalf("task pageSize = %q, want 10", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
+			return
+		}
 		requestedMethod = r.Method
 		requestedPath = r.URL.Path
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -1540,6 +2493,14 @@ func TestAppCreateResolvesEnvAndStackNames(t *testing.T) {
 				"name":         "drupal",
 				"currentRevId": 70,
 			})
+		case "/v1/clusters/by-name/primary":
+			if got := r.URL.Query().Get("orgId"); got != "10" {
+				t.Fatalf("cluster orgId = %q, want 10", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":   33,
+				"name": "primary",
+			})
 		case "/v1/apps":
 			if r.Method != http.MethodPost {
 				t.Fatalf("method = %q, want POST", r.Method)
@@ -1553,6 +2514,14 @@ func TestAppCreateResolvesEnvAndStackNames(t *testing.T) {
 				"name":  "site",
 				"title": "Site",
 			})
+		case "/v1/tasks":
+			if got := r.URL.Query().Get("appId"); got != "101" {
+				t.Fatalf("task appId = %q, want 101", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "10" {
+				t.Fatalf("task pageSize = %q, want 10", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -1567,7 +2536,7 @@ func TestAppCreateResolvesEnvAndStackNames(t *testing.T) {
 		"--org", "10",
 		"--project", "12",
 		"--env", "prod",
-		"--cluster", "33",
+		"--cluster", "primary",
 		"--stack", "drupal",
 		"--name", "site",
 		"--instance", "prod",
@@ -1581,6 +2550,9 @@ func TestAppCreateResolvesEnvAndStackNames(t *testing.T) {
 	}
 	if body["stackRevId"] != float64(70) {
 		t.Fatalf("stackRevId = %#v, want 70", body["stackRevId"])
+	}
+	if body["clusterId"] != float64(33) {
+		t.Fatalf("clusterId = %#v, want 33", body["clusterId"])
 	}
 	if body["instanceName"] != "prod" {
 		t.Fatalf("instanceName = %#v, want prod", body["instanceName"])
@@ -1636,6 +2608,14 @@ func TestAppCreateResolvesBareStackNameWithCurrentOrgPrefix(t *testing.T) {
 				"name":  "site",
 				"title": "Site",
 			})
+		case "/v1/tasks":
+			if got := r.URL.Query().Get("appId"); got != "101" {
+				t.Fatalf("task appId = %q, want 101", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "10" {
+				t.Fatalf("task pageSize = %q, want 10", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -1744,6 +2724,14 @@ func TestAppInstanceCreateResolvesAppEnvAndStackNames(t *testing.T) {
 					"id": 70,
 				},
 			})
+		case "/v1/clusters/by-name/primary":
+			if got := r.URL.Query().Get("orgId"); got != "10" {
+				t.Fatalf("cluster orgId = %q, want 10", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":   33,
+				"name": "primary",
+			})
 		case "/v1/app-instances":
 			if r.Method != http.MethodPost {
 				t.Fatalf("method = %q, want POST", r.Method)
@@ -1757,6 +2745,14 @@ func TestAppInstanceCreateResolvesAppEnvAndStackNames(t *testing.T) {
 				"name":  "prod",
 				"title": "Production",
 			})
+		case "/v1/tasks":
+			if got := r.URL.Query().Get("appInstanceId"); got != "101" {
+				t.Fatalf("task appInstanceId = %q, want 101", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "10" {
+				t.Fatalf("task pageSize = %q, want 10", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -1771,7 +2767,7 @@ func TestAppInstanceCreateResolvesAppEnvAndStackNames(t *testing.T) {
 		"--org", "10",
 		"--app", "drupal",
 		"--env", "prod",
-		"--cluster", "33",
+		"--cluster", "primary",
 		"--stack", "drupal",
 		"--instance", "prod",
 	})
@@ -1784,6 +2780,9 @@ func TestAppInstanceCreateResolvesAppEnvAndStackNames(t *testing.T) {
 	}
 	if body["envId"] != float64(22) {
 		t.Fatalf("envId = %#v, want 22", body["envId"])
+	}
+	if body["clusterId"] != float64(33) {
+		t.Fatalf("clusterId = %#v, want 33", body["clusterId"])
 	}
 	if body["stackRevId"] != float64(70) {
 		t.Fatalf("stackRevId = %#v, want 70", body["stackRevId"])
@@ -3845,6 +4844,14 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var gotMethod, gotPath, gotQuery string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/tasks/55" {
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"id":     55,
+						"title":  "Upgrade stack",
+						"status": "completed",
+					})
+					return
+				}
 				gotMethod = r.Method
 				gotPath = r.URL.Path
 				gotQuery = r.URL.RawQuery
@@ -4646,6 +5653,16 @@ func TestClusterCreateUsesPublicAPIShape(t *testing.T) {
 	var body map[string]interface{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/tasks" {
+			if got := r.URL.Query().Get("clusterId"); got != "101" {
+				t.Fatalf("task clusterId = %q, want 101", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "10" {
+				t.Fatalf("task pageSize = %q, want 10", got)
+			}
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
+			return
+		}
 		requestedMethod = r.Method
 		requestedPath = r.URL.Path
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -5354,6 +6371,7 @@ func TestInstanceListCanFilterClusterApps(t *testing.T) {
 
 func TestInstanceListEnrichesReadableRelations(t *testing.T) {
 	var out bytes.Buffer
+	deployedAt := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -5386,6 +6404,18 @@ func TestInstanceListEnrichesReadableRelations(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 22, "title": "Prod"})
 		case "/v1/clusters/33":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 33, "title": "Primary"})
+		case "/v1/app-deployments":
+			if got := r.URL.Query().Get("appInstanceId"); got != "1" {
+				t.Fatalf("deployment appInstanceId = %q, want 1", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "1" {
+				t.Fatalf("deployment pageSize = %q, want 1", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": 71, "number": 4, "status": "completed", "startedAt": "2026-01-02T03:04:00Z", "endedAt": deployedAt, "createdAt": "2026-01-02T03:03:00Z"},
+				},
+			})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -5401,7 +6431,7 @@ func TestInstanceListEnrichesReadableRelations(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"outdated", "app", "stack", "env", "cluster", "domain", "Drupal", "Drupal Stack", "Prod", "Primary", "example.com"} {
+	for _, expected := range []string{"outdated", "app", "stack", "env", "cluster", "domain", "last deployed at", "Drupal", "Drupal Stack", "Prod", "Primary", "example.com", "2h ago"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("output should include %q: %s", expected, output)
 		}
@@ -5444,6 +6474,14 @@ func TestInstanceListUsesStackFromInstanceRelation(t *testing.T) {
 					},
 				},
 			})
+		case "/v1/app-deployments":
+			if got := r.URL.Query().Get("appInstanceId"); got != "1" {
+				t.Fatalf("deployment appInstanceId = %q, want 1", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "1" {
+				t.Fatalf("deployment pageSize = %q, want 1", got)
+			}
+			encodeEmptyItems(w)
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -5813,6 +6851,10 @@ func executeInstanceListQuery(t *testing.T, args ...string) url.Values {
 	var requestedPath string
 	var requestedQuery url.Values
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/app-deployments" {
+			encodeEmptyItems(w)
+			return
+		}
 		requestedPath = r.URL.Path
 		requestedQuery = r.URL.Query()
 		_ = json.NewEncoder(w).Encode([]map[string]interface{}{

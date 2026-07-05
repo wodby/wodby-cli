@@ -38,7 +38,35 @@ type Client struct {
 }
 
 type ErrorResponse struct {
-	Message string `json:"message"`
+	Title   string       `json:"title"`
+	Detail  string       `json:"detail"`
+	Code    string       `json:"code"`
+	Message string       `json:"message"`
+	Errors  []FieldError `json:"errors"`
+}
+
+type FieldError struct {
+	Field  string `json:"field"`
+	Code   string `json:"code"`
+	Detail string `json:"detail"`
+}
+
+type APIError struct {
+	StatusCode int
+	Status     string
+	Response   ErrorResponse
+	Message    string
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("api request failed: %s (%s)", e.Message, e.Status)
+	}
+	if strings.TrimSpace(e.Body) != "" {
+		return fmt.Sprintf("api request failed: %s: %s", e.Status, e.Body)
+	}
+	return fmt.Sprintf("api request failed: %s", e.Status)
 }
 
 func NewClient(config types.APIConfig) (*Client, error) {
@@ -154,12 +182,61 @@ func decodeError(resp *http.Response) error {
 	}
 
 	var apiErr ErrorResponse
-	if err := json.Unmarshal(body, &apiErr); err == nil && apiErr.Message != "" {
-		return errors.Errorf("api request failed: %s (%s)", apiErr.Message, resp.Status)
+	if err := json.Unmarshal(body, &apiErr); err == nil {
+		if message := apiErr.UserMessage(); message != "" {
+			return &APIError{
+				StatusCode: resp.StatusCode,
+				Status:     resp.Status,
+				Response:   apiErr,
+				Message:    message,
+			}
+		}
 	}
 	if len(bytes.TrimSpace(body)) != 0 {
-		return errors.Errorf("api request failed: %s: %s", resp.Status, string(body))
+		return &APIError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Body:       string(body),
+		}
 	}
 
-	return fmt.Errorf("api request failed: %s", resp.Status)
+	return &APIError{
+		StatusCode: resp.StatusCode,
+		Status:     resp.Status,
+	}
+}
+
+func (r ErrorResponse) UserMessage() string {
+	message := firstNonEmpty(r.Message, r.Detail, r.Title)
+	if len(r.Errors) == 0 {
+		return message
+	}
+
+	fieldMessages := make([]string, 0, len(r.Errors))
+	for _, fieldErr := range r.Errors {
+		detail := firstNonEmpty(fieldErr.Detail, fieldErr.Code)
+		if detail == "" {
+			continue
+		}
+		if fieldErr.Field != "" {
+			detail = fieldErr.Field + ": " + detail
+		}
+		fieldMessages = append(fieldMessages, detail)
+	}
+	if len(fieldMessages) == 0 {
+		return message
+	}
+	if message == "" {
+		return strings.Join(fieldMessages, "; ")
+	}
+	return message + ": " + strings.Join(fieldMessages, "; ")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

@@ -3,6 +3,7 @@ package rest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -94,6 +95,43 @@ func TestClientDecodesAPIErrorMessage(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	if got := err.Error(); got != "api request failed: bad request (400 Bad Request)" {
+		t.Fatalf("error = %q", got)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error type = %T, want *APIError", err)
+	}
+	if apiErr.StatusCode != http.StatusBadRequest || apiErr.Message != "bad request" {
+		t.Fatalf("api error = %#v", apiErr)
+	}
+}
+
+func TestClientDecodesProblemJSONErrorDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"title":   "Invalid request",
+			"detail":  "invalid request body",
+			"message": "invalid request body",
+			"errors": []map[string]interface{}{
+				{"field": "name", "detail": "is required"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(types.APIConfig{Endpoint: server.URL + "/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out map[string]interface{}
+	err = client.Get(context.Background(), "/orgs", nil, &out)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got := err.Error(); got != "api request failed: invalid request body: name: is required (400 Bad Request)" {
 		t.Fatalf("error = %q", got)
 	}
 }

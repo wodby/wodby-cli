@@ -347,6 +347,9 @@ func printGetResult(cmd *cobra.Command, opts outputOptions, value interface{}, c
 }
 
 func printClientResult(cmd *cobra.Command, client *rest.Client, opts outputOptions, value interface{}, columns []string) error {
+	if handled, err := printOperationTaskLogs(cmd.Context(), cmd, client, opts, value); handled || err != nil {
+		return err
+	}
 	items := normalizeItems(value)
 	if outputFormat(cmd, opts) != outputJSON && isCollection(items) {
 		if err := enrichDisplayRelations(cmd.Context(), client, items, columns); err != nil {
@@ -859,6 +862,12 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		return formatAuthorColumn(row)
 	case "member":
 		return formatOrgMembershipLabel(row)
+	case "orgs":
+		return formatNamedRows(row["orgs"])
+	case "defaultOrg":
+		return formatNamedRow(valueAtPath(row, "defaultOrg"))
+	case "defaultProjects":
+		return formatNamedRows(valueAtPath(row, "defaultProjects"))
 	case "email":
 		return firstScalarPath(row, "email", "user.email", "account.email", "profile.email")
 	case "role":
@@ -1157,15 +1166,13 @@ func asRows(value interface{}) []map[string]interface{} {
 }
 
 func responseRows(value interface{}) []map[string]interface{} {
-	if row, ok := value.(map[string]interface{}); ok && !looksLikeResponseWrapper(row) {
-		return []map[string]interface{}{row}
-	}
 	if row, ok := value.(map[string]interface{}); ok {
+		if !looksLikeResponseWrapper(row) {
+			return []map[string]interface{}{row}
+		}
 		for _, key := range []string{"items", "results", "item", "result", "data"} {
 			if nested, ok := row[key]; ok {
-				if rows := responseRows(nested); len(rows) != 0 {
-					return rows
-				}
+				return responseRows(nested)
 			}
 		}
 	}
@@ -2707,6 +2714,32 @@ func formatOrgMembershipLabel(row map[string]interface{}) string {
 	)
 	email := firstScalarPath(row, "email", "user.email", "account.email", "profile.email")
 	return joinNameEmail(name, email)
+}
+
+func formatNamedRows(value interface{}) string {
+	labels := make([]string, 0)
+	for _, row := range asRows(value) {
+		if label := formatNamedRow(row); label != "" {
+			labels = append(labels, label)
+		}
+	}
+	return strings.Join(labels, ", ")
+}
+
+func formatNamedRow(value interface{}) string {
+	row, ok := value.(map[string]interface{})
+	if !ok {
+		return formatValue(value)
+	}
+	label := firstTitlePath(row, "title", "name", "email")
+	id := firstScalarPath(row, "id")
+	if label != "" && id != "" && label != id {
+		return label + " [" + id + "]"
+	}
+	if label != "" {
+		return label
+	}
+	return id
 }
 
 func joinNameEmail(name string, email string) string {

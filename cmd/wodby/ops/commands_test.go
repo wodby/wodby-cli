@@ -1550,7 +1550,18 @@ func TestAppCreateStreamsBuildTaskAfterCreationTask(t *testing.T) {
 				"totalCount": 1,
 			})
 		case http.MethodGet + " /v1/app-deployments":
-			t.Fatalf("deployment should not be fetched when build task is available")
+			if got := r.URL.Query().Get("appInstanceId"); got != "202" {
+				t.Fatalf("deployment appInstanceId = %q, want 202", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "1" {
+				t.Fatalf("deployment pageSize = %q, want 1", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": 601, "number": 1, "status": "running", "taskId": 85, "createdAt": "2026-01-02T03:05:00Z"},
+				},
+				"totalCount": 1,
+			})
 		case http.MethodGet + " /v1/tasks/84":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"id":     84,
@@ -1571,6 +1582,28 @@ func TestAppCreateStreamsBuildTaskAfterCreationTask(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"lines": []map[string]interface{}{
 					{"level": "info", "message": "image built"},
+				},
+			})
+		case http.MethodGet + " /v1/tasks/85":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     85,
+				"title":  "Deploy app",
+				"status": "completed",
+				"jobs": []map[string]interface{}{
+					{
+						"id":     "job-deploy",
+						"title":  "Deploy",
+						"status": "completed",
+						"steps": []map[string]interface{}{
+							{"id": "step-deploy", "name": "Deploy services", "status": "completed"},
+						},
+					},
+				},
+			})
+		case http.MethodGet + " /v1/task-steps/step-deploy/logs":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"lines": []map[string]interface{}{
+					{"level": "info", "message": "services deployed"},
 				},
 			})
 		default:
@@ -1595,6 +1628,9 @@ func TestAppCreateStreamsBuildTaskAfterCreationTask(t *testing.T) {
 		"Build started. Streaming task logs for build 501 (task 84).",
 		"== Build image (completed) ==",
 		"[info] image built",
+		"Deployment started. Streaming task logs for deployment 601 (task 85).",
+		"== Deploy services (completed) ==",
+		"[info] services deployed",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("output should include %q: %s", expected, output)
@@ -1609,6 +1645,9 @@ func TestAppCreateStreamsBuildTaskAfterCreationTask(t *testing.T) {
 		"GET /v1/app-builds",
 		"GET /v1/tasks/84",
 		"GET /v1/task-steps/step-build/logs",
+		"GET /v1/app-deployments",
+		"GET /v1/tasks/85",
+		"GET /v1/task-steps/step-deploy/logs",
 	}
 	if strings.Join(requests, "\n") != strings.Join(wantRequests, "\n") {
 		t.Fatalf("requests = %#v, want %#v", requests, wantRequests)
@@ -1746,6 +1785,228 @@ func TestAppInstanceCreateStreamsDeploymentTaskWhenNoBuildTask(t *testing.T) {
 	}
 	if strings.Join(requests, "\n") != strings.Join(wantRequests, "\n") {
 		t.Fatalf("requests = %#v, want %#v", requests, wantRequests)
+	}
+}
+
+func TestBuildCreateStreamsBuildAndTriggeredDeploymentLogs(t *testing.T) {
+	var out bytes.Buffer
+	var requests []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case http.MethodPost + " /v1/app-builds":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": 501, "appInstanceId": 202, "status": "running"},
+				},
+				"taskId": 84,
+			})
+		case http.MethodGet + " /v1/tasks/84":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     84,
+				"title":  "Build app",
+				"status": "completed",
+				"jobs": []map[string]interface{}{
+					{
+						"id":     "job-build",
+						"title":  "Build",
+						"status": "completed",
+						"steps": []map[string]interface{}{
+							{"id": "step-build", "name": "Build image", "status": "completed"},
+						},
+					},
+				},
+			})
+		case http.MethodGet + " /v1/task-steps/step-build/logs":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"lines": []map[string]interface{}{
+					{"level": "info", "message": "image built"},
+				},
+			})
+		case http.MethodGet + " /v1/app-deployments":
+			if got := r.URL.Query().Get("appInstanceId"); got != "202" {
+				t.Fatalf("deployment appInstanceId = %q, want 202", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "1" {
+				t.Fatalf("deployment pageSize = %q, want 1", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"items": []map[string]interface{}{
+					{"id": 601, "number": 1, "status": "running", "taskId": 85, "createdAt": "2026-01-02T03:05:00Z"},
+				},
+				"totalCount": 1,
+			})
+		case http.MethodGet + " /v1/tasks/85":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     85,
+				"title":  "Deploy app",
+				"status": "completed",
+				"jobs": []map[string]interface{}{
+					{
+						"id":     "job-deploy",
+						"title":  "Deploy",
+						"status": "completed",
+						"steps": []map[string]interface{}{
+							{"id": "step-deploy", "name": "Deploy services", "status": "completed"},
+						},
+					},
+				},
+			})
+		case http.MethodGet + " /v1/task-steps/step-deploy/logs":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"lines": []map[string]interface{}{
+					{"level": "info", "message": "services deployed"},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newBuildCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"create", "--data", `{"appServiceIds":[22]}`})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{
+		"Build started. Streaming task logs for build 501 (task 84).",
+		"== Build image (completed) ==",
+		"[info] image built",
+		"Task completed.",
+		"Deployment started. Streaming task logs for deployment 601 (task 85).",
+		"== Deploy services (completed) ==",
+		"[info] services deployed",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, "\nid\t") {
+		t.Fatalf("output should not include raw build result table: %s", output)
+	}
+	wantRequests := []string{
+		"POST /v1/app-builds",
+		"GET /v1/tasks/84",
+		"GET /v1/task-steps/step-build/logs",
+		"GET /v1/app-deployments",
+		"GET /v1/tasks/85",
+		"GET /v1/task-steps/step-deploy/logs",
+	}
+	if strings.Join(requests, "\n") != strings.Join(wantRequests, "\n") {
+		t.Fatalf("requests = %#v, want %#v", requests, wantRequests)
+	}
+}
+
+func TestDeploymentRunCommandsStreamTaskLogs(t *testing.T) {
+	tests := []struct {
+		name     string
+		command  func() *cobra.Command
+		args     []string
+		postPath string
+	}{
+		{
+			name:     "build deploy",
+			command:  newBuildCommand,
+			args:     []string{"deploy", "501"},
+			postPath: "/v1/app-builds/501/deploy",
+		},
+		{
+			name:     "deployment create",
+			command:  newDeploymentCommand,
+			args:     []string{"create", "--data", `{"services":[{"appServiceId":22}]}`},
+			postPath: "/v1/app-deployments",
+		},
+		{
+			name:     "deployment redeploy",
+			command:  newDeploymentCommand,
+			args:     []string{"redeploy", "601"},
+			postPath: "/v1/app-deployments/601/redeploy",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var out bytes.Buffer
+			var requests []string
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests = append(requests, r.Method+" "+r.URL.Path)
+				switch r.Method + " " + r.URL.Path {
+				case http.MethodPost + " " + test.postPath:
+					w.WriteHeader(http.StatusCreated)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"id":            601,
+						"number":        1,
+						"status":        "running",
+						"appInstanceId": 202,
+						"taskId":        85,
+					})
+				case http.MethodGet + " /v1/tasks/85":
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"id":     85,
+						"title":  "Deploy app",
+						"status": "completed",
+						"jobs": []map[string]interface{}{
+							{
+								"id":     "job-deploy",
+								"title":  "Deploy",
+								"status": "completed",
+								"steps": []map[string]interface{}{
+									{"id": "step-deploy", "name": "Deploy services", "status": "completed"},
+								},
+							},
+						},
+					})
+				case http.MethodGet + " /v1/task-steps/step-deploy/logs":
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"lines": []map[string]interface{}{
+							{"level": "info", "message": "services deployed"},
+						},
+					})
+				default:
+					t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			configureTestAPI(t, server.URL+"/v1")
+
+			cmd := test.command()
+			cmd.SetOut(&out)
+			cmd.SetArgs(test.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+
+			output := out.String()
+			for _, expected := range []string{
+				"Deployment started. Streaming task logs for deployment 601 (task 85).",
+				"== Deploy services (completed) ==",
+				"[info] services deployed",
+				"Task completed.",
+			} {
+				if !strings.Contains(output, expected) {
+					t.Fatalf("output should include %q: %s", expected, output)
+				}
+			}
+			if strings.Contains(output, "\nid\t") {
+				t.Fatalf("output should not include raw deployment result table: %s", output)
+			}
+			wantRequests := []string{
+				"POST " + test.postPath,
+				"GET /v1/tasks/85",
+				"GET /v1/task-steps/step-deploy/logs",
+			}
+			if strings.Join(requests, "\n") != strings.Join(wantRequests, "\n") {
+				t.Fatalf("requests = %#v, want %#v", requests, wantRequests)
+			}
+		})
 	}
 }
 

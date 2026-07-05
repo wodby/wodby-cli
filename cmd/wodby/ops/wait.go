@@ -190,6 +190,38 @@ func printAppInstanceCreateTaskLogs(ctx context.Context, cmd *cobra.Command, cli
 	return true, nil
 }
 
+func printBuildTaskLogs(ctx context.Context, cmd *cobra.Command, client *rest.Client, output outputOptions, value interface{}) (bool, error) {
+	if outputFormat(cmd, output) == outputJSON {
+		return false, nil
+	}
+
+	buildID, instanceID, taskID := buildOperationRef(value)
+	if taskID == "" {
+		return false, nil
+	}
+
+	if err := streamBuildTaskAndDeployment(ctx, cmd, client, instanceID, buildID, taskID, nil); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func printDeploymentTaskLogs(ctx context.Context, cmd *cobra.Command, client *rest.Client, output outputOptions, value interface{}) (bool, error) {
+	if outputFormat(cmd, output) == outputJSON {
+		return false, nil
+	}
+
+	deploymentID, taskID := deploymentOperationRef(value)
+	if taskID == "" {
+		return false, nil
+	}
+
+	if err := streamDeploymentTask(ctx, cmd, client, deploymentID, taskID); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
 func printResolvedCreatedResourceTaskLogs(ctx context.Context, cmd *cobra.Command, client *rest.Client, resource string, resourceID string, taskID string) (bool, error) {
 	if taskID == "" {
 		return false, nil
@@ -286,20 +318,10 @@ func streamCreatedAppInstanceFollowUpTask(ctx context.Context, cmd *cobra.Comman
 		return err
 	}
 	if taskID != "" && taskID != previousTaskID {
-		fmt.Fprintf(cmd.OutOrStdout(), "\nBuild started. Streaming task logs for build %s (task %s).\n\n", buildID, taskID)
-		return streamTaskLogs(ctx, cmd, client, taskID, defaultTaskLogStreamTimeout)
+		return streamBuildTaskAndDeployment(ctx, cmd, client, instanceID, buildID, taskID, map[string]bool{previousTaskID: true})
 	}
 
-	deploymentID, taskID, err := latestAppInstanceOperationTask(ctx, client, "/app-deployments", instanceID)
-	if err != nil {
-		return err
-	}
-	if taskID != "" && taskID != previousTaskID {
-		fmt.Fprintf(cmd.OutOrStdout(), "\nDeployment started. Streaming task logs for deployment %s (task %s).\n\n", deploymentID, taskID)
-		return streamTaskLogs(ctx, cmd, client, taskID, defaultTaskLogStreamTimeout)
-	}
-
-	return nil
+	return streamLatestDeploymentTask(ctx, cmd, client, instanceID, map[string]bool{previousTaskID: true})
 }
 
 func latestAppInstanceOperationTask(ctx context.Context, client *rest.Client, path string, instanceID string) (string, string, error) {
@@ -318,6 +340,78 @@ func latestAppInstanceOperationTask(ctx context.Context, client *rest.Client, pa
 	resourceID := firstScalarPath(row, "id")
 	taskID := firstScalarPath(row, "taskId", "task.id", "task")
 	return resourceID, taskID, nil
+}
+
+func streamBuildTaskAndDeployment(ctx context.Context, cmd *cobra.Command, client *rest.Client, instanceID string, buildID string, taskID string, skipTaskIDs map[string]bool) error {
+	if skipTaskIDs == nil {
+		skipTaskIDs = map[string]bool{}
+	}
+	if taskID == "" || skipTaskIDs[taskID] {
+		return nil
+	}
+
+	if buildID != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Build started. Streaming task logs for build %s (task %s).\n\n", buildID, taskID)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Build started. Streaming task logs for task %s.\n\n", taskID)
+	}
+	if err := streamTaskLogs(ctx, cmd, client, taskID, defaultTaskLogStreamTimeout); err != nil {
+		return err
+	}
+	skipTaskIDs[taskID] = true
+
+	return streamLatestDeploymentTask(ctx, cmd, client, instanceID, skipTaskIDs)
+}
+
+func streamLatestDeploymentTask(ctx context.Context, cmd *cobra.Command, client *rest.Client, instanceID string, skipTaskIDs map[string]bool) error {
+	if instanceID == "" {
+		return nil
+	}
+
+	deploymentID, taskID, err := latestAppInstanceOperationTask(ctx, client, "/app-deployments", instanceID)
+	if err != nil {
+		return err
+	}
+	if taskID == "" || skipTaskIDs[taskID] {
+		return nil
+	}
+	return streamDeploymentTask(ctx, cmd, client, deploymentID, taskID)
+}
+
+func streamDeploymentTask(ctx context.Context, cmd *cobra.Command, client *rest.Client, deploymentID string, taskID string) error {
+	if deploymentID != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Deployment started. Streaming task logs for deployment %s (task %s).\n\n", deploymentID, taskID)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Deployment started. Streaming task logs for task %s.\n\n", taskID)
+	}
+	return streamTaskLogs(ctx, cmd, client, taskID, defaultTaskLogStreamTimeout)
+}
+
+func buildOperationRef(value interface{}) (string, string, string) {
+	rows := responseRows(value)
+	if len(rows) == 0 {
+		return "", "", firstTaskID(value)
+	}
+	buildID := firstScalarPath(rows[0], "id", "appBuildId", "appBuild.id", "buildId", "build.id")
+	instanceID := firstScalarPath(rows[0], "appInstanceId", "instanceId", "appInstance.id", "instance.id")
+	taskID := firstTaskID(value)
+	if taskID == "" {
+		taskID = firstScalarPath(rows[0], "taskId", "task.id", "task")
+	}
+	return buildID, instanceID, taskID
+}
+
+func deploymentOperationRef(value interface{}) (string, string) {
+	rows := responseRows(value)
+	if len(rows) == 0 {
+		return "", firstTaskID(value)
+	}
+	deploymentID := firstScalarPath(rows[0], "id", "appDeploymentId", "appDeployment.id", "deploymentId", "deployment.id")
+	taskID := firstTaskID(value)
+	if taskID == "" {
+		taskID = firstScalarPath(rows[0], "taskId", "task.id", "task")
+	}
+	return deploymentID, taskID
 }
 
 func fetchReferencedTaskID(ctx context.Context, client *rest.Client, queryName string, id string) (string, error) {

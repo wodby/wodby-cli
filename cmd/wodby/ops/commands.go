@@ -5622,6 +5622,9 @@ func newBuildCreateCommand(out outputOptions) *cobra.Command {
 			if err := client.Post(cmd.Context(), "/app-builds", nil, requestBody, &result); err != nil {
 				return err
 			}
+			if handled, err := printBuildTaskLogs(cmd.Context(), cmd, client, out, result); handled || err != nil {
+				return err
+			}
 			columns := buildColumns
 			if wait.wait && firstTaskID(result) != "" {
 				result, err = waitForTask(cmd.Context(), client, firstTaskID(result), wait.timeout)
@@ -5652,6 +5655,9 @@ func newBuildDeployCommand(out outputOptions) *cobra.Command {
 			}
 			var result interface{}
 			if err := client.Post(cmd.Context(), "/app-builds/"+args[0]+"/deploy", nil, nil, &result); err != nil {
+				return err
+			}
+			if handled, err := printDeploymentTaskLogs(cmd.Context(), cmd, client, out, result); handled || err != nil {
 				return err
 			}
 			if wait.wait {
@@ -5783,6 +5789,9 @@ func newDeploymentCreateCommand(out outputOptions) *cobra.Command {
 			if err := client.Post(cmd.Context(), "/app-deployments", nil, requestBody, &result); err != nil {
 				return err
 			}
+			if handled, err := printDeploymentTaskLogs(cmd.Context(), cmd, client, out, result); handled || err != nil {
+				return err
+			}
 			if wait.wait {
 				deploymentID := firstID(result)
 				if deploymentID != "" {
@@ -5817,6 +5826,9 @@ func newDeploymentRedeployCommand(out outputOptions) *cobra.Command {
 			}
 			var result interface{}
 			if err := client.Post(cmd.Context(), "/app-deployments/"+args[0]+"/redeploy", nil, nil, &result); err != nil {
+				return err
+			}
+			if handled, err := printDeploymentTaskLogs(cmd.Context(), cmd, client, out, result); handled || err != nil {
 				return err
 			}
 			if wait.wait {

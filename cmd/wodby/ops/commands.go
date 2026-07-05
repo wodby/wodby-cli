@@ -21,14 +21,17 @@ var (
 	envColumns                      = []string{"id", "name", "title", "type"}
 	databaseColumns                 = []string{"id", "name", "title", "status", "kind", "type", "version", "env", "integration", "service", "region", "zone"}
 	databaseDbColumns               = []string{"id", "name", "status", "charset", "collation", "database", "createdAt"}
+	databaseCharsetColumns          = []string{"name", "title", "default", "defaultCollation"}
 	databaseUserColumns             = []string{"id", "username", "hostname", "status", "database", "dbs", "createdAt"}
 	clusterColumns                  = []string{"id", "name", "title", "status", "integration", "region", "zone", "version", "nodes", "singleNode", "scalable", "serverless"}
 	clusterGetColumns               = []string{"id", "name", "title", "status", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "scalable", "serverless"}
 	infraAppColumns                 = []string{"id", "name", "title", "status", "stack"}
 	integrationColumns              = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
 	providerColumns                 = []string{"id", "name", "title", "status", "public", "revId"}
+	providerRevisionColumns         = []string{"id", "name", "title", "number", "version", "provider", "createdAt"}
 	stackColumns                    = []string{"id", "name", "title", "status", "revision", "currentVersion", "outdated", "createdAt", "updatedAt"}
 	stackGetColumns                 = []string{"id", "name", "title", "status", "public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "outdated", "createdAt", "updatedAt", "services"}
+	stackRevisionColumns            = []string{"id", "name", "title", "number", "draft", "version", "stack", "createdAt"}
 	stackServiceColumns             = []string{"id", "name", "title", "type", "serviceRev", "replicas", "required", "disabled", "main", "updatedAt"}
 	stackServiceEnvColumns          = []string{"id", "name", "value", "secret", "envType", "workload", "container", "createdAt"}
 	stackServiceValueColumns        = []string{"id", "name", "value", "secret", "envType", "createdAt"}
@@ -42,6 +45,7 @@ var (
 	stackServiceOptionColumns       = []string{"id", "version", "default", "disabled"}
 	stackServiceCronScheduleColumns = []string{"id", "name", "title", "crontab", "command", "workload", "envType", "disabled", "updatedAt"}
 	catalogServiceColumns           = []string{"id", "name", "title", "type", "status", "public", "external", "revId", "latestRevNumber"}
+	serviceRevisionColumns          = []string{"id", "name", "title", "type", "external", "number", "version", "service", "createdAt"}
 	appColumns                      = []string{"id", "name", "title", "status", "stack", "clusterApp"}
 	appGetColumns                   = append(append([]string{}, appColumns...), "instances", "createdAt", "updatedAt")
 	appStatusColumns                = []string{"id", "title", "status", "instances", "serviceStatus", "routeStatus", "latestBuild", "latestDeployment", "needs"}
@@ -89,6 +93,7 @@ func Commands() []*cobra.Command {
 		newDatabaseCommand(),
 		newClusterCommand(),
 		newIntegrationCommand(),
+		newIntegrationKindCommand(),
 		newProviderCommand(),
 		newStackCommand(),
 		newServiceCommand(),
@@ -130,6 +135,55 @@ func newOrgCommand() *cobra.Command {
 		},
 	})
 
+	cmd.AddCommand(
+		newGetCommand("get ID", "Get organization", "/orgs/", orgColumns, out),
+		newOrgUpdateCommand(out),
+		newDeleteCommand("delete ID", "Delete organization", "/orgs/", orgColumns, out),
+	)
+
+	return cmd
+}
+
+func newOrgUpdateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	var title, ciIntegrationID, registryIntegrationID string
+	cmd := &cobra.Command{
+		Use:   "update ID",
+		Short: "Update organization",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if err := requireFlag(title, "--title"); err != nil {
+					return err
+				}
+				values := map[string]interface{}{"title": title}
+				if err := addOptionalInt(values, "ciIntegrationId", ciIntegrationID, "--ci-integration"); err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "registryIntegrationId", registryIntegrationID, "--registry-integration"); err != nil {
+					return err
+				}
+				requestBody = values
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Put(cmd.Context(), "/orgs/"+url.PathEscape(args[0]), nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, orgColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().StringVar(&title, "title", "", "Organization title")
+	cmd.Flags().StringVar(&ciIntegrationID, "ci-integration", "", "Default CI integration ID")
+	cmd.Flags().StringVar(&registryIntegrationID, "registry-integration", "", "Default registry integration ID")
 	return cmd
 }
 
@@ -211,7 +265,82 @@ func newProjectCommand() *cobra.Command {
 	}
 
 	defaultToList(cmd, listCmd)
-	cmd.AddCommand(listCmd, getCmd)
+	cmd.AddCommand(
+		listCmd,
+		getCmd,
+		newGetByNameCommand("get-by-name NAME", "Get project by name", "/projects/by-name/%s", projectColumns, out, true, false),
+		newProjectCreateCommand(out),
+		newTitleUpdateCommand("update ID", "Update project", "/projects/", projectColumns, out),
+		newDeleteCommand("delete ID", "Delete project", "/projects/", projectColumns, out),
+	)
+	return cmd
+}
+
+func newProjectCreateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	var orgID, name, title, role string
+	var orgMembershipIDs, teamIDs []string
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create project",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if err := requireFlag(name, "--name"); err != nil {
+					return err
+				}
+				if err := requireFlag(title, "--title"); err != nil {
+					return err
+				}
+				values := map[string]interface{}{
+					"name":  name,
+					"title": title,
+				}
+				resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
+				if err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "orgId", resolvedOrgID, "--org"); err != nil {
+					return err
+				}
+				if len(orgMembershipIDs) != 0 {
+					parsed, err := parseIntValues(orgMembershipIDs, "--org-membership")
+					if err != nil {
+						return err
+					}
+					values["orgMembershipIds"] = parsed
+				}
+				if len(teamIDs) != 0 {
+					parsed, err := parseIntValues(teamIDs, "--team")
+					if err != nil {
+						return err
+					}
+					values["teamIds"] = parsed
+				}
+				addOptionalString(values, "role", role)
+				requestBody = values
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), "/projects", nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, projectColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
+	cmd.Flags().StringVar(&name, "name", "", "Project machine name")
+	cmd.Flags().StringVar(&title, "title", "", "Project title")
+	cmd.Flags().StringArrayVar(&orgMembershipIDs, "org-membership", nil, "Organization membership ID to grant; repeatable or comma-separated")
+	cmd.Flags().StringArrayVar(&teamIDs, "team", nil, "Team ID to grant; repeatable or comma-separated")
+	cmd.Flags().StringVar(&role, "role", "", "Project role for granted members or teams")
 	return cmd
 }
 
@@ -256,7 +385,14 @@ func newEnvCommand() *cobra.Command {
 	}
 
 	defaultToList(cmd, listCmd)
-	cmd.AddCommand(listCmd, getCmd, newEnvCreateCommand(out), newEnvUpdateCommand(out), newDeleteCommand("delete ID", "Delete environment", "/envs/", envColumns, out))
+	cmd.AddCommand(
+		listCmd,
+		getCmd,
+		newGetByNameCommand("get-by-name NAME", "Get environment by name", "/envs/by-name/%s", envColumns, out, true, false),
+		newEnvCreateCommand(out),
+		newEnvUpdateCommand(out),
+		newDeleteCommand("delete ID", "Delete environment", "/envs/", envColumns, out),
+	)
 	return cmd
 }
 
@@ -408,8 +544,40 @@ func newDatabaseCommand() *cobra.Command {
 	}
 
 	defaultToList(cmd, listCmd)
-	cmd.AddCommand(listCmd, getCmd, newDatabaseCreateCommand(out), newDatabaseUpdateCommand(out), newDeleteCommand("delete ID", "Delete database", "/databases/", databaseColumns, out))
+	cmd.AddCommand(
+		listCmd,
+		getCmd,
+		newGetByNameCommand("get-by-name NAME", "Get database by name", "/databases/by-name/%s", databaseColumns, out, true, false),
+		newDatabaseCreateCommand(out),
+		newDatabaseUpdateCommand(out),
+		newDeleteCommand("delete ID", "Delete database", "/databases/", databaseColumns, out),
+		newDatabaseOptionsCommand(out),
+	)
 	cmd.AddCommand(newDatabaseDbCommand(), newDatabaseUserCommand())
+	return cmd
+}
+
+func newDatabaseOptionsCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "options",
+		Short: "Show database options",
+	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "charsets DATABASE_ID",
+		Short: "List database charsets",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/databases/"+url.PathEscape(args[0])+"/options/charsets", nil, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, databaseCharsetColumns)
+		},
+	})
 	return cmd
 }
 
@@ -835,7 +1003,25 @@ func newClusterCommand() *cobra.Command {
 	}
 
 	defaultToList(cmd, listCmd)
-	cmd.AddCommand(listCmd, getCmd, newClusterAppCommand(), newClusterCreateCommand(out), newClusterUpdateCommand(out), newDeleteCommand("delete ID", "Delete cluster", "/clusters/", clusterColumns, out))
+	cmd.AddCommand(
+		listCmd,
+		getCmd,
+		newGetByNameCommand("get-by-name NAME", "Get cluster by name", "/clusters/by-name/%s", clusterGetColumns, out, true, false),
+		newClusterAppCommand(),
+		newClusterCreateCommand(out),
+		newClusterUpdateCommand(out),
+		newClusterSettingsCommand(out),
+		newDeleteCommand("delete ID", "Delete cluster", "/clusters/", clusterColumns, out),
+	)
+	return cmd
+}
+
+func newClusterSettingsCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "settings",
+		Short: "Manage cluster settings",
+	}
+	cmd.AddCommand(newRawBodyPutCommand("update ID", "Update cluster settings", "/clusters/settings/%s", clusterColumns, out))
 	return cmd
 }
 
@@ -1115,14 +1301,22 @@ func newIntegrationCommand() *cobra.Command {
 	}
 
 	defaultToList(cmd, listCmd)
-	cmd.AddCommand(listCmd, getCmd, newIntegrationCreateCommand(out), newIntegrationUpdateCommand(out), newDeleteCommand("delete ID", "Delete integration", "/integrations/", integrationColumns, out))
+	cmd.AddCommand(
+		listCmd,
+		getCmd,
+		newGetByNameCommand("get-by-name NAME", "Get integration by name", "/integrations/by-name/%s", integrationColumns, out, true, false),
+		newIntegrationCreateCommand(out),
+		newIntegrationUpdateCommand(out),
+		newIntegrationOptionsCommand(out),
+		newDeleteCommand("delete ID", "Delete integration", "/integrations/", integrationColumns, out),
+	)
 	return cmd
 }
 
 func newIntegrationCreateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
 	var orgID, projectID, providerID, name, title, auth, scope string
-	var kinds []string
+	var kinds, fields []string
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create integration",
@@ -1170,6 +1364,9 @@ func newIntegrationCreateCommand(out outputOptions) *cobra.Command {
 				}
 				addOptionalString(values, "auth", auth)
 				addOptionalString(values, "scope", scope)
+				if err := addOptionalNameValueInputs(values, "fieldsInput", fields, "--field"); err != nil {
+					return err
+				}
 				requestBody = values
 			}
 			var result interface{}
@@ -1186,6 +1383,7 @@ func newIntegrationCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "Integration machine name")
 	cmd.Flags().StringVar(&title, "title", "", "Integration title")
 	cmd.Flags().StringArrayVar(&kinds, "kind", nil, "Integration kind; repeatable")
+	cmd.Flags().StringArrayVar(&fields, "field", nil, "Provider field as NAME=VALUE; repeatable")
 	cmd.Flags().StringVar(&auth, "auth", "", "Integration auth mode")
 	cmd.Flags().StringVar(&scope, "scope", "", "Integration scope")
 	return cmd
@@ -1194,7 +1392,7 @@ func newIntegrationCreateCommand(out outputOptions) *cobra.Command {
 func newIntegrationUpdateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
 	var name, title, scope string
-	var kinds []string
+	var kinds, fields []string
 	cmd := &cobra.Command{
 		Use:   "update ID",
 		Short: "Update integration",
@@ -1220,6 +1418,9 @@ func newIntegrationUpdateCommand(out outputOptions) *cobra.Command {
 					"kinds": kinds,
 				}
 				addOptionalString(values, "scope", scope)
+				if err := addOptionalNameValueInputs(values, "fieldsInput", fields, "--field"); err != nil {
+					return err
+				}
 				requestBody = values
 			}
 			client, err := newRESTClient()
@@ -1237,12 +1438,124 @@ func newIntegrationUpdateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "Integration machine name")
 	cmd.Flags().StringVar(&title, "title", "", "Integration title")
 	cmd.Flags().StringArrayVar(&kinds, "kind", nil, "Integration kind; repeatable")
+	cmd.Flags().StringArrayVar(&fields, "field", nil, "Provider field as NAME=VALUE; repeatable")
 	cmd.Flags().StringVar(&scope, "scope", "", "Integration scope")
 	return cmd
 }
 
+func newIntegrationOptionsCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "options",
+		Short: "Show integration options",
+	}
+	cmd.AddCommand(
+		newIntegrationOptionCommand("scopes INTEGRATION_ID", "List integration scopes", "/integrations/%s/options/scopes", out, nil, nil),
+		newIntegrationOptionCommand("storage-buckets INTEGRATION_ID", "List storage buckets", "/integrations/%s/options/storage-buckets", out, nil, nil),
+		newIntegrationOptionCommand("storage-classes INTEGRATION_ID", "List storage classes", "/integrations/%s/options/storage-classes", out, nil, nil),
+		newIntegrationOptionCommand("remote-git-repos INTEGRATION_ID", "List remote Git repositories", "/integrations/%s/options/remote-git-repos", out, nil, nil),
+		newIntegrationOptionCommand("remote-git-repo-branches INTEGRATION_ID", "List remote Git repository branches", "/integrations/%s/options/remote-git-repo-branches", out, []queryFlag{{name: "remote-git-repo", queryName: "remoteGitRepoId", usage: "Remote Git repository ID", required: true}}, nil),
+		newIntegrationOptionCommand("remote-git-repo-tags INTEGRATION_ID", "List remote Git repository tags", "/integrations/%s/options/remote-git-repo-tags", out, []queryFlag{{name: "remote-git-repo", queryName: "remoteGitRepoId", usage: "Remote Git repository ID", required: true}}, nil),
+		newIntegrationOptionCommand("kube-regions INTEGRATION_ID", "List Kubernetes regions", "/integrations/%s/options/kube-regions", out, nil, nil),
+		newIntegrationOptionCommand("kube-zones INTEGRATION_ID", "List Kubernetes zones", "/integrations/%s/options/kube-zones", out, nil, nil),
+		newIntegrationOptionCommand("kube-versions INTEGRATION_ID", "List Kubernetes versions", "/integrations/%s/options/kube-versions", out, []queryFlag{{name: "location", queryName: "location", usage: "Provider location"}}, nil),
+		newIntegrationOptionCommand("kube-machine-types INTEGRATION_ID", "List Kubernetes machine types", "/integrations/%s/options/kube-machine-types", out, []queryFlag{{name: "location", queryName: "location", usage: "Provider location"}}, nil),
+		newIntegrationOptionCommand("kube-settings INTEGRATION_ID", "Get Kubernetes settings", "/integrations/%s/options/kube-settings", out, nil, nil),
+	)
+	return cmd
+}
+
+type queryFlag struct {
+	name      string
+	queryName string
+	usage     string
+	required  bool
+}
+
+func newIntegrationOptionCommand(use string, short string, pathPattern string, out outputOptions, flags []queryFlag, columns []string) *cobra.Command {
+	values := make(map[string]*string, len(flags))
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query := url.Values{}
+			for _, flag := range flags {
+				value := strings.TrimSpace(*values[flag.name])
+				if flag.required {
+					if err := requireFlag(value, "--"+flag.name); err != nil {
+						return err
+					}
+				}
+				addQuery(query, flag.queryName, value)
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), escapedPath(pathPattern, args[0]), query, &result); err != nil {
+				return err
+			}
+			return printOptionResult(cmd, client, out, result, columns)
+		},
+	}
+	for _, flag := range flags {
+		value := ""
+		values[flag.name] = &value
+		cmd.Flags().StringVar(values[flag.name], flag.name, "", flag.usage)
+	}
+	return cmd
+}
+
+func newIntegrationKindCommand() *cobra.Command {
+	out := outputOptions{}
+	cmd := &cobra.Command{
+		Use:     "integration-kind",
+		Aliases: []string{"integration-kinds"},
+		Short:   "Show integration kind options",
+	}
+	addOutputFlag(cmd, &out)
+	cmd.AddCommand(
+		newIntegrationKindOptionCommand("database-types KIND_ID", "List database types", "/integration-kinds/%s/database-types", out, nil, nil),
+		newIntegrationKindOptionCommand("database-versions KIND_ID", "List database versions", "/integration-kinds/%s/database-versions", out, []queryFlag{{name: "type", queryName: "dbType", usage: "Database type"}}, nil),
+		newIntegrationKindOptionCommand("database-regions KIND_ID", "List database regions", "/integration-kinds/%s/database-regions", out, databaseOptionQueryFlags(false), nil),
+		newIntegrationKindOptionCommand("database-machine-types KIND_ID", "List database machine types", "/integration-kinds/%s/database-machine-types", out, databaseOptionQueryFlags(true), nil),
+		newIntegrationKindOptionCommand("database-settings KIND_ID", "Get database settings", "/integration-kinds/%s/database-settings", out, []queryFlag{{name: "type", queryName: "dbType", usage: "Database type"}}, nil),
+	)
+	return cmd
+}
+
+func databaseOptionQueryFlags(includeLocation bool) []queryFlag {
+	flags := []queryFlag{
+		{name: "type", queryName: "dbType", usage: "Database type"},
+		{name: "version", queryName: "version", usage: "Database version"},
+		{name: "ha", queryName: "ha", usage: "High availability option"},
+	}
+	if includeLocation {
+		flags = append(flags,
+			queryFlag{name: "region", queryName: "region", usage: "Provider region"},
+			queryFlag{name: "zone", queryName: "zone", usage: "Provider zone"},
+		)
+	}
+	return flags
+}
+
+func newIntegrationKindOptionCommand(use string, short string, pathPattern string, out outputOptions, flags []queryFlag, columns []string) *cobra.Command {
+	return newIntegrationOptionCommand(use, short, pathPattern, out, flags, columns)
+}
+
 func newProviderCommand() *cobra.Command {
-	return newCatalogCommand("provider", "providers", "Manage providers", "/providers", providerColumns, true)
+	out := outputOptions{}
+	cmd := newCatalogCommand("provider", "providers", "Manage providers", "/providers", providerColumns, true)
+	addProviderCommands(cmd, out)
+	return cmd
+}
+
+func addProviderCommands(cmd *cobra.Command, out outputOptions) {
+	cmd.AddCommand(
+		newGetByNameCommand("get-by-name NAME", "Get provider by name", "/providers/by-name/%s", providerColumns, out, false, false),
+		newGetCommand("revision ID", "Get provider revision", "/provider-revisions/", providerRevisionColumns, out),
+	)
 }
 
 func newStackCommand() *cobra.Command {
@@ -1255,7 +1568,209 @@ func newStackCommand() *cobra.Command {
 	addOutputFlag(cmd, &out)
 	listCmd := newCatalogListCommand("list", "List stacks", "/stacks", stackColumns, out, false)
 	defaultToList(cmd, listCmd)
-	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get stack", "/stacks/", stackGetColumns, out), newStackServiceCommand(out))
+	cmd.AddCommand(
+		listCmd,
+		newGetCommand("get ID", "Get stack", "/stacks/", stackGetColumns, out),
+		newGetByNameCommand("get-by-name NAME", "Get stack by name", "/stacks/by-name/%s", stackGetColumns, out, false, true),
+		newCatalogImportFromGitCommand("import", "Import stacks from Git", "/stacks/actions/import", operationColumns, out),
+		newStackSettingsCommand(out),
+		newStackRevisionCommand(out),
+		newStackPublishDraftCommand(out),
+		newStackUpdateFromGitCommand(out),
+		newStackServiceCommand(out),
+	)
+	return cmd
+}
+
+func newStackSettingsCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "settings",
+		Short: "Manage stack settings",
+	}
+	cmd.AddCommand(newRawBodyPutCommand("update ID", "Update stack settings", "/stacks/settings/%s", stackColumns, out))
+	return cmd
+}
+
+func newStackRevisionCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "revision",
+		Aliases: []string{"revisions"},
+		Short:   "Read stack revisions",
+	}
+	servicesCmd := &cobra.Command{
+		Use:   "services ID",
+		Short: "List stack revision services",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/stack-revisions/"+url.PathEscape(args[0])+"/services", nil, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, stackServiceColumns)
+		},
+	}
+	cmd.AddCommand(
+		newGetCommand("get ID", "Get stack revision", "/stack-revisions/", stackRevisionColumns, out),
+		servicesCmd,
+	)
+	return cmd
+}
+
+func newStackPublishDraftCommand(out outputOptions) *cobra.Command {
+	wait := waitOptions{}
+	cmd := &cobra.Command{
+		Use:   "publish-draft ID",
+		Short: "Publish stack draft",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), "/stacks/"+url.PathEscape(args[0])+"/actions/publish-draft", nil, nil, &result); err != nil {
+				return err
+			}
+			if wait.wait && firstTaskID(result) != "" {
+				result, err = waitForTask(cmd.Context(), client, firstTaskID(result), wait.timeout)
+				if err != nil {
+					return err
+				}
+				return printClientResult(cmd, client, out, result, taskColumns)
+			}
+			return printClientResult(cmd, client, out, result, stackColumns)
+		},
+	}
+	addWaitFlags(cmd, &wait)
+	return cmd
+}
+
+func newStackUpdateFromGitCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	wait := waitOptions{}
+	var gitRef, gitRefType string
+	cmd := &cobra.Command{
+		Use:   "update-from-git ID",
+		Short: "Update stack from Git",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if err := requireFlag(gitRef, "--git-ref"); err != nil {
+					return err
+				}
+				if err := requireFlag(gitRefType, "--git-ref-type"); err != nil {
+					return err
+				}
+				requestBody = map[string]interface{}{
+					"gitRef":     gitRef,
+					"gitRefType": gitRefType,
+				}
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), "/stacks/"+url.PathEscape(args[0])+"/actions/update-from-git", nil, requestBody, &result); err != nil {
+				return err
+			}
+			columns := operationColumns
+			if wait.wait && firstTaskID(result) != "" {
+				result, err = waitForTask(cmd.Context(), client, firstTaskID(result), wait.timeout)
+				if err != nil {
+					return err
+				}
+				columns = taskColumns
+			}
+			return printClientResult(cmd, client, out, result, columns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	addWaitFlags(cmd, &wait)
+	cmd.Flags().StringVar(&gitRef, "git-ref", "", "Git ref")
+	cmd.Flags().StringVar(&gitRefType, "git-ref-type", "", "Git ref type")
+	return cmd
+}
+
+func newCatalogImportFromGitCommand(use string, short string, path string, columns []string, out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	wait := waitOptions{}
+	var orgID, projectID, integrationID, remoteGitRepoID, gitRef, gitRefType string
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if err := requireFlag(integrationID, "--integration"); err != nil {
+					return err
+				}
+				if err := requireFlag(remoteGitRepoID, "--remote-git-repo"); err != nil {
+					return err
+				}
+				if err := requireFlag(gitRef, "--git-ref"); err != nil {
+					return err
+				}
+				if err := requireFlag(gitRefType, "--git-ref-type"); err != nil {
+					return err
+				}
+				values := map[string]interface{}{
+					"remoteGitRepoId": remoteGitRepoID,
+					"gitRef":          gitRef,
+					"gitRefType":      gitRefType,
+				}
+				if err := addOptionalInt(values, "integrationId", integrationID, "--integration"); err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "orgId", orgID, "--org"); err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "projectId", projectID, "--project"); err != nil {
+					return err
+				}
+				requestBody = values
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), path, nil, requestBody, &result); err != nil {
+				return err
+			}
+			resultColumns := operationColumns
+			if len(columns) != 0 {
+				resultColumns = columns
+			}
+			if wait.wait && firstTaskID(result) != "" {
+				result, err = waitForTask(cmd.Context(), client, firstTaskID(result), wait.timeout)
+				if err != nil {
+					return err
+				}
+				resultColumns = taskColumns
+			}
+			return printClientResult(cmd, client, out, result, resultColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	addWaitFlags(cmd, &wait)
+	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID")
+	cmd.Flags().StringVar(&projectID, "project", "", "Project ID")
+	cmd.Flags().StringVar(&integrationID, "integration", "", "Git integration ID")
+	cmd.Flags().StringVar(&remoteGitRepoID, "remote-git-repo", "", "Remote Git repository ID")
+	cmd.Flags().StringVar(&gitRef, "git-ref", "", "Git ref")
+	cmd.Flags().StringVar(&gitRefType, "git-ref-type", "", "Git ref type")
 	return cmd
 }
 
@@ -1472,6 +1987,225 @@ func bodyFromJSONFlagSpecs(cmd *cobra.Command, specs []jsonFlagSpec, requireAnyC
 		return nil, errors.New("pass at least one update flag or provide --data/--file")
 	}
 	return values, nil
+}
+
+func newTitleUpdateCommand(use string, short string, pathPrefix string, columns []string, out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				title, _ := cmd.Flags().GetString("title")
+				if err := requireFlag(title, "--title"); err != nil {
+					return err
+				}
+				requestBody = map[string]interface{}{"title": title}
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Put(cmd.Context(), pathPrefix+url.PathEscape(args[0]), nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, columns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().String("title", "", "Resource title")
+	return cmd
+}
+
+func newGetByNameCommand(use string, short string, pathPattern string, columns []string, out outputOptions, withOrg bool, withRev bool) *cobra.Command {
+	var orgID string
+	var revNumber int
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			query := url.Values{}
+			if withOrg {
+				addQuery(query, "orgId", orgID)
+			}
+			if withRev && revNumber != 0 {
+				query.Set("revNumber", strconv.Itoa(revNumber))
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), escapedPath(pathPattern, args[0]), query, &result); err != nil {
+				return err
+			}
+			return printClientGetResult(cmd, client, out, result, columns)
+		},
+	}
+	if withOrg {
+		cmd.Flags().StringVar(&orgID, "org", "", "Organization ID")
+	}
+	if withRev {
+		cmd.Flags().IntVar(&revNumber, "rev", 0, "Revision number")
+	}
+	return cmd
+}
+
+func newRawBodyPutCommand(use string, short string, pathPattern string, columns []string, out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(strings.Count(pathPattern, "%s")),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				return errors.New("--data or --file is required")
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Put(cmd.Context(), escapedPath(pathPattern, args...), nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, columns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	return cmd
+}
+
+func newRawBodyPostCommand(use string, short string, pathPattern string, columns []string, out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	wait := waitOptions{}
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(strings.Count(pathPattern, "%s")),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				return errors.New("--data or --file is required")
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), escapedPath(pathPattern, args...), nil, requestBody, &result); err != nil {
+				return err
+			}
+			resultColumns := columns
+			if wait.wait && firstTaskID(result) != "" {
+				result, err = waitForTask(cmd.Context(), client, firstTaskID(result), wait.timeout)
+				if err != nil {
+					return err
+				}
+				resultColumns = taskColumns
+			}
+			return printClientResult(cmd, client, out, result, resultColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	addWaitFlags(cmd, &wait)
+	return cmd
+}
+
+func parseNameValueInputs(values []string, flag string) ([]map[string]interface{}, error) {
+	result := make([]map[string]interface{}, 0, len(values))
+	for _, value := range values {
+		name, raw, ok := strings.Cut(value, "=")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" {
+			return nil, errors.Errorf("invalid %s %q; expected NAME=VALUE", flag, value)
+		}
+		result = append(result, map[string]interface{}{
+			"name":  name,
+			"value": raw,
+		})
+	}
+	return result, nil
+}
+
+func addOptionalNameValueInputs(values map[string]interface{}, key string, inputs []string, flag string) error {
+	if len(inputs) == 0 {
+		return nil
+	}
+	parsed, err := parseNameValueInputs(inputs, flag)
+	if err != nil {
+		return err
+	}
+	values[key] = parsed
+	return nil
+}
+
+func filterResponseItems(value interface{}, keep func(map[string]interface{}) bool) interface{} {
+	rows := responseRows(value)
+	filtered := make([]map[string]interface{}, 0, len(rows))
+	for _, row := range rows {
+		if keep(row) {
+			filtered = append(filtered, row)
+		}
+	}
+
+	if wrapper, ok := value.(map[string]interface{}); ok && looksLikeResponseWrapper(wrapper) {
+		clone := make(map[string]interface{}, len(wrapper))
+		for key, item := range wrapper {
+			clone[key] = item
+		}
+		for _, key := range []string{"items", "results", "data"} {
+			if _, ok := clone[key]; ok {
+				clone[key] = filtered
+				if _, ok := clone["totalCount"]; ok {
+					clone["totalCount"] = len(filtered)
+				}
+				return clone
+			}
+		}
+	}
+
+	return filtered
+}
+
+func printOptionResult(cmd *cobra.Command, client *rest.Client, out outputOptions, value interface{}, columns []string) error {
+	items := normalizeItems(value)
+	if rows, ok := scalarOptionRows(items); ok {
+		value = rows
+		if len(columns) == 0 {
+			columns = []string{"value"}
+		}
+	}
+	return printClientResult(cmd, client, out, value, columns)
+}
+
+func scalarOptionRows(value interface{}) ([]map[string]interface{}, bool) {
+	items, ok := value.([]interface{})
+	if !ok {
+		return nil, false
+	}
+	rows := make([]map[string]interface{}, 0, len(items))
+	for _, item := range items {
+		if _, ok := item.(map[string]interface{}); ok {
+			return nil, false
+		}
+		rows = append(rows, map[string]interface{}{"value": item})
+	}
+	return rows, true
 }
 
 func escapedPath(pattern string, values ...string) string {
@@ -2040,7 +2774,49 @@ func resourceJSONFlags() []jsonFlagSpec {
 }
 
 func newServiceCommand() *cobra.Command {
-	return newCatalogCommand("service", "services", "Manage services", "/services", catalogServiceColumns, false)
+	out := outputOptions{}
+	cmd := newCatalogCommand("service", "services", "Manage services", "/services", catalogServiceColumns, false)
+	cmd.AddCommand(
+		newGetByNameCommand("get-by-name NAME", "Get service by name", "/services/by-name/%s", catalogServiceColumns, out, false, true),
+		newCatalogImportFromGitCommand("import", "Import services from Git", "/services/actions/import", operationColumns, out),
+		newServiceSettingsCommand(out),
+		newGetCommand("revision ID", "Get service revision", "/service-revisions/", serviceRevisionColumns, out),
+		newServiceOptionsCommand(out),
+	)
+	return cmd
+}
+
+func newServiceSettingsCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "settings",
+		Short: "Manage service settings",
+	}
+	cmd.AddCommand(newRawBodyPutCommand("update ID", "Update service settings", "/services/settings/%s", catalogServiceColumns, out))
+	return cmd
+}
+
+func newServiceOptionsCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "options",
+		Short: "Show service options",
+	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "link-candidates NAME",
+		Short: "List service link candidates",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), escapedPath("/services/%s/options/link-candidates", args[0]), nil, &result); err != nil {
+				return err
+			}
+			return printOptionResult(cmd, client, out, result, nil)
+		},
+	})
+	return cmd
 }
 
 func newCatalogCommand(use string, alias string, short string, path string, columns []string, excludePublic bool) *cobra.Command {
@@ -2158,7 +2934,15 @@ func newAppCommand() *cobra.Command {
 	}
 
 	defaultToList(cmd, listCmd)
-	cmd.AddCommand(listCmd, getCmd, statusCmd, newAppCreateCommand(out))
+	cmd.AddCommand(
+		listCmd,
+		getCmd,
+		newGetByNameCommand("get-by-name NAME", "Get app by name", "/apps/by-name/%s", appGetColumns, out, true, false),
+		statusCmd,
+		newAppCreateCommand(out),
+		newTitleUpdateCommand("update ID", "Update app", "/apps/", appColumns, out),
+		newDeleteCommand("delete ID", "Delete app", "/apps/", appColumns, out),
+	)
 	cmd.AddCommand(newAppInstanceCommand("instance", "Manage app instances"))
 	return cmd
 }
@@ -2166,7 +2950,7 @@ func newAppCommand() *cobra.Command {
 func newAppCreateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
 	wait := waitOptions{}
-	var orgID, projectID, stackID, stackRevID, name, title string
+	var orgID, projectID, envID, clusterID, stackID, stackRevID, name, title, instanceName, instanceTitle, domain, ciIntegrationID, registryIntegrationID string
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create app",
@@ -2183,7 +2967,13 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 				if err := requireFlag(name, "--name"); err != nil {
 					return err
 				}
-				if err := requireFlag(title, "--title"); err != nil {
+				if err := requireFlag(instanceName, "--instance-name"); err != nil {
+					return err
+				}
+				if err := requireFlag(envID, "--env"); err != nil {
+					return err
+				}
+				if err := requireFlag(stackRevID, "--stack-rev"); err != nil {
 					return err
 				}
 				resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
@@ -2191,23 +2981,32 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 					return err
 				}
 				values := map[string]interface{}{
-					"name":  name,
-					"title": title,
+					"name":         name,
+					"instanceName": instanceName,
 				}
+				addOptionalString(values, "title", title)
+				addOptionalString(values, "instanceTitle", instanceTitle)
+				addOptionalString(values, "domain", domain)
 				if err := addOptionalInt(values, "orgId", resolvedOrgID, "--org"); err != nil {
 					return err
 				}
 				if err := addOptionalInt(values, "projectId", projectID, "--project"); err != nil {
 					return err
 				}
-				if err := addOptionalInt(values, "stackId", stackID, "--stack"); err != nil {
+				if err := addOptionalInt(values, "envId", envID, "--env"); err != nil {
 					return err
 				}
 				if err := addOptionalInt(values, "stackRevId", stackRevID, "--stack-rev"); err != nil {
 					return err
 				}
-				if value, ok := changedBool(cmd, "cluster-app"); ok {
-					values["clusterApp"] = value
+				if err := addOptionalInt(values, "clusterId", clusterID, "--cluster"); err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "ciIntegrationId", ciIntegrationID, "--ci-integration"); err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "registryIntegrationId", registryIntegrationID, "--registry-integration"); err != nil {
+					return err
 				}
 				requestBody = values
 			}
@@ -2230,11 +3029,19 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 	addWaitFlags(cmd, &wait)
 	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
 	cmd.Flags().StringVar(&projectID, "project", "", "Project ID")
-	cmd.Flags().StringVar(&stackID, "stack", "", "Stack ID")
+	cmd.Flags().StringVar(&envID, "env", "", "Environment ID")
+	cmd.Flags().StringVar(&clusterID, "cluster", "", "Cluster ID")
+	cmd.Flags().StringVar(&stackID, "stack", "", "Deprecated: use --stack-rev")
 	cmd.Flags().StringVar(&stackRevID, "stack-rev", "", "Stack revision ID")
 	cmd.Flags().StringVar(&name, "name", "", "App machine name")
 	cmd.Flags().StringVar(&title, "title", "", "App title")
-	cmd.Flags().Bool("cluster-app", false, "Create a cluster app")
+	cmd.Flags().StringVar(&instanceName, "instance-name", "", "Initial app instance machine name")
+	cmd.Flags().StringVar(&instanceTitle, "instance-title", "", "Initial app instance title")
+	cmd.Flags().StringVar(&domain, "domain", "", "Initial app instance domain")
+	cmd.Flags().StringVar(&ciIntegrationID, "ci-integration", "", "CI integration ID")
+	cmd.Flags().StringVar(&registryIntegrationID, "registry-integration", "", "Registry integration ID")
+	cmd.Flags().Bool("cluster-app", false, "Deprecated: use --cluster when creating the initial cluster app instance")
+	_ = stackID
 	return cmd
 }
 
@@ -2312,7 +3119,17 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 	}
 
 	defaultToList(cmd, listCmd)
-	cmd.AddCommand(listCmd, getCmd, statusCmd, newAppInstanceCreateCommand(out))
+	cmd.AddCommand(
+		listCmd,
+		getCmd,
+		newAppInstanceGetByNameCommand(out),
+		statusCmd,
+		newAppInstanceCreateCommand(out),
+		newTitleUpdateCommand("update ID", "Update app instance", "/app-instances/", instanceColumns, out),
+		newAppInstanceDeleteCommand(out),
+		newAppInstanceSettingsCommand(out),
+		newAppInstanceUpgradeStackCommand(out),
+	)
 	cmd.AddCommand(newAppServiceCommand("service", []string{"services"}, "Manage app services", instanceFilterArg))
 	cmd.AddCommand(newAppRouteCommand("route", []string{"routes"}, "Manage app instance routes", instanceFilterArg))
 	cmd.AddCommand(newAppPortCommand("port", []string{"ports"}, "Manage app instance ports", instanceFilterArg))
@@ -2324,7 +3141,7 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
 	wait := waitOptions{}
-	var appID, envID, clusterID, stackID, stackRevID, name, title, domain, region, zone string
+	var appID, envID, clusterID, stackID, stackRevID, name, title, instanceName, instanceTitle, domain, region, zone, ciIntegrationID, registryIntegrationID string
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create app instance",
@@ -2343,10 +3160,12 @@ func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 				if err := requireFlag(clusterID, "--cluster"); err != nil {
 					return err
 				}
-				if err := requireFlag(name, "--name"); err != nil {
+				resolvedInstanceName := firstScalar(instanceName, name)
+				resolvedInstanceTitle := firstScalar(instanceTitle, title)
+				if err := requireFlag(resolvedInstanceName, "--instance-name"); err != nil {
 					return err
 				}
-				if err := requireFlag(title, "--title"); err != nil {
+				if err := requireFlag(stackRevID, "--stack-rev"); err != nil {
 					return err
 				}
 				appIDNumber, err := strconv.Atoi(appID)
@@ -2362,23 +3181,21 @@ func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 					return errors.Wrap(err, "invalid --cluster")
 				}
 				values := map[string]interface{}{
-					"appId":     appIDNumber,
-					"envId":     envIDNumber,
-					"clusterId": clusterIDNumber,
-					"name":      name,
-					"title":     title,
-				}
-				if err := addOptionalInt(values, "stackId", stackID, "--stack"); err != nil {
-					return err
+					"appId":        appIDNumber,
+					"envId":        envIDNumber,
+					"clusterId":    clusterIDNumber,
+					"instanceName": resolvedInstanceName,
 				}
 				if err := addOptionalInt(values, "stackRevId", stackRevID, "--stack-rev"); err != nil {
 					return err
 				}
-				addOptionalString(values, "mainDomain", domain)
-				addOptionalString(values, "region", region)
-				addOptionalString(values, "zone", zone)
-				if value, ok := changedBool(cmd, "cluster-app"); ok {
-					values["clusterApp"] = value
+				addOptionalString(values, "instanceTitle", resolvedInstanceTitle)
+				addOptionalString(values, "domain", domain)
+				if err := addOptionalInt(values, "ciIntegrationId", ciIntegrationID, "--ci-integration"); err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "registryIntegrationId", registryIntegrationID, "--registry-integration"); err != nil {
+					return err
 				}
 				requestBody = values
 			}
@@ -2406,15 +3223,199 @@ func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&appID, "app", "", "App ID")
 	cmd.Flags().StringVar(&envID, "env", "", "Environment ID")
 	cmd.Flags().StringVar(&clusterID, "cluster", "", "Cluster ID")
-	cmd.Flags().StringVar(&stackID, "stack", "", "Stack ID")
+	cmd.Flags().StringVar(&stackID, "stack", "", "Deprecated: use --stack-rev")
 	cmd.Flags().StringVar(&stackRevID, "stack-rev", "", "Stack revision ID")
-	cmd.Flags().StringVar(&name, "name", "", "App instance machine name")
-	cmd.Flags().StringVar(&title, "title", "", "App instance title")
-	cmd.Flags().StringVar(&domain, "domain", "", "Main domain")
-	cmd.Flags().StringVar(&region, "region", "", "Provider region")
-	cmd.Flags().StringVar(&zone, "zone", "", "Provider zone")
-	cmd.Flags().Bool("cluster-app", false, "Create a cluster app instance")
+	cmd.Flags().StringVar(&name, "name", "", "Deprecated alias for --instance-name")
+	cmd.Flags().StringVar(&title, "title", "", "Deprecated alias for --instance-title")
+	cmd.Flags().StringVar(&instanceName, "instance-name", "", "App instance machine name")
+	cmd.Flags().StringVar(&instanceTitle, "instance-title", "", "App instance title")
+	cmd.Flags().StringVar(&domain, "domain", "", "App instance domain")
+	cmd.Flags().StringVar(&region, "region", "", "Deprecated")
+	cmd.Flags().StringVar(&zone, "zone", "", "Deprecated")
+	cmd.Flags().StringVar(&ciIntegrationID, "ci-integration", "", "CI integration ID")
+	cmd.Flags().StringVar(&registryIntegrationID, "registry-integration", "", "Registry integration ID")
+	cmd.Flags().Bool("cluster-app", false, "Deprecated: cluster app status is inferred from --cluster")
+	_, _, _, _ = stackID, region, zone, title
 	return cmd
+}
+
+func newAppInstanceGetByNameCommand(out outputOptions) *cobra.Command {
+	var orgID string
+	cmd := &cobra.Command{
+		Use:   "get-by-name APP_NAME INSTANCE_NAME",
+		Short: "Get app instance by app and instance name",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			query := url.Values{}
+			addQuery(query, "orgId", orgID)
+			var result interface{}
+			if err := client.Get(cmd.Context(), escapedPath("/app-instances/by-name/%s/%s", args[0], args[1]), query, &result); err != nil {
+				return err
+			}
+			return printClientGetResult(cmd, client, out, result, instanceGetColumns)
+		},
+	}
+	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID")
+	return cmd
+}
+
+func newAppInstanceDeleteCommand(out outputOptions) *cobra.Command {
+	var yes, force bool
+	wait := waitOptions{}
+	cmd := &cobra.Command{
+		Use:   "delete ID",
+		Short: "Delete app instance",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := confirm(cmd, yes, "Delete app instance?"); err != nil {
+				return err
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			query := url.Values{}
+			if cmd.Flags().Changed("force") {
+				query.Set("force", strconv.FormatBool(force))
+			}
+			var result interface{}
+			if err := client.Delete(cmd.Context(), "/app-instances/"+url.PathEscape(args[0]), query, &result); err != nil {
+				return err
+			}
+			resultColumns := operationColumns
+			if wait.wait && firstTaskID(result) != "" {
+				result, err = waitForTask(cmd.Context(), client, firstTaskID(result), wait.timeout)
+				if err != nil {
+					return err
+				}
+				resultColumns = taskColumns
+			}
+			return printClientResult(cmd, client, out, result, resultColumns)
+		},
+	}
+	addWaitFlags(cmd, &wait)
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Confirm without prompting")
+	cmd.Flags().BoolVar(&force, "force", false, "Force deletion")
+	return cmd
+}
+
+func newAppInstanceSettingsCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "settings",
+		Short: "Manage app instance settings",
+	}
+	cmd.AddCommand(newAppInstanceSettingsUpdateCommand(out))
+	return cmd
+}
+
+func newAppInstanceSettingsUpdateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	cmd := &cobra.Command{
+		Use:   "update ID",
+		Short: "Update app instance settings",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if !cmd.Flags().Changed("auto-stack-upgrade-enabled") {
+					return errors.New("--auto-stack-upgrade-enabled is required unless --data/--file is provided")
+				}
+				enabled, _ := cmd.Flags().GetBool("auto-stack-upgrade-enabled")
+				autoStackUpgrade := map[string]interface{}{"enabled": enabled}
+				if settings := changedStackUpgradeSettings(cmd, "upgrade-"); len(settings) != 0 {
+					autoStackUpgrade["upgradeSettings"] = settings
+				}
+				requestBody = map[string]interface{}{"autoStackUpgrade": autoStackUpgrade}
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Put(cmd.Context(), "/app-instances/settings/"+url.PathEscape(args[0]), nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, instanceColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().Bool("auto-stack-upgrade-enabled", false, "Enable automatic stack upgrades")
+	addStackUpgradeFlags(cmd, "upgrade-", false)
+	return cmd
+}
+
+func newAppInstanceUpgradeStackCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	wait := waitOptions{}
+	cmd := &cobra.Command{
+		Use:   "upgrade-stack ID",
+		Short: "Upgrade app instance stack",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				requestBody = stackUpgradeSettings(cmd, "", true)
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), "/app-instances/"+url.PathEscape(args[0])+"/actions/upgrade-stack", nil, requestBody, &result); err != nil {
+				return err
+			}
+			resultColumns := operationColumns
+			if wait.wait && firstTaskID(result) != "" {
+				result, err = waitForTask(cmd.Context(), client, firstTaskID(result), wait.timeout)
+				if err != nil {
+					return err
+				}
+				resultColumns = taskColumns
+			}
+			return printClientResult(cmd, client, out, result, resultColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	addWaitFlags(cmd, &wait)
+	addStackUpgradeFlags(cmd, "", true)
+	return cmd
+}
+
+func stackUpgradeFlagNames() []string {
+	return []string{"versions", "replicas", "resources", "integrations", "services", "settings", "links", "tokens", "configs", "cron", "volumes", "main"}
+}
+
+func addStackUpgradeFlags(cmd *cobra.Command, prefix string, defaultValue bool) {
+	for _, name := range stackUpgradeFlagNames() {
+		cmd.Flags().Bool(prefix+name, defaultValue, "Include "+strings.ReplaceAll(name, "-", " ")+" during stack upgrade")
+	}
+}
+
+func stackUpgradeSettings(cmd *cobra.Command, prefix string, includeUnchanged bool) map[string]interface{} {
+	values := map[string]interface{}{}
+	for _, name := range stackUpgradeFlagNames() {
+		flagName := prefix + name
+		if !includeUnchanged && !cmd.Flags().Changed(flagName) {
+			continue
+		}
+		value, _ := cmd.Flags().GetBool(flagName)
+		values[name] = value
+	}
+	return values
+}
+
+func changedStackUpgradeSettings(cmd *cobra.Command, prefix string) map[string]interface{} {
+	return stackUpgradeSettings(cmd, prefix, false)
 }
 
 func buildAppStatus(ctx context.Context, client *rest.Client, appID string) (map[string]interface{}, error) {
@@ -3408,8 +4409,7 @@ func newAppCertCommand(use string, aliases []string, short string, mode instance
 	}
 	addOutputFlag(cmd, &out)
 
-	var instanceID, routeID, host, status string
-	var page, pageSize int
+	var orgID, instanceID, routeID, host, status string
 	listCmd := &cobra.Command{
 		Use:   instanceScopedListUse("list", mode),
 		Short: "List app certificates",
@@ -3418,41 +4418,55 @@ func newAppCertCommand(use string, aliases []string, short string, mode instance
 			if mode == instanceFilterArg {
 				instanceID = args[0]
 			}
-			if err := requireFlag(instanceID, "--instance"); err != nil {
-				return err
-			}
-			query := url.Values{"appInstanceId": []string{instanceID}}
-			addQuery(query, "appRouteId", routeID)
-			addQuery(query, "host", host)
-			addQuery(query, "status", status)
-			addPagination(query, page, pageSize)
+			query := url.Values{}
+			addQuery(query, "orgId", orgID)
 			client, err := newRESTClient()
 			if err != nil {
 				return err
 			}
 			var result interface{}
-			if err := client.Get(cmd.Context(), "/app-certs", query, &result); err != nil {
+			if err := client.Get(cmd.Context(), "/certs", query, &result); err != nil {
 				return err
 			}
+			result = filterCerts(result, instanceID, routeID, host, status)
 			return printClientResult(cmd, client, out, result, certColumns)
 		},
 	}
+	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID")
 	if mode == instanceFilterFlag {
 		listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
 	}
 	listCmd.Flags().StringVar(&routeID, "route", "", "App route ID")
 	listCmd.Flags().StringVar(&host, "host", "", "Certificate host")
 	listCmd.Flags().StringVar(&status, "status", "", "Certificate status")
-	listCmd.Flags().IntVar(&page, "page", 0, "Page number")
-	listCmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
 	defaultToList(cmd, listCmd)
 
 	cmd.AddCommand(
 		listCmd,
-		newGetCommand("get ID", "Get app certificate", "/app-certs/", certColumns, out),
-		newDeleteCommand("delete ID", "Delete app certificate", "/app-certs/", certColumns, out),
+		newGetCommand("get ID", "Get app certificate", "/certs/", certColumns, out),
 	)
 	return cmd
+}
+
+func filterCerts(value interface{}, instanceID string, routeID string, host string, status string) interface{} {
+	if instanceID == "" && routeID == "" && host == "" && status == "" {
+		return value
+	}
+	return filterResponseItems(value, func(row map[string]interface{}) bool {
+		if instanceID != "" && firstScalarPath(row, "appInstanceId", "instanceId", "appInstance.id", "instance.id") != instanceID {
+			return false
+		}
+		if routeID != "" && firstScalarPath(row, "appRouteId", "routeId", "appRoute.id", "route.id") != routeID {
+			return false
+		}
+		if host != "" && firstScalarPath(row, "host", "hostname", "domain", "commonName") != host {
+			return false
+		}
+		if status != "" && firstScalarPath(row, "status") != status {
+			return false
+		}
+		return true
+	})
 }
 
 func instanceScopedListUse(base string, mode instanceFilterMode) string {
@@ -3471,9 +4485,10 @@ func instanceScopedListArgs(mode instanceFilterMode) cobra.PositionalArgs {
 
 func newAppRouteCreateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
-	var serviceID, host, path, pathType, action string
-	var port int
+	var serviceID, host, path, pathType, action, authLogin, authPassword, redirectHost, redirectPath, redirectScheme string
+	var port, authID, redirectStatusCode int
 	var main, primary, letsencrypt bool
+	var options []string
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create app route",
@@ -3496,17 +4511,32 @@ func newAppRouteCreateCommand(out outputOptions) *cobra.Command {
 				if err != nil {
 					return errors.WithStack(err)
 				}
-				requestBody = bodyFromMap(map[string]interface{}{
-					"appServiceId": appServiceID,
-					"host":         host,
-					"port":         port,
-					"main":         main,
-					"primary":      primary,
-					"letsencrypt":  letsencrypt,
-					"path":         path,
-					"pathType":     pathType,
-					"action":       action,
-				})
+				values := map[string]interface{}{
+					"appServiceId":   appServiceID,
+					"host":           host,
+					"port":           port,
+					"main":           main,
+					"primary":        primary,
+					"letsencrypt":    letsencrypt,
+					"path":           path,
+					"pathType":       pathType,
+					"action":         action,
+					"authLogin":      authLogin,
+					"authPassword":   authPassword,
+					"redirectHost":   redirectHost,
+					"redirectPath":   redirectPath,
+					"redirectScheme": redirectScheme,
+				}
+				if authID != 0 {
+					values["authId"] = authID
+				}
+				if redirectStatusCode != 0 {
+					values["redirectStatusCode"] = redirectStatusCode
+				}
+				if err := addOptionalNameValueInputs(values, "options", options, "--option"); err != nil {
+					return err
+				}
+				requestBody = bodyFromMap(values)
 			}
 			client, err := newRESTClient()
 			if err != nil {
@@ -3529,6 +4559,14 @@ func newAppRouteCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&path, "path", "", "Route path")
 	cmd.Flags().StringVar(&pathType, "path-type", "", "Route path type: PREFIX or EXACT")
 	cmd.Flags().StringVar(&action, "action", "", "Route action: BACKEND or REDIRECT")
+	cmd.Flags().IntVar(&authID, "auth", 0, "Route auth ID")
+	cmd.Flags().StringVar(&authLogin, "auth-login", "", "Route auth login")
+	cmd.Flags().StringVar(&authPassword, "auth-password", "", "Route auth password")
+	cmd.Flags().StringVar(&redirectHost, "redirect-host", "", "Redirect host")
+	cmd.Flags().StringVar(&redirectPath, "redirect-path", "", "Redirect path")
+	cmd.Flags().StringVar(&redirectScheme, "redirect-scheme", "", "Redirect scheme")
+	cmd.Flags().IntVar(&redirectStatusCode, "redirect-status-code", 0, "Redirect status code")
+	cmd.Flags().StringArrayVar(&options, "option", nil, "Route option as NAME=VALUE; repeatable")
 	return cmd
 }
 
@@ -3544,7 +4582,7 @@ func newAppRouteUpdateCommand(out outputOptions) *cobra.Command {
 				return err
 			}
 			if !hasBody {
-				if !hasChangedFlags(cmd.Flags(), "disabled", "main", "primary", "path", "path-type", "action", "redirect-host", "redirect-path", "redirect-scheme", "redirect-status-code") {
+				if !hasChangedFlags(cmd.Flags(), "disabled", "main", "primary", "path", "path-type", "action", "redirect-host", "redirect-path", "redirect-scheme", "redirect-status-code", "option") {
 					return errors.New("pass at least one update flag or provide --data/--file")
 				}
 				values := map[string]interface{}{}
@@ -3578,6 +4616,10 @@ func newAppRouteUpdateCommand(out outputOptions) *cobra.Command {
 				if value, ok := changedInt(cmd, "redirect-status-code"); ok {
 					values["redirectStatusCode"] = value
 				}
+				options, _ := cmd.Flags().GetStringArray("option")
+				if err := addOptionalNameValueInputs(values, "options", options, "--option"); err != nil {
+					return err
+				}
 				requestBody = values
 			}
 			client, err := newRESTClient()
@@ -3602,6 +4644,7 @@ func newAppRouteUpdateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().String("redirect-path", "", "Redirect path")
 	cmd.Flags().String("redirect-scheme", "", "Redirect scheme")
 	cmd.Flags().Int("redirect-status-code", 0, "Redirect status code")
+	cmd.Flags().StringArray("option", nil, "Route option as NAME=VALUE; repeatable")
 	return cmd
 }
 
@@ -3654,7 +4697,54 @@ func newBuildCommand() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(listCmd, getCmd, newBuildDeployCommand(out))
+	cmd.AddCommand(listCmd, getCmd, newBuildCreateCommand(out), newBuildDeployCommand(out))
+	return cmd
+}
+
+func newBuildCreateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	wait := waitOptions{}
+	var services []string
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create build",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				parsedServices, err := parseIntValues(services, "--service")
+				if err != nil {
+					return err
+				}
+				if len(parsedServices) == 0 {
+					return errors.New("--service is required unless --data/--file is provided")
+				}
+				requestBody = map[string]interface{}{"appServiceIds": parsedServices}
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Post(cmd.Context(), "/app-builds", nil, requestBody, &result); err != nil {
+				return err
+			}
+			columns := buildColumns
+			if wait.wait && firstTaskID(result) != "" {
+				result, err = waitForTask(cmd.Context(), client, firstTaskID(result), wait.timeout)
+				if err != nil {
+					return err
+				}
+				columns = taskColumns
+			}
+			return printClientResult(cmd, client, out, result, columns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	addWaitFlags(cmd, &wait)
+	cmd.Flags().StringArrayVar(&services, "service", nil, "App service ID to build; repeatable or comma-separated")
 	return cmd
 }
 
@@ -4004,7 +5094,7 @@ func newTaskCommand() *cobra.Command {
 	}
 	addOutputFlag(cmd, &out)
 
-	var scope, orgID, projectIDs, statuses, search, appID, instanceID string
+	var scope, orgID, projectIDs, statuses, search, appID, instanceID, stackID, databaseID, clusterID, serviceID, integrationID, providerID string
 	var withoutOrigin bool
 	var page, pageSize int
 	listCmd := &cobra.Command{
@@ -4019,6 +5109,12 @@ func newTaskCommand() *cobra.Command {
 			addQuery(query, "search", search)
 			addQuery(query, "appId", appID)
 			addQuery(query, "appInstanceId", instanceID)
+			addQuery(query, "stackId", stackID)
+			addQuery(query, "databaseId", databaseID)
+			addQuery(query, "clusterId", clusterID)
+			addQuery(query, "serviceId", serviceID)
+			addQuery(query, "integrationId", integrationID)
+			addQuery(query, "providerId", providerID)
 			if withoutOrigin {
 				query.Set("withoutOrigin", "true")
 			}
@@ -4046,6 +5142,12 @@ func newTaskCommand() *cobra.Command {
 	listCmd.Flags().StringVar(&search, "search", "", "Search query")
 	listCmd.Flags().StringVar(&appID, "app", "", "App ID")
 	listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
+	listCmd.Flags().StringVar(&stackID, "stack", "", "Stack ID")
+	listCmd.Flags().StringVar(&databaseID, "database", "", "Database ID")
+	listCmd.Flags().StringVar(&clusterID, "cluster", "", "Cluster ID")
+	listCmd.Flags().StringVar(&serviceID, "service", "", "Service ID")
+	listCmd.Flags().StringVar(&integrationID, "integration", "", "Integration ID")
+	listCmd.Flags().StringVar(&providerID, "provider", "", "Provider ID")
 	listCmd.Flags().BoolVar(&withoutOrigin, "without-origin", false, "Only tasks without origin")
 	listCmd.Flags().IntVar(&page, "page", 0, "Page number")
 	listCmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")

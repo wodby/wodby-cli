@@ -1121,11 +1121,43 @@ func TestInstanceCommandExposesCanonicalNestedResources(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	for _, name := range []string{"list", "get", "status", "create", "service", "route", "port", "cert", "build", "deployment", "backup", "import"} {
+	for _, name := range []string{"list", "get", "get-by-name", "status", "create", "update", "delete", "settings", "upgrade-stack", "service", "route", "port", "cert", "build", "deployment", "backup", "import"} {
 		if !names[name] {
 			t.Fatalf("missing instance subcommand %q", name)
 		}
 	}
+}
+
+func TestSchemaAddedCommandSurfaceIsExposed(t *testing.T) {
+	assertChildren := func(t *testing.T, cmd *cobra.Command, expected ...string) {
+		t.Helper()
+		names := make(map[string]bool)
+		for _, child := range cmd.Commands() {
+			names[child.Name()] = true
+		}
+		for _, name := range expected {
+			if !names[name] {
+				t.Fatalf("%s missing subcommand %q", cmd.Name(), name)
+			}
+		}
+	}
+
+	topLevel := make(map[string]bool)
+	for _, cmd := range Commands() {
+		topLevel[cmd.Name()] = true
+	}
+	if !topLevel["integration-kind"] {
+		t.Fatal("missing top-level integration-kind command")
+	}
+
+	assertChildren(t, newOrgCommand(), "get", "update", "delete")
+	assertChildren(t, newProjectCommand(), "get-by-name", "create", "update", "delete")
+	assertChildren(t, newDatabaseCommand(), "get-by-name", "options")
+	assertChildren(t, newClusterCommand(), "get-by-name", "settings")
+	assertChildren(t, newIntegrationCommand(), "get-by-name", "options")
+	assertChildren(t, newProviderCommand(), "get-by-name", "revision")
+	assertChildren(t, newStackCommand(), "get-by-name", "import", "settings", "revision", "publish-draft", "update-from-git")
+	assertChildren(t, newServiceCommand(), "get-by-name", "import", "settings", "revision", "options")
 }
 
 func TestAppCreateUsesPublicAPIShape(t *testing.T) {
@@ -1155,11 +1187,15 @@ func TestAppCreateUsesPublicAPIShape(t *testing.T) {
 		"create",
 		"--org", "10",
 		"--project", "12",
+		"--env", "22",
+		"--cluster", "33",
 		"--stack", "7",
 		"--stack-rev", "70",
 		"--name", "drupal",
 		"--title", "Drupal",
-		"--cluster-app",
+		"--instance-name", "prod",
+		"--instance-title", "Production",
+		"--domain", "example.com",
 	})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
@@ -1177,8 +1213,11 @@ func TestAppCreateUsesPublicAPIShape(t *testing.T) {
 	if body["projectId"] != float64(12) {
 		t.Fatalf("projectId = %#v, want 12", body["projectId"])
 	}
-	if body["stackId"] != float64(7) {
-		t.Fatalf("stackId = %#v, want 7", body["stackId"])
+	if body["envId"] != float64(22) {
+		t.Fatalf("envId = %#v, want 22", body["envId"])
+	}
+	if body["clusterId"] != float64(33) {
+		t.Fatalf("clusterId = %#v, want 33", body["clusterId"])
 	}
 	if body["stackRevId"] != float64(70) {
 		t.Fatalf("stackRevId = %#v, want 70", body["stackRevId"])
@@ -1186,8 +1225,17 @@ func TestAppCreateUsesPublicAPIShape(t *testing.T) {
 	if body["name"] != "drupal" || body["title"] != "Drupal" {
 		t.Fatalf("name/title body = %#v", body)
 	}
-	if body["clusterApp"] != true {
-		t.Fatalf("clusterApp = %#v, want true", body["clusterApp"])
+	if body["instanceName"] != "prod" || body["instanceTitle"] != "Production" {
+		t.Fatalf("instance name/title body = %#v", body)
+	}
+	if body["domain"] != "example.com" {
+		t.Fatalf("domain = %#v, want example.com", body["domain"])
+	}
+	if _, ok := body["stackId"]; ok {
+		t.Fatalf("body should not include stackId: %#v", body)
+	}
+	if _, ok := body["clusterApp"]; ok {
+		t.Fatalf("body should not include clusterApp: %#v", body)
 	}
 }
 
@@ -1221,8 +1269,8 @@ func TestAppInstanceCreateUsesPublicAPIShape(t *testing.T) {
 		"--cluster", "33",
 		"--stack", "7",
 		"--stack-rev", "70",
-		"--name", "prod",
-		"--title", "Production",
+		"--instance-name", "prod",
+		"--instance-title", "Production",
 		"--domain", "example.com",
 		"--region", "us",
 		"--zone", "us-a",
@@ -1247,23 +1295,19 @@ func TestAppInstanceCreateUsesPublicAPIShape(t *testing.T) {
 	if body["clusterId"] != float64(33) {
 		t.Fatalf("clusterId = %#v, want 33", body["clusterId"])
 	}
-	if body["stackId"] != float64(7) {
-		t.Fatalf("stackId = %#v, want 7", body["stackId"])
-	}
 	if body["stackRevId"] != float64(70) {
 		t.Fatalf("stackRevId = %#v, want 70", body["stackRevId"])
 	}
-	if body["name"] != "prod" || body["title"] != "Production" {
-		t.Fatalf("name/title body = %#v", body)
+	if body["instanceName"] != "prod" || body["instanceTitle"] != "Production" {
+		t.Fatalf("instance name/title body = %#v", body)
 	}
-	if body["mainDomain"] != "example.com" {
-		t.Fatalf("mainDomain = %#v, want example.com", body["mainDomain"])
+	if body["domain"] != "example.com" {
+		t.Fatalf("domain = %#v, want example.com", body["domain"])
 	}
-	if body["region"] != "us" || body["zone"] != "us-a" {
-		t.Fatalf("region/zone body = %#v", body)
-	}
-	if body["clusterApp"] != true {
-		t.Fatalf("clusterApp = %#v, want true", body["clusterApp"])
+	for _, key := range []string{"stackId", "name", "title", "mainDomain", "region", "zone", "clusterApp"} {
+		if _, ok := body[key]; ok {
+			t.Fatalf("body should not include %s: %#v", key, body)
+		}
 	}
 }
 
@@ -2164,7 +2208,7 @@ func TestInstanceFlagSupportsShortI(t *testing.T) {
 		{name: "route", cmd: newAppRouteCommand("route", nil, "Manage app routes", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-routes", wantQuery: "appInstanceId=21"},
 		{name: "aps", cmd: newAppServiceCommand("aps", nil, "Manage app services", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-services", wantQuery: "appInstanceId=21"},
 		{name: "port", cmd: newAppPortCommand("port", nil, "Manage app ports", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-ports", wantQuery: "appInstanceId=21"},
-		{name: "cert", cmd: newAppCertCommand("cert", nil, "Manage app certificates", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-certs", wantQuery: "appInstanceId=21"},
+		{name: "cert", cmd: newAppCertCommand("cert", nil, "Manage app certificates", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/certs", wantQuery: ""},
 		{name: "build", cmd: newBuildCommand(), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-builds", wantQuery: "appInstanceId=21"},
 		{name: "task", cmd: newTaskCommand(), args: []string{"list", "-i", "21"}, wantPath: "/v1/tasks", wantQuery: "appInstanceId=21"},
 	} {
@@ -3081,7 +3125,7 @@ func TestBuildCommandExposesSupportedOperations(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	for _, name := range []string{"list", "get", "deploy"} {
+	for _, name := range []string{"list", "get", "create", "deploy"} {
 		if !names[name] {
 			t.Fatalf("missing build subcommand %q", name)
 		}
@@ -3090,6 +3134,115 @@ func TestBuildCommandExposesSupportedOperations(t *testing.T) {
 		if names[name] {
 			t.Fatalf("unexpected build subcommand %q", name)
 		}
+	}
+}
+
+func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
+	tests := []struct {
+		name       string
+		cmd        func() *cobra.Command
+		args       []string
+		wantMethod string
+		wantPath   string
+		wantQuery  string
+		assertBody func(*testing.T, map[string]interface{})
+		response   interface{}
+	}{
+		{
+			name:       "build create",
+			cmd:        newBuildCommand,
+			args:       []string{"create", "--service", "22", "--service", "33,44"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/app-builds",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if got := fmt.Sprint(body["appServiceIds"]); got != "[22 33 44]" {
+					t.Fatalf("appServiceIds = %#v, want [22 33 44]", body["appServiceIds"])
+				}
+			},
+			response: []map[string]interface{}{{"id": 101, "status": "created"}},
+		},
+		{
+			name:       "instance delete force",
+			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			args:       []string{"delete", "21", "--force", "-y"},
+			wantMethod: http.MethodDelete,
+			wantPath:   "/v1/app-instances/21",
+			wantQuery:  "force=true",
+			response:   map[string]interface{}{"success": true},
+		},
+		{
+			name:       "instance upgrade stack",
+			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			args:       []string{"upgrade-stack", "21", "--tokens=false"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/app-instances/21/actions/upgrade-stack",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["versions"] != true || body["tokens"] != false {
+					t.Fatalf("upgrade body = %#v", body)
+				}
+			},
+			response: map[string]interface{}{"success": true, "taskId": 55},
+		},
+		{
+			name:       "stack update from git",
+			cmd:        newStackCommand,
+			args:       []string{"update-from-git", "7", "--git-ref", "main", "--git-ref-type", "branch"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/stacks/7/actions/update-from-git",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["gitRef"] != "main" || body["gitRefType"] != "branch" {
+					t.Fatalf("update-from-git body = %#v", body)
+				}
+			},
+			response: map[string]interface{}{"success": true},
+		},
+		{
+			name:       "integration option branches",
+			cmd:        newIntegrationCommand,
+			args:       []string{"options", "remote-git-repo-branches", "9", "--remote-git-repo", "repo-1"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/v1/integrations/9/options/remote-git-repo-branches",
+			wantQuery:  "remoteGitRepoId=repo-1",
+			response:   []interface{}{"main"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var gotMethod, gotPath, gotQuery string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotMethod = r.Method
+				gotPath = r.URL.Path
+				gotQuery = r.URL.RawQuery
+				if test.assertBody != nil {
+					var body map[string]interface{}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Fatalf("Decode() error = %v", err)
+					}
+					test.assertBody(t, body)
+				}
+				_ = json.NewEncoder(w).Encode(test.response)
+			}))
+			defer server.Close()
+			configureTestAPI(t, server.URL+"/v1")
+
+			cmd := test.cmd()
+			cmd.SetOut(io.Discard)
+			cmd.SetArgs(test.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+
+			if gotMethod != test.wantMethod {
+				t.Fatalf("method = %q, want %s", gotMethod, test.wantMethod)
+			}
+			if gotPath != test.wantPath {
+				t.Fatalf("path = %q, want %s", gotPath, test.wantPath)
+			}
+			if test.wantQuery != "" && gotQuery != test.wantQuery {
+				t.Fatalf("query = %q, want %s", gotQuery, test.wantQuery)
+			}
+		})
 	}
 }
 

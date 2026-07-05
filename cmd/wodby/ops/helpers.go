@@ -167,8 +167,8 @@ var relationColumns = map[string]relationColumn{
 		idTitle:       "cert id",
 		idPaths:       []string{"appCertId", "appCert.id", "certId", "cert.id", "certificateId", "certificate.id"},
 		idScalarPaths: []string{"appCert", "cert", "certificate"},
-		pathPrefix:    "/app-certs/",
-		pathPrefixes:  []string{"/certs/", "/certificates/"},
+		pathPrefix:    "/certs/",
+		pathPrefixes:  []string{"/certificates/"},
 		titlePaths:    []string{"appCertHost", "appCert.host", "appCert.hostname", "certHost", "cert.host", "cert.hostname", "certificateHost", "certificate.host", "certificate.hostname", "commonName", "cert.commonName", "certificate.commonName", "host", "hostname", "domain", "appCert", "cert", "certificate"},
 	},
 	"task": {

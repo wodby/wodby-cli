@@ -175,14 +175,15 @@ func buildNav(cmd *cobra.Command) []navItem {
 	var items []navItem
 	items = append(items, navItem{Link: linkForCommand(cmd)})
 
+	var children []navItem
 	for _, child := range cmd.Commands() {
 		if !isDocumentedCommand(child) {
 			continue
 		}
-		items = append(items, navForCommand(child))
+		children = append(children, navForCommand(child))
 	}
 
-	return items
+	return append(items, leavesFirst(children)...)
 }
 
 func navForCommand(cmd *cobra.Command) navItem {
@@ -193,7 +194,26 @@ func navForCommand(cmd *cobra.Command) navItem {
 		}
 		item.Children = append(item.Children, navForCommand(child))
 	}
+	item.Children = leavesFirst(item.Children)
 	return item
+}
+
+func leavesFirst(items []navItem) []navItem {
+	if len(items) < 2 {
+		return items
+	}
+
+	var leaves []navItem
+	var branches []navItem
+	for _, item := range items {
+		if len(item.Children) == 0 {
+			leaves = append(leaves, item)
+			continue
+		}
+		branches = append(branches, item)
+	}
+
+	return append(leaves, branches...)
 }
 
 func infoForCommand(cmd *cobra.Command) commandInfo {

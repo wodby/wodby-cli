@@ -105,6 +105,7 @@ func TestGenerateWritesCollapsibleCommandNav(t *testing.T) {
 	assertContains(t, indexHTML, `<summary class="nav-summary">project</summary>`)
 	assertContains(t, indexHTML, `<a class="nav-link nav-overview" href="wodby_project.html">Overview</a>`)
 	assertNotContains(t, indexHTML, `<details class="nav-branch" data-nav-command="wodby project" open>`)
+	assertBefore(t, indexHTML, `href="wodby_version.html">version</a>`, `data-nav-command="wodby ci"`)
 
 	childContent, err := os.ReadFile(filepath.Join(dir, "wodby_project_list.html"))
 	if err != nil {
@@ -113,6 +114,22 @@ func TestGenerateWritesCollapsibleCommandNav(t *testing.T) {
 
 	childHTML := string(childContent)
 	assertContains(t, childHTML, `<details class="nav-branch" data-nav-command="wodby project" open>`)
+}
+
+func TestGenerateWritesLeafCommandsBeforeBranches(t *testing.T) {
+	dir := t.TempDir()
+	if err := generate(dir); err != nil {
+		t.Fatalf("generate() error = %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(dir, "wodby_task.html"))
+	if err != nil {
+		t.Fatalf("ReadFile(wodby_task.html) error = %v", err)
+	}
+
+	html := string(content)
+	assertBefore(t, html, `href="wodby_task_cancel.html">cancel</a>`, `data-nav-command="wodby task job"`)
+	assertBefore(t, html, `href="wodby_task_repeat.html">repeat</a>`, `data-nav-command="wodby task step"`)
 }
 
 func assertContains(t *testing.T, got string, want string) {
@@ -126,5 +143,23 @@ func assertNotContains(t *testing.T, got string, want string) {
 	t.Helper()
 	if strings.Contains(got, want) {
 		t.Fatalf("generated HTML should not contain %q", want)
+	}
+}
+
+func assertBefore(t *testing.T, got string, first string, second string) {
+	t.Helper()
+
+	firstIndex := strings.Index(got, first)
+	if firstIndex < 0 {
+		t.Fatalf("generated HTML missing %q", first)
+	}
+
+	secondIndex := strings.Index(got, second)
+	if secondIndex < 0 {
+		t.Fatalf("generated HTML missing %q", second)
+	}
+
+	if firstIndex > secondIndex {
+		t.Fatalf("generated HTML should list %q before %q", first, second)
 	}
 }

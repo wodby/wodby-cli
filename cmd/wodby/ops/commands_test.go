@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -36,6 +37,7 @@ func TestCommandsExposeTopLevelOperationalSurface(t *testing.T) {
 		"cluster",
 		"integration",
 		"provider",
+		"helm",
 		"stack",
 		"service",
 		"app",
@@ -2404,6 +2406,9 @@ func TestSchemaAddedCommandSurfaceIsExposed(t *testing.T) {
 	if !topLevel["integration-kind"] {
 		t.Fatal("missing top-level integration-kind command")
 	}
+	if !topLevel["helm"] {
+		t.Fatal("missing top-level helm command")
+	}
 
 	assertChildren(t, newUserCommand(), "get", "update")
 	assertChildren(t, newOrgCommand(), "get", "update")
@@ -2412,8 +2417,9 @@ func TestSchemaAddedCommandSurfaceIsExposed(t *testing.T) {
 	assertChildren(t, newClusterCommand(), "get-by-name", "settings", "upgrade-infra", "upgrade-infra-apps", "delete")
 	assertChildren(t, newIntegrationCommand(), "get-by-name", "options")
 	assertChildren(t, newProviderCommand(), "get-by-name", "revision")
-	assertChildren(t, newStackCommand(), "get-by-name", "import", "settings", "revision", "publish-draft", "update-from-git", "duplicate", "sync-origin")
-	assertChildren(t, newServiceCommand(), "get-by-name", "import", "settings", "revision", "options")
+	assertChildren(t, newHelmCommand(), "inspect", "scaffold-service", "scaffold-stack")
+	assertChildren(t, newStackCommand(), "get-by-name", "import", "validate-manifest", "create-from-manifest", "settings", "revision", "publish-draft", "update-from-git", "duplicate", "sync-origin")
+	assertChildren(t, newServiceCommand(), "get-by-name", "import", "validate-manifest", "create-from-manifest", "settings", "revision", "options")
 }
 
 func TestStackActionCommandsUseRESTEndpoints(t *testing.T) {
@@ -2479,6 +2485,357 @@ func TestStackActionCommandsUseRESTEndpoints(t *testing.T) {
 				t.Fatalf("output should include duplicated/synced stack: %s", out.String())
 			}
 		})
+	}
+}
+
+func TestManifestCommandsUseRESTEndpoints(t *testing.T) {
+	tempDir := t.TempDir()
+	manifestPath := filepath.Join(tempDir, "service.yml")
+	includePath := filepath.Join(tempDir, "Dockerfile")
+	if err := os.WriteFile(manifestPath, []byte("name: redis\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(includePath, []byte("FROM redis:7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotMethod string
+	var gotPath string
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"valid":    true,
+			"resource": map[string]interface{}{"name": "redis"},
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	var out bytes.Buffer
+	cmd := newServiceCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{
+		"validate-manifest",
+		"--manifest", manifestPath,
+		"--org", "10",
+		"--project", "20",
+		"--version", "1.2.3",
+		"--include", "Dockerfile=" + includePath,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/v1/services/actions/validate-manifest" {
+		t.Fatalf("path = %q, want /v1/services/actions/validate-manifest", gotPath)
+	}
+	if body["manifestYaml"] != "name: redis\n" || body["version"] != "1.2.3" {
+		t.Fatalf("body = %#v, want manifest and version", body)
+	}
+	if body["orgId"] != float64(10) || body["projectId"] != float64(20) {
+		t.Fatalf("body = %#v, want org/project", body)
+	}
+	files, ok := body["files"].(map[string]interface{})
+	if !ok || files["Dockerfile"] != "FROM redis:7\n" {
+		t.Fatalf("files = %#v, want included Dockerfile", body["files"])
+	}
+}
+
+func TestCreateFromManifestUsesStackEndpoint(t *testing.T) {
+	tempDir := t.TempDir()
+	manifestPath := filepath.Join(tempDir, "stack.yml")
+	if err := os.WriteFile(manifestPath, []byte("name: redis-stack\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotMethod string
+	var gotPath string
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 99, "name": "redis-stack", "title": "Redis Stack"})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	var out bytes.Buffer
+	cmd := newStackCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"create-from-manifest", "-f", manifestPath, "--org", "10"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/v1/stacks/actions/create-from-manifest" {
+		t.Fatalf("path = %q, want /v1/stacks/actions/create-from-manifest", gotPath)
+	}
+	if body["manifestYaml"] != "name: redis-stack\n" || body["orgId"] != float64(10) {
+		t.Fatalf("body = %#v, want manifest and org", body)
+	}
+	if !strings.Contains(out.String(), "Redis Stack") {
+		t.Fatalf("output should include created stack: %s", out.String())
+	}
+}
+
+func TestValidateManifestReturnsErrorForInvalidManifest(t *testing.T) {
+	tempDir := t.TempDir()
+	manifestPath := filepath.Join(tempDir, "service.yml")
+	if err := os.WriteFile(manifestPath, []byte("name: broken\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"valid": false,
+			"error": "missing workloads",
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newServiceCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"validate-manifest", "-f", manifestPath})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want invalid manifest error")
+	}
+	if !strings.Contains(err.Error(), "service manifest is invalid") {
+		t.Fatalf("Execute() error = %q, want invalid manifest error", err)
+	}
+}
+
+func TestHelmInspectUsesRESTEndpoint(t *testing.T) {
+	tempDir := t.TempDir()
+	valuesPath := filepath.Join(tempDir, "values.yml")
+	if err := os.WriteFile(valuesPath, []byte("architecture: standalone\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotMethod string
+	var gotPath string
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"chart":         "redis",
+			"release":       "redis",
+			"namespace":     "default",
+			"resourceCount": 4,
+			"workloads":     []string{"redis-master"},
+			"services":      []string{"redis-master"},
+			"warnings":      []string{"uses persistent volume"},
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	var out bytes.Buffer
+	cmd := newHelmCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{
+		"inspect",
+		"--chart", "redis",
+		"--source", "https://charts.bitnami.com/bitnami",
+		"--source-name", "bitnami",
+		"--version", "22.0.0",
+		"--release", "redis",
+		"--namespace", "default",
+		"--values-yaml", valuesPath,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/v1/helm-charts/actions/inspect" {
+		t.Fatalf("path = %q, want /v1/helm-charts/actions/inspect", gotPath)
+	}
+	for key, want := range map[string]interface{}{
+		"chart":      "redis",
+		"source":     "https://charts.bitnami.com/bitnami",
+		"sourceName": "bitnami",
+		"version":    "22.0.0",
+		"release":    "redis",
+		"namespace":  "default",
+		"valuesYaml": "architecture: standalone\n",
+	} {
+		if body[key] != want {
+			t.Fatalf("body[%s] = %#v, want %#v in %#v", key, body[key], want, body)
+		}
+	}
+	if !strings.Contains(out.String(), "redis") {
+		t.Fatalf("output should include chart name: %s", out.String())
+	}
+}
+
+func TestHelmScaffoldServiceWritesManifest(t *testing.T) {
+	tempDir := t.TempDir()
+	valuesPath := filepath.Join(tempDir, "values.json")
+	outPath := filepath.Join(tempDir, "service.yml")
+	if err := os.WriteFile(valuesPath, []byte(`{"architecture":"standalone","replicaCount":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotMethod string
+	var gotPath string
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"manifestYaml": "name: redis\n",
+			"manifest":     map[string]interface{}{"name": "redis"},
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	var out bytes.Buffer
+	cmd := newHelmCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{
+		"scaffold-service",
+		"--chart", "redis",
+		"--values", valuesPath,
+		"--service-name", "redis",
+		"--service-title", "Redis",
+		"--service-type", "database",
+		"--icon", "redis",
+		"--out", outPath,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/v1/services/actions/scaffold-from-helm-chart" {
+		t.Fatalf("path = %q, want /v1/services/actions/scaffold-from-helm-chart", gotPath)
+	}
+	chart, ok := body["chart"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("chart body = %#v, want object", body["chart"])
+	}
+	if chart["chart"] != "redis" {
+		t.Fatalf("chart = %#v, want redis", chart)
+	}
+	values, ok := chart["values"].(map[string]interface{})
+	if !ok || values["architecture"] != "standalone" || values["replicaCount"] != float64(1) {
+		t.Fatalf("values = %#v, want JSON values", chart["values"])
+	}
+	for key, want := range map[string]interface{}{
+		"serviceName":  "redis",
+		"serviceTitle": "Redis",
+		"serviceType":  "database",
+		"icon":         "redis",
+	} {
+		if body[key] != want {
+			t.Fatalf("body[%s] = %#v, want %#v in %#v", key, body[key], want, body)
+		}
+	}
+	content, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "name: redis\n" {
+		t.Fatalf("manifest file = %q, want generated manifest", content)
+	}
+	if !strings.Contains(out.String(), "Wrote service manifest") {
+		t.Fatalf("output should report written manifest: %s", out.String())
+	}
+}
+
+func TestHelmScaffoldStackWritesManifests(t *testing.T) {
+	tempDir := t.TempDir()
+	serviceOut := filepath.Join(tempDir, "service.yml")
+	stackOut := filepath.Join(tempDir, "stack.yml")
+
+	var gotMethod string
+	var gotPath string
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"serviceManifestYaml": "name: redis\n",
+			"stackManifestYaml":   "name: redis-stack\n",
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	var out bytes.Buffer
+	cmd := newHelmCommand()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{
+		"scaffold-stack",
+		"--chart", "redis",
+		"--service-name", "redis",
+		"--stack-name", "redis-stack",
+		"--stack-title", "Redis Stack",
+		"--service-out", serviceOut,
+		"--stack-out", stackOut,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/v1/stacks/actions/scaffold-from-helm-chart" {
+		t.Fatalf("path = %q, want /v1/stacks/actions/scaffold-from-helm-chart", gotPath)
+	}
+	chart, ok := body["chart"].(map[string]interface{})
+	if !ok || chart["chart"] != "redis" {
+		t.Fatalf("chart body = %#v, want redis chart", body["chart"])
+	}
+	if body["serviceName"] != "redis" || body["stackName"] != "redis-stack" || body["stackTitle"] != "Redis Stack" {
+		t.Fatalf("body = %#v, want service and stack names", body)
+	}
+	serviceContent, err := os.ReadFile(serviceOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stackContent, err := os.ReadFile(stackOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(serviceContent) != "name: redis\n" || string(stackContent) != "name: redis-stack\n" {
+		t.Fatalf("generated files = %q / %q, want service and stack manifests", serviceContent, stackContent)
+	}
+	if !strings.Contains(out.String(), "Wrote service manifest") || !strings.Contains(out.String(), "Wrote stack manifest") {
+		t.Fatalf("output should report written manifests: %s", out.String())
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/wodby/wodby-cli/cmd/wodby/ci"
+	"github.com/wodby/wodby-cli/cmd/wodby/migrate"
 	"github.com/wodby/wodby-cli/cmd/wodby/ops"
 	"github.com/wodby/wodby-cli/cmd/wodby/version"
 )
@@ -19,6 +20,7 @@ func NewCommand() *cobra.Command {
 
 	bindPersistentFlags(cmd)
 	cmd.AddCommand(ci.Cmd)
+	cmd.AddCommand(migrate.NewCommand())
 	cmd.AddCommand(ops.Commands()...)
 	cmd.AddCommand(version.Cmd)
 

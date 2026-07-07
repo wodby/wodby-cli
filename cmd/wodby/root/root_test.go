@@ -21,3 +21,15 @@ func TestAPIEndpointDefaults(t *testing.T) {
 		t.Fatalf("api-base-url default = %q, want apiv2 REST API base URL", restBaseURL.DefValue)
 	}
 }
+
+func TestMigrateCommandRegistered(t *testing.T) {
+	cmd := NewCommand()
+
+	migrate, _, err := cmd.Find([]string{"migrate", "wodby1", "app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrate == nil || migrate.Use != "app SOURCE_APP_UUID" {
+		t.Fatalf("unexpected command = %#v", migrate)
+	}
+}

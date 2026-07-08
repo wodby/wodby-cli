@@ -17,6 +17,7 @@ import (
 
 const (
 	cliReferenceBaseURL = "https://wodby.com/docs/2.0/cli/"
+	faviconPath         = "../assets/images/favicon.svg"
 	siteName            = "Wodby Documentation"
 	indexDescription    = "Command-line reference for Wodby 2.0, including commands, options, aliases, and examples."
 )
@@ -404,6 +405,7 @@ var pageTemplate = template.Must(template.New("manual").Funcs(template.FuncMap{
   <title>{{.Title}}</title>
   <meta name="description" content="{{.Description}}">
   <link rel="canonical" href="{{.CanonicalURL}}">
+  <link rel="icon" href="` + faviconPath + `">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="` + siteName + `">
   <meta property="og:title" content="{{.Title}}">

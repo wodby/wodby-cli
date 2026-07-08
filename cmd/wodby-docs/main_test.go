@@ -44,6 +44,7 @@ func TestGenerateWritesSocialMetadata(t *testing.T) {
 			assertContains(t, html, `<title>`+tt.title+`</title>`)
 			assertContains(t, html, `<meta name="description" content="`+tt.description+`">`)
 			assertContains(t, html, `<link rel="canonical" href="`+tt.canonical+`">`)
+			assertContains(t, html, `<link rel="icon" href="../assets/images/favicon.svg">`)
 			assertContains(t, html, `<meta property="og:type" content="website">`)
 			assertContains(t, html, `<meta property="og:site_name" content="Wodby Documentation">`)
 			assertContains(t, html, `<meta property="og:title" content="`+tt.title+`">`)

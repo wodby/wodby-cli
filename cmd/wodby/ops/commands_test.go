@@ -2619,8 +2619,10 @@ func TestValidateManifestReturnsErrorForInvalidManifest(t *testing.T) {
 	configureTestAPI(t, server.URL+"/v1")
 
 	var out bytes.Buffer
+	var errOut bytes.Buffer
 	cmd := newServiceCommand()
 	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
 	cmd.SetArgs([]string{"validate-manifest", "-f", manifestPath})
 	err := cmd.Execute()
 	if err == nil {
@@ -2631,6 +2633,9 @@ func TestValidateManifestReturnsErrorForInvalidManifest(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Service manifest is invalid.") || !strings.Contains(out.String(), "missing workloads") {
 		t.Fatalf("output should include validation failure: %s", out.String())
+	}
+	if strings.Contains(errOut.String(), "Usage:") {
+		t.Fatalf("stderr should not include command usage for validation failures: %s", errOut.String())
 	}
 }
 

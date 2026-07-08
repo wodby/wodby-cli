@@ -45,6 +45,7 @@ func newManifestValidateCommand(kind string, out outputOptions) *cobra.Command {
 				return err
 			}
 			if manifestValidationFailed(result) {
+				cmd.SilenceUsage = true
 				return errors.New(kind + " manifest is invalid")
 			}
 			return nil

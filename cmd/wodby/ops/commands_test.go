@@ -2510,7 +2510,7 @@ func TestManifestCommandsUseRESTEndpoints(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"valid":    true,
-			"resource": map[string]interface{}{"name": "redis"},
+			"resource": map[string]interface{}{"name": "redis", "title": "Redis", "type": "database", "version": "1.2.3"},
 		})
 	}))
 	defer server.Close()
@@ -2521,7 +2521,7 @@ func TestManifestCommandsUseRESTEndpoints(t *testing.T) {
 	cmd.SetOut(&out)
 	cmd.SetArgs([]string{
 		"validate-manifest",
-		"--manifest", manifestPath,
+		manifestPath,
 		"--org", "10",
 		"--project", "20",
 		"--version", "1.2.3",
@@ -2546,6 +2546,15 @@ func TestManifestCommandsUseRESTEndpoints(t *testing.T) {
 	files, ok := body["files"].(map[string]interface{})
 	if !ok || files["Dockerfile"] != "FROM redis:7\n" {
 		t.Fatalf("files = %#v, want included Dockerfile", body["files"])
+	}
+	output := out.String()
+	for _, expected := range []string{"Service manifest is valid.", "Name: redis", "Title: Redis", "Type: database", "Version: 1.2.3"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, `{"`) {
+		t.Fatalf("output should not include raw JSON: %s", output)
 	}
 }
 
@@ -2609,8 +2618,9 @@ func TestValidateManifestReturnsErrorForInvalidManifest(t *testing.T) {
 	defer server.Close()
 	configureTestAPI(t, server.URL+"/v1")
 
+	var out bytes.Buffer
 	cmd := newServiceCommand()
-	cmd.SetOut(io.Discard)
+	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"validate-manifest", "-f", manifestPath})
 	err := cmd.Execute()
 	if err == nil {
@@ -2618,6 +2628,29 @@ func TestValidateManifestReturnsErrorForInvalidManifest(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "service manifest is invalid") {
 		t.Fatalf("Execute() error = %q, want invalid manifest error", err)
+	}
+	if !strings.Contains(out.String(), "Service manifest is invalid.") || !strings.Contains(out.String(), "missing workloads") {
+		t.Fatalf("output should include validation failure: %s", out.String())
+	}
+}
+
+func TestValidateManifestRejectsAmbiguousManifestInput(t *testing.T) {
+	tempDir := t.TempDir()
+	manifestPath := filepath.Join(tempDir, "service.yml")
+	if err := os.WriteFile(manifestPath, []byte("name: redis\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newServiceCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"validate-manifest", manifestPath, "--manifest", manifestPath})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want manifest input conflict")
+	}
+	if !strings.Contains(err.Error(), "use either MANIFEST or --manifest") {
+		t.Fatalf("Execute() error = %q, want manifest input conflict", err)
 	}
 }
 
@@ -2638,13 +2671,41 @@ func TestHelmInspectUsesRESTEndpoint(t *testing.T) {
 			t.Fatalf("Decode() error = %v", err)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"chart":         "redis",
+			"chart": map[string]interface{}{
+				"name":       "redis",
+				"version":    "22.0.0",
+				"appVersion": "7.4.0",
+				"chart":      "bitnami/redis",
+				"source":     "https://charts.bitnami.com/bitnami",
+			},
 			"release":       "redis",
 			"namespace":     "default",
 			"resourceCount": 4,
-			"workloads":     []string{"redis-master"},
-			"services":      []string{"redis-master"},
-			"warnings":      []string{"uses persistent volume"},
+			"workloads": []map[string]interface{}{
+				{
+					"kind": "deployment",
+					"name": "redis-master",
+					"containers": []map[string]interface{}{
+						{
+							"name":  "redis",
+							"image": "registry-1.docker.io/bitnami/redis:7.4.0",
+							"ports": []map[string]interface{}{
+								{"name": "redis", "number": 6379, "protocol": "tcp"},
+							},
+							"env": []string{"ALLOW_EMPTY_PASSWORD", "REDIS_PORT_NUMBER"},
+						},
+					},
+				},
+			},
+			"services": []map[string]interface{}{
+				{
+					"name": "redis-master",
+					"ports": []map[string]interface{}{
+						{"name": "tcp-redis", "number": 6379, "targetPort": "redis", "protocol": "tcp"},
+					},
+				},
+			},
+			"warnings": []string{"uses persistent volume"},
 		})
 	}))
 	defer server.Close()
@@ -2686,8 +2747,107 @@ func TestHelmInspectUsesRESTEndpoint(t *testing.T) {
 			t.Fatalf("body[%s] = %#v, want %#v in %#v", key, body[key], want, body)
 		}
 	}
-	if !strings.Contains(out.String(), "redis") {
-		t.Fatalf("output should include chart name: %s", out.String())
+	output := out.String()
+	for _, expected := range []string{
+		"redis",
+		"Version: 22.0.0 / app 7.4.0",
+		"Chart: bitnami/redis",
+		"Rendered resources: 4",
+		"Workloads: 1",
+		"deployment redis-master",
+		"registry-1.docker.io/bitnami/redis:7.4.0",
+		"redis:6379/tcp",
+		"2 env vars",
+		"Services: 1",
+		"Warnings:",
+		"uses persistent volume",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("output should include %q: %s", expected, output)
+		}
+	}
+	for _, unwanted := range []string{`{"`, `"containers"`, `"workloads"`} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("output should not include raw JSON %q: %s", unwanted, output)
+		}
+	}
+}
+
+func TestHelmInspectAcceptsPositionalChartReferences(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantChart  string
+		wantSource string
+	}{
+		{
+			name:      "oci chart reference",
+			args:      []string{"inspect", "oci://registry-1.docker.io/bitnamicharts/memcached"},
+			wantChart: "oci://registry-1.docker.io/bitnamicharts/memcached",
+		},
+		{
+			name:       "repository url with chart path",
+			args:       []string{"inspect", "https://charts.bitnami.com/bitnami/redis"},
+			wantChart:  "redis",
+			wantSource: "https://charts.bitnami.com/bitnami",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var body map[string]interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					t.Fatalf("method = %q, want POST", r.Method)
+				}
+				if r.URL.Path != "/v1/helm-charts/actions/inspect" {
+					t.Fatalf("path = %q, want /v1/helm-charts/actions/inspect", r.URL.Path)
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("Decode() error = %v", err)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"chart":         test.wantChart,
+					"release":       "app",
+					"namespace":     "default",
+					"resourceCount": 1,
+				})
+			}))
+			defer server.Close()
+			configureTestAPI(t, server.URL+"/v1")
+
+			cmd := newHelmCommand()
+			cmd.SetOut(io.Discard)
+			cmd.SetArgs(test.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+
+			if body["chart"] != test.wantChart {
+				t.Fatalf("chart = %#v, want %q in %#v", body["chart"], test.wantChart, body)
+			}
+			if test.wantSource == "" {
+				if _, ok := body["source"]; ok {
+					t.Fatalf("source = %#v, want omitted in %#v", body["source"], body)
+				}
+			} else if body["source"] != test.wantSource {
+				t.Fatalf("source = %#v, want %q in %#v", body["source"], test.wantSource, body)
+			}
+		})
+	}
+}
+
+func TestHelmChartReferenceRejectsAmbiguousSource(t *testing.T) {
+	cmd := newHelmCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"inspect", "https://charts.bitnami.com/bitnami/redis", "--source", "https://charts.example.com"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want source conflict error")
+	}
+	if !strings.Contains(err.Error(), "do not combine --source") {
+		t.Fatalf("Execute() error = %q, want source conflict error", err)
 	}
 }
 
@@ -2711,17 +2871,23 @@ func TestHelmScaffoldServiceWritesManifest(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"manifestYaml": "name: redis\n",
 			"manifest":     map[string]interface{}{"name": "redis"},
+			"analysis": map[string]interface{}{
+				"warnings": []string{"chart uses persistent storage"},
+			},
+			"warnings": []string{"review generated service", "chart uses persistent storage"},
 		})
 	}))
 	defer server.Close()
 	configureTestAPI(t, server.URL+"/v1")
 
 	var out bytes.Buffer
+	var errOut bytes.Buffer
 	cmd := newHelmCommand()
 	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
 	cmd.SetArgs([]string{
 		"scaffold-service",
-		"--chart", "redis",
+		"oci://registry-1.docker.io/bitnamicharts/redis",
 		"--values", valuesPath,
 		"--service-name", "redis",
 		"--service-title", "Redis",
@@ -2743,8 +2909,8 @@ func TestHelmScaffoldServiceWritesManifest(t *testing.T) {
 	if !ok {
 		t.Fatalf("chart body = %#v, want object", body["chart"])
 	}
-	if chart["chart"] != "redis" {
-		t.Fatalf("chart = %#v, want redis", chart)
+	if chart["chart"] != "oci://registry-1.docker.io/bitnamicharts/redis" {
+		t.Fatalf("chart = %#v, want OCI redis chart", chart)
 	}
 	values, ok := chart["values"].(map[string]interface{})
 	if !ok || values["architecture"] != "standalone" || values["replicaCount"] != float64(1) {
@@ -2769,6 +2935,14 @@ func TestHelmScaffoldServiceWritesManifest(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Wrote service manifest") {
 		t.Fatalf("output should report written manifest: %s", out.String())
+	}
+	for _, expected := range []string{"Warnings:", "review generated service", "chart uses persistent storage"} {
+		if !strings.Contains(errOut.String(), expected) {
+			t.Fatalf("stderr should include %q: %s", expected, errOut.String())
+		}
+	}
+	if strings.Count(errOut.String(), "chart uses persistent storage") != 1 {
+		t.Fatalf("stderr should deduplicate warnings: %s", errOut.String())
 	}
 }
 

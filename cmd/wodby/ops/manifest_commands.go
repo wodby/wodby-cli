@@ -1,6 +1,7 @@
 package ops
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -24,10 +25,11 @@ func newManifestValidateCommand(kind string, out outputOptions) *cobra.Command {
 	opts := manifestFileOptions{}
 	path := "/" + kind + "s/actions/validate-manifest"
 	cmd := &cobra.Command{
-		Use:   "validate-manifest",
+		Use:   "validate-manifest [MANIFEST]",
 		Short: "Validate " + kind + " manifest",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			body, err := manifestRequestBody(cmd, opts)
+			body, err := manifestRequestBody(cmd, args, opts)
 			if err != nil {
 				return err
 			}
@@ -39,7 +41,7 @@ func newManifestValidateCommand(kind string, out outputOptions) *cobra.Command {
 			if err := client.Post(cmd.Context(), path, nil, body, &result); err != nil {
 				return err
 			}
-			if err := printClientResult(cmd, client, out, result, manifestValidationColumns); err != nil {
+			if err := printManifestValidationResult(cmd, out, kind, result); err != nil {
 				return err
 			}
 			if manifestValidationFailed(result) {
@@ -56,10 +58,11 @@ func newManifestCreateCommand(kind string, out outputOptions, columns []string) 
 	opts := manifestFileOptions{}
 	path := "/" + kind + "s/actions/create-from-manifest"
 	cmd := &cobra.Command{
-		Use:   "create-from-manifest",
+		Use:   "create-from-manifest [MANIFEST]",
 		Short: "Create " + kind + " from manifest",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			body, err := manifestRequestBody(cmd, opts)
+			body, err := manifestRequestBody(cmd, args, opts)
 			if err != nil {
 				return err
 			}
@@ -86,11 +89,12 @@ func addManifestFileFlags(cmd *cobra.Command, opts *manifestFileOptions) {
 	cmd.Flags().StringArrayVar(&opts.includes, "include", nil, "Referenced file to include; use PATH or MANIFEST_PATH=LOCAL_PATH")
 }
 
-func manifestRequestBody(cmd *cobra.Command, opts manifestFileOptions) (map[string]interface{}, error) {
-	if err := requireFlag(opts.manifest, "--manifest"); err != nil {
+func manifestRequestBody(cmd *cobra.Command, args []string, opts manifestFileOptions) (map[string]interface{}, error) {
+	manifestPath, err := resolveManifestPath(args, opts)
+	if err != nil {
 		return nil, err
 	}
-	manifestYAML, err := readTextFileOrStdin(cmd, opts.manifest)
+	manifestYAML, err := readTextFileOrStdin(cmd, manifestPath)
 	if err != nil {
 		return nil, errors.Wrap(err, "read manifest")
 	}
@@ -112,6 +116,24 @@ func manifestRequestBody(cmd *cobra.Command, opts manifestFileOptions) (map[stri
 		body["files"] = files
 	}
 	return body, nil
+}
+
+func resolveManifestPath(args []string, opts manifestFileOptions) (string, error) {
+	positional := ""
+	if len(args) > 0 {
+		positional = strings.TrimSpace(args[0])
+	}
+	explicit := strings.TrimSpace(opts.manifest)
+	if positional != "" && explicit != "" {
+		return "", errors.New("use either MANIFEST or --manifest, not both")
+	}
+	if positional != "" {
+		return positional, nil
+	}
+	if explicit != "" {
+		return explicit, nil
+	}
+	return "", errors.New("MANIFEST or --manifest is required")
 }
 
 func readIncludedFiles(includes []string) (map[string]string, error) {
@@ -159,6 +181,62 @@ func manifestValidationFailed(result interface{}) bool {
 	}
 	valid, ok := row["valid"].(bool)
 	return ok && !valid
+}
+
+func printManifestValidationResult(cmd *cobra.Command, out outputOptions, kind string, result interface{}) error {
+	if outputFormat(cmd, out) == outputJSON {
+		return printResult(cmd, out, result, manifestValidationColumns)
+	}
+
+	row, ok := normalizeItem(result).(map[string]interface{})
+	if !ok {
+		return errors.New("response missing manifest validation result")
+	}
+	label := manifestKindLabel(kind)
+	if manifestValidationFailed(result) {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s manifest is invalid.\n", label)
+		if message := firstScalarPath(row, "error"); message != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "  Error: %s\n", message)
+		}
+		return nil
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "%s manifest is valid.\n", label)
+	resource := asRows(firstNonNilPath(row, "resource"))
+	if len(resource) > 0 {
+		printManifestValidationResource(cmd, kind, resource[0])
+	}
+	return nil
+}
+
+func printManifestValidationResource(cmd *cobra.Command, kind string, resource map[string]interface{}) {
+	out := cmd.OutOrStdout()
+	for _, item := range []struct {
+		label string
+		paths []string
+	}{
+		{label: "Name", paths: []string{"name"}},
+		{label: "Title", paths: []string{"title"}},
+		{label: "Type", paths: []string{"type"}},
+		{label: "Version", paths: []string{"version"}},
+	} {
+		if value := firstScalarPath(resource, item.paths...); value != "" {
+			fmt.Fprintf(out, "  %s: %s\n", item.label, value)
+		}
+	}
+	if kind == "stack" {
+		if count := firstScalarPath(resource, "serviceCount"); count != "" {
+			fmt.Fprintf(out, "  Services: %s\n", count)
+		}
+	}
+}
+
+func manifestKindLabel(kind string) string {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		return "Manifest"
+	}
+	return strings.ToUpper(kind[:1]) + kind[1:]
 }
 
 func writeTextOutput(path string, content string) error {

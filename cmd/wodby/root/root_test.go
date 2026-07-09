@@ -22,7 +22,7 @@ func TestAPIEndpointDefaults(t *testing.T) {
 	}
 }
 
-func TestMigrateCommandRegistered(t *testing.T) {
+func TestMigrateCommandHidden(t *testing.T) {
 	cmd := NewCommand()
 
 	migrate, _, err := cmd.Find([]string{"migrate", "wodby1", "app"})
@@ -31,5 +31,12 @@ func TestMigrateCommandRegistered(t *testing.T) {
 	}
 	if migrate == nil || migrate.Use != "app SOURCE_APP_UUID" {
 		t.Fatalf("unexpected command = %#v", migrate)
+	}
+	parent := migrate.Parent().Parent()
+	if parent == nil || parent.Name() != "migrate" {
+		t.Fatalf("unexpected parent command = %#v", parent)
+	}
+	if !parent.Hidden {
+		t.Fatal("migrate command should be hidden")
 	}
 }

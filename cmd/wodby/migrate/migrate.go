@@ -42,8 +42,9 @@ type options struct {
 
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "migrate",
-		Short: "Migration tools",
+		Use:    "migrate",
+		Short:  "Migration tools",
+		Hidden: true,
 	}
 	cmd.AddCommand(newWodby1Command())
 	return cmd

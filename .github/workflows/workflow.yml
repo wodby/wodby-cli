@@ -33,7 +33,7 @@ jobs:
     - name: Install Go
       uses: actions/setup-go@v6
       with:
-        go-version: 1.26
+        go-version-file: go.mod
     - name: build
       run: make VERSION="${VERSION}"
     - name: test
@@ -90,7 +90,7 @@ jobs:
     - name: Install Go
       uses: actions/setup-go@v6
       with:
-        go-version: 1.26
+        go-version-file: go.mod
     - name: Update CLI docs
       run: make docs-update
 

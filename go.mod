@@ -1,6 +1,6 @@
 module github.com/wodby/wodby-cli
 
-go 1.26
+go 1.26.5
 
 require (
 	github.com/google/uuid v1.6.0

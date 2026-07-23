@@ -74,8 +74,8 @@ var (
 	certColumns                     = []string{"id", "host", "status", "issuer", "certType", "expiresAt", "route", "instance", "createdAt"}
 	buildListColumns                = []string{"id", "number", "service", "services", "imageCount", "gitRefType", "gitRef", "startedAt", "duration", "status"}
 	buildColumns                    = []string{"id", "number", "status", "instance", "service", "services", "images", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "createdAt", "startedAt", "endedAt", "duration"}
-	deploymentListColumns           = []string{"id", "number", "services", "builds", "startedAt", "duration", "status", "rollbackStatus"}
-	deploymentColumns               = []string{"id", "number", "status", "rollbackStatus", "instance", "services", "images", "task", "skipRollback", "createdAt", "startedAt", "endedAt", "duration"}
+	deploymentListColumns           = []string{"id", "number", "services", "builds", "startedAt", "duration", "status", "postDeploymentStatus", "rollbackStatus"}
+	deploymentColumns               = []string{"id", "number", "status", "postDeploymentStatus", "rollbackStatus", "instance", "services", "images", "task", "postDeploymentTask", "skipRollback", "createdAt", "startedAt", "endedAt", "duration"}
 	backupColumns                   = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "task", "createdAt"}
 	importListColumns               = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "startedAt", "duration"}
 	importColumns                   = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "backup", "createdAt", "updatedAt", "startedAt", "endedAt", "duration"}

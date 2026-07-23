@@ -1602,6 +1602,12 @@ func TestAppCreateStreamsBuildTaskAfterCreationTask(t *testing.T) {
 					},
 				},
 			})
+		case http.MethodGet + " /v1/app-deployments/601":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":                   601,
+				"status":               "completed",
+				"postDeploymentStatus": "not_applicable",
+			})
 		case http.MethodGet + " /v1/task-steps/step-deploy/logs":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"lines": []map[string]interface{}{
@@ -1650,6 +1656,7 @@ func TestAppCreateStreamsBuildTaskAfterCreationTask(t *testing.T) {
 		"GET /v1/app-deployments",
 		"GET /v1/tasks/85",
 		"GET /v1/task-steps/step-deploy/logs",
+		"GET /v1/app-deployments/601",
 	}
 	if strings.Join(requests, "\n") != strings.Join(wantRequests, "\n") {
 		t.Fatalf("requests = %#v, want %#v", requests, wantRequests)
@@ -1742,6 +1749,12 @@ func TestAppInstanceCreateStreamsDeploymentTaskWhenNoBuildTask(t *testing.T) {
 					},
 				},
 			})
+		case http.MethodGet + " /v1/app-deployments/601":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":                   601,
+				"status":               "completed",
+				"postDeploymentStatus": "not_applicable",
+			})
 		case http.MethodGet + " /v1/task-steps/step-deploy/logs":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"lines": []map[string]interface{}{
@@ -1784,6 +1797,7 @@ func TestAppInstanceCreateStreamsDeploymentTaskWhenNoBuildTask(t *testing.T) {
 		"GET /v1/app-deployments",
 		"GET /v1/tasks/85",
 		"GET /v1/task-steps/step-deploy/logs",
+		"GET /v1/app-deployments/601",
 	}
 	if strings.Join(requests, "\n") != strings.Join(wantRequests, "\n") {
 		t.Fatalf("requests = %#v, want %#v", requests, wantRequests)
@@ -1856,6 +1870,12 @@ func TestBuildCreateStreamsBuildAndTriggeredDeploymentLogs(t *testing.T) {
 					},
 				},
 			})
+		case http.MethodGet + " /v1/app-deployments/601":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":                   601,
+				"status":               "completed",
+				"postDeploymentStatus": "not_applicable",
+			})
 		case http.MethodGet + " /v1/task-steps/step-deploy/logs":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"lines": []map[string]interface{}{
@@ -1900,6 +1920,7 @@ func TestBuildCreateStreamsBuildAndTriggeredDeploymentLogs(t *testing.T) {
 		"GET /v1/app-deployments",
 		"GET /v1/tasks/85",
 		"GET /v1/task-steps/step-deploy/logs",
+		"GET /v1/app-deployments/601",
 	}
 	if strings.Join(requests, "\n") != strings.Join(wantRequests, "\n") {
 		t.Fatalf("requests = %#v, want %#v", requests, wantRequests)
@@ -1944,11 +1965,12 @@ func TestDeploymentRunCommandsStreamTaskLogs(t *testing.T) {
 				case http.MethodPost + " " + test.postPath:
 					w.WriteHeader(http.StatusCreated)
 					_ = json.NewEncoder(w).Encode(map[string]interface{}{
-						"id":            601,
-						"number":        1,
-						"status":        "running",
-						"appInstanceId": 202,
-						"taskId":        85,
+						"id":                   601,
+						"number":               1,
+						"status":               "running",
+						"postDeploymentStatus": "pending",
+						"appInstanceId":        202,
+						"taskId":               85,
 					})
 				case http.MethodGet + " /v1/tasks/85":
 					_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1966,10 +1988,39 @@ func TestDeploymentRunCommandsStreamTaskLogs(t *testing.T) {
 							},
 						},
 					})
+				case http.MethodGet + " /v1/app-deployments/601":
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"id":                   601,
+						"status":               "completed",
+						"postDeploymentStatus": "in_progress",
+						"postDeploymentTaskId": 86,
+					})
+				case http.MethodGet + " /v1/tasks/86":
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"id":     86,
+						"title":  "Run post-deployment scripts",
+						"status": "completed",
+						"jobs": []map[string]interface{}{
+							{
+								"id":     "job-post-deploy",
+								"title":  "Post-deployment",
+								"status": "completed",
+								"steps": []map[string]interface{}{
+									{"id": "step-post-deploy", "name": "Run scripts", "status": "completed"},
+								},
+							},
+						},
+					})
 				case http.MethodGet + " /v1/task-steps/step-deploy/logs":
 					_ = json.NewEncoder(w).Encode(map[string]interface{}{
 						"lines": []map[string]interface{}{
 							{"level": "info", "message": "services deployed"},
+						},
+					})
+				case http.MethodGet + " /v1/task-steps/step-post-deploy/logs":
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"lines": []map[string]interface{}{
+							{"level": "info", "message": "post-deployment scripts completed"},
 						},
 					})
 				default:
@@ -1992,6 +2043,9 @@ func TestDeploymentRunCommandsStreamTaskLogs(t *testing.T) {
 				"== Deploy services (completed) ==",
 				"[info] services deployed",
 				"Task completed.",
+				"Post-deployment scripts started. Streaming task logs for deployment 601 (task 86).",
+				"== Run scripts (completed) ==",
+				"[info] post-deployment scripts completed",
 			} {
 				if !strings.Contains(output, expected) {
 					t.Fatalf("output should include %q: %s", expected, output)
@@ -2004,9 +2058,133 @@ func TestDeploymentRunCommandsStreamTaskLogs(t *testing.T) {
 				"POST " + test.postPath,
 				"GET /v1/tasks/85",
 				"GET /v1/task-steps/step-deploy/logs",
+				"GET /v1/app-deployments/601",
+				"GET /v1/tasks/86",
+				"GET /v1/task-steps/step-post-deploy/logs",
 			}
 			if strings.Join(requests, "\n") != strings.Join(wantRequests, "\n") {
 				t.Fatalf("requests = %#v, want %#v", requests, wantRequests)
+			}
+		})
+	}
+}
+
+func TestDeploymentRunCommandReturnsPostDeploymentFailure(t *testing.T) {
+	var out bytes.Buffer
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case http.MethodPost + " /v1/app-deployments":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":            601,
+				"status":        "running",
+				"appInstanceId": 202,
+				"taskId":        85,
+			})
+		case http.MethodGet + " /v1/tasks/85":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     85,
+				"status": "completed",
+				"jobs":   []map[string]interface{}{},
+			})
+		case http.MethodGet + " /v1/app-deployments/601":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":                   601,
+				"status":               "completed",
+				"postDeploymentStatus": "failed",
+				"postDeploymentTaskId": 86,
+			})
+		case http.MethodGet + " /v1/tasks/86":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     86,
+				"status": "failed",
+				"jobs":   []map[string]interface{}{},
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newDeploymentCommand()
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"create", "--data", `{"services":[{"appServiceId":22}]}`})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected post-deployment failure")
+	}
+	if !strings.Contains(err.Error(), "deployment completed, but post-deployment scripts failed") {
+		t.Fatalf("error should distinguish post-deployment failure: %v", err)
+	}
+	output := out.String()
+	if !strings.Contains(output, "Post-deployment scripts started.") {
+		t.Fatalf("output should identify the post-deployment task: %s", output)
+	}
+}
+
+func TestWaitForDeploymentIncludesPostDeploymentOutcome(t *testing.T) {
+	tests := []struct {
+		name                    string
+		postDeploymentStatus    string
+		hasPostDeploymentStatus bool
+		wantError               string
+	}{
+		{
+			name: "older API without separate status",
+		},
+		{
+			name:                    "post-deployment completed",
+			postDeploymentStatus:    "completed",
+			hasPostDeploymentStatus: true,
+		},
+		{
+			name:                    "post-deployment failed",
+			postDeploymentStatus:    "failed",
+			hasPostDeploymentStatus: true,
+			wantError:               `deployment completed, but post-deployment scripts finished with status "failed"`,
+		},
+		{
+			name:                    "post-deployment still pending",
+			postDeploymentStatus:    "pending",
+			hasPostDeploymentStatus: true,
+			wantError:               "timed out waiting for deployment",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/v1/app-deployments/601" {
+					t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				response := map[string]interface{}{
+					"id":     601,
+					"status": "completed",
+				}
+				if test.hasPostDeploymentStatus {
+					response["postDeploymentStatus"] = test.postDeploymentStatus
+				}
+				_ = json.NewEncoder(w).Encode(response)
+			}))
+			defer server.Close()
+			configureTestAPI(t, server.URL+"/v1")
+
+			client, err := newRESTClient()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = waitForDeployment(context.Background(), client, "601", 20*time.Millisecond)
+			if test.wantError == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("error = %v, want %q", err, test.wantError)
 			}
 		})
 	}
@@ -5722,13 +5900,13 @@ func TestLongRunningResourceColumnsIncludeTask(t *testing.T) {
 	}
 
 	deploymentColumnList := strings.Join(deploymentColumns, ",")
-	for _, expected := range []string{"services", "images", "rollbackStatus", "duration"} {
+	for _, expected := range []string{"services", "images", "postDeploymentStatus", "postDeploymentTask", "rollbackStatus", "duration"} {
 		if !strings.Contains(deploymentColumnList, expected) {
 			t.Fatalf("deploymentColumns should include %q: %s", expected, deploymentColumnList)
 		}
 	}
 	deploymentListColumnList := strings.Join(deploymentListColumns, ",")
-	for _, expected := range []string{"services", "builds", "startedAt", "duration", "rollbackStatus"} {
+	for _, expected := range []string{"services", "builds", "startedAt", "duration", "postDeploymentStatus", "rollbackStatus"} {
 		if !strings.Contains(deploymentListColumnList, expected) {
 			t.Fatalf("deploymentListColumns should include %q: %s", expected, deploymentListColumnList)
 		}
@@ -5895,10 +6073,15 @@ func TestDeploymentGetShowsServicesAndImages(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/app-deployments/303":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"id":             303,
-				"number":         7,
-				"status":         "completed",
-				"rollbackStatus": "rolled_back",
+				"id":                   303,
+				"number":               7,
+				"status":               "completed",
+				"postDeploymentStatus": "failed",
+				"rollbackStatus":       "rolled_back",
+				"postDeploymentTask": map[string]interface{}{
+					"id":    404,
+					"title": "Run post-deployment scripts",
+				},
 				"appServiceDeployments": []map[string]interface{}{
 					{
 						"appServiceId":      22,
@@ -5956,7 +6139,7 @@ func TestDeploymentGetShowsServicesAndImages(t *testing.T) {
 		}
 	}
 	output := out.String()
-	for _, expected := range []string{"services:", "PHP, Nginx", "images:", "PHP=registry.example.com/app:php-7", "Nginx=registry.example.com/app:nginx-7", "rollback status:", "rolled back"} {
+	for _, expected := range []string{"services:", "PHP, Nginx", "images:", "PHP=registry.example.com/app:php-7", "Nginx=registry.example.com/app:nginx-7", "post deployment status:", "failed", "post-deployment task:", "Run post-deployment scripts", "rollback status:", "rolled back"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("deployment get output should include %q: %s", expected, output)
 		}
@@ -5979,12 +6162,13 @@ func TestDeploymentListShowsServiceBuildCountsAndDurationWithoutImages(t *testin
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"items": []map[string]interface{}{
 				{
-					"id":             303,
-					"number":         7,
-					"status":         "completed",
-					"rollbackStatus": "not_attempted",
-					"startedAt":      "2026-01-02T03:00:00Z",
-					"endedAt":        "2026-01-02T03:02:00Z",
+					"id":                   303,
+					"number":               7,
+					"status":               "completed",
+					"postDeploymentStatus": "failed",
+					"rollbackStatus":       "not_attempted",
+					"startedAt":            "2026-01-02T03:00:00Z",
+					"endedAt":              "2026-01-02T03:02:00Z",
 					"appServiceDeployments": []map[string]interface{}{
 						{"appServiceId": 22, "appServiceBuildId": 2201},
 						{"appServiceId": 33, "appServiceBuildId": 3301},
@@ -6012,7 +6196,7 @@ func TestDeploymentListShowsServiceBuildCountsAndDurationWithoutImages(t *testin
 	}
 
 	output := out.String()
-	for _, expected := range []string{"services", "2 services", "builds", "1 build", "started at", "duration", "2m", "rollback status", "not attempted"} {
+	for _, expected := range []string{"services", "2 services", "builds", "1 build", "started at", "duration", "2m", "post deployment status", "failed", "rollback status", "not attempted"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("deployment list output should include %q: %s", expected, output)
 		}

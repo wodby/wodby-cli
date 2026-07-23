@@ -44,6 +44,20 @@ var failedStatuses = map[string]bool{
 	"timedout":   true,
 }
 
+var successfulPostDeploymentStatuses = map[string]bool{
+	"":               true, // Older API versions do not expose a separate status.
+	"completed":      true,
+	"not_applicable": true,
+	"not_run":        true,
+	"skipped":        true,
+	"unknown":        true, // Historical deployments migrated without an outcome.
+}
+
+var failedPostDeploymentStatuses = map[string]bool{
+	"canceled": true,
+	"failed":   true,
+}
+
 const defaultTaskLogStreamTimeout = 10 * time.Minute
 
 func waitForTask(ctx context.Context, client *rest.Client, id string, timeout time.Duration) (interface{}, error) {
@@ -51,7 +65,42 @@ func waitForTask(ctx context.Context, client *rest.Client, id string, timeout ti
 }
 
 func waitForDeployment(ctx context.Context, client *rest.Client, id string, timeout time.Duration) (interface{}, error) {
-	return waitForResource(ctx, client, "/app-deployments/"+id, timeout, "deployment")
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		var result interface{}
+		if err := client.Get(ctx, "/app-deployments/"+id, nil, &result); err != nil {
+			return nil, err
+		}
+
+		rows := responseRows(result)
+		if len(rows) == 0 {
+			return result, errors.New("deployment response did not include a status")
+		}
+		status := strings.ToLower(formatValue(rows[0]["status"]))
+		if failedStatuses[status] {
+			return result, errors.Errorf("deployment finished with status %q", status)
+		}
+		if successfulStatuses[status] {
+			postDeploymentStatus := normalizedPostDeploymentStatus(rows[0])
+			if failedPostDeploymentStatuses[postDeploymentStatus] {
+				return result, postDeploymentFailure(postDeploymentStatus)
+			}
+			if successfulPostDeploymentStatuses[postDeploymentStatus] {
+				return result, nil
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return result, errors.New("timed out waiting for deployment")
+		case <-ticker.C:
+		}
+	}
 }
 
 func waitForResource(ctx context.Context, client *rest.Client, path string, timeout time.Duration, resource string) (interface{}, error) {
@@ -384,7 +433,61 @@ func streamDeploymentTask(ctx context.Context, cmd *cobra.Command, client *rest.
 	} else {
 		fmt.Fprintf(cmd.OutOrStdout(), "Deployment started. Streaming task logs for task %s.\n\n", taskID)
 	}
-	return streamTaskLogs(ctx, cmd, client, taskID, defaultTaskLogStreamTimeout)
+	if err := streamTaskLogs(ctx, cmd, client, taskID, defaultTaskLogStreamTimeout); err != nil {
+		return err
+	}
+	if deploymentID == "" {
+		return nil
+	}
+	return streamPostDeploymentTask(ctx, cmd, client, deploymentID)
+}
+
+// streamPostDeploymentTask follows repository-defined post-deployment scripts
+// without conflating their outcome with the successful deployment rollout.
+func streamPostDeploymentTask(ctx context.Context, cmd *cobra.Command, client *rest.Client, deploymentID string) error {
+	var result interface{}
+	if err := client.Get(ctx, "/app-deployments/"+deploymentID, nil, &result); err != nil {
+		return err
+	}
+	rows := responseRows(result)
+	if len(rows) == 0 {
+		return errors.New("deployment response did not include a post-deployment status")
+	}
+
+	deployment := rows[0]
+	postDeploymentStatus := normalizedPostDeploymentStatus(deployment)
+	taskID := firstScalarPath(deployment, "postDeploymentTaskId", "postDeploymentTask.id")
+	if taskID == "" {
+		if failedPostDeploymentStatuses[postDeploymentStatus] {
+			return postDeploymentFailure(postDeploymentStatus)
+		}
+		if !successfulPostDeploymentStatuses[postDeploymentStatus] {
+			return errors.Errorf(
+				"deployment completed, but post-deployment scripts have status %q without a task reference",
+				postDeploymentStatus,
+			)
+		}
+		return nil
+	}
+
+	fmt.Fprintf(
+		cmd.OutOrStdout(),
+		"Post-deployment scripts started. Streaming task logs for deployment %s (task %s).\n\n",
+		deploymentID,
+		taskID,
+	)
+	if err := streamTaskLogs(ctx, cmd, client, taskID, defaultTaskLogStreamTimeout); err != nil {
+		return errors.Wrap(err, "deployment completed, but post-deployment scripts failed")
+	}
+	return nil
+}
+
+func normalizedPostDeploymentStatus(deployment map[string]interface{}) string {
+	return strings.ToLower(formatValue(deployment["postDeploymentStatus"]))
+}
+
+func postDeploymentFailure(status string) error {
+	return errors.Errorf("deployment completed, but post-deployment scripts finished with status %q", status)
 }
 
 func buildOperationRef(value interface{}) (string, string, string) {

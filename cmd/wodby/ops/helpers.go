@@ -180,6 +180,15 @@ var relationColumns = map[string]relationColumn{
 		pathPrefix:    "/tasks/",
 		titlePaths:    []string{"taskTitle", "task.title", "task", "taskName", "task.name"},
 	},
+	"postDeploymentTask": {
+		title:         "post-deployment task",
+		objectKey:     "postDeploymentTask",
+		idTitle:       "post-deployment task id",
+		idPaths:       []string{"postDeploymentTaskId", "postDeploymentTask.id"},
+		idScalarPaths: []string{"postDeploymentTask"},
+		pathPrefix:    "/tasks/",
+		titlePaths:    []string{"postDeploymentTaskTitle", "postDeploymentTask.title", "postDeploymentTask", "postDeploymentTaskName", "postDeploymentTask.name"},
+	},
 	"backup": {
 		title:         "backup",
 		objectKey:     "backup",
@@ -1130,6 +1139,8 @@ func relationColumnFor(column string) (relationColumn, bool) {
 		return relationColumns["cert"], true
 	case "task", "taskId":
 		return relationColumns["task"], true
+	case "postDeploymentTask", "postDeploymentTaskId":
+		return relationColumns["postDeploymentTask"], true
 	case "backup", "backupId":
 		return relationColumns["backup"], true
 	case "author", "authorId", "createdBy", "createdById", "orgMembership", "orgMembershipId", "membership", "membershipId":

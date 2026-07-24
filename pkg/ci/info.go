@@ -162,30 +162,31 @@ func collectGitHubActionsBuildInfo() (types.NewBuildFromCIInput, error) {
 func collectBuildInfoFromGit() (types.NewBuildFromCIInput, error) {
 	buildInput := types.NewBuildFromCIInput{Provider: ProviderUnknown}
 
-	out, err := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput()
+	out, err := exec.Command("git", "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		return types.NewBuildFromCIInput{}, errors.Wrap(err, "Failed to acquire commit info")
+	}
+	buildInput.GitCommitSHA = strings.TrimSpace(string(out))
+
+	out, err = exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput()
 	if err != nil {
 		return types.NewBuildFromCIInput{}, errors.Wrap(err, "Failed to acquire branch info")
 	}
 
-	branch := strings.TrimSuffix(string(out), "\n")
+	branch := strings.TrimSpace(string(out))
 	if branch == "HEAD" {
-		out, err = exec.Command("git", "describe", "--tags").CombinedOutput()
-		if err != nil {
-			return types.NewBuildFromCIInput{}, errors.Wrap(err, "Failed to acquire tag info")
+		out, err = exec.Command("git", "describe", "--tags", "--exact-match", "HEAD").CombinedOutput()
+		if err == nil {
+			buildInput.GitRef = strings.TrimSpace(string(out))
+			buildInput.GitRefType = string(types.GitRefTypeTag)
+		} else {
+			buildInput.GitRef = buildInput.GitCommitSHA
+			buildInput.GitRefType = string(types.GitRefTypeCommit)
 		}
-		buildInput.GitRef = strings.TrimSuffix(string(out), "\n")
-		buildInput.GitRefType = string(types.GitRefTypeTag)
 	} else {
 		buildInput.GitRef = branch
 		buildInput.GitRefType = string(types.GitRefTypeBranch)
 	}
-
-	out, err = exec.Command("git", "rev-parse", "HEAD").CombinedOutput()
-	if err != nil {
-		return types.NewBuildFromCIInput{}, errors.Wrap(err, "Failed to acquire commit info")
-	}
-
-	buildInput.GitCommitSHA = strings.TrimSuffix(string(out), "\n")
 
 	return buildInput, nil
 }

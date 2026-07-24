@@ -140,6 +140,121 @@ func runGit(t *testing.T, args ...string) {
 	}
 }
 
+func runGitOutput(t *testing.T, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func initDetachedCheckoutTestRepo(t *testing.T) string {
+	t.Helper()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current directory: %v", err)
+	}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Fatalf("failed to restore directory: %v", err)
+		}
+	})
+
+	runGit(t, "init")
+	runGit(t, "checkout", "-b", "main")
+	runGit(t, "config", "user.name", "Jane Doe")
+	runGit(t, "config", "user.email", "jane@example.com")
+	if err := os.WriteFile("README.md", []byte("first\n"), 0o644); err != nil {
+		t.Fatalf("failed to write README.md: %v", err)
+	}
+	runGit(t, "add", "README.md")
+	runGit(t, "commit", "-m", "first commit")
+	return runGitOutput(t, "rev-parse", "HEAD")
+}
+
+func TestCollectBuildInfoFromDetachedGitCheckout(t *testing.T) {
+	tests := []struct {
+		name     string
+		prepare  func(*testing.T, string) string
+		wantType types.GitRefType
+		wantRef  func(string) string
+	}{
+		{
+			name: "untagged commit uses commit ref",
+			prepare: func(t *testing.T, sha string) string {
+				runGit(t, "checkout", "--detach", sha)
+				return sha
+			},
+			wantType: types.GitRefTypeCommit,
+			wantRef:  func(sha string) string { return sha },
+		},
+		{
+			name: "lightweight exact tag uses tag ref",
+			prepare: func(t *testing.T, sha string) string {
+				runGit(t, "tag", "v1.2.3")
+				runGit(t, "checkout", "--detach", sha)
+				return sha
+			},
+			wantType: types.GitRefTypeTag,
+			wantRef:  func(string) string { return "v1.2.3" },
+		},
+		{
+			name: "annotated exact tag uses tag ref",
+			prepare: func(t *testing.T, sha string) string {
+				runGit(t, "tag", "-a", "v2.0.0", "-m", "release")
+				runGit(t, "checkout", "--detach", sha)
+				return sha
+			},
+			wantType: types.GitRefTypeTag,
+			wantRef:  func(string) string { return "v2.0.0" },
+		},
+		{
+			name: "commit after reachable tag stays a commit ref",
+			prepare: func(t *testing.T, _ string) string {
+				runGit(t, "tag", "v1.0.0")
+				if err := os.WriteFile("README.md", []byte("second\n"), 0o644); err != nil {
+					t.Fatalf("failed to update README.md: %v", err)
+				}
+				runGit(t, "add", "README.md")
+				runGit(t, "commit", "-m", "second commit")
+				sha := runGitOutput(t, "rev-parse", "HEAD")
+				runGit(t, "checkout", "--detach", sha)
+				return sha
+			},
+			wantType: types.GitRefTypeCommit,
+			wantRef:  func(sha string) string { return sha },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sha := initDetachedCheckoutTestRepo(t)
+			sha = tt.prepare(t, sha)
+
+			buildInput, err := collectBuildInfoFromGit()
+			if err != nil {
+				t.Fatalf("collectBuildInfoFromGit() error = %v", err)
+			}
+			if buildInput.GitCommitSHA != sha {
+				t.Fatalf("GitCommitSHA = %q, want %q", buildInput.GitCommitSHA, sha)
+			}
+			if buildInput.GitRefType != string(tt.wantType) {
+				t.Fatalf("GitRefType = %q, want %q", buildInput.GitRefType, tt.wantType)
+			}
+			if want := tt.wantRef(sha); buildInput.GitRef != want {
+				t.Fatalf("GitRef = %q, want %q", buildInput.GitRef, want)
+			}
+		})
+	}
+}
+
 func TestCollectGitHubActionsBuildInfoUsesHeadRefForPullRequests(t *testing.T) {
 	t.Setenv("GITHUB_RUN_ID", "1001")
 	t.Setenv("GITHUB_RUN_NUMBER", "17")

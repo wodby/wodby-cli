@@ -28,20 +28,18 @@ var successfulStatuses = map[string]bool{
 	"ok":                 true,
 }
 
+// Retryable and unknown statuses remain active until the API reports a terminal state.
 var failedStatuses = map[string]bool{
-	"backed off": true,
-	"backed-off": true,
-	"backed_off": true,
-	"canceled":   true,
-	"cancelled":  true,
-	"errored":    true,
-	"error":      true,
-	"failed":     true,
-	"timed out":  true,
-	"timed-out":  true,
-	"timed_out":  true,
-	"timeout":    true,
-	"timedout":   true,
+	"canceled":  true,
+	"cancelled": true,
+	"errored":   true,
+	"error":     true,
+	"failed":    true,
+	"timed out": true,
+	"timed-out": true,
+	"timed_out": true,
+	"timeout":   true,
+	"timedout":  true,
 }
 
 var successfulPostDeploymentStatuses = map[string]bool{

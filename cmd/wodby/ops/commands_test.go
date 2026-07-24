@@ -1209,6 +1209,68 @@ func TestStreamTaskLogsStopsOnBackendDoneStatus(t *testing.T) {
 	}
 }
 
+func TestStreamTaskLogsKeepsBackedOffTaskActive(t *testing.T) {
+	var out bytes.Buffer
+	var requests int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/tasks/42" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":     42,
+			"status": "backed_off",
+			"jobs":   []map[string]interface{}{},
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	client, err := newRESTClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	err = streamTaskLogs(context.Background(), cmd, client, "42", 50*time.Millisecond)
+	if err == nil || err.Error() != "timed out streaming task logs" {
+		t.Fatalf("streamTaskLogs() error = %v, want timeout while task remains active", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+}
+
+func TestFetchReferencedTaskIDPrefersBackedOffTask(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/tasks" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("appId"); got != "17" {
+			t.Fatalf("appId = %q, want 17", got)
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+			{"id": 41, "status": "failed"},
+			{"id": 42, "status": "backed_off"},
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	client, err := newRESTClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID, err := fetchReferencedTaskID(context.Background(), client, "appId", "17")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if taskID != "42" {
+		t.Fatalf("fetchReferencedTaskID() = %q, want active task 42", taskID)
+	}
+}
+
 func TestCreateCommandsStreamReferencedTaskLogs(t *testing.T) {
 	tests := []struct {
 		name      string

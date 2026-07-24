@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/pkg/errors"
 	"github.com/wodby/wodby-cli/pkg/exec"
@@ -213,52 +215,185 @@ func cmdStartVerbose(cmd *exec.Cmd) error {
 }
 
 func cmdStartVerboseRedacted(cmd *exec.Cmd, redactions []string) error {
-	var stdoutBuf, stderrBuf bytes.Buffer
-	stdoutIn, _ := cmd.StdoutPipe()
-	stderrIn, _ := cmd.StderrPipe()
+	return cmdStartVerboseRedactedTo(cmd, redactions, os.Stdout, os.Stderr)
+}
 
-	var errStdout, errStderr error
-	stdout := io.MultiWriter(redactWriter{w: os.Stdout, redactions: redactions}, &stdoutBuf)
-	stderr := io.MultiWriter(redactWriter{w: os.Stderr, redactions: redactions}, &stderrBuf)
-
-	err := cmd.Start()
+func cmdStartVerboseRedactedTo(cmd *exec.Cmd, redactions []string, stdoutOutput io.Writer, stderrOutput io.Writer) error {
+	stdoutIn, err := cmd.StdoutPipe()
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	stderrIn, err := cmd.StderrPipe()
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
+	var errStdout, errStderr error
+	stdout := newRedactWriter(stdoutOutput, redactions)
+	stderr := newRedactWriter(stderrOutput, redactions)
+
+	if err := cmd.Start(); err != nil {
+		return errors.WithStack(err)
+	}
+
+	var copies sync.WaitGroup
+	copies.Add(2)
 	go func() {
+		defer copies.Done()
 		_, errStdout = io.Copy(stdout, stdoutIn)
 	}()
 	go func() {
+		defer copies.Done()
 		_, errStderr = io.Copy(stderr, stderrIn)
 	}()
+	copies.Wait()
 
-	err = cmd.Wait()
-	if err != nil {
+	errFlushStdout := stdout.Flush()
+	errFlushStderr := stderr.Flush()
+
+	if err := cmd.Wait(); err != nil {
 		return errors.WithStack(err)
 	}
-	if errStdout != nil || errStderr != nil {
-		//return errors.New("failed to capture stdout or stderr\n")
+	if errStdout != nil {
+		return errors.Wrap(errStdout, "failed to copy command stdout")
+	}
+	if errStderr != nil {
+		return errors.Wrap(errStderr, "failed to copy command stderr")
+	}
+	if errFlushStdout != nil {
+		return errors.Wrap(errFlushStdout, "failed to flush command stdout")
+	}
+	if errFlushStderr != nil {
+		return errors.Wrap(errFlushStderr, "failed to flush command stderr")
 	}
 
 	return nil
 }
 
 type redactWriter struct {
-	w          io.Writer
-	redactions []string
+	w                  io.Writer
+	redactions         [][]byte
+	maxRedactionLength int
+	pending            []byte
 }
 
-func (w redactWriter) Write(p []byte) (int, error) {
-	output := string(p)
-	for _, value := range w.redactions {
-		if len(value) > 4 {
-			output = strings.ReplaceAll(output, value, "*****")
+func newRedactWriter(w io.Writer, redactions []string) *redactWriter {
+	unique := make(map[string]struct{}, len(redactions))
+	values := make([][]byte, 0, len(redactions))
+	for _, value := range redactions {
+		if value == "" {
+			continue
 		}
+		if _, ok := unique[value]; ok {
+			continue
+		}
+		unique[value] = struct{}{}
+		values = append(values, []byte(value))
 	}
-	_, err := w.w.Write([]byte(output))
-	if err != nil {
+	sort.Slice(values, func(i, j int) bool {
+		return len(values[i]) > len(values[j])
+	})
+
+	maxLength := 0
+	if len(values) > 0 {
+		maxLength = len(values[0])
+	}
+
+	return &redactWriter{
+		w:                  w,
+		redactions:         values,
+		maxRedactionLength: maxLength,
+	}
+}
+
+func (w *redactWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+
+	w.pending = append(w.pending, p...)
+	if err := w.drain(false); err != nil {
 		return 0, err
 	}
 	return len(p), nil
+}
+
+func (w *redactWriter) Flush() error {
+	return w.drain(true)
+}
+
+func (w *redactWriter) drain(final bool) error {
+	if len(w.pending) == 0 {
+		return nil
+	}
+	if len(w.redactions) == 0 {
+		if err := writeAll(w.w, w.pending); err != nil {
+			return err
+		}
+		w.clearPending(len(w.pending))
+		return nil
+	}
+
+	limit := len(w.pending)
+	if !final {
+		limit -= w.maxRedactionLength - 1
+		if limit <= 0 {
+			return nil
+		}
+	}
+
+	var output bytes.Buffer
+	consumed := 0
+	for consumed < limit {
+		matchLength := w.matchLength(w.pending[consumed:])
+		if matchLength > 0 {
+			output.WriteString("*****")
+			consumed += matchLength
+			continue
+		}
+		output.WriteByte(w.pending[consumed])
+		consumed++
+	}
+
+	if err := writeAll(w.w, output.Bytes()); err != nil {
+		return err
+	}
+	w.clearPending(consumed)
+	return nil
+}
+
+func (w *redactWriter) matchLength(p []byte) int {
+	for _, value := range w.redactions {
+		if bytes.HasPrefix(p, value) {
+			return len(value)
+		}
+	}
+	return 0
+}
+
+func (w *redactWriter) clearPending(consumed int) {
+	for i := 0; i < consumed; i++ {
+		w.pending[i] = 0
+	}
+	if consumed == len(w.pending) {
+		w.pending = nil
+		return
+	}
+	w.pending = w.pending[consumed:]
+}
+
+func writeAll(w io.Writer, p []byte) error {
+	for len(p) > 0 {
+		n, err := w.Write(p)
+		if n > 0 {
+			p = p[n:]
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
 }

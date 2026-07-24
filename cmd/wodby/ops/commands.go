@@ -33,7 +33,7 @@ var (
 	stackColumns                    = []string{"id", "name", "title", "status", "revision", "currentVersion", "outdated", "autoUpdates", "createdAt", "updatedAt"}
 	stackGetColumns                 = []string{"id", "name", "title", "status", "public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "outdated", "autoUpdates", "createdAt", "updatedAt", "services"}
 	stackRevisionColumns            = []string{"id", "name", "title", "number", "draft", "version", "stack", "createdAt"}
-	stackServiceColumns             = []string{"id", "name", "title", "type", "serviceRev", "replicas", "required", "disabled", "main", "updatedAt"}
+	stackServiceColumns             = []string{"id", "name", "title", "type", "serviceRev", "serviceRevPinned", "replicas", "required", "disabled", "main", "updatedAt"}
 	stackServiceEnvColumns          = []string{"id", "name", "value", "secret", "envType", "workload", "container", "createdAt"}
 	stackServiceValueColumns        = []string{"id", "name", "value", "secret", "envType", "createdAt"}
 	stackServiceTokenColumns        = []string{"id", "name", "value", "regex", "secret", "envType", "createdAt"}
@@ -3237,6 +3237,9 @@ func newStackServiceCreateCommand(out outputOptions) *cobra.Command {
 					"required": required,
 					"replicas": replicas,
 				}
+				if value, ok := changedBool(cmd, "service-rev-pinned"); ok {
+					values["serviceRevPinned"] = value
+				}
 				if err := addOptionalInt(values, "stackId", stackID, "--stack"); err != nil {
 					return err
 				}
@@ -3263,6 +3266,7 @@ func newStackServiceCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&title, "title", "", "Stack service title")
 	cmd.Flags().BoolVar(&required, "required", false, "Make stack service required")
 	cmd.Flags().IntVar(&replicas, "replicas", 1, "Replica count")
+	cmd.Flags().Bool("service-rev-pinned", false, "Pin the current service revision")
 	return cmd
 }
 
@@ -3278,7 +3282,7 @@ func newStackServiceUpdateCommand(out outputOptions) *cobra.Command {
 				return err
 			}
 			if !hasBody {
-				if !hasChangedFlags(cmd.Flags(), "title", "replicas", "required", "disabled", "main") {
+				if !hasChangedFlags(cmd.Flags(), "title", "replicas", "required", "disabled", "main", "service-rev-pinned") {
 					return errors.New("pass at least one update flag or provide --data/--file")
 				}
 				values := map[string]interface{}{}
@@ -3296,6 +3300,9 @@ func newStackServiceUpdateCommand(out outputOptions) *cobra.Command {
 				}
 				if value, ok := changedBool(cmd, "main"); ok {
 					values["main"] = value
+				}
+				if value, ok := changedBool(cmd, "service-rev-pinned"); ok {
+					values["serviceRevPinned"] = value
 				}
 				requestBody = bodyFromMap(values)
 			}
@@ -3316,6 +3323,7 @@ func newStackServiceUpdateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().Bool("required", false, "Set required state")
 	cmd.Flags().Bool("disabled", false, "Set disabled state")
 	cmd.Flags().Bool("main", false, "Set main service state")
+	cmd.Flags().Bool("service-rev-pinned", false, "Set current service revision pin state")
 	return cmd
 }
 

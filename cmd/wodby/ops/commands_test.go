@@ -5265,6 +5265,9 @@ func TestStackServiceOperationsUseRESTEndpoints(t *testing.T) {
 						t.Fatalf("%s = %#v, want %#v; body=%#v", key, body[key], want, body)
 					}
 				}
+				if _, ok := body["serviceRevPinned"]; ok {
+					t.Fatalf("serviceRevPinned should not be sent unless changed: %#v", body)
+				}
 			},
 			response: map[string]interface{}{
 				"id":                11,
@@ -5275,6 +5278,27 @@ func TestStackServiceOperationsUseRESTEndpoints(t *testing.T) {
 				"serviceRevVersion": "8.3",
 			},
 			wantOutput: []string{"PHP 8.3"},
+		},
+		{
+			name:       "create with pinned service revision",
+			args:       []string{"service", "create", "--stack", "21", "--service", "22", "--name", "php", "--title", "PHP", "--service-rev-pinned"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/stack-services",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if got := body["serviceRevPinned"]; got != true {
+					t.Fatalf("serviceRevPinned = %#v, want true; body=%#v", got, body)
+				}
+			},
+			response: map[string]interface{}{
+				"id":                11,
+				"name":              "php",
+				"title":             "PHP",
+				"type":              "SERVICE",
+				"serviceRevTitle":   "PHP",
+				"serviceRevVersion": "8.3",
+				"serviceRevPinned":  true,
+			},
+			wantOutput: []string{"PHP 8.3", "true"},
 		},
 		{
 			name:       "update",
@@ -5302,6 +5326,27 @@ func TestStackServiceOperationsUseRESTEndpoints(t *testing.T) {
 				"disabled":          true,
 			},
 			wantOutput: []string{"PHP 8.3", "true"},
+		},
+		{
+			name:       "update can explicitly unpin service revision",
+			args:       []string{"services", "update", "11", "--service-rev-pinned=false"},
+			wantMethod: http.MethodPut,
+			wantPath:   "/v1/stack-services/11",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if len(body) != 1 || body["serviceRevPinned"] != false {
+					t.Fatalf("body = %#v, want only serviceRevPinned=false", body)
+				}
+			},
+			response: map[string]interface{}{
+				"id":                11,
+				"name":              "php",
+				"title":             "PHP",
+				"type":              "SERVICE",
+				"serviceRevTitle":   "PHP",
+				"serviceRevVersion": "8.3",
+				"serviceRevPinned":  false,
+			},
+			wantOutput: []string{"PHP 8.3", "false"},
 		},
 		{
 			name:       "delete",

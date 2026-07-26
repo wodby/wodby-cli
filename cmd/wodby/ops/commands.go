@@ -25,7 +25,7 @@ var (
 	databaseCharsetColumns          = []string{"name", "title", "default", "defaultCollation"}
 	databaseUserColumns             = []string{"id", "username", "hostname", "status", "database", "dbs", "createdAt"}
 	clusterColumns                  = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "version", "nodes", "singleNode"}
-	clusterGetColumns               = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode"}
+	clusterGetColumns               = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "storageClasses", "storageClassesObservedAt"}
 	infraAppColumns                 = []string{"id", "name", "title", "status", "stack"}
 	integrationColumns              = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
 	providerColumns                 = []string{"id", "name", "title", "status", "providerVersion"}
@@ -64,7 +64,8 @@ var (
 	appServiceConfigColumns         = []string{"id", "name", "title", "disabled", "config"}
 	appServiceLinkColumns           = []string{"id", "name", "linkedService"}
 	appServiceContainerColumns      = []string{"id", "workload", "name", "requestCPU", "requestMem", "limitCPU", "limitMem"}
-	appServiceCronScheduleColumns   = []string{"id", "title", "crontab", "command", "workload", "envType", "disabled", "updatedAt"}
+	appServiceVolumeColumns         = []string{"id", "name", "path", "size", "shared", "readOnly", "configuredStorageClassName", "effectiveStorageClassNames", "storageClassStatus", "storageClassSelectable", "fromVolumeId", "storageAppServiceId"}
+	appServiceCronScheduleColumns   = []string{"id", "name", "title", "crontab", "command", "workload", "envType", "disabled", "updatedAt"}
 	appServiceCronJobColumns        = []string{"id", "title", "status", "service", "scheduleId", "task", "createdAt"}
 	logStreamColumns                = []string{"id"}
 	routeListColumns                = []string{"id", "service", "route", "action", "cert", "primary", "private", "status", "updatedAt"}
@@ -79,8 +80,8 @@ var (
 	backupColumns                   = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "task", "createdAt"}
 	importListColumns               = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "startedAt", "duration"}
 	importColumns                   = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "backup", "createdAt", "updatedAt", "startedAt", "endedAt", "duration"}
-	taskColumns                     = []string{"id", "title", "status", "progress", "projects", "author", "startedAt", "duration"}
-	taskGetColumns                  = []string{"id", "title", "status", "progress", "projects", "author", "app", "instance", "service", "database", "databaseDb", "originTask", "repeatedTask", "spawnedTasks", "createdAt", "startedAt", "endedAt", "duration"}
+	taskColumns                     = []string{"id", "name", "title", "status", "progress", "projects", "author", "startedAt", "duration"}
+	taskGetColumns                  = []string{"id", "name", "title", "status", "progress", "projects", "author", "app", "instance", "service", "database", "databaseDb", "originTask", "repeatedTask", "spawnedTasks", "createdAt", "startedAt", "endedAt", "duration"}
 	taskJobColumns                  = []string{"id", "name", "status", "logStatus", "system", "startedAt", "duration", "steps"}
 	taskStepColumns                 = []string{"id", "name", "status", "logStatus", "system", "startedAt", "duration", "job"}
 	operationColumns                = []string{"success", "task"}
@@ -4795,6 +4796,7 @@ func newAppServiceCommand(use string, aliases []string, short string, mode insta
 		newAppServiceConfigCommand(out),
 		newAppServiceLinkCommand(out),
 		newAppServiceContainerCommand(out),
+		newAppServiceVolumeCommand(out),
 		newAppServiceResourcesCommand(out),
 		newAppServiceDatabaseCommand(out),
 		newAppServiceCronScheduleCommand(out),
@@ -5046,6 +5048,16 @@ func newAppServiceContainerCommand(out outputOptions) *cobra.Command {
 	return cmd
 }
 
+func newAppServiceVolumeCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "volume",
+		Aliases: []string{"volumes"},
+		Short:   "List app service volumes",
+	}
+	cmd.AddCommand(newServiceChildListCommand("list SERVICE_ID", "List app service volumes", "/app-services/%s/volumes", appServiceVolumeColumns, out))
+	return cmd
+}
+
 func newAppServiceResourcesCommand(out outputOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "resources",
@@ -5076,6 +5088,7 @@ func newAppServiceCronScheduleCommand(out outputOptions) *cobra.Command {
 	cmd.AddCommand(
 		newServiceChildListCommand("list SERVICE_ID", "List app service cron schedules", "/app-services/%s/cron-schedules", appServiceCronScheduleColumns, out),
 		newServiceChildCreateCommand("create SERVICE_ID", "Create app service cron schedule", "/app-services/%s/cron-schedules", appServiceCronScheduleColumns, out, []jsonFlagSpec{
+			stringJSONFlag("name", "name", "Stable cron schedule name", false),
 			stringJSONFlag("title", "title", "Cron schedule title", true),
 			stringJSONFlag("crontab", "crontab", "Crontab expression", true),
 			stringJSONFlag("command", "command", "Command to run", true),
@@ -6010,7 +6023,7 @@ func newTaskCommand() *cobra.Command {
 	}
 	addOutputFlag(cmd, &out)
 
-	var scope, orgID, projectIDs, statuses, search, appID, instanceID, stackID, databaseID, clusterID, serviceID, integrationID, providerID string
+	var scope, view, orgID, projectIDs, statuses, names, search, appID, instanceID, stackID, databaseID, clusterID, serviceID, integrationID, providerID string
 	var withoutOrigin bool
 	var page, pageSize int
 	listCmd := &cobra.Command{
@@ -6019,9 +6032,11 @@ func newTaskCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query := url.Values{}
 			addQuery(query, "scope", scope)
+			addQuery(query, "view", view)
 			addQuery(query, "orgId", orgID)
 			addQuery(query, "projectIds", projectIDs)
 			addQuery(query, "statuses", statuses)
+			addQuery(query, "names", names)
 			addQuery(query, "search", search)
 			addQuery(query, "appId", appID)
 			addQuery(query, "appInstanceId", instanceID)
@@ -6052,9 +6067,11 @@ func newTaskCommand() *cobra.Command {
 		},
 	}
 	listCmd.Flags().StringVar(&scope, "scope", "", "Task scope: project_and_org, org_only, or user_only")
+	listCmd.Flags().StringVar(&view, "view", "", "Task view: flat or tree")
 	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID")
 	listCmd.Flags().StringVar(&projectIDs, "project", "", "Project ID or comma-separated project IDs")
 	listCmd.Flags().StringVar(&statuses, "statuses", "", "Comma-separated statuses")
+	listCmd.Flags().StringVar(&names, "names", "", "Comma-separated exact task names")
 	listCmd.Flags().StringVar(&search, "search", "", "Search query")
 	listCmd.Flags().StringVar(&appID, "app", "", "App ID")
 	listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
@@ -6065,6 +6082,7 @@ func newTaskCommand() *cobra.Command {
 	listCmd.Flags().StringVar(&integrationID, "integration", "", "Integration ID")
 	listCmd.Flags().StringVar(&providerID, "provider", "", "Provider ID")
 	listCmd.Flags().BoolVar(&withoutOrigin, "without-origin", false, "Only tasks without origin")
+	_ = listCmd.Flags().MarkDeprecated("without-origin", "use --view tree")
 	listCmd.Flags().IntVar(&page, "page", 0, "Page number")
 	listCmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
 	defaultToList(cmd, listCmd)

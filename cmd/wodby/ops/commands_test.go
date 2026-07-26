@@ -135,19 +135,50 @@ func TestDefaultTableColumnsUseReadableRelations(t *testing.T) {
 
 func TestDefaultTaskColumnsUseCompactListShape(t *testing.T) {
 	got := strings.Join(taskColumns, ",")
-	want := "id,title,status,progress,projects,author,startedAt,duration"
+	want := "id,name,title,status,progress,projects,author,startedAt,duration"
 	if got != want {
 		t.Fatalf("taskColumns = %q, want %q", got, want)
 	}
 
 	getColumns := strings.Join(taskGetColumns, ",")
-	for _, expected := range []string{"progress", "projects", "author", "app", "instance", "service", "database", "databaseDb", "originTask", "repeatedTask", "spawnedTasks", "startedAt", "endedAt"} {
+	for _, expected := range []string{"name", "progress", "projects", "author", "app", "instance", "service", "database", "databaseDb", "originTask", "repeatedTask", "spawnedTasks", "startedAt", "endedAt"} {
 		if !strings.Contains(getColumns, expected) {
 			t.Fatalf("taskGetColumns should include %q: %s", expected, getColumns)
 		}
 	}
 	if strings.Contains(getColumns, "jobs") {
 		t.Fatalf("taskGetColumns should not include jobs: %s", getColumns)
+	}
+}
+
+func TestTaskListSupportsViewAndNameFilters(t *testing.T) {
+	var requestedQuery url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedQuery = r.URL.Query()
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"items":      []map[string]interface{}{},
+			"totalCount": 0,
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newTaskCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"list", "--view", "tree", "--names", "delete-app,delete-cluster"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if requestedQuery.Get("view") != "tree" || requestedQuery.Get("names") != "delete-app,delete-cluster" {
+		t.Fatalf("unexpected query: %s", requestedQuery.Encode())
+	}
+	listCmd, _, err := cmd.Find([]string{"list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deprecated := listCmd.Flag("without-origin").Deprecated; deprecated == "" {
+		t.Fatal("--without-origin should be deprecated")
 	}
 }
 
@@ -186,7 +217,7 @@ func TestClusterGetColumnsShowAdditionalDetails(t *testing.T) {
 	}
 
 	getColumns := strings.Join(clusterGetColumns, ",")
-	for _, expected := range []string{"autoUpdates", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode"} {
+	for _, expected := range []string{"autoUpdates", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "storageClasses", "storageClassesObservedAt"} {
 		if !strings.Contains(getColumns, expected) {
 			t.Fatalf("clusterGetColumns should include %q: %s", expected, getColumns)
 		}
@@ -677,12 +708,12 @@ func TestTaskColumnsShowProgressProjectsStartedAndDuration(t *testing.T) {
 	}, taskColumns)
 
 	output := out.String()
-	for _, expected := range []string{"id", "title", "status", "progress", "projects", "author", "started at", "duration", "87%", "12, 14", "2h ago", "1h 2m"} {
+	for _, expected := range []string{"id", "name", "worker-task", "title", "status", "progress", "projects", "author", "started at", "duration", "87%", "12, 14", "2h ago", "1h 2m"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("output should include %q: %s", expected, output)
 		}
 	}
-	for _, unwanted := range []string{"name", "worker-task", "created at", "app", "Drupal", "instance", "Prod", "ended at", startedAt, "2026-01-02T03:00:00Z"} {
+	for _, unwanted := range []string{"created at", "app", "Drupal", "instance", "Prod", "ended at", startedAt, "2026-01-02T03:00:00Z"} {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("output should not include %q: %s", unwanted, output)
 		}
@@ -4588,6 +4619,7 @@ func TestAppServiceCommandExposesChildOperations(t *testing.T) {
 		"config",
 		"link",
 		"container",
+		"volume",
 		"resources",
 		"database",
 		"cron-schedule",
@@ -4668,6 +4700,36 @@ func TestAppServiceChildOperationsUseRESTEndpoints(t *testing.T) {
 			},
 			response:   map[string]interface{}{"id": 21, "title": "PHP", "status": "running", "version": "8.3"},
 			wantOutput: []string{"PHP", "running", "8.3"},
+		},
+		{
+			name:       "volume list",
+			args:       []string{"volume", "list", "21"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/v1/app-services/21/volumes",
+			response: []map[string]interface{}{{
+				"id":                         71,
+				"name":                       "data",
+				"path":                       "/var/lib/data",
+				"size":                       20,
+				"configuredStorageClassName": "rook-ceph",
+				"effectiveStorageClassNames": []string{"rook-ceph"},
+				"storageClassStatus":         "current",
+				"storageClassSelectable":     true,
+			}},
+			wantOutput: []string{"data", "rook-ceph", "current"},
+		},
+		{
+			name:       "cron create",
+			args:       []string{"cron-schedule", "create", "21", "--name", "hourly", "--title", "Hourly", "--crontab", "0 * * * *", "--command", "bin/cron"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/app-services/21/cron-schedules",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["name"] != "hourly" {
+					t.Fatalf("name = %#v, want hourly; body=%#v", body["name"], body)
+				}
+			},
+			response:   map[string]interface{}{"id": 80, "name": "hourly", "title": "Hourly", "crontab": "0 * * * *", "command": "bin/cron"},
+			wantOutput: []string{"hourly", "Hourly"},
 		},
 		{
 			name:       "cron run",

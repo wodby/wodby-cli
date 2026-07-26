@@ -7,11 +7,39 @@ import (
 )
 
 func PrintReview(w io.Writer, plan Plan) {
-	fmt.Fprintf(w, "Wodby 1 migration review\n")
+	fmt.Fprintf(w, "Wodby 1 migration inventory (read-only)\n")
 	fmt.Fprintf(w, "Status: %s\n", plan.Status)
 	fmt.Fprintf(w, "Source: %s %s\n", plan.Source.Kind, plan.Source.ID)
+	fmt.Fprintf(w, "Source export digest: %s\n", plan.Source.ExportDigest)
+	if plan.Source.ResponseDigest != "" {
+		fmt.Fprintf(w, "Source response digest: %s\n", plan.Source.ResponseDigest)
+	}
+	fmt.Fprintf(w, "Plan hash: %s\n", plan.PlanHash)
 	if plan.Target.Org != "" || plan.Target.Project != "" || plan.Target.Cluster != "" {
-		fmt.Fprintf(w, "Target: org=%s project=%s cluster=%s\n", emptyDash(plan.Target.Org), emptyDash(plan.Target.Project), emptyDash(plan.Target.Cluster))
+		fmt.Fprintf(w, "Intended target: org=%s project=%s cluster=%s\n", emptyDash(plan.Target.Org), emptyDash(plan.Target.Project), emptyDash(plan.Target.Cluster))
+		fmt.Fprintf(w, "Target Wodby 2 administrator: %s\n", verifiedLabel(plan.Target.AdminVerified))
+		fmt.Fprintf(w, "Target discovery: %s\n", verifiedLabel(plan.Target.DiscoveryVerified))
+		if plan.Target.DiscoveryVerified {
+			fmt.Fprintf(
+				w,
+				"Resolved target: org=%s(%d) project=%s(%d) cluster=%s(%d) status=%s\n",
+				emptyDash(plan.Target.OrgName),
+				plan.Target.OrgID,
+				emptyDash(plan.Target.ProjectName),
+				plan.Target.ProjectID,
+				emptyDash(plan.Target.ClusterName),
+				plan.Target.ClusterID,
+				emptyDash(plan.Target.ClusterStatus),
+			)
+			if plan.Target.Capabilities != nil {
+				fmt.Fprintf(
+					w,
+					"Target capabilities: envoyGateway=%t redirectRoutes=%t\n",
+					plan.Target.Capabilities.EnvoyGateway,
+					plan.Target.Capabilities.RedirectRoutes,
+				)
+			}
+		}
 	}
 	fmt.Fprintf(w, "\nSummary:\n")
 	fmt.Fprintf(w, "  Apps: %d\n", plan.Summary.Apps)
@@ -29,8 +57,11 @@ func PrintReview(w io.Writer, plan Plan) {
 	for _, app := range plan.Apps {
 		fmt.Fprintf(w, "\nApp: %s (%s)\n", firstNonEmpty(app.Title, app.Name), app.SourceUUID)
 		for _, instance := range app.Instances {
-			fmt.Fprintf(w, "  Instance: %s type=%s targetEnv=%s stack=%s\n", firstNonEmpty(instance.Title, instance.Name), instance.SourceType, emptyDash(instance.TargetEnv), instance.Stack.Name)
-			fmt.Fprintf(w, "    Technical domain: %s\n", instance.TechnicalDomain)
+			targetEnv := emptyDash(instance.TargetEnv)
+			if instance.TargetEnvID > 0 {
+				targetEnv = fmt.Sprintf("%s(%d)", targetEnv, instance.TargetEnvID)
+			}
+			fmt.Fprintf(w, "  Instance: %s type=%s targetEnv=%s stack=%s\n", firstNonEmpty(instance.Title, instance.Name), instance.SourceType, targetEnv, instance.Stack.Name)
 			if instance.BasicAuth.Enabled {
 				status := "enabled"
 				if instance.BasicAuth.SecretRedacted {
@@ -59,7 +90,7 @@ func PrintReview(w io.Writer, plan Plan) {
 					if route.PortNumber != nil {
 						port = fmt.Sprintf("%d", *route.PortNumber)
 					}
-					fmt.Fprintf(w, "      - %s service=%s portNumber=%s%s\n", route.Host, emptyDash(route.Service), port, flags)
+					fmt.Fprintf(w, "      - %s action=%s type=%s service=%s portNumber=%s%s\n", route.Host, route.Action, emptyDash(route.Type), emptyDash(route.Service), port, flags)
 				}
 			}
 		}
@@ -80,6 +111,13 @@ func PrintReview(w io.Writer, plan Plan) {
 	}
 }
 
+func verifiedLabel(verified bool) string {
+	if verified {
+		return "verified"
+	}
+	return "not verified"
+}
+
 func routeFlags(route RoutePlan) string {
 	var flags []string
 	if route.Primary {
@@ -92,7 +130,11 @@ func routeFlags(route RoutePlan) string {
 		flags = append(flags, "redirect")
 	}
 	if len(route.Settings) != 0 {
-		flags = append(flags, "settings="+strings.Join(route.Settings, ","))
+		settings := make([]string, 0, len(route.Settings))
+		for _, setting := range route.Settings {
+			settings = append(settings, setting.Name+"="+setting.Value)
+		}
+		flags = append(flags, "settings="+strings.Join(settings, ","))
 	}
 	if route.ReviewRequired {
 		flags = append(flags, "review")

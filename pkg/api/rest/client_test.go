@@ -7,10 +7,41 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/wodby/wodby-cli/pkg/types"
 )
+
+func TestClientRejectsCrossOriginRedirectWithoutLeakingCredentials(t *testing.T) {
+	destinationCalled := false
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		destinationCalled = true
+		if r.Header.Get("X-API-KEY") != "" || r.Header.Get("X-ACCESS-TOKEN") != "" {
+			t.Fatal("API credentials leaked to redirect destination")
+		}
+		http.Error(w, "unexpected", http.StatusInternalServerError)
+	}))
+	defer destination.Close()
+
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, destination.URL+"/v1/user", http.StatusFound)
+	}))
+	defer redirect.Close()
+
+	client, err := NewClient(types.APIConfig{Endpoint: redirect.URL + "/v1", Key: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]interface{}
+	err = client.Get(context.Background(), "/user", nil, &out)
+	if err == nil || !strings.Contains(err.Error(), "different origin") {
+		t.Fatalf("err = %v", err)
+	}
+	if destinationCalled {
+		t.Fatal("cross-origin redirect destination must not be requested")
+	}
+}
 
 func TestClientSendsAPIKeyAndPreservesBasePath(t *testing.T) {
 	var requestedPath string

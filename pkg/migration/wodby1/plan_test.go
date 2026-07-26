@@ -1,6 +1,11 @@
 package wodby1
 
-import "testing"
+import (
+	"encoding/json"
+	"reflect"
+	"strings"
+	"testing"
+)
 
 func TestBuildPlanCapturesManagedMigrationReviewItems(t *testing.T) {
 	indexed := false
@@ -16,13 +21,16 @@ func TestBuildPlanCapturesManagedMigrationReviewItems(t *testing.T) {
 			Stack: Stack{Name: "drupal10"},
 			BasicAuth: &BasicAuth{
 				Enabled: true,
+				Login:   "admin",
 				Secret:  true,
 			},
 			Domains: []Domain{{
 				Name:           "example.com",
+				Type:           "user",
 				Primary:        true,
 				Indexed:        &indexed,
 				SSLRequired:    &sslRequired,
+				Protected:      true,
 				Service:        "nginx",
 				PortNumber:     &port,
 				RedirectToWWW:  true,
@@ -47,7 +55,7 @@ func TestBuildPlanCapturesManagedMigrationReviewItems(t *testing.T) {
 				{Name: "athenapdf", Enabled: true},
 				{Name: "rsyslog", Enabled: true},
 			},
-			Backups: []Backup{{UUID: "backup-1", URL: "https://example.com/backup.sql"}},
+			Backups: []Backup{{UUID: "backup-1", Component: "database", URL: "https://example.com/backup.sql", Status: "ok"}},
 		}},
 	}
 
@@ -72,21 +80,67 @@ func TestBuildPlanCapturesManagedMigrationReviewItems(t *testing.T) {
 	if instance.TargetEnvType != "PROD" || instance.TargetEnv != "prod" {
 		t.Fatalf("target env = %s/%s", instance.TargetEnvType, instance.TargetEnv)
 	}
-	if instance.TechnicalDomain != "demo.wodby.local" {
-		t.Fatalf("technical domain = %q", instance.TechnicalDomain)
-	}
 	route := instance.Routes[0]
 	if !route.NeedsPortID || route.PortNumber == nil || *route.PortNumber != 80 {
 		t.Fatalf("route port resolution = %#v", route)
 	}
-	if len(route.Settings) != 2 || route.Settings[0] != "HTTPS_REDIRECT" || route.Settings[1] != "NO_INDEX" {
+	if len(route.Settings) != 2 ||
+		route.Settings[0] != (RouteSettingPlan{Name: "HTTPS_REDIRECT", Value: "true"}) ||
+		route.Settings[1] != (RouteSettingPlan{Name: "NO_INDEX", Value: "true"}) {
 		t.Fatalf("route settings = %#v", route.Settings)
 	}
-	if instance.Services[1].TargetName != "gotenberg" || instance.Services[1].Action != "substitute" {
-		t.Fatalf("athenapdf service = %#v", instance.Services[1])
+	if instance.Services[0].TargetName != "gotenberg" || instance.Services[0].Action != "substitute" {
+		t.Fatalf("athenapdf service = %#v", instance.Services[0])
 	}
 	if instance.Services[2].Action != "skip" {
 		t.Fatalf("rsyslog service = %#v", instance.Services[2])
+	}
+}
+
+func TestBuildPlanSanitizesRepositoryCredentials(t *testing.T) {
+	export := Export{
+		Schema: ExportSchemaV1,
+		App: &App{
+			UUID: "app-1",
+			Name: "demo",
+			Repository: &Repository{
+				UUID: "repo-1",
+				URL:  "https://user:secret@git.example.com/org/repo.git?private_token=also-secret#fragment",
+			},
+		},
+	}
+
+	plan, err := BuildPlan(export, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := plan.Apps[0].Repository
+	if repository == nil || repository.URL != "https://git.example.com/org/repo.git" || !repository.CredentialsRedacted {
+		t.Fatalf("repository = %#v", repository)
+	}
+	data, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "secret") || strings.Contains(string(data), "private_token") {
+		t.Fatalf("plan leaked repository credentials: %s", data)
+	}
+
+	scpURL, redacted := sanitizeRepositoryURL("git@git.example.com:org/repo.git?access_token=secret")
+	if scpURL != "git@git.example.com:org/repo.git" || !redacted {
+		t.Fatalf("scp URL = %q, redacted = %t", scpURL, redacted)
+	}
+	sshURL, redacted := sanitizeRepositoryURL("ssh://git@git.example.com/org/repo.git")
+	if sshURL != "ssh://git@git.example.com/org/repo.git" || redacted {
+		t.Fatalf("SSH URL = %q, redacted = %t", sshURL, redacted)
+	}
+	invalidURL, redacted := sanitizeRepositoryURL("https:/user:secret@git.example.com/org/repo.git")
+	if invalidURL != "" || !redacted {
+		t.Fatalf("invalid URL = %q, redacted = %t", invalidURL, redacted)
+	}
+	multiAtURL, redacted := sanitizeRepositoryURL("https://user:p@ss@git.example.com/org/repo.git")
+	if multiAtURL != "https://git.example.com/org/repo.git" || !redacted {
+		t.Fatalf("multi-@ URL = %q, redacted = %t", multiAtURL, redacted)
 	}
 }
 
@@ -118,11 +172,12 @@ func TestBuildPlanBlocksUnknownSourceEnvType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Status != "clean" {
+	if plan.Status != "source_inventory_unvalidated" {
 		t.Fatalf("status with explicit env map = %q", plan.Status)
 	}
-	if got := plan.Apps[0].Instances[0].TargetEnv; got != "test" {
-		t.Fatalf("target env = %q", got)
+	instance := plan.Apps[0].Instances[0]
+	if instance.TargetEnv != "test" || instance.TargetEnvType != "TEST" {
+		t.Fatalf("target env = %#v", instance)
 	}
 }
 
@@ -149,5 +204,570 @@ func TestBuildPlanSupportsServerExportShape(t *testing.T) {
 	}
 	if plan.Apps[0].SourceUUID != "app-1" {
 		t.Fatalf("app = %#v", plan.Apps[0])
+	}
+}
+
+func TestBuildPlanSupportsEmptyV2ServerExport(t *testing.T) {
+	plan, err := BuildPlan(
+		Export{
+			Schema: ExportSchemaV2,
+			Source: &ExportSource{Kind: "server", UUID: "server-1"},
+			Apps:   []AppExport{},
+		},
+		PlanOptions{SourceKind: "server", SourceID: "server-1"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Apps == nil || len(plan.Apps) != 0 || plan.Summary.Apps != 0 || plan.Status != "source_inventory_unvalidated" {
+		t.Fatalf("plan = %#v", plan)
+	}
+}
+
+func TestBuildPlanSkipsTechnicalAndDisabledRoutes(t *testing.T) {
+	enabled := true
+	disabled := false
+	sslRequired := true
+	port := 80
+	export := Export{
+		Schema: ExportSchemaV1,
+		App:    &App{UUID: "app-1", Name: "demo"},
+		Instances: []Instance{{
+			UUID:  "inst-1",
+			Name:  "prod",
+			Type:  "prod",
+			Stack: Stack{Name: "drupal10"},
+			Domains: []Domain{
+				{
+					Name:          "technical.example",
+					Type:          "technical",
+					Enabled:       &enabled,
+					SSLRequired:   &sslRequired,
+					RedirectToWWW: true,
+					Service:       "nginx",
+					PortNumber:    &port,
+				},
+				{
+					Name:          "disabled.example",
+					Type:          "user",
+					Enabled:       &disabled,
+					SSLRequired:   &sslRequired,
+					RedirectToWWW: true,
+					Service:       "nginx",
+					PortNumber:    &port,
+				},
+			},
+		}},
+	}
+
+	plan, err := BuildPlan(export, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	routes := plan.Apps[0].Instances[0].Routes
+	if len(routes) != 2 {
+		t.Fatalf("routes = %#v", routes)
+	}
+	if routes[0].Host != "disabled.example" || routes[0].Action != "skip_disabled" {
+		t.Fatalf("disabled route = %#v", routes[0])
+	}
+	if routes[1].Host != "technical.example" || routes[1].Action != "skip_technical" {
+		t.Fatalf("technical route = %#v", routes[1])
+	}
+	if routes[0].NeedsPortID || routes[1].NeedsPortID || !routes[0].Redirect || !routes[1].Redirect {
+		t.Fatalf("skipped route metadata = %#v", routes)
+	}
+	if plan.Summary.Intentionally != 2 || plan.Summary.Blocking != 0 ||
+		plan.Summary.Confirmation != 0 || plan.Summary.Manual != 0 {
+		t.Fatalf("summary = %#v", plan.Summary)
+	}
+	if plan.Status != "source_inventory_unvalidated" {
+		t.Fatalf("status = %q", plan.Status)
+	}
+
+	data, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), ".wodby.local") {
+		t.Fatalf("plan invents a target domain: %s", data)
+	}
+}
+
+func TestBuildPlanPreservesExplicitRedactionAndBasicAuthSemantics(t *testing.T) {
+	notRedacted := false
+	redacted := true
+	port := 80
+	export := Export{
+		Schema: ExportSchemaV1,
+		App:    &App{UUID: "app-1", Name: "demo"},
+		Instances: []Instance{{
+			UUID:  "inst-1",
+			Name:  "prod",
+			Type:  "prod",
+			Stack: Stack{Name: "drupal10"},
+			BasicAuth: &BasicAuth{
+				Enabled:          true,
+				Login:            "ada",
+				Password:         "available",
+				Secret:           true,
+				PasswordRedacted: &notRedacted,
+			},
+			Domains: []Domain{
+				{Name: "open.example", Type: "user", Service: "nginx", PortNumber: &port},
+				{Name: "protected.example", Type: "user", Protected: true, Service: "nginx", PortNumber: &port},
+			},
+			Services: []Service{{
+				Name:    "php",
+				Enabled: true,
+				EnvVars: []EnvVar{
+					{Name: "EMPTY_VALUE", Enabled: true, Protected: true, Origin: "custom", Redacted: &notRedacted},
+					{Name: "REDACTED_VALUE", Enabled: true, Protected: true, Origin: "custom", Redacted: &redacted},
+				},
+			}},
+		}},
+	}
+
+	plan, err := BuildPlan(export, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Summary.Blocking != 1 {
+		t.Fatalf("blocking = %d, review = %#v", plan.Summary.Blocking, plan.Review)
+	}
+
+	instance := plan.Apps[0].Instances[0]
+	if instance.BasicAuth.SecretRedacted {
+		t.Fatalf("basic auth should honor explicit password_redacted=false: %#v", instance.BasicAuth)
+	}
+	if instance.Routes[0].Host != "open.example" || instance.Routes[0].BasicAuth {
+		t.Fatalf("unprotected route basic auth = %#v", instance.Routes[0])
+	}
+	if instance.Routes[1].Host != "protected.example" || !instance.Routes[1].BasicAuth {
+		t.Fatalf("protected route basic auth = %#v", instance.Routes[1])
+	}
+	if len(plan.Review) != 3 || plan.Review[0].Subject != "env var REDACTED_VALUE" ||
+		plan.Review[1].Subject != "basic auth" ||
+		plan.Review[2].Severity != SeverityManual {
+		t.Fatalf("review = %#v", plan.Review)
+	}
+}
+
+func TestBuildPlanBlocksIncompleteBasicAuth(t *testing.T) {
+	export := Export{
+		Schema: ExportSchemaV1,
+		App:    &App{UUID: "app-1", Name: "demo"},
+		Instances: []Instance{{
+			UUID:      "inst-1",
+			Name:      "prod",
+			Type:      "prod",
+			Stack:     Stack{Name: "drupal10"},
+			BasicAuth: &BasicAuth{Enabled: true},
+		}},
+	}
+
+	plan, err := BuildPlan(export, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Summary.Blocking != 2 {
+		t.Fatalf("blocking = %d, review = %#v", plan.Summary.Blocking, plan.Review)
+	}
+	if plan.Review[0].Subject != "basic auth" || plan.Review[1].Subject != "basic auth" {
+		t.Fatalf("review = %#v", plan.Review)
+	}
+}
+
+func TestBuildPlanPreservesSSLRequiredFalse(t *testing.T) {
+	sslRequired := false
+	port := 80
+	export := Export{
+		Schema: ExportSchemaV1,
+		App:    &App{UUID: "app-1", Name: "demo"},
+		Instances: []Instance{{
+			UUID:  "inst-1",
+			Name:  "prod",
+			Type:  "prod",
+			Stack: Stack{Name: "drupal10"},
+			Domains: []Domain{{
+				Name:        "example.com",
+				Type:        "user",
+				SSLRequired: &sslRequired,
+				Service:     "nginx",
+				PortNumber:  &port,
+			}},
+		}},
+	}
+
+	plan, err := BuildPlan(export, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := plan.Apps[0].Instances[0].Routes[0].Settings
+	if len(settings) != 1 || settings[0] != (RouteSettingPlan{Name: "HTTPS_REDIRECT", Value: "false"}) {
+		t.Fatalf("settings = %#v", settings)
+	}
+	if len(plan.Review) != 0 {
+		t.Fatalf("review = %#v", plan.Review)
+	}
+	if plan.Apps[0].Instances[0].Routes[0].Action != "create_backend" {
+		t.Fatalf("route = %#v", plan.Apps[0].Instances[0].Routes[0])
+	}
+}
+
+func TestBuildPlanPreservesIndexedTrueAsNoIndexFalse(t *testing.T) {
+	indexed := true
+	port := 80
+	export := Export{
+		Schema: ExportSchemaV1,
+		App:    &App{UUID: "app-1", Name: "demo"},
+		Instances: []Instance{{
+			UUID: "inst-1", Name: "prod", Type: "prod", Stack: Stack{Name: "drupal10"},
+			Domains: []Domain{{
+				Name: "example.com", Type: "user", Indexed: &indexed,
+				Service: "nginx", PortNumber: &port,
+			}},
+		}},
+	}
+
+	plan, err := BuildPlan(export, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := plan.Apps[0].Instances[0].Routes[0].Settings
+	if len(settings) != 1 || settings[0] != (RouteSettingPlan{Name: "NO_INDEX", Value: "false"}) {
+		t.Fatalf("settings = %#v", settings)
+	}
+}
+
+func TestBuildPlanUsesVerifiedTargetDiscovery(t *testing.T) {
+	port := 80
+	export := Export{
+		Schema: ExportSchemaV1,
+		App:    &App{UUID: "app-1", Name: "demo"},
+		Instances: []Instance{{
+			UUID:  "inst-1",
+			Name:  "prod",
+			Type:  "prod",
+			Stack: Stack{Name: "drupal10"},
+			Domains: []Domain{{
+				Name:           "example.com",
+				Type:           "user",
+				Service:        "nginx",
+				PortNumber:     &port,
+				RedirectTarget: "www.example.com",
+			}},
+		}},
+	}
+	scope := TargetScopeDiscovery{
+		User:    TargetCurrentUser{ID: 1, IsAdmin: true},
+		Org:     TargetOrg{ID: 2, Name: "acme"},
+		Project: TargetProject{ID: 3, Name: "site", OrgID: 2},
+		Cluster: TargetCluster{
+			ID:     4,
+			Name:   "prod",
+			Status: "OK",
+			OrgID:  2,
+			Capabilities: TargetClusterCapabilities{
+				EnvoyGateway:   true,
+				RedirectRoutes: true,
+			},
+		},
+	}
+	plan, err := BuildPlan(export, PlanOptions{
+		SourceKind:    "app",
+		SourceID:      "app-1",
+		TargetOrg:     "acme",
+		TargetProject: "site",
+		TargetCluster: "prod",
+		TargetScope:   &scope,
+		TargetEnvs: map[string]TargetEnv{
+			"prod": {ID: 5, Name: "prod", Type: "PROD", OrgID: 2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != "target_scope_validated" {
+		t.Fatalf("status = %q, review = %#v", plan.Status, plan.Review)
+	}
+	if plan.Target.OrgID != 2 || plan.Target.ProjectID != 3 || plan.Target.ClusterID != 4 ||
+		!plan.Target.AdminVerified || !plan.Target.DiscoveryVerified ||
+		plan.Target.Capabilities == nil || !plan.Target.Capabilities.RedirectRoutes {
+		t.Fatalf("target = %#v", plan.Target)
+	}
+	instance := plan.Apps[0].Instances[0]
+	if instance.TargetEnvID != 5 || instance.TargetEnv != "prod" || instance.TargetEnvType != "PROD" {
+		t.Fatalf("instance = %#v", instance)
+	}
+	if instance.Routes[0].Action != "create_redirect" {
+		t.Fatalf("route = %#v", instance.Routes[0])
+	}
+}
+
+func TestRedirectActionsRemainUnvalidatedWhenRouteChecksFail(t *testing.T) {
+	port := 80
+	negativePort := -1
+	scope := &TargetScopeDiscovery{
+		Cluster: TargetCluster{
+			Capabilities: TargetClusterCapabilities{RedirectRoutes: true},
+		},
+	}
+	cases := map[string]Domain{
+		"missing service": {
+			UUID: "domain-1", Name: "example.com", Type: "user", Status: "ok",
+			PortNumber: &port, RedirectToWWW: true,
+		},
+		"missing port": {
+			UUID: "domain-1", Name: "example.com", Type: "user", Status: "ok",
+			Service: "nginx", RedirectToWWW: true,
+		},
+		"invalid port": {
+			UUID: "domain-1", Name: "example.com", Type: "user", Status: "ok",
+			Service: "nginx", PortNumber: &negativePort, RedirectToWWW: true,
+		},
+		"unstable status": {
+			UUID: "domain-1", Name: "example.com", Type: "user", Status: "updating",
+			Service: "nginx", PortNumber: &port, RedirectToWWW: true,
+		},
+		"custom TLS": {
+			UUID: "domain-1", Name: "example.com", Type: "user", Status: "ok",
+			Service: "nginx", PortNumber: &port, RedirectToWWW: true, SSLCustom: true,
+		},
+		"unsupported protocol": {
+			UUID: "domain-1", Name: "example.com", Type: "user", Status: "ok",
+			Service: "nginx", PortNumber: &port, RedirectToWWW: true, ServiceProtocol: "tcp",
+		},
+	}
+
+	for name, domain := range cases {
+		t.Run(name, func(t *testing.T) {
+			plan := Plan{}
+			route := buildRoutePlan(
+				&plan,
+				App{Name: "demo"},
+				Instance{Name: "prod"},
+				domain,
+				false,
+				PlanOptions{TargetScope: scope},
+				true,
+			)
+			if route.Action != "unvalidated" || !route.ReviewRequired {
+				t.Fatalf("route = %#v, review = %#v", route, plan.Review)
+			}
+		})
+	}
+}
+
+func TestBuildPlanMarksUnresolvedPayloadsForReview(t *testing.T) {
+	port := 80
+	export := Export{
+		Schema: ExportSchemaV2,
+		Source: &ExportSource{Kind: "app", UUID: "app-1"},
+		Apps: []AppExport{{
+			App: App{UUID: "app-1", Name: "demo", Status: "ok"},
+			Instances: []Instance{{
+				UUID: "inst-1", Name: "prod", Type: "prod", Status: "ok",
+				Stack: Stack{Name: "drupal10"},
+				Services: []Service{{
+					Name: "php", Enabled: true,
+					Configuration: map[string]interface{}{"command": "php-fpm"},
+					EnvVars:       []EnvVar{{Name: "CUSTOM", Value: "value", Enabled: true, Origin: "custom"}},
+					CronJobs:      []CronJob{{Crontab: "@hourly", Command: "drush cron", Enabled: true}},
+				}},
+				Domains: []Domain{{
+					UUID: "domain-1", Name: "example.com", Type: "user", Status: "ok",
+					Service: "nginx", PortNumber: &port,
+				}},
+				Backups: []Backup{{
+					UUID: "backup-1", Component: "database", URL: "https://backups.example.com/database.sql", Status: "ok",
+				}},
+			}},
+		}},
+	}
+	scope := TargetScopeDiscovery{
+		User:    TargetCurrentUser{ID: 1, IsAdmin: true},
+		Org:     TargetOrg{ID: 2, Name: "acme"},
+		Project: TargetProject{ID: 3, Name: "site", OrgID: 2},
+		Cluster: TargetCluster{ID: 4, Name: "prod", Status: "OK", OrgID: 2},
+	}
+	plan, err := BuildPlan(export, PlanOptions{
+		SourceKind:  "app",
+		SourceID:    "app-1",
+		TargetScope: &scope,
+		TargetEnvs: map[string]TargetEnv{
+			"prod": {ID: 5, Name: "prod", Type: "PROD", OrgID: 2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != "requires_review" || plan.Summary.Manual < 4 {
+		t.Fatalf("status = %q, summary = %#v, review = %#v", plan.Status, plan.Summary, plan.Review)
+	}
+}
+
+func TestBuildPlanCarriesSourceIssuesAndSkipsInfrastructureCron(t *testing.T) {
+	export := Export{
+		Schema: ExportSchemaV2,
+		Source: &ExportSource{Kind: "app", UUID: "app-1"},
+		Apps: []AppExport{{
+			App: App{UUID: "app-1", Name: "demo", Status: "ok"},
+			Instances: []Instance{{
+				UUID:   "inst-1",
+				Name:   "prod",
+				Type:   "prod",
+				Status: "ok",
+				Stack:  Stack{Name: "drupal10"},
+				Services: []Service{{
+					Name:    "php",
+					Enabled: true,
+					CronJobs: []CronJob{
+						{Crontab: "@daily", Command: "cleanup", Enabled: true, Classification: "source_only_infrastructure"},
+						{Crontab: "@hourly", Command: "drush cron", Enabled: true, Classification: "application"},
+					},
+				}},
+			}},
+		}},
+		Issues: []ExportIssue{{
+			Code:     "cron.source_only_infrastructure",
+			Severity: SeveritySkipped,
+			Path:     "apps.app-1.instances.inst-1.properties.cron_tasks.lines.1",
+			Message:  "source-only cron",
+			Details: map[string]interface{}{
+				"line_number": float64(1),
+				"raw_line":    "@daily cleanup",
+			},
+		}},
+	}
+
+	plan, err := BuildPlan(export, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Summary.CronJobs != 1 || plan.Summary.Intentionally != 1 {
+		t.Fatalf("summary = %#v, review = %#v", plan.Summary, plan.Review)
+	}
+	if plan.Review[0].Code != "cron.source_only_infrastructure" ||
+		plan.Review[0].Path == "" ||
+		plan.Review[0].Details["raw_line"] != "@daily cleanup" {
+		t.Fatalf("review = %#v", plan.Review[0])
+	}
+}
+
+func TestBuildPlanOrderingIsDeterministic(t *testing.T) {
+	port := 80
+	appA := AppExport{
+		App: App{UUID: "app-a", Name: "alpha"},
+		Instances: []Instance{
+			{
+				UUID:  "instance-b",
+				Name:  "stage",
+				Type:  "stage",
+				Stack: Stack{Name: "drupal10"},
+			},
+			{
+				UUID:  "instance-a",
+				Name:  "prod",
+				Type:  "prod",
+				Stack: Stack{Name: "drupal10"},
+				Services: []Service{
+					{Name: "rsyslog", Enabled: true},
+					{Name: "athenapdf", Enabled: true},
+				},
+				Domains: []Domain{
+					{UUID: "domain-b", Name: "b.example", Type: "user", Service: "nginx", PortNumber: &port},
+					{UUID: "domain-a", Name: "a.example", Type: "user", Service: "nginx", PortNumber: &port},
+				},
+			},
+		},
+	}
+	appB := AppExport{
+		App: App{UUID: "app-b", Name: "beta"},
+		Instances: []Instance{{
+			UUID:  "instance-c",
+			Name:  "dev",
+			Type:  "dev",
+			Stack: Stack{Name: "drupal10"},
+		}},
+	}
+	reversedAppA := appA
+	reversedAppA.Instances = []Instance{appA.Instances[1], appA.Instances[0]}
+	reversedAppA.Instances[0].Services = []Service{appA.Instances[1].Services[1], appA.Instances[1].Services[0]}
+	reversedAppA.Instances[0].Domains = []Domain{appA.Instances[1].Domains[1], appA.Instances[1].Domains[0]}
+
+	exportA := Export{
+		Schema: ExportSchemaV2,
+		Source: &ExportSource{Kind: "server", UUID: "server-1"},
+		Apps:   []AppExport{appB, appA},
+		Issues: []ExportIssue{
+			{Code: "same", Path: "path", Message: "message", Details: map[string]interface{}{"value": "b"}},
+			{Code: "same", Path: "path", Message: "message", Details: map[string]interface{}{"value": "a"}},
+		},
+	}
+	exportB := Export{
+		Schema: ExportSchemaV2,
+		Source: &ExportSource{Kind: "server", UUID: "server-1"},
+		Apps:   []AppExport{reversedAppA, appB},
+		Issues: []ExportIssue{
+			{Code: "same", Path: "path", Message: "message", Details: map[string]interface{}{"value": "a"}},
+			{Code: "same", Path: "path", Message: "message", Details: map[string]interface{}{"value": "b"}},
+		},
+	}
+	planA, err := BuildPlan(exportA, PlanOptions{SourceKind: "server", SourceID: "server-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planB, err := BuildPlan(exportB, PlanOptions{SourceKind: "server", SourceID: "server-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(planA, planB) {
+		t.Fatalf("plans differ by source ordering:\nA: %#v\nB: %#v", planA, planB)
+	}
+	if len(planA.Source.ExportDigest) == 0 || len(planA.PlanHash) != 64 {
+		t.Fatalf("plan identity is incomplete: %#v", planA)
+	}
+}
+
+func TestExportAndPlanDigestsIgnoreTransportMetadata(t *testing.T) {
+	first := Export{
+		Schema:         ExportSchemaV2,
+		Source:         &ExportSource{Kind: "server", UUID: "server-1"},
+		GeneratedAt:    100,
+		ResponseDigest: strings.Repeat("a", 64),
+		Apps:           []AppExport{},
+	}
+	second := first
+	second.GeneratedAt = 200
+	second.ResponseDigest = strings.Repeat("b", 64)
+
+	firstDigest, err := first.ContentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := second.ContentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest != secondDigest {
+		t.Fatalf("content digests differ: %q != %q", firstDigest, secondDigest)
+	}
+
+	firstPlan, err := BuildPlan(first, PlanOptions{SourceKind: "server", SourceID: "server-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPlan, err := BuildPlan(second, PlanOptions{SourceKind: "server", SourceID: "server-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstPlan.PlanHash != secondPlan.PlanHash {
+		t.Fatalf("plan hashes differ: %q != %q", firstPlan.PlanHash, secondPlan.PlanHash)
+	}
+	if firstPlan.Source.GeneratedAt == secondPlan.Source.GeneratedAt ||
+		firstPlan.Source.ResponseDigest == secondPlan.Source.ResponseDigest {
+		t.Fatalf("transport metadata was not retained: %#v %#v", firstPlan.Source, secondPlan.Source)
 	}
 }

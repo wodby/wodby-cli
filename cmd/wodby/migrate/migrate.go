@@ -5,39 +5,32 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	"github.com/wodby/wodby-cli/pkg/migration/wodby1"
+	"github.com/wodby/wodby-cli/pkg/types"
 )
 
-const defaultSourceBaseURL = "https://api.wodby.com"
+const (
+	defaultSourceBaseURL = "https://api.wodby.com"
+	sourceTokenEnv       = "WODBY1_SOURCE_TOKEN"
+)
 
 type options struct {
 	sourceBaseURL       string
 	sourceToken         string
 	includeSecrets      bool
-	createSourceBackup  bool
 	targetOrg           string
 	targetProject       string
 	targetCluster       string
 	targetEnvMap        []string
-	createMissingEnvs   bool
-	stackMap            []string
-	serviceMap          []string
-	dryRun              bool
-	execute             bool
 	planFile            string
-	stateFile           string
-	resume              bool
-	parallel            int
-	continueOnError     bool
 	allowMissingSecrets bool
-	yes                 bool
-	acceptReview        bool
 	output              string
-	assumeEnvoyGateway  bool
 }
 
 func NewCommand() *cobra.Command {
@@ -53,7 +46,7 @@ func NewCommand() *cobra.Command {
 func newWodby1Command() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "wodby1",
-		Short: "Migrate Wodby 1 apps to Wodby 2",
+		Short: "Inspect Wodby 1 exports and build read-only migration plans",
 	}
 	cmd.AddCommand(newWodby1AppCommand(), newWodby1ServerCommand())
 	return cmd
@@ -63,7 +56,7 @@ func newWodby1AppCommand() *cobra.Command {
 	opts := defaultOptions()
 	cmd := &cobra.Command{
 		Use:   "app SOURCE_APP_UUID",
-		Short: "Plan a Wodby 1 app migration",
+		Short: "Build a read-only Wodby 1 app migration plan",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWodby1(cmd, "app", args[0], opts)
@@ -77,7 +70,7 @@ func newWodby1ServerCommand() *cobra.Command {
 	opts := defaultOptions()
 	cmd := &cobra.Command{
 		Use:   "server SOURCE_SERVER_UUID",
-		Short: "Plan a Wodby 1 server-to-cluster migration",
+		Short: "Build a read-only Wodby 1 server migration plan",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWodby1(cmd, "server", args[0], opts)
@@ -90,45 +83,61 @@ func newWodby1ServerCommand() *cobra.Command {
 func defaultOptions() *options {
 	return &options{
 		sourceBaseURL: defaultSourceBaseURL,
-		parallel:      1,
 		output:        "text",
 	}
 }
 
 func bindFlags(cmd *cobra.Command, opts *options) {
 	cmd.Flags().StringVar(&opts.sourceBaseURL, "source-base-url", defaultSourceBaseURL, "Wodby 1 API base URL")
-	cmd.Flags().StringVar(&opts.sourceToken, "source-token", "", "Wodby 1 API token")
+	cmd.Flags().StringVar(&opts.sourceToken, "source-token", "", "Wodby 1 API token (defaults to "+sourceTokenEnv+")")
 	cmd.Flags().BoolVar(&opts.includeSecrets, "include-secrets", false, "Ask the source API to include protected secret values")
-	cmd.Flags().BoolVar(&opts.createSourceBackup, "create-source-backup", false, "Create missing source backups before migration execution")
-	cmd.Flags().StringVar(&opts.targetOrg, "target-org", "", "Target Wodby 2 org name or ID")
-	cmd.Flags().StringVar(&opts.targetProject, "target-project", "", "Target Wodby 2 project name or ID")
-	cmd.Flags().StringVar(&opts.targetCluster, "target-cluster", "", "Target Wodby 2 cluster name or ID")
+	cmd.Flags().StringVar(&opts.targetOrg, "target-org", "", "Record the intended Wodby 2 org selector in the plan")
+	cmd.Flags().StringVar(&opts.targetProject, "target-project", "", "Record the intended Wodby 2 project selector in the plan")
+	cmd.Flags().StringVar(&opts.targetCluster, "target-cluster", "", "Record the intended Wodby 2 cluster selector in the plan")
 	cmd.Flags().StringArrayVar(&opts.targetEnvMap, "target-env-map", nil, "Source-to-target env mapping, e.g. prod=production")
-	cmd.Flags().BoolVar(&opts.createMissingEnvs, "create-missing-envs", false, "Create missing target envs during execution")
-	cmd.Flags().StringArrayVar(&opts.stackMap, "stack-map", nil, "Managed stack mapping override, e.g. drupal9=drupal10")
-	cmd.Flags().StringArrayVar(&opts.serviceMap, "service-map", nil, "Service mapping override, e.g. redis=valkey")
-	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Plan only; this is also the default when --execute is omitted")
-	cmd.Flags().BoolVar(&opts.execute, "execute", false, "Execute the reviewed migration plan")
-	cmd.Flags().StringVar(&opts.planFile, "plan-file", "", "Write the normalized migration plan to this JSON file")
-	cmd.Flags().StringVar(&opts.stateFile, "state-file", "", "Path to resumable migration state file")
-	cmd.Flags().BoolVar(&opts.resume, "resume", false, "Resume from the state file")
-	cmd.Flags().IntVar(&opts.parallel, "parallel", 1, "Parallel app migrations for server migrations")
-	cmd.Flags().BoolVar(&opts.continueOnError, "continue-on-error", false, "Continue server migration after an app failure")
+	cmd.Flags().StringVar(&opts.planFile, "plan-file", "", "Write the read-only migration plan to this JSON file")
 	cmd.Flags().BoolVar(&opts.allowMissingSecrets, "allow-missing-secrets", false, "Allow redacted secrets as manual follow-up items")
-	cmd.Flags().BoolVar(&opts.yes, "yes", false, "Confirm clean managed-stack execution non-interactively")
-	cmd.Flags().BoolVar(&opts.acceptReview, "accept-review", false, "Accept non-blocking review items non-interactively")
 	cmd.Flags().StringVarP(&opts.output, "output", "o", "text", "Output format: text or json")
-	cmd.Flags().BoolVar(&opts.assumeEnvoyGateway, "assume-envoy-gateway", false, "Assume the target cluster supports Envoy Gateway redirect routes during planning")
 }
 
 func runWodby1(cmd *cobra.Command, kind string, id string, opts *options) error {
-	if err := validateOptions(cmd, opts); err != nil {
+	if strings.TrimSpace(opts.sourceToken) == "" {
+		opts.sourceToken = strings.TrimSpace(os.Getenv(sourceTokenEnv))
+	}
+	if err := validateOptions(opts); err != nil {
 		return err
 	}
-
+	envMap, err := parseMapping(opts.targetEnvMap, "--target-env-map")
+	if err != nil {
+		return err
+	}
 	client, err := wodby1.NewSourceClient(opts.sourceBaseURL, opts.sourceToken)
 	if err != nil {
 		return err
+	}
+
+	targetAdminVerified := false
+	var targetClient *wodby1.TargetClient
+	var targetScope *wodby1.TargetScopeDiscovery
+	if hasTarget(opts) {
+		targetClient, err = wodby1.NewTargetClient(types.APIConfig{
+			Endpoint:    strings.TrimSpace(viper.GetString("api_base_url")),
+			Key:         strings.TrimSpace(viper.GetString("api_key")),
+			AccessToken: strings.TrimSpace(viper.GetString("access_token")),
+		})
+		if err != nil {
+			return err
+		}
+		scope, err := targetClient.DiscoverTargetScope(cmd.Context(), wodby1.TargetScopeSelectors{
+			Org:     opts.targetOrg,
+			Project: opts.targetProject,
+			Cluster: opts.targetCluster,
+		})
+		if err != nil {
+			return err
+		}
+		targetScope = &scope
+		targetAdminVerified = scope.User.IsAdmin
 	}
 
 	var export wodby1.Export
@@ -144,9 +153,19 @@ func runWodby1(cmd *cobra.Command, kind string, id string, opts *options) error 
 		return err
 	}
 
-	envMap, err := parseMapping(opts.targetEnvMap, "--target-env-map")
-	if err != nil {
-		return err
+	targetEnvs := map[string]wodby1.TargetEnv{}
+	if targetClient != nil && targetScope != nil {
+		selectors, err := wodby1.TargetEnvironmentSelectors(export, envMap)
+		if err != nil {
+			return err
+		}
+		resolved, err := targetClient.ResolveTargetEnvs(cmd.Context(), targetScope.Org.ID, selectors)
+		if err != nil {
+			return err
+		}
+		for _, item := range resolved {
+			targetEnvs[item.Selector] = item.Env
+		}
 	}
 
 	plan, err := wodby1.BuildPlan(export, wodby1.PlanOptions{
@@ -157,7 +176,9 @@ func runWodby1(cmd *cobra.Command, kind string, id string, opts *options) error 
 		TargetCluster:       opts.targetCluster,
 		TargetEnvMap:        envMap,
 		AllowMissingSecrets: opts.allowMissingSecrets,
-		AssumeEnvoyGateway:  opts.assumeEnvoyGateway,
+		TargetAdminVerified: targetAdminVerified,
+		TargetScope:         targetScope,
+		TargetEnvs:          targetEnvs,
 	})
 	if err != nil {
 		return err
@@ -179,16 +200,10 @@ func runWodby1(cmd *cobra.Command, kind string, id string, opts *options) error 
 		wodby1.PrintReview(cmd.OutOrStdout(), plan)
 	}
 
-	if opts.execute {
-		return errors.New("migration execution is not implemented yet; rerun without --execute to use the dry-run planner")
-	}
 	return nil
 }
 
-func validateOptions(cmd *cobra.Command, opts *options) error {
-	if opts.execute && cmd.Flags().Changed("dry-run") && opts.dryRun {
-		return errors.New("--dry-run and --execute are mutually exclusive")
-	}
+func validateOptions(opts *options) error {
 	if opts.sourceBaseURL == "" {
 		return errors.New("--source-base-url is required")
 	}
@@ -196,26 +211,36 @@ func validateOptions(cmd *cobra.Command, opts *options) error {
 		return errors.Wrap(err, "invalid --source-base-url")
 	}
 	if strings.TrimSpace(opts.sourceToken) == "" {
-		return errors.New("--source-token is required")
+		return errors.Errorf("--source-token or %s is required", sourceTokenEnv)
 	}
 	if opts.output != "text" && opts.output != "json" {
 		return errors.Errorf("unsupported --output %q", opts.output)
 	}
-	if opts.parallel < 1 {
-		return errors.New("--parallel must be greater than zero")
+	if hasAnyTarget(opts) && !hasTarget(opts) {
+		return errors.New("--target-org, --target-project, and --target-cluster must be specified together")
 	}
-	if opts.execute {
-		if opts.targetOrg == "" || opts.targetProject == "" || opts.targetCluster == "" {
-			return errors.New("--target-org, --target-project, and --target-cluster are required with --execute")
+	if hasTarget(opts) {
+		if strings.TrimSpace(viper.GetString("api_base_url")) == "" {
+			return errors.New("--api-base-url is required when a target is specified")
 		}
-		if opts.yes && opts.acceptReview {
-			return errors.New("use either --yes or --accept-review, not both")
+		if strings.TrimSpace(viper.GetString("api_key")) == "" &&
+			strings.TrimSpace(viper.GetString("access_token")) == "" {
+			return errors.New("--api-key or --access-token is required when a target is specified")
 		}
-	}
-	if opts.resume && opts.stateFile == "" {
-		return errors.New("--resume requires --state-file")
 	}
 	return nil
+}
+
+func hasAnyTarget(opts *options) bool {
+	return strings.TrimSpace(opts.targetOrg) != "" ||
+		strings.TrimSpace(opts.targetProject) != "" ||
+		strings.TrimSpace(opts.targetCluster) != ""
+}
+
+func hasTarget(opts *options) bool {
+	return strings.TrimSpace(opts.targetOrg) != "" &&
+		strings.TrimSpace(opts.targetProject) != "" &&
+		strings.TrimSpace(opts.targetCluster) != ""
 }
 
 func parseMapping(values []string, flag string) (map[string]string, error) {
@@ -235,6 +260,10 @@ func parseMapping(values []string, flag string) (map[string]string, error) {
 			if key == "" || target == "" {
 				return nil, fmt.Errorf("%s value %q must be in source=target format", flag, part)
 			}
+			key = strings.ToLower(key)
+			if existing, exists := result[key]; exists && existing != target {
+				return nil, fmt.Errorf("%s contains conflicting mappings for source %q", flag, key)
+			}
 			result[key] = target
 		}
 	}
@@ -247,5 +276,27 @@ func writePlanFile(path string, plan wodby1.Plan) error {
 		return errors.WithStack(err)
 	}
 	data = append(data, '\n')
-	return errors.WithStack(os.WriteFile(path, data, 0600))
+	dir := filepath.Dir(path)
+	file, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	tempPath := file.Name()
+	defer os.Remove(tempPath)
+	if err := file.Chmod(0600); err != nil {
+		_ = file.Close()
+		return errors.WithStack(err)
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return errors.WithStack(err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return errors.WithStack(err)
+	}
+	if err := file.Close(); err != nil {
+		return errors.WithStack(err)
+	}
+	return errors.WithStack(os.Rename(tempPath, path))
 }

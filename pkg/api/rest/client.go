@@ -87,6 +87,17 @@ func NewClient(config types.APIConfig) (*Client, error) {
 				accessToken:         config.AccessToken,
 			},
 			Timeout: defaultHTTPTimeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) == 0 {
+					return nil
+				}
+				origin := via[0].URL
+				if !strings.EqualFold(req.URL.Scheme, origin.Scheme) ||
+					!strings.EqualFold(req.URL.Host, origin.Host) {
+					return errors.New("API redirect to a different origin is not allowed")
+				}
+				return nil
+			},
 		},
 	}, nil
 }

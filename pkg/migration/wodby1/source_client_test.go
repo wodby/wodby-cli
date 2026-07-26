@@ -27,7 +27,8 @@ func TestSourceClientExportsApp(t *testing.T) {
 			Source:          &ExportSource{Kind: "app", UUID: "app-1"},
 			SecretsIncluded: true,
 			Apps: []AppExport{{
-				App: App{UUID: "app-1", Name: "demo"},
+				App:       App{UUID: "app-1", Name: "demo"},
+				Instances: []Instance{sourceClientTestInstance()},
 			}},
 		})
 	}))
@@ -38,7 +39,7 @@ func TestSourceClientExportsApp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	export, err := client.ExportApp(context.Background(), "app-1", true)
+	export, err := client.ExportApp(context.Background(), "app-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +47,7 @@ func TestSourceClientExportsApp(t *testing.T) {
 	if gotPath != "/api/v4/migrations/v2/apps/app-1/export" {
 		t.Fatalf("path = %q", gotPath)
 	}
-	if gotQuery != "include_secrets=true" {
+	if gotQuery != "" {
 		t.Fatalf("query = %q", gotQuery)
 	}
 	if gotAPIKey != testSourceToken {
@@ -63,6 +64,9 @@ func TestSourceClientExportsApp(t *testing.T) {
 	}
 	if len(export.ResponseDigest) != 64 {
 		t.Fatalf("response digest = %q", export.ResponseDigest)
+	}
+	if len(export.ConfigMAC) != 64 {
+		t.Fatalf("configuration MAC = %q", export.ConfigMAC)
 	}
 }
 
@@ -102,6 +106,17 @@ func TestDecodeExportPreservesLargeNumbersAndRejectsTrailingJSON(t *testing.T) {
 func TestDecodeExportRequiresV2SourceIdentity(t *testing.T) {
 	_, err := DecodeExport([]byte(`{"schema":"wodby1-migration/v2","apps":[]}`))
 	if err == nil || !strings.Contains(err.Error(), "identify its source") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestDecodeAppExportRequiresAtLeastOneInstance(t *testing.T) {
+	_, err := DecodeExport([]byte(`{
+		"schema":"wodby1-migration/v2",
+		"source":{"kind":"app","uuid":"app-1"},
+		"apps":[{"app":{"uuid":"app-1","name":"demo"},"instances":[]}]
+	}`))
+	if err == nil || !strings.Contains(err.Error(), "at least one source instance") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -168,7 +183,8 @@ func TestSourceClientRejectsMismatchedSourceIdentity(t *testing.T) {
 			Schema: ExportSchemaV2,
 			Source: &ExportSource{Kind: "app", UUID: "different-app"},
 			Apps: []AppExport{{
-				App: App{UUID: "different-app", Name: "different"},
+				App:       App{UUID: "different-app", Name: "different"},
+				Instances: []Instance{sourceClientTestInstance()},
 			}},
 		})
 	}))
@@ -178,7 +194,7 @@ func TestSourceClientRejectsMismatchedSourceIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.ExportApp(context.Background(), "app-1", false)
+	_, err = client.ExportApp(context.Background(), "app-1")
 	if err == nil || !strings.Contains(err.Error(), "does not match requested source") {
 		t.Fatalf("err = %v", err)
 	}
@@ -197,19 +213,22 @@ func TestSourceClientRejectsLegacySchemaWithoutSourceIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.ExportApp(context.Background(), "app-1", false)
+	_, err = client.ExportApp(context.Background(), "app-1")
 	if err == nil || !strings.Contains(err.Error(), "requires schema") {
 		t.Fatalf("err = %v", err)
 	}
 }
 
-func TestSourceClientRejectsSecretsModeMismatch(t *testing.T) {
+func TestSourceClientRequiresProtectedExport(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(Export{
 			Schema:          ExportSchemaV2,
-			Source:          &ExportSource{Kind: "server", UUID: "server-1"},
-			SecretsIncluded: true,
-			Apps:            []AppExport{},
+			Source:          &ExportSource{Kind: "app", UUID: "app-1"},
+			SecretsIncluded: false,
+			Apps: []AppExport{{
+				App:       App{UUID: "app-1", Name: "demo"},
+				Instances: []Instance{sourceClientTestInstance()},
+			}},
 		})
 	}))
 	defer server.Close()
@@ -218,9 +237,16 @@ func TestSourceClientRejectsSecretsModeMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.ExportServer(context.Background(), "server-1", false)
-	if err == nil || !strings.Contains(err.Error(), "does not match") {
+	_, err = client.ExportApp(context.Background(), "app-1")
+	if err == nil || !strings.Contains(err.Error(), "did not include required secrets") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func sourceClientTestInstance() Instance {
+	return Instance{
+		UUID: "instance-1", Name: "prod", Type: "prod", Status: "ok",
+		Stack: Stack{Name: "drupal"},
 	}
 }
 
@@ -254,7 +280,7 @@ func TestSourceClientRejectsInvalidSourceUUIDBeforeNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.ExportApp(context.Background(), " ", false); err == nil {
+	if _, err := client.ExportApp(context.Background(), " "); err == nil {
 		t.Fatal("expected invalid source UUID")
 	}
 	if called {
@@ -282,7 +308,7 @@ func TestSourceClientRejectsCrossOriginRedirectWithoutLeakingToken(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.ExportApp(context.Background(), "app-1", false)
+	_, err = client.ExportApp(context.Background(), "app-1")
 	if err == nil || !strings.Contains(err.Error(), "different origin") {
 		t.Fatalf("err = %v", err)
 	}
@@ -301,35 +327,9 @@ func TestSourceClientRejectsOversizedExportExplicitly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.ExportApp(context.Background(), "app-1", false)
+	_, err = client.ExportApp(context.Background(), "app-1")
 	if err == nil || !strings.Contains(err.Error(), "safety limit") {
 		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestSourceClientAcceptsEmptyServerExport(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v4/migrations/v2/servers/server-1/export" {
-			t.Fatalf("path = %q", r.URL.Path)
-		}
-		_ = json.NewEncoder(w).Encode(Export{
-			Schema: ExportSchemaV2,
-			Source: &ExportSource{Kind: "server", UUID: "server-1"},
-			Apps:   []AppExport{},
-		})
-	}))
-	defer server.Close()
-
-	client, err := NewSourceClient(server.URL, testSourceToken)
-	if err != nil {
-		t.Fatal(err)
-	}
-	export, err := client.ExportServer(context.Background(), "server-1", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if export.Apps == nil || len(export.Apps) != 0 {
-		t.Fatalf("apps = %#v", export.Apps)
 	}
 }
 

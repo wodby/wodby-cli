@@ -47,6 +47,8 @@ type TargetCluster struct {
 	Title        string                    `json:"title"`
 	Status       string                    `json:"status"`
 	OrgID        int                       `json:"orgId"`
+	IPs          []string                  `json:"ips,omitempty"`
+	Hostname     *string                   `json:"hostname,omitempty"`
 	Capabilities TargetClusterCapabilities `json:"capabilities"`
 }
 
@@ -70,10 +72,11 @@ type TargetDiscoveryRequest struct {
 }
 
 type TargetScopeDiscovery struct {
-	User    TargetCurrentUser `json:"user"`
-	Org     TargetOrg         `json:"org"`
-	Project TargetProject     `json:"project"`
-	Cluster TargetCluster     `json:"cluster"`
+	User       TargetCurrentUser   `json:"user"`
+	Membership TargetOrgMembership `json:"membership"`
+	Org        TargetOrg           `json:"org"`
+	Project    TargetProject       `json:"project"`
+	Cluster    TargetCluster       `json:"cluster"`
 }
 
 type TargetResolvedEnv struct {
@@ -237,9 +240,10 @@ func (c *TargetClient) GetEnv(ctx context.Context, id int) (TargetEnv, error) {
 	return item, nil
 }
 
-// DiscoverTargetScope verifies global administrator access and resolves the
-// exact organization, project, and cluster selectors. Cluster membership in
-// the selected project is verified through the projectIds list filter.
+// DiscoverTargetScope resolves the exact organization selector, verifies that
+// the authenticated account is an active OWNER or ADMIN of that organization,
+// and then resolves the project and cluster selectors. Cluster availability
+// to the selected project is verified through the projectIds list filter.
 func (c *TargetClient) DiscoverTargetScope(ctx context.Context, selectors TargetScopeSelectors) (TargetScopeDiscovery, error) {
 	orgSelector, err := normalizeTargetSelector("organization", selectors.Org)
 	if err != nil {
@@ -254,11 +258,11 @@ func (c *TargetClient) DiscoverTargetScope(ctx context.Context, selectors Target
 		return TargetScopeDiscovery{}, err
 	}
 
-	user, err := c.RequireAdmin(ctx)
+	org, err := c.resolveOrg(ctx, orgSelector)
 	if err != nil {
 		return TargetScopeDiscovery{}, err
 	}
-	org, err := c.resolveOrg(ctx, orgSelector)
+	user, membership, err := c.RequireOrgOwnerOrAdmin(ctx, org.ID)
 	if err != nil {
 		return TargetScopeDiscovery{}, err
 	}
@@ -272,10 +276,11 @@ func (c *TargetClient) DiscoverTargetScope(ctx context.Context, selectors Target
 	}
 
 	return TargetScopeDiscovery{
-		User:    user,
-		Org:     org,
-		Project: project,
-		Cluster: cluster,
+		User:       user,
+		Membership: membership,
+		Org:        org,
+		Project:    project,
+		Cluster:    cluster,
 	}, nil
 }
 

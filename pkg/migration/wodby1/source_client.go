@@ -92,18 +92,11 @@ func normalizeSourceToken(token string) (string, error) {
 	return token, nil
 }
 
-func (c *SourceClient) ExportApp(ctx context.Context, uuid string, includeSecrets bool) (Export, error) {
+func (c *SourceClient) ExportApp(ctx context.Context, uuid string) (Export, error) {
 	if err := validateSourceUUID(uuid); err != nil {
 		return Export{}, err
 	}
-	return c.getExport(ctx, "app", uuid, "/api/v4/migrations/v2/apps/"+url.PathEscape(uuid)+"/export", includeSecrets)
-}
-
-func (c *SourceClient) ExportServer(ctx context.Context, uuid string, includeSecrets bool) (Export, error) {
-	if err := validateSourceUUID(uuid); err != nil {
-		return Export{}, err
-	}
-	return c.getExport(ctx, "server", uuid, "/api/v4/migrations/v2/servers/"+url.PathEscape(uuid)+"/export", includeSecrets)
+	return c.getExport(ctx, "app", uuid, "/api/v4/migrations/v2/apps/"+url.PathEscape(uuid)+"/export")
 }
 
 func validateSourceUUID(uuid string) error {
@@ -122,13 +115,8 @@ func validateSourceUUID(uuid string) error {
 	return nil
 }
 
-func (c *SourceClient) getExport(ctx context.Context, kind string, uuid string, path string, includeSecrets bool) (Export, error) {
-	query := url.Values{}
-	if includeSecrets {
-		query.Set("include_secrets", "true")
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.resolve(path, query), nil)
+func (c *SourceClient) getExport(ctx context.Context, kind string, uuid string, path string) (Export, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.resolve(path, nil), nil)
 	if err != nil {
 		return Export{}, errors.WithStack(err)
 	}
@@ -165,12 +153,12 @@ func (c *SourceClient) getExport(ctx context.Context, kind string, uuid string, 
 	if err := export.ValidateSource(kind, uuid); err != nil {
 		return Export{}, err
 	}
-	if export.SecretsIncluded != includeSecrets {
-		return Export{}, errors.Errorf(
-			"source migration export secrets_included=%t does not match include_secrets=%t",
-			export.SecretsIncluded,
-			includeSecrets,
-		)
+	if !export.SecretsIncluded {
+		return Export{}, errors.New("protected source migration export did not include required secrets")
+	}
+	export.ConfigMAC, err = export.AuthenticatedConfigDigest(c.token)
+	if err != nil {
+		return Export{}, errors.Wrap(err, "compute authenticated source configuration digest")
 	}
 	export.ResponseDigest = fmt.Sprintf("%x", sha256.Sum256(body))
 	export.Digest, err = export.ContentDigest()

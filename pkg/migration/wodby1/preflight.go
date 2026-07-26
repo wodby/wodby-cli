@@ -1,0 +1,685 @@
+package wodby1
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/pkg/errors"
+)
+
+// TargetPreflightOptions contains the explicit customer choices that affect
+// target-side migration preparation. Mapping selectors themselves are already
+// recorded in Plan.
+type TargetPreflightOptions struct {
+	SkipCode                    bool
+	SkipData                    bool
+	GitRef                      string
+	GitRefType                  string
+	AllowedTargetAppID          int
+	AllowStateBackedAppRecovery bool
+}
+
+// PreparedMigration is an in-memory, secret-free target mapping. It is rebuilt
+// from the approved plan on every phase instead of being persisted in the
+// state file. Mutation phases pin and read back the reviewed immutable IDs.
+type PreparedMigration struct {
+	App       AppExport
+	Instances []PreparedInstance
+}
+
+type PreparedInstance struct {
+	Source            Instance
+	SkipCode          bool
+	Stack             TargetStack
+	StackServices     []TargetStackServiceInspection
+	Services          map[string]PreparedService
+	BuildSource       *PreparedBuildSource
+	Imports           map[string]PreparedImport
+	ImportByComponent map[string]PreparedImport
+	EffectiveState    map[string]bool
+}
+
+type PreparedService struct {
+	Source Service
+	Target TargetStackServiceInspection
+}
+
+type PreparedBuildSource struct {
+	ServiceName string
+	Input       TargetBuildSourceInput
+}
+
+type PreparedImport struct {
+	Source       Backup
+	ServiceName  string
+	ImportName   string
+	StackService TargetStackServiceInspection
+}
+
+// PreflightTarget resolves immutable stack revisions and validates every
+// service, repository, and import mapping against the selected Wodby 2 target.
+// It performs reads only and folds its findings into plan before calculating
+// the approval hash.
+func (c *TargetClient) PreflightTarget(
+	ctx context.Context,
+	export Export,
+	plan *Plan,
+	opts TargetPreflightOptions,
+) (PreparedMigration, error) {
+	if c == nil {
+		return PreparedMigration{}, errors.New("target Wodby 2 client is required")
+	}
+	if plan == nil {
+		return PreparedMigration{}, errors.New("migration plan is required")
+	}
+	if err := export.ValidateSource("app", plan.Source.ID); err != nil {
+		return PreparedMigration{}, err
+	}
+	appExports := export.AppExports()
+	if len(appExports) != 1 || len(plan.Apps) != 1 {
+		return PreparedMigration{}, errors.New("customer migration requires exactly one source app")
+	}
+	if !plan.Target.DiscoveryVerified || !plan.Target.OrgOwnerOrAdminVerified {
+		return PreparedMigration{}, errors.New("target organization owner/admin discovery is required before preflight")
+	}
+
+	prepared := PreparedMigration{App: appExports[0], Instances: []PreparedInstance{}}
+	findings := []ReviewItem{}
+	existingApp, appFound, err := c.FindAppExact(ctx, plan.Target.OrgID, appExports[0].App.Name)
+	if err != nil {
+		return PreparedMigration{}, errors.Wrap(err, "check target app name availability")
+	}
+	if appFound &&
+		existingApp.ID != opts.AllowedTargetAppID &&
+		!opts.AllowStateBackedAppRecovery {
+		findings = append(findings, ReviewItem{
+			Severity: SeverityBlocking,
+			App:      appExports[0].App.Name,
+			Subject:  "target app name",
+			Message: fmt.Sprintf(
+				"target organization already contains app %q with ID %d; choose a different source app name or remove the unrelated target app",
+				existingApp.Name,
+				existingApp.ID,
+			),
+		})
+	}
+	planInstances := make(map[string]*InstancePlan, len(plan.Apps[0].Instances))
+	for index := range plan.Apps[0].Instances {
+		item := &plan.Apps[0].Instances[index]
+		planInstances[item.SourceUUID] = item
+	}
+
+	for _, sourceInstance := range appExports[0].Instances {
+		instancePlan, found := planInstances[sourceInstance.UUID]
+		if !found {
+			return PreparedMigration{}, errors.Errorf("migration plan is missing source instance %q", sourceInstance.UUID)
+		}
+		preparedInstance, instanceFindings, err := c.preflightInstance(
+			ctx,
+			appExports[0].App,
+			sourceInstance,
+			instancePlan,
+			plan.Target.OrgID,
+			plan.Target.ProjectID,
+			plan.Apps[0].Repository,
+			opts,
+		)
+		if err != nil {
+			return PreparedMigration{}, err
+		}
+		prepared.Instances = append(prepared.Instances, preparedInstance)
+		findings = append(findings, instanceFindings...)
+	}
+	sort.SliceStable(prepared.Instances, func(i, j int) bool {
+		return compareInstance(prepared.Instances[i].Source, prepared.Instances[j].Source) < 0
+	})
+	if err := plan.AddReviewItems(findings...); err != nil {
+		return PreparedMigration{}, err
+	}
+	return prepared, nil
+}
+
+func (c *TargetClient) preflightInstance(
+	ctx context.Context,
+	app App,
+	source Instance,
+	plan *InstancePlan,
+	targetOrgID int,
+	targetProjectID int,
+	repositoryPlan *RepositoryPlan,
+	opts TargetPreflightOptions,
+) (PreparedInstance, []ReviewItem, error) {
+	pinned := plan.Stack.TargetID != 0 || plan.Stack.TargetRevID != 0
+	stack, err := c.resolvePreflightStackRevision(
+		ctx, targetOrgID, targetProjectID, plan.Stack,
+	)
+	if err != nil {
+		return PreparedInstance{}, nil, errors.Wrapf(err, "resolve target stack for %s/%s", app.Name, source.Name)
+	}
+	inspections, err := c.InspectStackRevision(ctx, stack.RevID)
+	if err != nil {
+		return PreparedInstance{}, nil, errors.Wrapf(err, "inspect target stack for %s/%s", app.Name, source.Name)
+	}
+	byName, err := indexStackInspections(inspections)
+	if err != nil {
+		return PreparedInstance{}, nil, err
+	}
+	plan.Stack.Target = stack.Name
+	plan.Stack.TargetID = stack.ID
+	plan.Stack.TargetRevID = stack.RevID
+	plan.Stack.TargetVersion = stackVersionLabel(stack)
+	findings := []ReviewItem{{
+		Severity: SeverityConfirmation,
+		App:      app.Name,
+		Instance: source.Name,
+		Subject:  "target stack revision",
+		Message:  fmt.Sprintf("target stack %s revision ID %d will be used", stack.Name, stack.RevID),
+	}}
+
+	sourceByName := make(map[string]Service, len(source.Services))
+	for _, service := range source.Services {
+		sourceByName[service.Name] = service
+	}
+	effective := make(map[string]bool, len(inspections))
+	for _, inspection := range inspections {
+		effective[inspection.StackService.Name] = !inspection.StackService.Disabled
+	}
+	preparedServices := map[string]PreparedService{}
+	targetOwners := map[string]string{}
+	for index := range plan.Services {
+		servicePlan := &plan.Services[index]
+		sourceService, exists := sourceByName[servicePlan.SourceName]
+		if !exists {
+			return PreparedInstance{}, nil, errors.Errorf(
+				"migration plan service %q is missing from source instance %q",
+				servicePlan.SourceName,
+				source.UUID,
+			)
+		}
+		if servicePlan.TargetName == "" {
+			continue
+		}
+		inspection, exists := byName[servicePlan.TargetName]
+		if !exists {
+			if sourceService.Enabled {
+				findings = append(findings, ReviewItem{
+					Severity: SeverityBlocking,
+					App:      app.Name,
+					Instance: source.Name,
+					Subject:  "service " + sourceService.Name,
+					Message:  fmt.Sprintf("target stack has no service named %q", servicePlan.TargetName),
+				})
+			}
+			continue
+		}
+		if pinned {
+			if servicePlan.TargetID <= 0 || servicePlan.TargetServiceRevID <= 0 {
+				return PreparedInstance{}, nil, errors.Errorf(
+					"reviewed target service %q is missing immutable IDs",
+					servicePlan.TargetName,
+				)
+			}
+			if servicePlan.TargetID != inspection.StackService.ID ||
+				servicePlan.TargetServiceRevID != inspection.StackService.ServiceRevID {
+				return PreparedInstance{}, nil, errors.Errorf(
+					"reviewed target service %q no longer matches stack service ID %d and service revision ID %d",
+					servicePlan.TargetName,
+					servicePlan.TargetID,
+					servicePlan.TargetServiceRevID,
+				)
+			}
+		}
+		if owner, duplicate := targetOwners[servicePlan.TargetName]; duplicate && owner != sourceService.Name {
+			findings = append(findings, ReviewItem{
+				Severity: SeverityBlocking,
+				App:      app.Name,
+				Instance: source.Name,
+				Subject:  "service mapping",
+				Message:  fmt.Sprintf("source services %q and %q both map to target service %q", owner, sourceService.Name, servicePlan.TargetName),
+			})
+			continue
+		}
+		targetOwners[servicePlan.TargetName] = sourceService.Name
+		servicePlan.TargetID = inspection.StackService.ID
+		servicePlan.TargetServiceRevID = inspection.StackService.ServiceRevID
+		effective[inspection.StackService.Name] = sourceService.Enabled
+		if !sourceService.Enabled && inspection.StackService.Required {
+			findings = append(findings, ReviewItem{
+				Severity: SeverityBlocking,
+				App:      app.Name,
+				Instance: source.Name,
+				Subject:  "service " + sourceService.Name,
+				Message:  fmt.Sprintf("source service is disabled but target service %q is required", inspection.StackService.Name),
+			})
+			continue
+		}
+		preparedServices[sourceService.Name] = PreparedService{Source: sourceService, Target: inspection}
+	}
+
+	prepared := PreparedInstance{
+		Source:            source,
+		SkipCode:          opts.SkipCode,
+		Stack:             stack,
+		StackServices:     inspections,
+		Services:          preparedServices,
+		Imports:           map[string]PreparedImport{},
+		ImportByComponent: map[string]PreparedImport{},
+		EffectiveState:    effective,
+	}
+	for _, sourceService := range source.Services {
+		for _, variable := range sourceService.EnvVars {
+			if variable.Enabled || !containsString(variable.OverrideFields, "enabled") {
+				continue
+			}
+			findings = append(findings, ReviewItem{
+				Severity: SeverityBlocking,
+				App:      app.Name,
+				Instance: source.Name,
+				Subject:  "env var " + variable.Name,
+				Message:  "a disabled inherited environment-variable override cannot be represented safely by the Wodby 2 environment API",
+			})
+		}
+	}
+	buildSource, buildFindings := prepareBuildSource(app, source, repositoryPlan, inspections, effective, opts)
+	prepared.BuildSource = buildSource
+	findings = append(findings, buildFindings...)
+	if repositoryPlan != nil && buildSource != nil {
+		inspection := byName[buildSource.ServiceName]
+		if pinned {
+			if plan.BuildServiceID != inspection.StackService.ID ||
+				plan.BuildServiceRevID != inspection.StackService.ServiceRevID {
+				return PreparedInstance{}, nil, errors.Errorf(
+					"reviewed build service %q no longer matches stack service ID %d and service revision ID %d",
+					buildSource.ServiceName,
+					plan.BuildServiceID,
+					plan.BuildServiceRevID,
+				)
+			}
+		}
+		if repositoryPlan.TargetService == "" {
+			repositoryPlan.TargetService = buildSource.ServiceName
+		}
+		plan.BuildServiceID = inspection.StackService.ID
+		plan.BuildServiceRevID = inspection.StackService.ServiceRevID
+	}
+
+	if !opts.SkipData {
+		for index := range plan.Imports {
+			importPlan := &plan.Imports[index]
+			sourceBackup, found := findBackupByUUID(source.Backups, importPlan.SourceUUID)
+			if !found {
+				return PreparedInstance{}, nil, errors.Errorf(
+					"migration plan backup %q is missing from source instance %q",
+					importPlan.SourceUUID,
+					source.UUID,
+				)
+			}
+			destination, review := resolveImportDestination(
+				app,
+				source,
+				sourceBackup,
+				importPlan,
+				inspections,
+				effective,
+			)
+			findings = append(findings, review...)
+			if destination != nil {
+				if pinned &&
+					(importPlan.TargetServiceID != destination.StackService.StackService.ID ||
+						importPlan.TargetServiceRevID != destination.StackService.StackService.ServiceRevID) {
+					return PreparedInstance{}, nil, errors.Errorf(
+						"reviewed import %q no longer matches stack service ID %d and service revision ID %d",
+						importPlan.Component,
+						importPlan.TargetServiceID,
+						importPlan.TargetServiceRevID,
+					)
+				}
+				importPlan.TargetServiceRevID = destination.StackService.StackService.ServiceRevID
+				prepared.Imports[sourceBackup.UUID] = *destination
+				component := strings.ToLower(strings.TrimSpace(sourceBackup.Component))
+				if _, exists := prepared.ImportByComponent[component]; exists {
+					findings = append(findings, ReviewItem{
+						Severity: SeverityBlocking,
+						App:      app.Name,
+						Instance: source.Name,
+						Subject:  "backup " + sourceBackup.Component,
+						Message:  "source export contains multiple files for the same backup component",
+					})
+				} else {
+					prepared.ImportByComponent[component] = *destination
+				}
+			}
+		}
+		if len(source.Backups) == 0 {
+			findings = append(findings, ReviewItem{
+				Severity: SeverityConfirmation,
+				App:      app.Name,
+				Instance: source.Name,
+				Subject:  "fresh source backup",
+				Message:  "create a fresh Wodby 1 backup after enabling maintenance mode before sync-data",
+			})
+		}
+	}
+	return prepared, findings, nil
+}
+
+func (c *TargetClient) resolvePreflightStackRevision(
+	ctx context.Context,
+	targetOrgID int,
+	targetProjectID int,
+	plan StackPlan,
+) (TargetStack, error) {
+	pinned := plan.TargetID != 0 || plan.TargetRevID != 0
+	if !pinned {
+		return c.resolveMigrationStackRevision(ctx, targetOrgID, targetProjectID, plan)
+	}
+	if plan.TargetID <= 0 || plan.TargetRevID <= 0 || strings.TrimSpace(plan.Target) == "" {
+		return TargetStack{}, errors.New("reviewed target stack pins are incomplete")
+	}
+	stack, err := c.GetStack(ctx, plan.TargetID)
+	if err != nil {
+		return TargetStack{}, err
+	}
+	if stack.OrgID != targetOrgID {
+		return TargetStack{}, errors.Errorf(
+			"reviewed target stack ID %d belongs to organization ID %d, expected %d",
+			stack.ID,
+			stack.OrgID,
+			targetOrgID,
+		)
+	}
+	if stack.Name != plan.Target {
+		return TargetStack{}, errors.Errorf(
+			"reviewed target stack ID %d is named %q, expected %q",
+			stack.ID,
+			stack.Name,
+			plan.Target,
+		)
+	}
+	revision, err := c.GetStackRevision(ctx, plan.TargetRevID)
+	if err != nil {
+		return TargetStack{}, err
+	}
+	if revision.StackID != stack.ID {
+		return TargetStack{}, errors.Errorf(
+			"reviewed stack revision ID %d belongs to stack ID %d, expected %d",
+			revision.ID,
+			revision.StackID,
+			stack.ID,
+		)
+	}
+	version := fmt.Sprintf("revision-%d", revision.Number)
+	if plan.TargetVersion != version {
+		return TargetStack{}, errors.Errorf(
+			"reviewed stack revision ID %d has version label %q, expected %q",
+			revision.ID,
+			version,
+			plan.TargetVersion,
+		)
+	}
+	stack.RevID = revision.ID
+	stack.LatestRevNumber = revision.Number
+	return stack, nil
+}
+
+func containsString(items []string, wanted string) bool {
+	for _, item := range items {
+		if item == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func indexStackInspections(items []TargetStackServiceInspection) (map[string]TargetStackServiceInspection, error) {
+	result := make(map[string]TargetStackServiceInspection, len(items))
+	for _, item := range items {
+		name := item.StackService.Name
+		if _, exists := result[name]; exists {
+			return nil, &TargetAmbiguousMatchError{Resource: "stack service", Name: name, Count: 2}
+		}
+		result[name] = item
+	}
+	return result, nil
+}
+
+func prepareBuildSource(
+	app App,
+	instance Instance,
+	repositoryPlan *RepositoryPlan,
+	inspections []TargetStackServiceInspection,
+	effective map[string]bool,
+	opts TargetPreflightOptions,
+) (*PreparedBuildSource, []ReviewItem) {
+	if opts.SkipCode {
+		return nil, nil
+	}
+	buildServices := make([]TargetStackServiceInspection, 0, 1)
+	for _, inspection := range inspections {
+		if inspection.ServiceRevision.Manifest == nil ||
+			inspection.ServiceRevision.Manifest.Build == nil ||
+			!inspection.ServiceRevision.Manifest.Build.Connect ||
+			!effective[inspection.StackService.Name] {
+			continue
+		}
+		buildServices = append(buildServices, inspection)
+	}
+	if app.Repository == nil {
+		if len(buildServices) == 0 {
+			return nil, nil
+		}
+		return nil, []ReviewItem{{
+			Severity: SeverityBlocking,
+			App:      app.Name,
+			Instance: instance.Name,
+			Subject:  "application code",
+			Message:  "the target stack requires a build source but the Wodby 1 app has no repository; use --skip-code only for an intentional partial migration",
+		}}
+	}
+	if repositoryPlan == nil || repositoryPlan.CIIntegrationID <= 0 ||
+		strings.TrimSpace(repositoryPlan.RemoteGitRepoID) == "" {
+		return nil, nil // The base plan already records the blocking mapping.
+	}
+
+	var selected TargetStackServiceInspection
+	serviceSelector := strings.TrimSpace(repositoryPlan.TargetService)
+	if serviceSelector != "" {
+		for _, candidate := range buildServices {
+			if candidate.StackService.Name == serviceSelector {
+				selected = candidate
+				break
+			}
+		}
+		if selected.StackService.ID == 0 {
+			return nil, []ReviewItem{{
+				Severity: SeverityBlocking,
+				App:      app.Name,
+				Instance: instance.Name,
+				Subject:  "repository target service",
+				Message:  fmt.Sprintf("target service %q is not an enabled connect-build service", serviceSelector),
+			}}
+		}
+	} else if len(buildServices) == 1 {
+		selected = buildServices[0]
+	} else {
+		return nil, []ReviewItem{{
+			Severity: SeverityBlocking,
+			App:      app.Name,
+			Instance: instance.Name,
+			Subject:  "repository target service",
+			Message:  fmt.Sprintf("target stack has %d enabled connect-build services; select one with --target-code-service", len(buildServices)),
+		}}
+	}
+
+	gitRef := strings.TrimSpace(opts.GitRef)
+	if gitRef == "" {
+		gitRef = stringProperty(instance.Properties, "git_target_value")
+	}
+	gitRefType := strings.TrimSpace(opts.GitRefType)
+	if gitRefType == "" {
+		gitRefType = stringProperty(instance.Properties, "git_target_type")
+	}
+	gitRefType = normalizeGitRefType(gitRefType)
+	if gitRef == "" || gitRefType == "" {
+		return nil, []ReviewItem{{
+			Severity: SeverityBlocking,
+			App:      app.Name,
+			Instance: instance.Name,
+			Subject:  "repository ref",
+			Message:  "source Git ref and ref type are required; pass --target-git-ref and --target-git-ref-type",
+		}}
+	}
+	if deploymentType := strings.ToLower(stringProperty(instance.Properties, "deployment_type")); deploymentType != "" && deploymentType != "git" {
+		return nil, []ReviewItem{{
+			Severity: SeverityBlocking,
+			App:      app.Name,
+			Instance: instance.Name,
+			Subject:  "deployment type",
+			Message:  fmt.Sprintf("source deployment type %q is not supported by the Git migration path", deploymentType),
+		}}
+	}
+
+	integrationID := repositoryPlan.CIIntegrationID
+	remoteRepoID := repositoryPlan.RemoteGitRepoID
+	return &PreparedBuildSource{
+			ServiceName: selected.StackService.Name,
+			Input: TargetBuildSourceInput{
+				BuildSourceType: TargetBuildSourceConnect,
+				IntegrationID:   &integrationID,
+				RemoteGitRepoID: &remoteRepoID,
+				GitRef:          &gitRef,
+				GitRefType:      &gitRefType,
+			},
+		}, []ReviewItem{{
+			Severity: SeverityConfirmation,
+			App:      app.Name,
+			Instance: instance.Name,
+			Subject:  "repository build source",
+			Message:  fmt.Sprintf("target service %q will build Git %s %q", selected.StackService.Name, strings.ToLower(gitRefType), gitRef),
+		}}
+}
+
+func resolveImportDestination(
+	app App,
+	instance Instance,
+	backup Backup,
+	plan *ImportPlan,
+	inspections []TargetStackServiceInspection,
+	effective map[string]bool,
+) (*PreparedImport, []ReviewItem) {
+	expectedImport := sourceComponentImportName(backup.Component)
+	if expectedImport == "" {
+		return nil, []ReviewItem{{
+			Severity: SeverityBlocking,
+			App:      app.Name,
+			Instance: instance.Name,
+			Subject:  "backup " + backup.Component,
+			Message:  fmt.Sprintf("source backup component %q has no supported Wodby 2 import mapping", backup.Component),
+		}}
+	}
+
+	candidates := make([]PreparedImport, 0, 2)
+	for _, inspection := range inspections {
+		if !effective[inspection.StackService.Name] || inspection.ServiceRevision.Manifest == nil {
+			continue
+		}
+		for _, capability := range inspection.ServiceRevision.Manifest.Imports {
+			if capability.Name != expectedImport {
+				continue
+			}
+			candidates = append(candidates, PreparedImport{
+				Source:       backup,
+				ServiceName:  inspection.StackService.Name,
+				ImportName:   capability.Name,
+				StackService: inspection,
+			})
+		}
+	}
+	if plan.TargetService != "" || plan.TargetImport != "" {
+		filtered := candidates[:0]
+		for _, candidate := range candidates {
+			if candidate.ServiceName == plan.TargetService && candidate.ImportName == plan.TargetImport {
+				filtered = append(filtered, candidate)
+			}
+		}
+		candidates = filtered
+	}
+	if len(candidates) != 1 {
+		return nil, []ReviewItem{{
+			Severity: SeverityBlocking,
+			App:      app.Name,
+			Instance: instance.Name,
+			Subject:  "backup " + backup.Component,
+			Message: fmt.Sprintf(
+				"backup component %q matched %d enabled target imports; provide an unambiguous --target-import-map",
+				backup.Component,
+				len(candidates),
+			),
+		}}
+	}
+	selected := candidates[0]
+	plan.TargetService = selected.ServiceName
+	plan.TargetImport = selected.ImportName
+	plan.TargetServiceID = selected.StackService.StackService.ID
+	plan.TargetServiceRevID = selected.StackService.StackService.ServiceRevID
+	return &selected, []ReviewItem{{
+		Severity: SeverityConfirmation,
+		App:      app.Name,
+		Instance: instance.Name,
+		Subject:  "backup " + backup.Component,
+		Message:  fmt.Sprintf("backup will import through target service %q capability %q", selected.ServiceName, selected.ImportName),
+	}}
+}
+
+func findBackupByUUID(items []Backup, uuid string) (Backup, bool) {
+	for _, item := range items {
+		if item.UUID == uuid {
+			return item, true
+		}
+	}
+	return Backup{}, false
+}
+
+func sourceComponentImportName(component string) string {
+	switch strings.ToLower(strings.TrimSpace(component)) {
+	case "db", "database":
+		return "database"
+	case "files":
+		return "files"
+	default:
+		return ""
+	}
+}
+
+func stringProperty(properties map[string]interface{}, name string) string {
+	value, found := properties[name]
+	if !found || value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func normalizeGitRefType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "branch":
+		return TargetGitRefBranch
+	case "tag":
+		return TargetGitRefTag
+	case "commit", "sha":
+		return TargetGitRefCommit
+	default:
+		return ""
+	}
+}
+
+func stackVersionLabel(stack TargetStack) string {
+	if stack.LatestRevNumber > 0 {
+		return fmt.Sprintf("revision-%d", stack.LatestRevNumber)
+	}
+	return ""
+}

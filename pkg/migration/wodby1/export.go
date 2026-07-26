@@ -2,6 +2,7 @@ package wodby1
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -28,6 +29,7 @@ type Export struct {
 	Issues          []ExportIssue `json:"issues,omitempty"`
 	Digest          string        `json:"-"`
 	ResponseDigest  string        `json:"-"`
+	ConfigMAC       string        `json:"-"`
 
 	// App and Instances are the Wodby 1 migration/v1 app export shape.
 	App       *App       `json:"app,omitempty"`
@@ -36,7 +38,10 @@ type Export struct {
 
 func (e Export) ContentDigest() (string, error) {
 	// generated_at is transport metadata rather than source state. Excluding it
-	// makes identical exports comparable across repeated read-only requests.
+	// makes identical exports comparable across repeated requests. Backup URLs
+	// are also transport credentials: the source may refresh them even when the
+	// selected backup has not changed, and they must never influence a persisted
+	// plan or state identity.
 	e.GeneratedAt = 0
 	e.Digest = ""
 	e.ResponseDigest = ""
@@ -50,8 +55,135 @@ func (e Export) ContentDigest() (string, error) {
 	if err := decoder.Decode(&canonical); err != nil {
 		return "", err
 	}
+	scrubBackupURLs(&canonical)
+	scrubPublicDigestValues(&canonical)
 	canonicalizeExport(&canonical)
 	data, err = json.Marshal(canonical)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
+}
+
+// ConfigDigest identifies the source application configuration independently
+// from backup selection and the write-freeze flag. A migration can therefore
+// prepare infrastructure, let the customer enable maintenance mode and create
+// a fresh backup, then safely resume data synchronization without accepting
+// unrelated source drift.
+func (e Export) ConfigDigest() (string, error) {
+	e.GeneratedAt = 0
+	e.Digest = ""
+	e.ResponseDigest = ""
+	data, err := json.Marshal(e)
+	if err != nil {
+		return "", err
+	}
+	var canonical Export
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&canonical); err != nil {
+		return "", err
+	}
+	normalizeConfigDigestExport(&canonical)
+	scrubPublicDigestValues(&canonical)
+	canonicalizeExport(&canonical)
+	data, err = json.Marshal(canonical)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
+}
+
+// AuthenticatedConfigDigest binds the full source configuration, including
+// protected values, without persisting an offline password oracle. The Wodby 1
+// API token is already required for every phase and is never written to the
+// plan or state file.
+func (e Export) AuthenticatedConfigDigest(key string) (string, error) {
+	if key == "" {
+		return "", fmt.Errorf("authenticated configuration digest key is required")
+	}
+	e.GeneratedAt = 0
+	e.Digest = ""
+	e.ResponseDigest = ""
+	e.ConfigMAC = ""
+	data, err := json.Marshal(e)
+	if err != nil {
+		return "", err
+	}
+	var canonical Export
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&canonical); err != nil {
+		return "", err
+	}
+	normalizeConfigDigestExport(&canonical)
+	canonicalizeExport(&canonical)
+	data, err = json.Marshal(canonical)
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, []byte(key))
+	_, _ = mac.Write([]byte("wodby1-migration-config/v1\x00"))
+	_, _ = mac.Write(data)
+	return fmt.Sprintf("%x", mac.Sum(nil)), nil
+}
+
+// MigrationConfigDigest returns the token-authenticated fingerprint populated
+// by SourceClient. In-memory/unit-test exports fall back to the public digest,
+// which deliberately excludes protected and free-form values.
+func (e Export) MigrationConfigDigest() (string, error) {
+	if e.ConfigMAC != "" {
+		if len(e.ConfigMAC) != sha256.Size*2 {
+			return "", fmt.Errorf("authenticated configuration digest is invalid")
+		}
+		for _, char := range e.ConfigMAC {
+			if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+				return "", fmt.Errorf("authenticated configuration digest is invalid")
+			}
+		}
+		return e.ConfigMAC, nil
+	}
+	return e.ConfigDigest()
+}
+
+// BackupDigest identifies the selected backup files without hashing their
+// backup download URLs. It is suitable for recording which immutable data
+// snapshot was imported while keeping URL credentials out of migration state.
+func (e Export) BackupDigest() (string, error) {
+	type digestInstance struct {
+		AppUUID      string   `json:"appUuid"`
+		InstanceUUID string   `json:"instanceUuid"`
+		Backups      []Backup `json:"backups"`
+	}
+	payload := struct {
+		Schema string           `json:"schema"`
+		Source *ExportSource    `json:"source,omitempty"`
+		Items  []digestInstance `json:"items"`
+	}{
+		Schema: e.Schema,
+		Source: e.Source,
+		Items:  []digestInstance{},
+	}
+	for _, appExport := range e.AppExports() {
+		for _, instance := range appExport.Instances {
+			backups := append([]Backup(nil), instance.Backups...)
+			for i := range backups {
+				backups[i].URL = ""
+			}
+			sort.SliceStable(backups, func(i, j int) bool {
+				return canonicalJSON(backups[i]) < canonicalJSON(backups[j])
+			})
+			payload.Items = append(payload.Items, digestInstance{
+				AppUUID:      appExport.App.UUID,
+				InstanceUUID: instance.UUID,
+				Backups:      backups,
+			})
+		}
+	}
+	sort.SliceStable(payload.Items, func(i, j int) bool {
+		return canonicalJSON(payload.Items[i]) < canonicalJSON(payload.Items[j])
+	})
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
@@ -169,13 +301,14 @@ type Service struct {
 }
 
 type EnvVar struct {
-	Name      string `json:"name"`
-	Value     string `json:"value,omitempty"`
-	Secret    bool   `json:"secret,omitempty"`
-	Enabled   bool   `json:"enabled"`
-	Protected bool   `json:"protected,omitempty"`
-	Origin    string `json:"origin,omitempty"`
-	Redacted  *bool  `json:"redacted,omitempty"`
+	Name           string   `json:"name"`
+	Value          string   `json:"value,omitempty"`
+	Secret         bool     `json:"secret,omitempty"`
+	Enabled        bool     `json:"enabled"`
+	Protected      bool     `json:"protected,omitempty"`
+	Origin         string   `json:"origin,omitempty"`
+	OverrideFields []string `json:"override_fields,omitempty"`
+	Redacted       *bool    `json:"redacted,omitempty"`
 }
 
 type CronJob struct {
@@ -198,6 +331,7 @@ type Backup struct {
 	Updated       int64  `json:"updated,omitempty"`
 	BackupUUID    string `json:"backup_uuid,omitempty"`
 	BackupCreated int64  `json:"backup_created,omitempty"`
+	BackupUpdated int64  `json:"backup_updated,omitempty"`
 }
 
 func DecodeExport(data []byte) (Export, error) {
@@ -247,6 +381,9 @@ func (e Export) Validate() error {
 		if e.Source.Kind == "app" {
 			if len(e.Apps) != 1 || e.Apps[0].App.UUID != e.Source.UUID {
 				return fmt.Errorf("Wodby 1 migration/v2 app export must contain exactly its requested source app")
+			}
+			if len(e.Apps[0].Instances) == 0 {
+				return fmt.Errorf("Wodby 1 migration/v2 app export must contain at least one source instance")
 			}
 		}
 		if err := validateV2Identities(e.Apps); err != nil {
@@ -395,6 +532,115 @@ func canonicalizeExport(export *Export) {
 	})
 }
 
+func scrubBackupURLs(export *Export) {
+	for appIndex := range export.Apps {
+		for instanceIndex := range export.Apps[appIndex].Instances {
+			for backupIndex := range export.Apps[appIndex].Instances[instanceIndex].Backups {
+				export.Apps[appIndex].Instances[instanceIndex].Backups[backupIndex].URL = ""
+			}
+		}
+	}
+	for instanceIndex := range export.Instances {
+		for backupIndex := range export.Instances[instanceIndex].Backups {
+			export.Instances[instanceIndex].Backups[backupIndex].URL = ""
+		}
+	}
+}
+
+func scrubPublicDigestValues(export *Export) {
+	for issueIndex := range export.Issues {
+		export.Issues[issueIndex].Details = nil
+	}
+	if export.App != nil {
+		scrubPublicAppValues(export.App)
+	}
+	for appIndex := range export.Apps {
+		app := &export.Apps[appIndex]
+		scrubPublicAppValues(&app.App)
+		for instanceIndex := range app.Instances {
+			scrubPublicInstanceValues(&app.Instances[instanceIndex])
+		}
+	}
+	for instanceIndex := range export.Instances {
+		scrubPublicInstanceValues(&export.Instances[instanceIndex])
+	}
+}
+
+func scrubPublicAppValues(app *App) {
+	if app != nil && app.Repository != nil {
+		app.Repository.URL = ""
+	}
+}
+
+func scrubPublicInstanceValues(instance *Instance) {
+	if instance.BasicAuth != nil {
+		instance.BasicAuth.Password = ""
+	}
+	for serviceIndex := range instance.Services {
+		service := &instance.Services[serviceIndex]
+		for name := range service.Configuration {
+			service.Configuration[name] = nil
+		}
+		for envIndex := range service.EnvVars {
+			service.EnvVars[envIndex].Value = ""
+		}
+		for cronIndex := range service.CronJobs {
+			cron := &service.CronJobs[cronIndex]
+			cron.Title = ""
+			cron.Command = ""
+			cron.Source = ""
+		}
+	}
+}
+
+func normalizeConfigDigestExport(export *Export) {
+	export.GeneratedAt = 0
+	export.Digest = ""
+	export.ResponseDigest = ""
+	export.Issues = filterConfigDigestIssues(export.Issues)
+	if export.App != nil {
+		export.App.Updated = 0
+		if export.App.Repository != nil {
+			export.App.Repository.Updated = 0
+		}
+	}
+	for appIndex := range export.Apps {
+		app := &export.Apps[appIndex]
+		app.App.Updated = 0
+		if app.App.Repository != nil {
+			app.App.Repository.Updated = 0
+		}
+		for instanceIndex := range app.Instances {
+			normalizeConfigDigestInstance(&app.Instances[instanceIndex])
+		}
+	}
+	for instanceIndex := range export.Instances {
+		normalizeConfigDigestInstance(&export.Instances[instanceIndex])
+	}
+}
+
+func normalizeConfigDigestInstance(instance *Instance) {
+	instance.Updated = 0
+	instance.Backups = nil
+	if instance.Properties != nil {
+		delete(instance.Properties, "maintenance_mode")
+	}
+}
+
+func filterConfigDigestIssues(issues []ExportIssue) []ExportIssue {
+	result := make([]ExportIssue, 0, len(issues))
+	for _, issue := range issues {
+		// Backup freshness and availability are validated by sync-data against
+		// BackupDigest. They must not invalidate already prepared target
+		// infrastructure.
+		if strings.HasPrefix(issue.Code, "backup.") {
+			continue
+		}
+		result = append(result, issue)
+	}
+	return result
+}
+
 func canonicalizeAppExport(appExport *AppExport) {
 	for i := range appExport.Instances {
 		canonicalizeInstance(&appExport.Instances[i])
@@ -407,6 +653,9 @@ func canonicalizeAppExport(appExport *AppExport) {
 func canonicalizeInstance(instance *Instance) {
 	for i := range instance.Services {
 		service := &instance.Services[i]
+		for envIndex := range service.EnvVars {
+			sort.Strings(service.EnvVars[envIndex].OverrideFields)
+		}
 		sort.SliceStable(service.EnvVars, func(i, j int) bool {
 			return canonicalJSON(service.EnvVars[i]) < canonicalJSON(service.EnvVars[j])
 		})

@@ -7,7 +7,7 @@ import (
 )
 
 func PrintReview(w io.Writer, plan Plan) {
-	fmt.Fprintf(w, "Wodby 1 migration inventory (read-only)\n")
+	fmt.Fprintf(w, "Wodby 1 to Wodby 2 migration plan\n")
 	fmt.Fprintf(w, "Status: %s\n", plan.Status)
 	fmt.Fprintf(w, "Source: %s %s\n", plan.Source.Kind, plan.Source.ID)
 	fmt.Fprintf(w, "Source export digest: %s\n", plan.Source.ExportDigest)
@@ -17,7 +17,12 @@ func PrintReview(w io.Writer, plan Plan) {
 	fmt.Fprintf(w, "Plan hash: %s\n", plan.PlanHash)
 	if plan.Target.Org != "" || plan.Target.Project != "" || plan.Target.Cluster != "" {
 		fmt.Fprintf(w, "Intended target: org=%s project=%s cluster=%s\n", emptyDash(plan.Target.Org), emptyDash(plan.Target.Project), emptyDash(plan.Target.Cluster))
-		fmt.Fprintf(w, "Target Wodby 2 administrator: %s\n", verifiedLabel(plan.Target.AdminVerified))
+		fmt.Fprintf(
+			w,
+			"Target organization owner/admin: %s (role=%s)\n",
+			verifiedLabel(plan.Target.OrgOwnerOrAdminVerified),
+			emptyDash(plan.Target.OrgRole),
+		)
 		fmt.Fprintf(w, "Target discovery: %s\n", verifiedLabel(plan.Target.DiscoveryVerified))
 		if plan.Target.DiscoveryVerified {
 			fmt.Fprintf(
@@ -61,7 +66,15 @@ func PrintReview(w io.Writer, plan Plan) {
 			if instance.TargetEnvID > 0 {
 				targetEnv = fmt.Sprintf("%s(%d)", targetEnv, instance.TargetEnvID)
 			}
-			fmt.Fprintf(w, "  Instance: %s type=%s targetEnv=%s stack=%s\n", firstNonEmpty(instance.Title, instance.Name), instance.SourceType, targetEnv, instance.Stack.Name)
+			fmt.Fprintf(
+				w,
+				"  Instance: %s type=%s targetEnv=%s stack=%s -> %s\n",
+				firstNonEmpty(instance.Title, instance.Name),
+				instance.SourceType,
+				targetEnv,
+				instance.Stack.Name,
+				emptyDash(instance.Stack.Target),
+			)
 			if instance.BasicAuth.Enabled {
 				status := "enabled"
 				if instance.BasicAuth.SecretRedacted {
@@ -91,6 +104,24 @@ func PrintReview(w io.Writer, plan Plan) {
 						port = fmt.Sprintf("%d", *route.PortNumber)
 					}
 					fmt.Fprintf(w, "      - %s action=%s type=%s service=%s portNumber=%s%s\n", route.Host, route.Action, emptyDash(route.Type), emptyDash(route.Service), port, flags)
+				}
+			}
+			if len(instance.Imports) != 0 {
+				fmt.Fprintf(w, "    Data imports:\n")
+				for _, item := range instance.Imports {
+					target := "-"
+					if item.TargetService != "" || item.TargetImport != "" {
+						target = emptyDash(item.TargetService) + ":" + emptyDash(item.TargetImport)
+					}
+					fmt.Fprintf(
+						w,
+						"      - %s action=%s target=%s backupCreated=%d size=%d\n",
+						item.Component,
+						item.Action,
+						target,
+						item.BackupCreated,
+						item.Size,
+					)
 				}
 			}
 		}

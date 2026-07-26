@@ -295,6 +295,39 @@ func TestBuildPlanSkipsTechnicalAndDisabledRoutes(t *testing.T) {
 	}
 }
 
+func TestBuildPlanBlocksWildcardRouteBeforePrepare(t *testing.T) {
+	enabled := true
+	port := 80
+	export := Export{
+		Schema: ExportSchemaV2,
+		Source: &ExportSource{Kind: "app", UUID: "app-1"},
+		Apps: []AppExport{{
+			App: App{UUID: "app-1", Name: "demo", Status: "ok"},
+			Instances: []Instance{{
+				UUID: "instance-1", Name: "prod", Type: "prod", Status: "ok",
+				Stack: Stack{Name: "drupal"},
+				Domains: []Domain{{
+					UUID: "domain-1", Name: "*.example.com", Type: "user",
+					Status: "ok", Enabled: &enabled, Service: "nginx",
+					ServiceProtocol: "http", PortNumber: &port,
+				}},
+			}},
+		}},
+	}
+
+	plan, err := BuildPlan(export, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := plan.Apps[0].Instances[0].Routes[0]
+	if !route.ReviewRequired || route.Action != "unvalidated" || plan.Summary.Blocking == 0 {
+		t.Fatalf("wildcard route was not blocked: route=%#v review=%#v", route, plan.Review)
+	}
+	if !hasReviewMessage(plan.Review, SeverityBlocking, "wildcard source routes") {
+		t.Fatalf("wildcard blocker missing: %#v", plan.Review)
+	}
+}
+
 func TestBuildPlanPreservesExplicitRedactionAndBasicAuthSemantics(t *testing.T) {
 	notRedacted := false
 	redacted := true
@@ -349,7 +382,7 @@ func TestBuildPlanPreservesExplicitRedactionAndBasicAuthSemantics(t *testing.T) 
 	}
 	if len(plan.Review) != 3 || plan.Review[0].Subject != "env var REDACTED_VALUE" ||
 		plan.Review[1].Subject != "basic auth" ||
-		plan.Review[2].Severity != SeverityManual {
+		plan.Review[2].Severity != SeverityConfirmation {
 		t.Fatalf("review = %#v", plan.Review)
 	}
 }
@@ -461,9 +494,10 @@ func TestBuildPlanUsesVerifiedTargetDiscovery(t *testing.T) {
 		}},
 	}
 	scope := TargetScopeDiscovery{
-		User:    TargetCurrentUser{ID: 1, IsAdmin: true},
-		Org:     TargetOrg{ID: 2, Name: "acme"},
-		Project: TargetProject{ID: 3, Name: "site", OrgID: 2},
+		User:       TargetCurrentUser{ID: 1},
+		Membership: TargetOrgMembership{ID: 10, OrgID: 2, Role: "owner", Status: "ok"},
+		Org:        TargetOrg{ID: 2, Name: "acme"},
+		Project:    TargetProject{ID: 3, Name: "site", OrgID: 2},
 		Cluster: TargetCluster{
 			ID:     4,
 			Name:   "prod",
@@ -493,7 +527,7 @@ func TestBuildPlanUsesVerifiedTargetDiscovery(t *testing.T) {
 		t.Fatalf("status = %q, review = %#v", plan.Status, plan.Review)
 	}
 	if plan.Target.OrgID != 2 || plan.Target.ProjectID != 3 || plan.Target.ClusterID != 4 ||
-		!plan.Target.AdminVerified || !plan.Target.DiscoveryVerified ||
+		!plan.Target.OrgOwnerOrAdminVerified || !plan.Target.DiscoveryVerified ||
 		plan.Target.Capabilities == nil || !plan.Target.Capabilities.RedirectRoutes {
 		t.Fatalf("target = %#v", plan.Target)
 	}
@@ -587,10 +621,11 @@ func TestBuildPlanMarksUnresolvedPayloadsForReview(t *testing.T) {
 		}},
 	}
 	scope := TargetScopeDiscovery{
-		User:    TargetCurrentUser{ID: 1, IsAdmin: true},
-		Org:     TargetOrg{ID: 2, Name: "acme"},
-		Project: TargetProject{ID: 3, Name: "site", OrgID: 2},
-		Cluster: TargetCluster{ID: 4, Name: "prod", Status: "OK", OrgID: 2},
+		User:       TargetCurrentUser{ID: 1},
+		Membership: TargetOrgMembership{ID: 10, OrgID: 2, Role: "admin", Status: "ok"},
+		Org:        TargetOrg{ID: 2, Name: "acme"},
+		Project:    TargetProject{ID: 3, Name: "site", OrgID: 2},
+		Cluster:    TargetCluster{ID: 4, Name: "prod", Status: "OK", OrgID: 2},
 	}
 	plan, err := BuildPlan(export, PlanOptions{
 		SourceKind:  "app",
@@ -603,7 +638,8 @@ func TestBuildPlanMarksUnresolvedPayloadsForReview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Status != "requires_review" || plan.Summary.Manual < 4 {
+	if plan.Status != "blocked" || plan.Summary.Blocking != 1 ||
+		plan.Summary.Confirmation < 3 || plan.Summary.Manual != 0 {
 		t.Fatalf("status = %q, summary = %#v, review = %#v", plan.Status, plan.Summary, plan.Review)
 	}
 }
@@ -651,9 +687,101 @@ func TestBuildPlanCarriesSourceIssuesAndSkipsInfrastructureCron(t *testing.T) {
 	}
 	if plan.Review[0].Code != "cron.source_only_infrastructure" ||
 		plan.Review[0].Path == "" ||
-		plan.Review[0].Details["raw_line"] != "@daily cleanup" {
+		plan.Review[0].Details != nil {
 		t.Fatalf("review = %#v", plan.Review[0])
 	}
+}
+
+func TestBuildPlanTreatsOptionalServicePropertiesAsEffectiveOnlyWhenServiceIsEnabled(t *testing.T) {
+	base := Export{
+		Schema: ExportSchemaV1,
+		App:    &App{UUID: "app-1", Name: "demo"},
+		Instances: []Instance{{
+			UUID: "instance-1", Name: "prod", Type: "prod",
+			Stack:      Stack{Name: "drupal"},
+			Properties: map[string]interface{}{"cache_redis": true},
+			Services:   []Service{{Name: "php", Enabled: true}},
+		}},
+	}
+
+	plan, err := BuildPlan(base, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Summary.Blocking != 0 {
+		t.Fatalf("irrelevant optional-service default blocked migration: %#v", plan.Review)
+	}
+
+	disabledIntegration := cloneExportForTest(t, base)
+	disabledIntegration.Instances[0].Properties["cache_redis"] = false
+	disabledIntegration.Instances[0].Services = append(
+		disabledIntegration.Instances[0].Services,
+		Service{Name: "redis", Enabled: true},
+	)
+	plan, err = BuildPlan(disabledIntegration, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Summary.Blocking != 1 ||
+		!hasReviewMessage(plan.Review, SeverityBlocking, "application integration is disabled") {
+		t.Fatalf("disabled effective integration was not blocked: %#v", plan.Review)
+	}
+
+	enabledIntegration := cloneExportForTest(t, disabledIntegration)
+	enabledIntegration.Instances[0].Properties["cache_redis"] = true
+	plan, err = BuildPlan(enabledIntegration, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Summary.Blocking != 0 ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "enabled source integration") {
+		t.Fatalf("enabled effective integration was not reviewable: %#v", plan.Review)
+	}
+}
+
+func TestBuildPlanMigratesPropertyDerivedPHPEnvironment(t *testing.T) {
+	export := Export{
+		Schema: ExportSchemaV1,
+		App:    &App{UUID: "app-1", Name: "demo"},
+		Instances: []Instance{{
+			UUID: "instance-1", Name: "prod", Type: "prod",
+			Stack: Stack{Name: "drupal"},
+			Properties: map[string]interface{}{
+				"php_opcache": false,
+				"php_xdebug":  true,
+			},
+			Services: []Service{{
+				Name: "php", Enabled: true,
+				EnvVars: []EnvVar{
+					{Name: "PHP_OPCACHE_ENABLE", Value: "0", Enabled: true, Origin: "computed"},
+					{Name: "PHP_XDEBUG", Value: "1", Enabled: true, Origin: "default"},
+					{Name: "PHP_DEFAULT", Value: "unchanged", Enabled: true, Origin: "default"},
+				},
+			}},
+		}},
+	}
+
+	plan, err := BuildPlan(export, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := plan.Apps[0].Instances[0].Services[0]
+	if service.EnvVars != 2 || plan.Summary.EnvVars != 2 {
+		t.Fatalf("property-derived PHP environment was not selected: %#v", service)
+	}
+	if !hasReviewMessage(plan.Review, SeverityConfirmation, "OPcache") ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "Xdebug") {
+		t.Fatalf("property-derived behavior was not disclosed: %#v", plan.Review)
+	}
+}
+
+func hasReviewMessage(items []ReviewItem, severity string, fragment string) bool {
+	for _, item := range items {
+		if item.Severity == severity && strings.Contains(item.Message, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBuildPlanOrderingIsDeterministic(t *testing.T) {
@@ -766,8 +894,54 @@ func TestExportAndPlanDigestsIgnoreTransportMetadata(t *testing.T) {
 	if firstPlan.PlanHash != secondPlan.PlanHash {
 		t.Fatalf("plan hashes differ: %q != %q", firstPlan.PlanHash, secondPlan.PlanHash)
 	}
-	if firstPlan.Source.GeneratedAt == secondPlan.Source.GeneratedAt ||
-		firstPlan.Source.ResponseDigest == secondPlan.Source.ResponseDigest {
-		t.Fatalf("transport metadata was not retained: %#v %#v", firstPlan.Source, secondPlan.Source)
+	if firstPlan.Source.GeneratedAt == secondPlan.Source.GeneratedAt {
+		t.Fatalf("generation timestamps were not retained: %#v %#v", firstPlan.Source, secondPlan.Source)
+	}
+	if firstPlan.Source.ResponseDigest != "" || secondPlan.Source.ResponseDigest != "" {
+		t.Fatalf("raw response digests must not be persisted: %#v %#v", firstPlan.Source, secondPlan.Source)
+	}
+}
+
+func TestPlanHashTreatsOwnerAndAdminAsTheSameAuthorizationClass(t *testing.T) {
+	owner := Plan{
+		Schema: MigrationPlanSchema,
+		Target: PlanTarget{
+			OrgRole:                 "owner",
+			OrgOwnerOrAdminVerified: true,
+		},
+	}
+	ownerHash, err := owner.contentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	admin := owner
+	admin.Target.OrgRole = "admin"
+	adminHash, err := admin.contentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adminHash != ownerHash {
+		t.Fatalf("authorized role transition changed plan hash: owner=%q admin=%q", ownerHash, adminHash)
+	}
+
+	unverified := owner
+	unverified.Target.OrgOwnerOrAdminVerified = false
+	unverifiedHash, err := unverified.contentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unverifiedHash == ownerHash {
+		t.Fatal("loss of organization owner/admin authorization did not change plan hash")
+	}
+
+	tampered := owner
+	tampered.Target.OrgRole = "member"
+	tamperedHash, err := tampered.contentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tamperedHash == ownerHash {
+		t.Fatal("role outside the authorized owner/admin class did not change plan hash")
 	}
 }

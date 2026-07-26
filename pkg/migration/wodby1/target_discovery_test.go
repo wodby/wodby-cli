@@ -165,9 +165,15 @@ func TestTargetClientDiscoverTargetByExactNames(t *testing.T) {
 		var response any
 		switch r.URL.Path {
 		case "/v1/user":
-			response = TargetCurrentUser{ID: 1, Email: "admin@example.com", IsAdmin: true}
+			response = TargetCurrentUser{ID: 1, Email: "admin@example.com"}
 		case "/v1/orgs":
 			response = []TargetOrg{{ID: 7, Name: "acme", Title: "Acme"}}
+		case "/v1/org-memberships":
+			if r.URL.Query().Get("orgId") != "7" {
+				http.Error(w, "missing membership org scope", http.StatusBadRequest)
+				return
+			}
+			response = targetAdminMemberships(1, 7)
 		case "/v1/projects":
 			if r.URL.Query().Get("orgId") != "7" {
 				http.Error(w, "missing project org scope", http.StatusBadRequest)
@@ -228,7 +234,8 @@ func TestTargetClientDiscoverTargetByExactNames(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if result.User.ID != 1 || result.Org.ID != 7 || result.Project.ID != 11 || result.Cluster.ID != 13 {
+	if result.User.ID != 1 || result.Membership.Role != "admin" || result.Membership.OrgID != 7 ||
+		result.Org.ID != 7 || result.Project.ID != 11 || result.Cluster.ID != 13 {
 		t.Fatalf("scope = %#v", result.TargetScopeDiscovery)
 	}
 	if !result.Cluster.Capabilities.EnvoyGateway || !result.Cluster.Capabilities.RedirectRoutes {
@@ -260,10 +267,12 @@ func TestTargetClientDiscoverTargetByIDs(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var response any
 		switch r.URL.RequestURI() {
-		case "/v1/user":
-			response = TargetCurrentUser{ID: 1, IsAdmin: true}
 		case "/v1/orgs/7":
 			response = TargetOrg{ID: 7, Name: "acme"}
+		case "/v1/user":
+			response = TargetCurrentUser{ID: 1}
+		case "/v1/org-memberships?orgId=7":
+			response = targetAdminMemberships(1, 7)
 		case "/v1/projects/11":
 			response = TargetProject{ID: 11, Name: "platform", OrgID: 7}
 		case "/v1/clusters/13":
@@ -301,10 +310,12 @@ func TestTargetDiscoveryRelationshipBlockers(t *testing.T) {
 	t.Run("project organization", func(t *testing.T) {
 		server := newTargetDiscoveryServer(t, func(r *http.Request) any {
 			switch r.URL.RequestURI() {
-			case "/v1/user":
-				return TargetCurrentUser{ID: 1, IsAdmin: true}
 			case "/v1/orgs/7":
 				return TargetOrg{ID: 7, Name: "acme"}
+			case "/v1/user":
+				return TargetCurrentUser{ID: 1}
+			case "/v1/org-memberships?orgId=7":
+				return targetAdminMemberships(1, 7)
 			case "/v1/projects/11":
 				return TargetProject{ID: 11, Name: "other", OrgID: 8}
 			default:
@@ -324,10 +335,12 @@ func TestTargetDiscoveryRelationshipBlockers(t *testing.T) {
 	t.Run("cluster organization", func(t *testing.T) {
 		server := newTargetDiscoveryServer(t, func(r *http.Request) any {
 			switch r.URL.RequestURI() {
-			case "/v1/user":
-				return TargetCurrentUser{ID: 1, IsAdmin: true}
 			case "/v1/orgs/7":
 				return TargetOrg{ID: 7, Name: "acme"}
+			case "/v1/user":
+				return TargetCurrentUser{ID: 1}
+			case "/v1/org-memberships?orgId=7":
+				return targetAdminMemberships(1, 7)
 			case "/v1/projects/11":
 				return TargetProject{ID: 11, Name: "platform", OrgID: 7}
 			case "/v1/clusters/13":
@@ -349,10 +362,12 @@ func TestTargetDiscoveryRelationshipBlockers(t *testing.T) {
 	t.Run("cluster project", func(t *testing.T) {
 		server := newTargetDiscoveryServer(t, func(r *http.Request) any {
 			switch r.URL.RequestURI() {
-			case "/v1/user":
-				return TargetCurrentUser{ID: 1, IsAdmin: true}
 			case "/v1/orgs/7":
 				return TargetOrg{ID: 7, Name: "acme"}
+			case "/v1/user":
+				return TargetCurrentUser{ID: 1}
+			case "/v1/org-memberships?orgId=7":
+				return targetAdminMemberships(1, 7)
 			case "/v1/projects/11":
 				return TargetProject{ID: 11, Name: "platform", OrgID: 7}
 			case "/v1/clusters/13":
@@ -457,6 +472,16 @@ func mustTargetClient(t *testing.T, serverURL string) *TargetClient {
 		t.Fatal(err)
 	}
 	return client
+}
+
+func targetAdminMemberships(userID int, orgID int) []TargetOrgMembership {
+	return []TargetOrgMembership{{
+		ID:     1,
+		UserID: &userID,
+		OrgID:  orgID,
+		Role:   "admin",
+		Status: "ok",
+	}}
 }
 
 func assertTargetBlocker(t *testing.T, err error, code string, message string) {

@@ -26,6 +26,7 @@ var (
 	databaseUserColumns             = []string{"id", "username", "hostname", "status", "database", "dbs", "createdAt"}
 	clusterColumns                  = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "version", "nodes", "singleNode"}
 	clusterGetColumns               = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "storageClasses", "storageClassesObservedAt"}
+	clusterMetricsColumns           = []string{"id", "nodes", "cpu", "memory", "kubeCPUCap", "kubeMemoryCap", "kubePodsCap", "hostDisk"}
 	infraAppColumns                 = []string{"id", "name", "title", "status", "stack"}
 	integrationColumns              = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
 	providerColumns                 = []string{"id", "name", "title", "status", "providerVersion"}
@@ -52,8 +53,8 @@ var (
 	appStatusColumns                = []string{"id", "title", "status", "instances", "serviceStatus", "routeStatus", "latestBuild", "latestDeployment", "needs"}
 	instanceColumns                 = []string{"id", "name", "title", "status", "outdated", "autoUpdates", "app", "stack", "env", "cluster", "domain"}
 	instanceListColumns             = append(append([]string{}, instanceColumns...), "lastDeployedAt")
-	instanceGetColumns              = append(append([]string{}, instanceColumns...), "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
-	instanceStatusColumns           = []string{"id", "title", "status", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
+	instanceGetColumns              = append(append([]string{}, instanceColumns...), "pausedAt", "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
+	instanceStatusColumns           = []string{"id", "title", "status", "pausedAt", "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
 	serviceColumns                  = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
 	appServiceEnvColumns            = []string{"id", "name", "value", "secret", "runtime", "build", "envType", "workload", "container", "source", "createdAt"}
 	appServiceValueColumns          = []string{"id", "name", "value", "secret", "source", "createdAt"}
@@ -1068,6 +1069,7 @@ func newClusterCommand() *cobra.Command {
 		listCmd,
 		getCmd,
 		newClusterGetByNameCommand(out),
+		newClusterMetricsCommand(out),
 		newClusterAppCommand(),
 		newClusterCreateCommand(out),
 		newClusterUpdateCommand(out),
@@ -1107,9 +1109,28 @@ func getAndPrintCluster(cmd *cobra.Command, out outputOptions, path string, quer
 	return printClusterGetResult(cmd, client, out, result, clusterGetColumns)
 }
 
+func newClusterMetricsCommand(out outputOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "metrics ID",
+		Short: "Get cluster metrics",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/clusters/metrics/"+url.PathEscape(args[0]), nil, &result); err != nil {
+				return err
+			}
+			return printClientGetResult(cmd, client, out, result, clusterMetricsColumns)
+		},
+	}
+}
+
 func printClusterResult(cmd *cobra.Command, client *rest.Client, out outputOptions, value interface{}, columns []string) error {
 	if outputFormat(cmd, out) != outputJSON {
-		if err := enrichClusterNodesSummary(cmd.Context(), normalizeItems(value)); err != nil {
+		if err := enrichClusterNodesSummary(cmd.Context(), client, normalizeItems(value)); err != nil {
 			return err
 		}
 	}
@@ -1118,60 +1139,44 @@ func printClusterResult(cmd *cobra.Command, client *rest.Client, out outputOptio
 
 func printClusterGetResult(cmd *cobra.Command, client *rest.Client, out outputOptions, value interface{}, columns []string) error {
 	if outputFormat(cmd, out) != outputJSON {
-		if err := enrichClusterNodesSummary(cmd.Context(), normalizeItem(value)); err != nil {
+		if err := enrichClusterNodesSummary(cmd.Context(), client, normalizeItem(value)); err != nil {
 			return err
 		}
 	}
 	return printClientGetResult(cmd, client, out, value, clusterDisplayColumns(cmd, out, normalizeItem(value), columns))
 }
 
-func enrichClusterNodesSummary(ctx context.Context, value interface{}) error {
+func enrichClusterNodesSummary(ctx context.Context, client *rest.Client, value interface{}) error {
 	rows := responseRows(value)
 	if len(rows) == 0 {
 		return nil
 	}
 
-	ids := make([]int, 0, len(rows))
+	ids := make([]string, 0, len(rows))
 	seen := map[string]bool{}
 	for _, row := range rows {
 		id := firstScalarPath(row, "id")
 		if id == "" || seen[id] {
 			continue
 		}
-		parsed, err := strconv.Atoi(id)
-		if err != nil {
+		if _, err := strconv.Atoi(id); err != nil {
 			continue
 		}
-		ids = append(ids, parsed)
+		ids = append(ids, id)
 		seen[id] = true
 	}
 	if len(ids) == 0 {
 		return nil
 	}
 
-	client, err := newGraphQLClient()
-	if err != nil {
-		return err
-	}
-	var result map[string]interface{}
-	if err := client.Post(ctx, "/query", nil, map[string]interface{}{
-		"query": `query ClusterNodesSummary($ids: [Int!]!) {
-			clustersMetrics(ids: $ids) {
-				id
-				nodesReady
-				nodesTotal
-			}
-		}`,
-		"variables": map[string]interface{}{"ids": ids},
-	}, &result); err != nil {
-		return err
-	}
-	if err := graphQLErrors(result); err != nil {
+	query := url.Values{"ids": []string{strings.Join(ids, ",")}}
+	var result interface{}
+	if err := client.Get(ctx, "/cluster-metrics", query, &result); err != nil {
 		return err
 	}
 
 	metricsByID := map[string]map[string]interface{}{}
-	for _, metric := range responseRows(valueAtPath(result, "data.clustersMetrics")) {
+	for _, metric := range responseRows(result) {
 		id := firstScalarPath(metric, "id")
 		if id != "" {
 			metricsByID[id] = metric
@@ -1190,30 +1195,6 @@ func enrichClusterNodesSummary(ctx context.Context, value interface{}) error {
 		}
 	}
 	return nil
-}
-
-func graphQLErrors(result map[string]interface{}) error {
-	values, ok := result["errors"].([]interface{})
-	if !ok || len(values) == 0 {
-		return nil
-	}
-
-	messages := make([]string, 0, len(values))
-	for _, value := range values {
-		if row, ok := value.(map[string]interface{}); ok {
-			if message := firstScalarPath(row, "message"); message != "" {
-				messages = append(messages, message)
-				continue
-			}
-		}
-		if message := scalarString(value); message != "" {
-			messages = append(messages, message)
-		}
-	}
-	if len(messages) == 0 {
-		return errors.New("GraphQL request failed")
-	}
-	return errors.Errorf("GraphQL request failed: %s", strings.Join(messages, "; "))
 }
 
 func clusterDisplayColumns(cmd *cobra.Command, out outputOptions, value interface{}, columns []string) []string {
@@ -3992,6 +3973,8 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 		statusCmd,
 		newAppInstanceCreateCommand(out),
 		newTitleUpdateCommand("update ID", "Update app instance", "/app-instances/", instanceColumns, out),
+		newAppInstanceLifecycleCommand("pause", "Pause app instance", out),
+		newAppInstanceLifecycleCommand("resume", "Resume app instance", out),
 		newAppInstanceDeleteCommand(out),
 		newAppInstanceSettingsCommand(out),
 		newAppInstanceUpgradeStackCommand(out),
@@ -4001,6 +3984,37 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 	cmd.AddCommand(newAppPortCommand("port", []string{"ports"}, "Manage app instance ports", instanceFilterArg))
 	cmd.AddCommand(newAppCertCommand("cert", []string{"certs", "certificate", "certificates"}, "Manage app instance certificates", instanceFilterArg))
 	cmd.AddCommand(newInstanceBuildCommand(), newInstanceDeploymentCommand(), newInstanceBackupCommand(), newInstanceImportCommand())
+	return cmd
+}
+
+func newAppInstanceLifecycleCommand(action string, short string, out outputOptions) *cobra.Command {
+	wait := waitOptions{}
+	cmd := &cobra.Command{
+		Use:   action + " ID",
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			path := "/app-instances/" + url.PathEscape(args[0]) + "/actions/" + action
+			if err := client.Post(cmd.Context(), path, nil, nil, &result); err != nil {
+				return err
+			}
+			columns := operationColumns
+			if wait.wait && firstTaskID(result) != "" {
+				result, err = waitForTask(cmd.Context(), client, firstTaskID(result), wait.timeout)
+				if err != nil {
+					return err
+				}
+				columns = taskColumns
+			}
+			return printClientResult(cmd, client, out, result, columns)
+		},
+	}
+	addWaitFlags(cmd, &wait)
 	return cmd
 }
 

@@ -482,23 +482,6 @@ func TestTableColumnTitlesAreHumanReadable(t *testing.T) {
 	}
 }
 
-func TestGraphQLBaseURLDerivesRootFromRESTBaseURL(t *testing.T) {
-	for endpoint, expected := range map[string]string{
-		"https://apiv2.wodby.com/v1":       "https://apiv2.wodby.com",
-		"https://apiv2.wodby.com/v1/":      "https://apiv2.wodby.com",
-		"http://127.0.0.1:8080/v1":         "http://127.0.0.1:8080",
-		"http://127.0.0.1:8080/api/v1?x=1": "http://127.0.0.1:8080/api",
-	} {
-		got, err := graphQLBaseURL(endpoint)
-		if err != nil {
-			t.Fatalf("graphQLBaseURL(%q) error = %v", endpoint, err)
-		}
-		if got != expected {
-			t.Fatalf("graphQLBaseURL(%q) = %q, want %q", endpoint, got, expected)
-		}
-	}
-}
-
 func TestOutdatedColumnFormatsFlagsAndRevisionDrift(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -2571,6 +2554,45 @@ func TestGetResultShowsTaskWithTaskIDRow(t *testing.T) {
 	}
 }
 
+func TestInstanceStatusShowsPauseAndHealth(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	err := printGetResult(cmd, outputOptions{output: outputTable}, map[string]interface{}{
+		"id":       21,
+		"title":    "Production",
+		"status":   "paused",
+		"pausedAt": "2026-07-28T01:30:00Z",
+		"health": map[string]interface{}{
+			"cron": map[string]interface{}{
+				"failingSchedulesCount": 0,
+			},
+			"backups": map[string]interface{}{
+				"failingSchedulesCount": 2,
+				"latestFailureAt":       "2026-07-27T23:45:00Z",
+			},
+		},
+	}, instanceStatusColumns)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output := out.String()
+	for _, expected := range []string{
+		"paused at:", "2026-07-28 01:30",
+		"cron health:", "healthy",
+		"backup health:", "2 failing schedules, latest 2026-07-27 23:45",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("instance status output should include %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, `"failingSchedulesCount"`) {
+		t.Fatalf("instance status should summarize health instead of printing raw JSON: %s", output)
+	}
+}
+
 func TestRelationColumnsDoNotFallbackToIDs(t *testing.T) {
 	var out bytes.Buffer
 	cmd := &cobra.Command{}
@@ -2649,7 +2671,7 @@ func TestInstanceCommandExposesCanonicalNestedResources(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	for _, name := range []string{"list", "get", "get-by-name", "status", "create", "update", "delete", "settings", "upgrade-stack", "service", "route", "port", "cert", "build", "deployment", "backup", "import"} {
+	for _, name := range []string{"list", "get", "get-by-name", "status", "create", "update", "pause", "resume", "delete", "settings", "upgrade-stack", "service", "route", "port", "cert", "build", "deployment", "backup", "import"} {
 		if !names[name] {
 			t.Fatalf("missing instance subcommand %q", name)
 		}
@@ -2685,7 +2707,7 @@ func TestSchemaAddedCommandSurfaceIsExposed(t *testing.T) {
 	assertChildren(t, newOrgCommand(), "get", "update")
 	assertChildren(t, newProjectCommand(), "get-by-name", "create", "update", "delete")
 	assertChildren(t, newDatabaseCommand(), "get-by-name", "options")
-	assertChildren(t, newClusterCommand(), "get-by-name", "settings", "upgrade-infra", "upgrade-infra-apps", "delete")
+	assertChildren(t, newClusterCommand(), "get-by-name", "metrics", "settings", "upgrade-infra", "upgrade-infra-apps", "delete")
 	assertChildren(t, newIntegrationCommand(), "get-by-name", "options")
 	assertChildren(t, newProviderCommand(), "get-by-name", "revision")
 	assertChildren(t, newHelmCommand(), "inspect", "scaffold-service", "scaffold-stack")
@@ -5939,6 +5961,19 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 			response: []map[string]interface{}{{"id": 101, "status": "created"}},
 		},
 		{
+			name:       "cluster metrics",
+			cmd:        newClusterCommand,
+			args:       []string{"metrics", "21"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/v1/clusters/metrics/21",
+			response: map[string]interface{}{
+				"id":         21,
+				"nodesReady": 2,
+				"nodesTotal": 3,
+				"cpu":        map[string]interface{}{"cores": 4},
+			},
+		},
+		{
 			name:       "instance delete force",
 			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
 			args:       []string{"delete", "21", "--force", "-y"},
@@ -5946,6 +5981,22 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 			wantPath:   "/v1/app-instances/21",
 			wantQuery:  "force=true",
 			response:   map[string]interface{}{"success": true},
+		},
+		{
+			name:       "instance pause",
+			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			args:       []string{"pause", "21", "--wait"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/app-instances/21/actions/pause",
+			response:   map[string]interface{}{"success": true, "taskId": 55},
+		},
+		{
+			name:       "instance resume",
+			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			args:       []string{"resume", "21"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/app-instances/21/actions/resume",
+			response:   map[string]interface{}{"success": true, "taskId": 56},
 		},
 		{
 			name:       "instance upgrade stack",
@@ -5988,9 +6039,10 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var gotMethod, gotPath, gotQuery string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/v1/tasks/55" {
+				if strings.HasPrefix(r.URL.Path, "/v1/tasks/") {
+					taskID := strings.TrimPrefix(r.URL.Path, "/v1/tasks/")
 					_ = json.NewEncoder(w).Encode(map[string]interface{}{
-						"id":     55,
+						"id":     taskID,
 						"title":  "Upgrade stack",
 						"status": "completed",
 					})
@@ -6891,7 +6943,7 @@ func TestClusterListDoesNotFailWhenIntegrationEnrichmentFails(t *testing.T) {
 			})
 		case "/v1/integrations/7":
 			http.NotFound(w, r)
-		case "/query":
+		case "/v1/cluster-metrics":
 			writeClusterMetricsResponse(t, w, r, map[int][2]int{101: {1, 1}})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
@@ -6954,7 +7006,7 @@ func TestClusterListEnrichesIntegrationTitleWithProviderTitle(t *testing.T) {
 					},
 				},
 			})
-		case "/query":
+		case "/v1/cluster-metrics":
 			writeClusterMetricsResponse(t, w, r, map[int][2]int{101: {1, 1}})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
@@ -7001,7 +7053,7 @@ func TestClusterListShowsRealNodeMetrics(t *testing.T) {
 					"status": "running",
 				},
 			})
-		case "/query":
+		case "/v1/cluster-metrics":
 			writeClusterMetricsResponse(t, w, r, map[int][2]int{101: {3, 4}, 102: {0, 2}})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
@@ -7035,7 +7087,7 @@ func TestClusterCommandExposesAppSubcommand(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	for _, name := range []string{"list", "get", "app", "create", "update", "delete"} {
+	for _, name := range []string{"list", "get", "metrics", "app", "create", "update", "delete"} {
 		if !names[name] {
 			t.Fatalf("missing cluster subcommand %q", name)
 		}
@@ -7064,7 +7116,7 @@ func TestClusterGetShowsVersionInfraIPsAndNodes(t *testing.T) {
 				"singleNode":            false,
 				"serverless":            false,
 			})
-		case "/query":
+		case "/v1/cluster-metrics":
 			writeClusterMetricsResponse(t, w, r, map[int][2]int{101: {3, 4}})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
@@ -7107,7 +7159,7 @@ func TestClusterOutputHidesRegionWhenMissing(t *testing.T) {
 			})
 		case "/v1/clusters/101":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 101, "name": "prod", "title": "Production", "status": "running", "zone": "a"})
-		case "/query":
+		case "/v1/cluster-metrics":
 			writeClusterMetricsResponse(t, w, r, map[int][2]int{101: {1, 1}})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
@@ -7150,7 +7202,7 @@ func TestClusterOutputKeepsRegionWhenPresent(t *testing.T) {
 	var out bytes.Buffer
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/query" {
+		if r.URL.Path == "/v1/cluster-metrics" {
 			writeClusterMetricsResponse(t, w, r, map[int][2]int{101: {1, 1}, 102: {2, 2}})
 			return
 		}
@@ -7252,7 +7304,7 @@ func TestClusterListShowsSpecialIntegrationLabelsWithoutEnrichment(t *testing.T)
 	var out bytes.Buffer
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/query" {
+		if r.URL.Path == "/v1/cluster-metrics" {
 			writeClusterMetricsResponse(t, w, r, map[int][2]int{101: {1, 1}, 102: {1, 1}, 103: {1, 1}})
 			return
 		}
@@ -7329,7 +7381,7 @@ func TestClusterGetOmitsSpecialIntegrationIDRows(t *testing.T) {
 			})
 		case "/v1/app-instances":
 			_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
-		case "/query":
+		case "/v1/cluster-metrics":
 			writeClusterMetricsResponse(t, w, r, map[int][2]int{101: {1, 1}})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
@@ -8086,20 +8138,15 @@ func configureTestAPI(t *testing.T, endpoint string) {
 
 func writeClusterMetricsResponse(t *testing.T, w http.ResponseWriter, r *http.Request, metrics map[int][2]int) {
 	t.Helper()
-	if r.Method != http.MethodPost {
-		t.Fatalf("cluster metrics method = %q, want POST", r.Method)
+	if r.Method != http.MethodGet {
+		t.Fatalf("cluster metrics method = %q, want GET", r.Method)
 	}
 
-	var body map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		t.Fatalf("Decode() error = %v", err)
-	}
-	variables, _ := body["variables"].(map[string]interface{})
-	rawIDs, _ := variables["ids"].([]interface{})
+	rawIDs := strings.Split(r.URL.Query().Get("ids"), ",")
 
 	items := make([]map[string]interface{}, 0, len(rawIDs))
 	for _, rawID := range rawIDs {
-		id, err := strconv.Atoi(fmt.Sprint(rawID))
+		id, err := strconv.Atoi(rawID)
 		if err != nil {
 			t.Fatalf("cluster metrics id = %#v: %v", rawID, err)
 		}
@@ -8114,7 +8161,5 @@ func writeClusterMetricsResponse(t *testing.T, w http.ResponseWriter, r *http.Re
 		})
 	}
 
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"data": map[string]interface{}{"clustersMetrics": items},
-	})
+	_ = json.NewEncoder(w).Encode(items)
 }

@@ -252,46 +252,6 @@ func newRESTClient() (*rest.Client, error) {
 	})
 }
 
-func newGraphQLClient() (*rest.Client, error) {
-	if viper.GetString("api_key") == "" && viper.GetString("access_token") == "" {
-		return nil, errors.New("either api-key or access-token must be specified")
-	}
-	endpoint, err := graphQLBaseURL(apiBaseURL())
-	if err != nil {
-		return nil, err
-	}
-	if endpoint == "" {
-		return nil, errors.New("api-base-url flag is required")
-	}
-
-	return rest.NewClient(types.APIConfig{
-		Key:         viper.GetString("api_key"),
-		AccessToken: viper.GetString("access_token"),
-		Endpoint:    endpoint,
-	})
-}
-
-func graphQLBaseURL(endpoint string) (string, error) {
-	if endpoint == "" {
-		return "", nil
-	}
-	u, err := url.Parse(endpoint)
-	if err != nil {
-		return "", errors.WithStack(err)
-	}
-	path := strings.TrimRight(u.Path, "/")
-	if path == "/v1" {
-		u.Path = ""
-	} else if strings.HasSuffix(path, "/v1") {
-		u.Path = strings.TrimSuffix(path, "/v1")
-	} else {
-		u.Path = path
-	}
-	u.RawQuery = ""
-	u.Fragment = ""
-	return strings.TrimRight(u.String(), "/"), nil
-}
-
 func apiBaseURL() string {
 	if endpoint := viper.GetString("api_endpoint"); endpoint != "" {
 		return endpoint
@@ -940,6 +900,10 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		return formatIPsColumn(row)
 	case "nodes":
 		return formatClusterNodesColumn(row)
+	case "cronHealth":
+		return formatInstanceHealthColumn(row, "cron")
+	case "backupHealth":
+		return formatInstanceHealthColumn(row, "backups")
 	case "singleNode":
 		return firstScalarPath(row, "singleNode", "single_node", "single-node")
 	case "scalable":
@@ -973,6 +937,26 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		}
 		return formatValue(row[column])
 	}
+}
+
+func formatInstanceHealthColumn(row map[string]interface{}, kind string) string {
+	health, ok := valueAtPath(row, "health."+kind).(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	countValue := firstScalarPath(health, "failingSchedulesCount")
+	count, err := strconv.Atoi(countValue)
+	if err != nil {
+		return ""
+	}
+	if count == 0 {
+		return "healthy"
+	}
+	result := pluralizeCount(count, "failing schedule", "failing schedules")
+	if latest := formatDisplayTime(valueAtPath(health, "latestFailureAt")); latest != "" {
+		result += ", latest " + latest
+	}
+	return result
 }
 
 func isTimeColumn(column string) bool {

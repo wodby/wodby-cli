@@ -2554,16 +2554,15 @@ func TestGetResultShowsTaskWithTaskIDRow(t *testing.T) {
 	}
 }
 
-func TestInstanceStatusShowsPauseAndHealth(t *testing.T) {
+func TestInstanceStatusShowsHealth(t *testing.T) {
 	var out bytes.Buffer
 	cmd := &cobra.Command{}
 	cmd.SetOut(&out)
 
 	err := printGetResult(cmd, outputOptions{output: outputTable}, map[string]interface{}{
-		"id":       21,
-		"title":    "Production",
-		"status":   "paused",
-		"pausedAt": "2026-07-28T01:30:00Z",
+		"id":     21,
+		"title":  "Production",
+		"status": "running",
 		"health": map[string]interface{}{
 			"cron": map[string]interface{}{
 				"failingSchedulesCount": 0,
@@ -2580,7 +2579,6 @@ func TestInstanceStatusShowsPauseAndHealth(t *testing.T) {
 
 	output := out.String()
 	for _, expected := range []string{
-		"paused at:", "2026-07-28 01:30",
 		"cron health:", "healthy",
 		"backup health:", "2 failing schedules, latest 2026-07-27 23:45",
 	} {
@@ -2671,9 +2669,14 @@ func TestInstanceCommandExposesCanonicalNestedResources(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	for _, name := range []string{"list", "get", "get-by-name", "status", "create", "update", "pause", "resume", "delete", "settings", "upgrade-stack", "service", "route", "port", "cert", "build", "deployment", "backup", "import"} {
+	for _, name := range []string{"list", "get", "get-by-name", "status", "create", "update", "delete", "settings", "upgrade-stack", "service", "route", "port", "cert", "build", "deployment", "backup", "import"} {
 		if !names[name] {
 			t.Fatalf("missing instance subcommand %q", name)
+		}
+	}
+	for _, name := range []string{"pause", "resume"} {
+		if names[name] {
+			t.Fatalf("app instance pausing must remain outside the CLI: unexpected subcommand %q", name)
 		}
 	}
 }
@@ -5981,22 +5984,6 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 			wantPath:   "/v1/app-instances/21",
 			wantQuery:  "force=true",
 			response:   map[string]interface{}{"success": true},
-		},
-		{
-			name:       "instance pause",
-			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
-			args:       []string{"pause", "21", "--wait"},
-			wantMethod: http.MethodPost,
-			wantPath:   "/v1/app-instances/21/actions/pause",
-			response:   map[string]interface{}{"success": true, "taskId": 55},
-		},
-		{
-			name:       "instance resume",
-			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
-			args:       []string{"resume", "21"},
-			wantMethod: http.MethodPost,
-			wantPath:   "/v1/app-instances/21/actions/resume",
-			response:   map[string]interface{}{"success": true, "taskId": 56},
 		},
 		{
 			name:       "instance upgrade stack",

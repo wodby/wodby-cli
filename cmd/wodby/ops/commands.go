@@ -53,8 +53,8 @@ var (
 	appStatusColumns                = []string{"id", "title", "status", "instances", "serviceStatus", "routeStatus", "latestBuild", "latestDeployment", "needs"}
 	instanceColumns                 = []string{"id", "name", "title", "status", "outdated", "autoUpdates", "app", "stack", "env", "cluster", "domain"}
 	instanceListColumns             = append(append([]string{}, instanceColumns...), "lastDeployedAt")
-	instanceGetColumns              = append(append([]string{}, instanceColumns...), "pausedAt", "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
-	instanceStatusColumns           = []string{"id", "title", "status", "pausedAt", "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
+	instanceGetColumns              = append(append([]string{}, instanceColumns...), "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
+	instanceStatusColumns           = []string{"id", "title", "status", "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
 	serviceColumns                  = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
 	appServiceEnvColumns            = []string{"id", "name", "value", "secret", "runtime", "build", "envType", "workload", "container", "source", "createdAt"}
 	appServiceValueColumns          = []string{"id", "name", "value", "secret", "source", "createdAt"}
@@ -3973,8 +3973,6 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 		statusCmd,
 		newAppInstanceCreateCommand(out),
 		newTitleUpdateCommand("update ID", "Update app instance", "/app-instances/", instanceColumns, out),
-		newAppInstanceLifecycleCommand("pause", "Pause app instance", out),
-		newAppInstanceLifecycleCommand("resume", "Resume app instance", out),
 		newAppInstanceDeleteCommand(out),
 		newAppInstanceSettingsCommand(out),
 		newAppInstanceUpgradeStackCommand(out),
@@ -3984,37 +3982,6 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 	cmd.AddCommand(newAppPortCommand("port", []string{"ports"}, "Manage app instance ports", instanceFilterArg))
 	cmd.AddCommand(newAppCertCommand("cert", []string{"certs", "certificate", "certificates"}, "Manage app instance certificates", instanceFilterArg))
 	cmd.AddCommand(newInstanceBuildCommand(), newInstanceDeploymentCommand(), newInstanceBackupCommand(), newInstanceImportCommand())
-	return cmd
-}
-
-func newAppInstanceLifecycleCommand(action string, short string, out outputOptions) *cobra.Command {
-	wait := waitOptions{}
-	cmd := &cobra.Command{
-		Use:   action + " ID",
-		Short: short,
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := newRESTClient()
-			if err != nil {
-				return err
-			}
-			var result interface{}
-			path := "/app-instances/" + url.PathEscape(args[0]) + "/actions/" + action
-			if err := client.Post(cmd.Context(), path, nil, nil, &result); err != nil {
-				return err
-			}
-			columns := operationColumns
-			if wait.wait && firstTaskID(result) != "" {
-				result, err = waitForTask(cmd.Context(), client, firstTaskID(result), wait.timeout)
-				if err != nil {
-					return err
-				}
-				columns = taskColumns
-			}
-			return printClientResult(cmd, client, out, result, columns)
-		},
-	}
-	addWaitFlags(cmd, &wait)
 	return cmd
 }
 

@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -210,19 +209,22 @@ func TestClusterGetColumnsShowAdditionalDetails(t *testing.T) {
 			t.Fatalf("clusterColumns should not include %q on list: %s", unwanted, listColumns)
 		}
 	}
-	for _, expected := range []string{"autoUpdates", "nodes", "singleNode"} {
+	for _, expected := range []string{"autoUpdates", "singleNode"} {
 		if !strings.Contains(listColumns, expected) {
 			t.Fatalf("clusterColumns should include %q: %s", expected, listColumns)
 		}
 	}
+	if strings.Contains(listColumns, "nodes") {
+		t.Fatalf("clusterColumns should not expose metrics-derived nodes: %s", listColumns)
+	}
 
 	getColumns := strings.Join(clusterGetColumns, ",")
-	for _, expected := range []string{"autoUpdates", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "storageClasses", "storageClassesObservedAt"} {
+	for _, expected := range []string{"autoUpdates", "kubernetesVersion", "infraVersion", "ips", "singleNode", "storageClasses", "storageClassesObservedAt"} {
 		if !strings.Contains(getColumns, expected) {
 			t.Fatalf("clusterGetColumns should include %q: %s", expected, getColumns)
 		}
 	}
-	for _, unwanted := range []string{"instances", "scalable", "serverless"} {
+	for _, unwanted := range []string{"instances", "nodes", "scalable", "serverless"} {
 		if strings.Contains(getColumns, unwanted) {
 			t.Fatalf("clusterGetColumns should not include %q: %s", unwanted, getColumns)
 		}
@@ -608,41 +610,6 @@ func TestAutoUpdatesColumnFormatsResourceSettings(t *testing.T) {
 				t.Fatalf("formatColumnValue(autoUpdates) = %q, want %q", got, test.want)
 			}
 		})
-	}
-}
-
-func TestClusterNodesColumnShowsReadyOverTotal(t *testing.T) {
-	row := map[string]interface{}{
-		"lastNodesReady":   4,
-		"lastNodesTotal":   6,
-		"readyNodeCount":   3,
-		"totalNodeCount":   4,
-		"currentNodeCount": 2,
-		"maxNodeCount":     5,
-	}
-	if got := formatColumnValue(row, "nodes"); got != "4 / 6" {
-		t.Fatalf("formatColumnValue(nodes) = %q, want 4 / 6", got)
-	}
-}
-
-func TestClusterNodesColumnKeepsZeroReadyCount(t *testing.T) {
-	row := map[string]interface{}{
-		"lastNodesReady": 0,
-		"lastNodesTotal": 2,
-	}
-	if got := formatColumnValue(row, "nodes"); got != "0 / 2" {
-		t.Fatalf("formatColumnValue(nodes) = %q, want 0 / 2", got)
-	}
-}
-
-func TestClusterNodesColumnShowsSingleNodeAsReadyAndTotal(t *testing.T) {
-	row := map[string]interface{}{
-		"singleNode":       true,
-		"currentNodeCount": 2,
-		"maxNodeCount":     5,
-	}
-	if got := formatColumnValue(row, "nodes"); got != "1 / 1" {
-		t.Fatalf("formatColumnValue(nodes) = %q, want 1 / 1", got)
 	}
 }
 
@@ -2710,7 +2677,13 @@ func TestSchemaAddedCommandSurfaceIsExposed(t *testing.T) {
 	assertChildren(t, newOrgCommand(), "get", "update")
 	assertChildren(t, newProjectCommand(), "get-by-name", "create", "update", "delete")
 	assertChildren(t, newDatabaseCommand(), "get-by-name", "options")
-	assertChildren(t, newClusterCommand(), "get-by-name", "metrics", "settings", "upgrade-infra", "upgrade-infra-apps", "delete")
+	clusterCommand := newClusterCommand()
+	assertChildren(t, clusterCommand, "get-by-name", "settings", "upgrade-infra", "upgrade-infra-apps", "delete")
+	for _, child := range clusterCommand.Commands() {
+		if child.Name() == "metrics" {
+			t.Fatal("cluster metrics must remain outside the CLI")
+		}
+	}
 	assertChildren(t, newIntegrationCommand(), "get-by-name", "options")
 	assertChildren(t, newProviderCommand(), "get-by-name", "revision")
 	assertChildren(t, newHelmCommand(), "inspect", "scaffold-service", "scaffold-stack")
@@ -5964,19 +5937,6 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 			response: []map[string]interface{}{{"id": 101, "status": "created"}},
 		},
 		{
-			name:       "cluster metrics",
-			cmd:        newClusterCommand,
-			args:       []string{"metrics", "21"},
-			wantMethod: http.MethodGet,
-			wantPath:   "/v1/clusters/metrics/21",
-			response: map[string]interface{}{
-				"id":         21,
-				"nodesReady": 2,
-				"nodesTotal": 3,
-				"cpu":        map[string]interface{}{"cores": 4},
-			},
-		},
-		{
 			name:       "instance delete force",
 			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
 			args:       []string{"delete", "21", "--force", "-y"},
@@ -6930,8 +6890,6 @@ func TestClusterListDoesNotFailWhenIntegrationEnrichmentFails(t *testing.T) {
 			})
 		case "/v1/integrations/7":
 			http.NotFound(w, r)
-		case "/v1/cluster-metrics":
-			writeClusterMetricsResponse(t, w, r, map[int][2]int{101: {1, 1}})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -6993,8 +6951,6 @@ func TestClusterListEnrichesIntegrationTitleWithProviderTitle(t *testing.T) {
 					},
 				},
 			})
-		case "/v1/cluster-metrics":
-			writeClusterMetricsResponse(t, w, r, map[int][2]int{101: {1, 1}})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -7018,55 +6974,6 @@ func TestClusterListEnrichesIntegrationTitleWithProviderTitle(t *testing.T) {
 	}
 }
 
-func TestClusterListShowsRealNodeMetrics(t *testing.T) {
-	var out bytes.Buffer
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/clusters":
-			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
-				{
-					"id":               101,
-					"name":             "prod",
-					"title":            "Production",
-					"status":           "running",
-					"currentNodeCount": 2,
-					"maxNodeCount":     5,
-				},
-				{
-					"id":     102,
-					"name":   "stage",
-					"title":  "Staging",
-					"status": "running",
-				},
-			})
-		case "/v1/cluster-metrics":
-			writeClusterMetricsResponse(t, w, r, map[int][2]int{101: {3, 4}, 102: {0, 2}})
-		default:
-			t.Fatalf("unexpected request path %q", r.URL.Path)
-		}
-	}))
-	defer server.Close()
-	configureTestAPI(t, server.URL+"/v1")
-
-	cmd := newClusterCommand()
-	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"list", "--org", "123"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
-	}
-
-	output := out.String()
-	for _, expected := range []string{"nodes", "3 / 4", "0 / 2"} {
-		if !strings.Contains(output, expected) {
-			t.Fatalf("cluster list output should include %q: %s", expected, output)
-		}
-	}
-	if strings.Contains(output, "2 / 5") {
-		t.Fatalf("cluster list output should use real metrics instead of REST fallback counts: %s", output)
-	}
-}
-
 func TestClusterCommandExposesAppSubcommand(t *testing.T) {
 	cluster := newClusterCommand()
 	names := make(map[string]bool)
@@ -7074,14 +6981,17 @@ func TestClusterCommandExposesAppSubcommand(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	for _, name := range []string{"list", "get", "metrics", "app", "create", "update", "delete"} {
+	for _, name := range []string{"list", "get", "app", "create", "update", "delete"} {
 		if !names[name] {
 			t.Fatalf("missing cluster subcommand %q", name)
 		}
 	}
+	if names["metrics"] {
+		t.Fatal("cluster metrics must remain outside the CLI")
+	}
 }
 
-func TestClusterGetShowsVersionInfraIPsAndNodes(t *testing.T) {
+func TestClusterGetShowsVersionInfraAndIPs(t *testing.T) {
 	var out bytes.Buffer
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -7098,13 +7008,9 @@ func TestClusterGetShowsVersionInfraIPsAndNodes(t *testing.T) {
 				"version":               "1.31",
 				"infrastructureVersion": "2026.06",
 				"ips":                   []string{"203.0.113.10"},
-				"currentNodeCount":      2,
-				"maxNodeCount":          5,
 				"singleNode":            false,
 				"serverless":            false,
 			})
-		case "/v1/cluster-metrics":
-			writeClusterMetricsResponse(t, w, r, map[int][2]int{101: {3, 4}})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -7120,12 +7026,12 @@ func TestClusterGetShowsVersionInfraIPsAndNodes(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"kubernetes version:", "1.31", "infra version:", "2026.06", "ips:", "203.0.113.10", "nodes:", "3 / 4", "single node:", "false"} {
+	for _, expected := range []string{"kubernetes version:", "1.31", "infra version:", "2026.06", "ips:", "203.0.113.10", "single node:", "false"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("cluster get output should include %q: %s", expected, output)
 		}
 	}
-	for _, unwanted := range []string{"instances:", "scalable:", "serverless:"} {
+	for _, unwanted := range []string{"instances:", "nodes:", "scalable:", "serverless:"} {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("cluster get output should not include %q: %s", unwanted, output)
 		}
@@ -7146,8 +7052,6 @@ func TestClusterOutputHidesRegionWhenMissing(t *testing.T) {
 			})
 		case "/v1/clusters/101":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 101, "name": "prod", "title": "Production", "status": "running", "zone": "a"})
-		case "/v1/cluster-metrics":
-			writeClusterMetricsResponse(t, w, r, map[int][2]int{101: {1, 1}})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -7189,10 +7093,6 @@ func TestClusterOutputKeepsRegionWhenPresent(t *testing.T) {
 	var out bytes.Buffer
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/cluster-metrics" {
-			writeClusterMetricsResponse(t, w, r, map[int][2]int{101: {1, 1}, 102: {2, 2}})
-			return
-		}
 		if r.URL.Path != "/v1/clusters" {
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -7291,10 +7191,6 @@ func TestClusterListShowsSpecialIntegrationLabelsWithoutEnrichment(t *testing.T)
 	var out bytes.Buffer
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/cluster-metrics" {
-			writeClusterMetricsResponse(t, w, r, map[int][2]int{101: {1, 1}, 102: {1, 1}, 103: {1, 1}})
-			return
-		}
 		if r.URL.Path != "/v1/clusters" {
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -7368,8 +7264,6 @@ func TestClusterGetOmitsSpecialIntegrationIDRows(t *testing.T) {
 			})
 		case "/v1/app-instances":
 			_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
-		case "/v1/cluster-metrics":
-			writeClusterMetricsResponse(t, w, r, map[int][2]int{101: {1, 1}})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -8121,32 +8015,4 @@ func configureTestAPI(t *testing.T, endpoint string) {
 		viper.Set("api_endpoint", "")
 		viper.Set("api_base_url", "")
 	})
-}
-
-func writeClusterMetricsResponse(t *testing.T, w http.ResponseWriter, r *http.Request, metrics map[int][2]int) {
-	t.Helper()
-	if r.Method != http.MethodGet {
-		t.Fatalf("cluster metrics method = %q, want GET", r.Method)
-	}
-
-	rawIDs := strings.Split(r.URL.Query().Get("ids"), ",")
-
-	items := make([]map[string]interface{}, 0, len(rawIDs))
-	for _, rawID := range rawIDs {
-		id, err := strconv.Atoi(rawID)
-		if err != nil {
-			t.Fatalf("cluster metrics id = %#v: %v", rawID, err)
-		}
-		counts, ok := metrics[id]
-		if !ok {
-			continue
-		}
-		items = append(items, map[string]interface{}{
-			"id":         id,
-			"nodesReady": counts[0],
-			"nodesTotal": counts[1],
-		})
-	}
-
-	_ = json.NewEncoder(w).Encode(items)
 }

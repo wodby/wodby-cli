@@ -24,9 +24,8 @@ var (
 	databaseDbColumns               = []string{"id", "name", "status", "charset", "collation", "database", "createdAt"}
 	databaseCharsetColumns          = []string{"name", "title", "default", "defaultCollation"}
 	databaseUserColumns             = []string{"id", "username", "hostname", "status", "database", "dbs", "createdAt"}
-	clusterColumns                  = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "version", "nodes", "singleNode"}
-	clusterGetColumns               = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "nodes", "singleNode", "storageClasses", "storageClassesObservedAt"}
-	clusterMetricsColumns           = []string{"id", "nodes", "cpu", "memory", "kubeCPUCap", "kubeMemoryCap", "kubePodsCap", "hostDisk"}
+	clusterColumns                  = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "version", "singleNode"}
+	clusterGetColumns               = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "singleNode", "storageClasses", "storageClassesObservedAt"}
 	infraAppColumns                 = []string{"id", "name", "title", "status", "stack"}
 	integrationColumns              = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
 	providerColumns                 = []string{"id", "name", "title", "status", "providerVersion"}
@@ -1069,7 +1068,6 @@ func newClusterCommand() *cobra.Command {
 		listCmd,
 		getCmd,
 		newClusterGetByNameCommand(out),
-		newClusterMetricsCommand(out),
 		newClusterAppCommand(),
 		newClusterCreateCommand(out),
 		newClusterUpdateCommand(out),
@@ -1109,92 +1107,12 @@ func getAndPrintCluster(cmd *cobra.Command, out outputOptions, path string, quer
 	return printClusterGetResult(cmd, client, out, result, clusterGetColumns)
 }
 
-func newClusterMetricsCommand(out outputOptions) *cobra.Command {
-	return &cobra.Command{
-		Use:   "metrics ID",
-		Short: "Get cluster metrics",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := newRESTClient()
-			if err != nil {
-				return err
-			}
-			var result interface{}
-			if err := client.Get(cmd.Context(), "/clusters/metrics/"+url.PathEscape(args[0]), nil, &result); err != nil {
-				return err
-			}
-			return printClientGetResult(cmd, client, out, result, clusterMetricsColumns)
-		},
-	}
-}
-
 func printClusterResult(cmd *cobra.Command, client *rest.Client, out outputOptions, value interface{}, columns []string) error {
-	if outputFormat(cmd, out) != outputJSON {
-		if err := enrichClusterNodesSummary(cmd.Context(), client, normalizeItems(value)); err != nil {
-			return err
-		}
-	}
 	return printClientResult(cmd, client, out, value, clusterDisplayColumns(cmd, out, normalizeItems(value), columns))
 }
 
 func printClusterGetResult(cmd *cobra.Command, client *rest.Client, out outputOptions, value interface{}, columns []string) error {
-	if outputFormat(cmd, out) != outputJSON {
-		if err := enrichClusterNodesSummary(cmd.Context(), client, normalizeItem(value)); err != nil {
-			return err
-		}
-	}
 	return printClientGetResult(cmd, client, out, value, clusterDisplayColumns(cmd, out, normalizeItem(value), columns))
-}
-
-func enrichClusterNodesSummary(ctx context.Context, client *rest.Client, value interface{}) error {
-	rows := responseRows(value)
-	if len(rows) == 0 {
-		return nil
-	}
-
-	ids := make([]string, 0, len(rows))
-	seen := map[string]bool{}
-	for _, row := range rows {
-		id := firstScalarPath(row, "id")
-		if id == "" || seen[id] {
-			continue
-		}
-		if _, err := strconv.Atoi(id); err != nil {
-			continue
-		}
-		ids = append(ids, id)
-		seen[id] = true
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-
-	query := url.Values{"ids": []string{strings.Join(ids, ",")}}
-	var result interface{}
-	if err := client.Get(ctx, "/cluster-metrics", query, &result); err != nil {
-		return err
-	}
-
-	metricsByID := map[string]map[string]interface{}{}
-	for _, metric := range responseRows(result) {
-		id := firstScalarPath(metric, "id")
-		if id != "" {
-			metricsByID[id] = metric
-		}
-	}
-	for _, row := range rows {
-		metric := metricsByID[firstScalarPath(row, "id")]
-		if metric == nil {
-			continue
-		}
-		if ready := firstNonNilPath(metric, "nodesReady"); ready != nil {
-			row["nodesReady"] = ready
-		}
-		if total := firstNonNilPath(metric, "nodesTotal"); total != nil {
-			row["nodesTotal"] = total
-		}
-	}
-	return nil
 }
 
 func clusterDisplayColumns(cmd *cobra.Command, out outputOptions, value interface{}, columns []string) []string {

@@ -898,8 +898,6 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		return firstScalarPath(row, "infraVersion", "infrastructureVersion", "infra.version", "infrastructure.version")
 	case "ips", "publicIp":
 		return formatIPsColumn(row)
-	case "nodes":
-		return formatClusterNodesColumn(row)
 	case "cronHealth":
 		return formatInstanceHealthColumn(row, "cron")
 	case "backupHealth":
@@ -2579,69 +2577,6 @@ func formatIPsColumn(row map[string]interface{}) string {
 	default:
 		return scalarString(v)
 	}
-}
-
-func formatClusterNodesColumn(row map[string]interface{}) string {
-	if truthyPath(row, "singleNode", "single_node", "single-node") {
-		return "1 / 1"
-	}
-
-	ready := firstScalarPath(
-		row,
-		"lastNodesReady",
-		"lastNodeReady",
-		"metrics.nodesReady",
-		"clusterMetrics.nodesReady",
-		"readyNodeCount",
-		"readyNodes",
-		"nodesReady",
-		"nodesReadyCount",
-		"nodes.ready",
-		"nodes.readyCount",
-		"node.ready",
-		"node.readyCount",
-		"currentNodeCount",
-		"nodeCount",
-		"nodesCount",
-		"currentNodes",
-		"nodesCurrent",
-		"nodes.current",
-		"nodes.currentCount",
-		"node.current",
-		"node.currentCount",
-	)
-	total := firstScalarPath(
-		row,
-		"lastNodesTotal",
-		"lastNodeTotal",
-		"metrics.nodesTotal",
-		"clusterMetrics.nodesTotal",
-		"totalNodeCount",
-		"totalNodes",
-		"nodesTotal",
-		"nodesTotalCount",
-		"nodes.total",
-		"nodes.totalCount",
-		"node.total",
-		"node.totalCount",
-		"maxNodeCount",
-		"nodesMax",
-		"maxNodes",
-		"nodes.max",
-		"nodes.maxCount",
-		"node.max",
-		"node.maxCount",
-	)
-	if ready == "" && total == "" {
-		return ""
-	}
-	if ready == "" {
-		return total
-	}
-	if total == "" {
-		return ready
-	}
-	return ready + " / " + total
 }
 
 func formatClusterScalableColumn(row map[string]interface{}) string {

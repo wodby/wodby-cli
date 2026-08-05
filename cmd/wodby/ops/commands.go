@@ -6042,6 +6042,9 @@ func newTaskCommand() *cobra.Command {
 			if err := client.Get(cmd.Context(), "/tasks", query, &result); err != nil {
 				return err
 			}
+			if strings.EqualFold(view, "tree") && outputFormat(cmd, out) != outputJSON {
+				result = taskTreeListDisplayResult(result)
+			}
 			return printClientResult(cmd, client, out, result, taskColumns)
 		},
 	}
@@ -6107,6 +6110,89 @@ func newTaskCommand() *cobra.Command {
 	repeatCmd := newTaskRepeatCommand(out)
 	cmd.AddCommand(listCmd, getCmd, waitCmd, logsCmd, newTaskJobCommand(out), newTaskStepCommand(out), cancelCmd, repeatCmd)
 	return cmd
+}
+
+// taskTreeListDisplayResult replaces paginated roots with a preorder display
+// list built from REST treeItems. Older backends omit treeItems, in which case
+// the original root-only response remains unchanged.
+func taskTreeListDisplayResult(value interface{}) interface{} {
+	response, ok := value.(map[string]interface{})
+	if !ok {
+		return value
+	}
+	treeItems := asRows(response["treeItems"])
+	if len(treeItems) == 0 {
+		return value
+	}
+
+	tasksByID := make(map[string]map[string]interface{}, len(treeItems))
+	childIDsByParentID := make(map[string][]string)
+	for _, item := range treeItems {
+		tasks := asRows(item["task"])
+		if len(tasks) == 0 {
+			continue
+		}
+		task := tasks[0]
+		taskID := firstScalarPath(task, "id")
+		if taskID == "" {
+			continue
+		}
+		if _, exists := tasksByID[taskID]; exists {
+			continue
+		}
+		tasksByID[taskID] = task
+		if parentID := firstScalarPath(item, "parentId", "parentID"); parentID != "" {
+			childIDsByParentID[parentID] = append(childIDsByParentID[parentID], taskID)
+		}
+	}
+
+	rootRows := asRows(response["items"])
+	for _, root := range rootRows {
+		rootID := firstScalarPath(root, "id")
+		if rootID == "" {
+			continue
+		}
+		if _, exists := tasksByID[rootID]; !exists {
+			tasksByID[rootID] = root
+		}
+	}
+
+	rows := make([]map[string]interface{}, 0, len(tasksByID))
+	visited := make(map[string]struct{}, len(tasksByID))
+	var appendTree func(string, int)
+	appendTree = func(taskID string, depth int) {
+		if _, seen := visited[taskID]; seen {
+			return
+		}
+		task, exists := tasksByID[taskID]
+		if !exists {
+			return
+		}
+		visited[taskID] = struct{}{}
+
+		row := cloneRow(task)
+		if depth > 0 {
+			if title := firstScalarPath(row, "title"); title != "" {
+				row["title"] = strings.Repeat("  ", depth-1) + "↳ " + title
+			}
+		}
+		rows = append(rows, row)
+		for _, childID := range childIDsByParentID[taskID] {
+			appendTree(childID, depth+1)
+		}
+	}
+	for _, root := range rootRows {
+		if rootID := firstScalarPath(root, "id"); rootID != "" {
+			appendTree(rootID, 0)
+		}
+	}
+	if len(rows) == 0 {
+		return value
+	}
+
+	result := cloneRow(response)
+	result["items"] = rows
+	return result
 }
 
 func newTaskGetCommand(out outputOptions) *cobra.Command {

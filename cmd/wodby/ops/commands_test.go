@@ -155,15 +155,23 @@ func TestTaskListSupportsViewAndNameFilters(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestedQuery = r.URL.Query()
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"items":      []map[string]interface{}{},
-			"totalCount": 0,
+			"items": []map[string]interface{}{
+				{"id": 10, "name": "root", "title": "Root task", "status": "done", "progress": 100},
+			},
+			"treeItems": []map[string]interface{}{
+				{"task": map[string]interface{}{"id": 10, "name": "root", "title": "Root task", "status": "done", "progress": 100}},
+				{"parentId": 10, "task": map[string]interface{}{"id": 11, "name": "child", "title": "Child task", "status": "done", "progress": 100}},
+				{"parentId": 11, "task": map[string]interface{}{"id": 12, "name": "grandchild", "title": "Grandchild task", "status": "done", "progress": 100}},
+			},
+			"totalCount": 1,
 		})
 	}))
 	defer server.Close()
 	configureTestAPI(t, server.URL+"/v1")
 
 	cmd := newTaskCommand()
-	cmd.SetOut(io.Discard)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"list", "--view", "tree", "--names", "delete-app,delete-cluster"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
@@ -178,6 +186,37 @@ func TestTaskListSupportsViewAndNameFilters(t *testing.T) {
 	}
 	if deprecated := listCmd.Flag("without-origin").Deprecated; deprecated == "" {
 		t.Fatal("--without-origin should be deprecated")
+	}
+	output := out.String()
+	rootIndex := strings.Index(output, "Root task")
+	childIndex := strings.Index(output, "↳ Child task")
+	grandchildIndex := strings.Index(output, "  ↳ Grandchild task")
+	if rootIndex < 0 || childIndex <= rootIndex || grandchildIndex <= childIndex {
+		t.Fatalf("task tree should render in preorder with indented descendants:\n%s", output)
+	}
+}
+
+func TestTaskListTreeFallsBackToLegacyRootItems(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"items": []map[string]interface{}{
+				{"id": 10, "name": "root", "title": "Legacy root task", "status": "done", "progress": 100},
+			},
+			"totalCount": 1,
+		})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newTaskCommand()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "--view", "tree"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Legacy root task") {
+		t.Fatalf("legacy root task should remain visible:\n%s", out.String())
 	}
 }
 

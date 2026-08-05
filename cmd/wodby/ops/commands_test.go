@@ -2636,7 +2636,7 @@ func TestInstanceCommandExposesCanonicalNestedResources(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	for _, name := range []string{"list", "get", "get-by-name", "status", "create", "update", "delete", "settings", "upgrade-stack", "service", "route", "port", "cert", "build", "deployment", "backup", "import"} {
+	for _, name := range []string{"list", "get", "get-by-name", "status", "create", "update", "delete", "settings", "cicd-settings", "upgrade-stack", "service", "route", "port", "cert", "build", "deployment", "backup", "import"} {
 		if !names[name] {
 			t.Fatalf("missing instance subcommand %q", name)
 		}
@@ -5924,6 +5924,19 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 		response   interface{}
 	}{
 		{
+			name:       "organization update settings",
+			cmd:        newOrgCommand,
+			args:       []string{"update", "7", "--title", "Demo", "--default-time-zone", "Europe/London", "--ci-integration", "0", "--registry-integration", "34"},
+			wantMethod: http.MethodPut,
+			wantPath:   "/v1/orgs/7",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["title"] != "Demo" || body["defaultTimeZone"] != "Europe/London" || body["ciIntegrationId"] != float64(0) || body["registryIntegrationId"] != float64(34) {
+					t.Fatalf("organization settings body = %#v", body)
+				}
+			},
+			response: map[string]interface{}{"id": 7, "title": "Demo"},
+		},
+		{
 			name:       "build create",
 			cmd:        newBuildCommand,
 			args:       []string{"create", "--service", "22", "--service", "33,44"},
@@ -5935,6 +5948,27 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 				}
 			},
 			response: []map[string]interface{}{{"id": 101, "status": "created"}},
+		},
+		{
+			name:       "instance get CI/CD settings",
+			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			args:       []string{"cicd-settings", "get", "21"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/v1/app-instances/cicd-settings/21",
+			response:   map[string]interface{}{"appInstanceId": 21, "ciIntegrationId": 12, "registryIntegrationId": 34},
+		},
+		{
+			name:       "instance update CI/CD settings",
+			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			args:       []string{"cicd-settings", "update", "21", "--ci-integration", "12", "--registry-integration", "34"},
+			wantMethod: http.MethodPut,
+			wantPath:   "/v1/app-instances/cicd-settings/21",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["ciIntegrationId"] != float64(12) || body["registryIntegrationId"] != float64(34) {
+					t.Fatalf("app instance CI/CD settings body = %#v", body)
+				}
+			},
+			response: map[string]interface{}{"id": 21, "ciIntegrationId": 12, "registryIntegrationId": 34},
 		},
 		{
 			name:       "instance delete force",

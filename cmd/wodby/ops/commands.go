@@ -16,7 +16,7 @@ import (
 
 var (
 	userColumns                     = []string{"id", "email", "name", "twofa", "defaultOrg", "defaultProjects", "createdAt", "updatedAt"}
-	orgColumns                      = []string{"id", "name", "title", "domain"}
+	orgColumns                      = []string{"id", "name", "title", "domain", "defaultTimeZone", "ciIntegrationId", "registryIntegrationId"}
 	memberColumns                   = []string{"id", "member", "email", "role", "status", "joinedAt"}
 	projectColumns                  = []string{"id", "name", "title"}
 	envColumns                      = []string{"id", "name", "title", "type"}
@@ -53,6 +53,7 @@ var (
 	instanceColumns                 = []string{"id", "name", "title", "status", "outdated", "autoUpdates", "app", "stack", "env", "cluster", "domain"}
 	instanceListColumns             = append(append([]string{}, instanceColumns...), "lastDeployedAt")
 	instanceGetColumns              = append(append([]string{}, instanceColumns...), "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
+	instanceCICDSettingsColumns     = []string{"appInstanceId", "ciIntegrationId", "registryIntegrationId", "registryRepository"}
 	instanceStatusColumns           = []string{"id", "title", "status", "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
 	serviceColumns                  = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
 	appServiceEnvColumns            = []string{"id", "name", "value", "secret", "runtime", "build", "envType", "workload", "container", "source", "createdAt"}
@@ -207,7 +208,7 @@ func newUserCommand() *cobra.Command {
 
 func newOrgUpdateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
-	var title, ciIntegrationID, registryIntegrationID string
+	var title, defaultTimeZone, ciIntegrationID, registryIntegrationID string
 	cmd := &cobra.Command{
 		Use:   "update ID",
 		Short: "Update organization",
@@ -222,6 +223,7 @@ func newOrgUpdateCommand(out outputOptions) *cobra.Command {
 					return err
 				}
 				values := map[string]interface{}{"title": title}
+				addOptionalString(values, "defaultTimeZone", defaultTimeZone)
 				if err := addOptionalInt(values, "ciIntegrationId", ciIntegrationID, "--ci-integration"); err != nil {
 					return err
 				}
@@ -243,6 +245,7 @@ func newOrgUpdateCommand(out outputOptions) *cobra.Command {
 	}
 	addBodyFlags(cmd, &body)
 	cmd.Flags().StringVar(&title, "title", "", "Organization title")
+	cmd.Flags().StringVar(&defaultTimeZone, "default-time-zone", "", "Default time zone")
 	cmd.Flags().StringVar(&ciIntegrationID, "ci-integration", "", "Default CI integration ID")
 	cmd.Flags().StringVar(&registryIntegrationID, "registry-integration", "", "Default registry integration ID")
 	return cmd
@@ -3893,6 +3896,7 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 		newTitleUpdateCommand("update ID", "Update app instance", "/app-instances/", instanceColumns, out),
 		newAppInstanceDeleteCommand(out),
 		newAppInstanceSettingsCommand(out),
+		newAppInstanceCICDSettingsCommand(out),
 		newAppInstanceUpgradeStackCommand(out),
 	)
 	cmd.AddCommand(newAppServiceCommand("service", []string{"services"}, "Manage app services", instanceFilterArg))
@@ -4131,6 +4135,82 @@ func newAppInstanceSettingsUpdateCommand(out outputOptions) *cobra.Command {
 	addBodyFlags(cmd, &body)
 	cmd.Flags().Bool("auto-stack-upgrade-enabled", false, "Enable automatic stack upgrades")
 	addStackUpgradeFlags(cmd, "upgrade-", false)
+	return cmd
+}
+
+func newAppInstanceCICDSettingsCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "cicd-settings",
+		Short: "Manage app instance CI/CD settings",
+	}
+	cmd.AddCommand(
+		newAppInstanceCICDSettingsGetCommand(out),
+		newAppInstanceCICDSettingsUpdateCommand(out),
+	)
+	return cmd
+}
+
+func newAppInstanceCICDSettingsGetCommand(out outputOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "get ID",
+		Short: "Get app instance CI/CD settings",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/app-instances/cicd-settings/"+url.PathEscape(args[0]), nil, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, instanceCICDSettingsColumns)
+		},
+	}
+}
+
+func newAppInstanceCICDSettingsUpdateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	var ciIntegrationID, registryIntegrationID string
+	cmd := &cobra.Command{
+		Use:   "update ID",
+		Short: "Update app instance CI/CD settings",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if err := requireFlag(ciIntegrationID, "--ci-integration"); err != nil {
+					return err
+				}
+				if err := requireFlag(registryIntegrationID, "--registry-integration"); err != nil {
+					return err
+				}
+				values := map[string]interface{}{}
+				if err := addOptionalInt(values, "ciIntegrationId", ciIntegrationID, "--ci-integration"); err != nil {
+					return err
+				}
+				if err := addOptionalInt(values, "registryIntegrationId", registryIntegrationID, "--registry-integration"); err != nil {
+					return err
+				}
+				requestBody = values
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Put(cmd.Context(), "/app-instances/cicd-settings/"+url.PathEscape(args[0]), nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, instanceCICDSettingsColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().StringVar(&ciIntegrationID, "ci-integration", "", "CI integration ID; use 0 for built-in Wodby CI")
+	cmd.Flags().StringVar(&registryIntegrationID, "registry-integration", "", "Registry integration ID; use 0 for built-in Wodby registry")
 	return cmd
 }
 

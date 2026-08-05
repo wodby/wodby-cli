@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -985,6 +987,7 @@ type taskLogJob struct {
 
 type taskLogStep struct {
 	id        string
+	position  int
 	name      string
 	status    string
 	logStatus string
@@ -1054,6 +1057,7 @@ func taskLogStepsFromValue(value interface{}) []taskLogStep {
 		return nil
 	}
 	steps := make([]taskLogStep, 0, len(rawSteps))
+	allPositioned := true
 	for _, step := range rawSteps {
 		stepMap, ok := step.(map[string]interface{})
 		if !ok {
@@ -1064,14 +1068,27 @@ func taskLogStepsFromValue(value interface{}) []taskLogStep {
 		if id == "" && name == "" {
 			continue
 		}
+		position, err := strconv.Atoi(formatValue(stepMap["position"]))
+		if err != nil || position <= 0 {
+			allPositioned = false
+			position = 0
+		}
 		steps = append(steps, taskLogStep{
 			id:        id,
+			position:  position,
 			name:      name,
 			status:    firstScalarPath(stepMap, "status"),
 			logStatus: firstScalarPath(stepMap, "logStatus", "logsStatus"),
 			system:    firstScalarPath(stepMap, "system"),
 			startedAt: firstScalarPath(stepMap, "startedAt"),
 			duration:  stepLogDuration(stepMap),
+		})
+	}
+	// Current APIs provide a position for every step. Keep response order when
+	// talking to a legacy API that omits it.
+	if allPositioned {
+		sort.SliceStable(steps, func(i, j int) bool {
+			return steps[i].position < steps[j].position
 		})
 	}
 	return steps

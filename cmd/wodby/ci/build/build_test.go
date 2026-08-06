@@ -120,6 +120,30 @@ func TestPrioritizeMainService(t *testing.T) {
 	})
 }
 
+func TestAppBuildImageTagIncludesUniqueBuildID(t *testing.T) {
+	config := &types.Config{
+		AppBuild: types.AppBuild{
+			ID:     types.ToID(123),
+			Number: 42,
+			Config: &types.AppBuildConfig{
+				RegistryHost:       "registry.example.com",
+				RegistryRepository: "apps/demo",
+			},
+		},
+	}
+
+	got := appBuildImageTag(config, "php")
+	want := "registry.example.com/apps/demo:php-42-123"
+	if got != want {
+		t.Fatalf("appBuildImageTag() = %q, want %q", got, want)
+	}
+
+	config.AppBuild.ID = types.ToID(124)
+	if next := appBuildImageTag(config, "php"); next == got {
+		t.Fatalf("appBuildImageTag() reused %q for a different app-build ID", next)
+	}
+}
+
 func TestResolveCacheOptions(t *testing.T) {
 	config := &types.Config{
 		DataContainer: "data-container",

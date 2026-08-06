@@ -4681,6 +4681,25 @@ func TestAppServiceChildOperationsUseRESTEndpoints(t *testing.T) {
 		wantOutput []string
 	}{
 		{
+			name:       "update autoscaling",
+			args:       []string{"update", "21", "--scalability-enabled", "--scalability-average-cpu", "70", "--scalability-min-replicas", "1", "--scalability-max-replicas", "3"},
+			wantMethod: http.MethodPut,
+			wantPath:   "/v1/app-services/21",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				scalability, ok := body["scalability"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("scalability = %#v, want object; body=%#v", body["scalability"], body)
+				}
+				for key, want := range map[string]interface{}{"enabled": true, "averageCPU": float64(70), "minReplicas": float64(1), "maxReplicas": float64(3)} {
+					if scalability[key] != want {
+						t.Fatalf("scalability.%s = %#v, want %#v; body=%#v", key, scalability[key], want, body)
+					}
+				}
+			},
+			response:   map[string]interface{}{"id": 21, "title": "PHP", "status": "running", "scalability": map[string]interface{}{"averageCPU": 70, "minReplicas": 1, "maxReplicas": 3}},
+			wantOutput: []string{"PHP", "running", "scalability"},
+		},
+		{
 			name:       "env create",
 			args:       []string{"env-var", "create", "21", "--name", "APP_ENV", "--value", "prod", "--runtime"},
 			wantMethod: http.MethodPost,
@@ -4789,11 +4808,11 @@ func TestAppServiceChildOperationsUseRESTEndpoints(t *testing.T) {
 		},
 		{
 			name:       "log stream create",
-			args:       []string{"log-stream", "create", "21", "--workload", "web", "--container", "php"},
+			args:       []string{"log-stream", "create", "21", "--workload", "web", "--container", "php", "--pod", "php-abc"},
 			wantMethod: http.MethodPost,
 			wantPath:   "/v1/app-services/21/log-streams",
 			assertBody: func(t *testing.T, body map[string]interface{}) {
-				for key, want := range map[string]interface{}{"workload": "web", "container": "php"} {
+				for key, want := range map[string]interface{}{"workload": "web", "container": "php", "pod": "php-abc"} {
 					if body[key] != want {
 						t.Fatalf("%s = %#v, want %#v; body=%#v", key, body[key], want, body)
 					}
@@ -4858,6 +4877,83 @@ func TestAppServiceChildOperationsUseRESTEndpoints(t *testing.T) {
 				if !strings.Contains(output, expected) {
 					t.Fatalf("output should include %q: %s", expected, output)
 				}
+			}
+		})
+	}
+}
+
+func TestAppServiceUpdateValidatesScalabilityFlags(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "child option requires enabled flag",
+			args:    []string{"update", "21", "--scalability-average-cpu", "70"},
+			wantErr: "--scalability-enabled is required",
+		},
+		{
+			name:    "enabled requires configuration",
+			args:    []string{"update", "21", "--scalability-enabled"},
+			wantErr: "--scalability-average-cpu is required",
+		},
+		{
+			name:    "disabled rejects configuration",
+			args:    []string{"update", "21", "--scalability-enabled=false", "--scalability-min-replicas", "1"},
+			wantErr: "autoscaling options cannot be used",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := newAppServiceCommand("aps", nil, "Manage app services", instanceFilterFlag)
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SilenceUsage = true
+			cmd.SetArgs(test.args)
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Execute() error = %v, want containing %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestAppInstanceSettingsValidatesAutomationTimeWindowFlags(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "child option requires enabled flag",
+			args:    []string{"settings", "update", "21", "--auto-stack-upgrade-enabled", "--time-window-start", "02:00"},
+			wantErr: "--time-window-enabled is required",
+		},
+		{
+			name:    "enabled requires start and end",
+			args:    []string{"settings", "update", "21", "--auto-stack-upgrade-enabled", "--time-window-enabled", "--time-window-end", "04:00"},
+			wantErr: "--time-window-start is required",
+		},
+		{
+			name:    "disabled rejects configuration",
+			args:    []string{"settings", "update", "21", "--auto-stack-upgrade-enabled", "--time-window-enabled=false", "--time-window-start", "02:00"},
+			wantErr: "automation time window options cannot be used",
+		},
+		{
+			name:    "weekday is validated",
+			args:    []string{"settings", "update", "21", "--auto-stack-upgrade-enabled", "--time-window-enabled", "--time-window-start", "02:00", "--time-window-end", "04:00", "--time-window-day", "funday"},
+			wantErr: "invalid --time-window-day value",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := newAppInstanceCommand("instance", "Manage app instances")
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SilenceUsage = true
+			cmd.SetArgs(test.args)
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Execute() error = %v, want containing %q", err, test.wantErr)
 			}
 		})
 	}
@@ -6008,6 +6104,30 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 				}
 			},
 			response: map[string]interface{}{"id": 21, "ciIntegrationId": 12, "registryIntegrationId": 34},
+		},
+		{
+			name:       "instance update automation time window",
+			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			args:       []string{"settings", "update", "21", "--auto-stack-upgrade-enabled", "--time-window-enabled", "--time-window-start", "02:00", "--time-window-end", "04:00", "--time-window-time-zone", "Europe/London", "--time-window-day", "monday", "--time-window-day", "wednesday"},
+			wantMethod: http.MethodPut,
+			wantPath:   "/v1/app-instances/settings/21",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				autoStackUpgrade, ok := body["autoStackUpgrade"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("autoStackUpgrade = %#v, want object; body=%#v", body["autoStackUpgrade"], body)
+				}
+				if autoStackUpgrade["enabled"] != true {
+					t.Fatalf("autoStackUpgrade.enabled = %#v, want true", autoStackUpgrade["enabled"])
+				}
+				timeWindow, ok := autoStackUpgrade["timeWindow"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("timeWindow = %#v, want object; autoStackUpgrade=%#v", autoStackUpgrade["timeWindow"], autoStackUpgrade)
+				}
+				if timeWindow["enabled"] != true || timeWindow["start"] != "02:00" || timeWindow["end"] != "04:00" || timeWindow["timeZone"] != "Europe/London" || fmt.Sprint(timeWindow["days"]) != "[MONDAY WEDNESDAY]" {
+					t.Fatalf("automation time window body = %#v", timeWindow)
+				}
+			},
+			response: map[string]interface{}{"id": 21, "title": "Production"},
 		},
 		{
 			name:       "instance delete force",

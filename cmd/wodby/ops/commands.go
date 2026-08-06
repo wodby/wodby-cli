@@ -55,7 +55,7 @@ var (
 	instanceGetColumns              = append(append([]string{}, instanceColumns...), "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
 	instanceCICDSettingsColumns     = []string{"appInstanceId", "ciIntegrationId", "registryIntegrationId", "registryRepository"}
 	instanceStatusColumns           = []string{"id", "title", "status", "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
-	serviceColumns                  = []string{"id", "name", "title", "type", "status", "version", "replicas", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
+	serviceColumns                  = []string{"id", "name", "title", "type", "status", "version", "replicas", "scalability", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
 	appServiceEnvColumns            = []string{"id", "name", "value", "secret", "runtime", "build", "envType", "workload", "container", "source", "createdAt"}
 	appServiceValueColumns          = []string{"id", "name", "value", "secret", "source", "createdAt"}
 	appServiceTokenColumns          = []string{"id", "name", "value", "secret", "envType", "createdAt"}
@@ -4119,6 +4119,13 @@ func newAppInstanceSettingsUpdateCommand(out outputOptions) *cobra.Command {
 				if settings := changedStackUpgradeSettings(cmd, "upgrade-"); len(settings) != 0 {
 					autoStackUpgrade["upgradeSettings"] = settings
 				}
+				timeWindow, changed, err := changedAutomationTimeWindow(cmd, "time-window-")
+				if err != nil {
+					return err
+				}
+				if changed {
+					autoStackUpgrade["timeWindow"] = timeWindow
+				}
 				requestBody = map[string]interface{}{"autoStackUpgrade": autoStackUpgrade}
 			}
 			client, err := newRESTClient()
@@ -4135,6 +4142,7 @@ func newAppInstanceSettingsUpdateCommand(out outputOptions) *cobra.Command {
 	addBodyFlags(cmd, &body)
 	cmd.Flags().Bool("auto-stack-upgrade-enabled", false, "Enable automatic stack upgrades")
 	addStackUpgradeFlags(cmd, "upgrade-", false)
+	addAutomationTimeWindowFlags(cmd, "time-window-")
 	return cmd
 }
 
@@ -4279,6 +4287,91 @@ func stackUpgradeSettings(cmd *cobra.Command, prefix string, includeUnchanged bo
 
 func changedStackUpgradeSettings(cmd *cobra.Command, prefix string) map[string]interface{} {
 	return stackUpgradeSettings(cmd, prefix, false)
+}
+
+func addAutomationTimeWindowFlags(cmd *cobra.Command, prefix string) {
+	cmd.Flags().Bool(prefix+"enabled", false, "Enable the automation time window")
+	cmd.Flags().String(prefix+"start", "", "Automation time window start in HH:MM format")
+	cmd.Flags().String(prefix+"end", "", "Automation time window end in HH:MM format")
+	cmd.Flags().String(prefix+"time-zone", "", "Automation time window IANA time zone")
+	cmd.Flags().StringArray(prefix+"day", nil, "Automation time window weekday; repeatable or comma-separated")
+}
+
+func changedAutomationTimeWindow(cmd *cobra.Command, prefix string) (map[string]interface{}, bool, error) {
+	enabledFlag := prefix + "enabled"
+	childFlags := []string{prefix + "start", prefix + "end", prefix + "time-zone", prefix + "day"}
+	if !hasChangedFlags(cmd.Flags(), append([]string{enabledFlag}, childFlags...)...) {
+		return nil, false, nil
+	}
+	if !cmd.Flags().Changed(enabledFlag) {
+		return nil, false, errors.Errorf("--%s is required when configuring an automation time window", enabledFlag)
+	}
+
+	enabled, _ := cmd.Flags().GetBool(enabledFlag)
+	values := map[string]interface{}{"enabled": enabled}
+	if !enabled {
+		if hasChangedFlags(cmd.Flags(), childFlags...) {
+			return nil, false, errors.Errorf("automation time window options cannot be used when --%s=false", enabledFlag)
+		}
+		return values, true, nil
+	}
+
+	start, startChanged := changedString(cmd, prefix+"start")
+	if !startChanged || strings.TrimSpace(start) == "" {
+		return nil, false, errors.Errorf("--%s is required when --%s=true", prefix+"start", enabledFlag)
+	}
+	end, endChanged := changedString(cmd, prefix+"end")
+	if !endChanged || strings.TrimSpace(end) == "" {
+		return nil, false, errors.Errorf("--%s is required when --%s=true", prefix+"end", enabledFlag)
+	}
+	values["start"] = start
+	values["end"] = end
+
+	if timeZone, ok := changedString(cmd, prefix+"time-zone"); ok {
+		if strings.TrimSpace(timeZone) == "" {
+			return nil, false, errors.Errorf("--%s cannot be empty", prefix+"time-zone")
+		}
+		values["timeZone"] = timeZone
+	}
+	if cmd.Flags().Changed(prefix + "day") {
+		days, _ := cmd.Flags().GetStringArray(prefix + "day")
+		normalized, err := normalizeAutomationWeekdays(days, "--"+prefix+"day")
+		if err != nil {
+			return nil, false, err
+		}
+		values["days"] = normalized
+	}
+
+	return values, true, nil
+}
+
+func normalizeAutomationWeekdays(values []string, flag string) ([]string, error) {
+	valid := map[string]bool{
+		"MONDAY": true, "TUESDAY": true, "WEDNESDAY": true, "THURSDAY": true,
+		"FRIDAY": true, "SATURDAY": true, "SUNDAY": true,
+	}
+	result := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			day := strings.ToUpper(strings.TrimSpace(part))
+			if day == "" {
+				continue
+			}
+			if !valid[day] {
+				return nil, errors.Errorf("invalid %s value %q", flag, part)
+			}
+			if seen[day] {
+				return nil, errors.Errorf("duplicate %s value %q", flag, part)
+			}
+			seen[day] = true
+			result = append(result, day)
+		}
+	}
+	if len(result) == 0 {
+		return nil, errors.Errorf("%s must include at least one weekday", flag)
+	}
+	return result, nil
 }
 
 func buildAppStatus(ctx context.Context, client *rest.Client, appID string) (map[string]interface{}, error) {
@@ -4797,7 +4890,7 @@ func newAppServiceUpdateCommand(out outputOptions) *cobra.Command {
 				return err
 			}
 			if !hasBody {
-				if !hasChangedFlags(cmd.Flags(), "disabled", "main", "replicas", "version") {
+				if !hasChangedFlags(cmd.Flags(), "disabled", "main", "replicas", "version", "scalability-enabled", "scalability-average-cpu", "scalability-min-replicas", "scalability-max-replicas") {
 					return errors.New("pass at least one update flag or provide --data/--file")
 				}
 				values := map[string]interface{}{}
@@ -4812,6 +4905,13 @@ func newAppServiceUpdateCommand(out outputOptions) *cobra.Command {
 				}
 				if value, ok := changedString(cmd, "version"); ok {
 					values["version"] = value
+				}
+				scalability, changed, err := changedAppServiceScalability(cmd)
+				if err != nil {
+					return err
+				}
+				if changed {
+					values["scalability"] = scalability
 				}
 				requestBody = values
 			}
@@ -4832,7 +4932,48 @@ func newAppServiceUpdateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().Bool("main", false, "Set main service state")
 	cmd.Flags().Int("replicas", 0, "Set replicas")
 	cmd.Flags().String("version", "", "Set service version")
+	cmd.Flags().Bool("scalability-enabled", false, "Enable app service autoscaling")
+	cmd.Flags().Int("scalability-average-cpu", 0, "Target average CPU utilization percentage")
+	cmd.Flags().Int("scalability-min-replicas", 0, "Minimum autoscaling replicas")
+	cmd.Flags().Int("scalability-max-replicas", 0, "Maximum autoscaling replicas")
 	return cmd
+}
+
+func changedAppServiceScalability(cmd *cobra.Command) (map[string]interface{}, bool, error) {
+	enabledFlag := "scalability-enabled"
+	childFlags := []string{"scalability-average-cpu", "scalability-min-replicas", "scalability-max-replicas"}
+	if !hasChangedFlags(cmd.Flags(), append([]string{enabledFlag}, childFlags...)...) {
+		return nil, false, nil
+	}
+	if !cmd.Flags().Changed(enabledFlag) {
+		return nil, false, errors.New("--scalability-enabled is required when configuring autoscaling")
+	}
+
+	enabled, _ := cmd.Flags().GetBool(enabledFlag)
+	values := map[string]interface{}{"enabled": enabled}
+	if !enabled {
+		if hasChangedFlags(cmd.Flags(), childFlags...) {
+			return nil, false, errors.New("autoscaling options cannot be used when --scalability-enabled=false")
+		}
+		return values, true, nil
+	}
+
+	for _, spec := range []struct {
+		flag string
+		key  string
+	}{
+		{flag: "scalability-average-cpu", key: "averageCPU"},
+		{flag: "scalability-min-replicas", key: "minReplicas"},
+		{flag: "scalability-max-replicas", key: "maxReplicas"},
+	} {
+		value, ok := changedInt(cmd, spec.flag)
+		if !ok {
+			return nil, false, errors.Errorf("--%s is required when --scalability-enabled=true", spec.flag)
+		}
+		values[spec.key] = value
+	}
+
+	return values, true, nil
 }
 
 func newAppServiceActionCommand(out outputOptions) *cobra.Command {
@@ -5167,6 +5308,7 @@ func newAppServiceLogStreamCommand(out outputOptions) *cobra.Command {
 		newServiceChildCreateCommand("create SERVICE_ID", "Create app service log stream", "/app-services/%s/log-streams", logStreamColumns, out, []jsonFlagSpec{
 			stringJSONFlag("workload", "workload", "Workload name", false),
 			stringJSONFlag("container", "container", "Container name", false),
+			stringJSONFlag("pod", "pod", "Pod name", false),
 		}),
 		newLogStreamActionCommand("start ID", "Start log stream", "/log-streams/%s/start", out),
 		newLogStreamActionCommand("keep-alive ID", "Keep log stream alive", "/log-streams/%s/keep-alive", out),

@@ -231,7 +231,7 @@ var Cmd = &cobra.Command{
 				cleanUpDockerignore = true
 			}
 
-			tag = fmt.Sprintf("%s/%s:%s-%d", config.AppBuild.Config.RegistryHost, config.AppBuild.Config.RegistryRepository, appServiceBuildConfig.Name, config.AppBuild.Number)
+			tag = appBuildImageTag(config, appServiceBuildConfig.Name)
 			err = dockerClient.Build(docker.BuildConfig{
 				Dockerfile:   buildFiles.dockerfilePath,
 				Tags:         []string{tag},
@@ -285,6 +285,20 @@ var Cmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+// appBuildImageTag keeps the human-facing launch number while including the
+// unique app-build ID so parallel workflows for one service cannot overwrite
+// each other's registry tag.
+func appBuildImageTag(config *types.Config, serviceName string) string {
+	return fmt.Sprintf(
+		"%s/%s:%s-%d-%s",
+		config.AppBuild.Config.RegistryHost,
+		config.AppBuild.Config.RegistryRepository,
+		serviceName,
+		config.AppBuild.Number,
+		config.AppBuild.ID.String(),
+	)
 }
 
 func containsString(s []string, e string) bool {

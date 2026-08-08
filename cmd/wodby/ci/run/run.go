@@ -1,9 +1,9 @@
 package run
 
 import (
-	"path"
-
 	"fmt"
+	"path"
+	"strings"
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
@@ -93,6 +93,7 @@ var Cmd = &cobra.Command{
 				User:       opts.user,
 				Entrypoint: opts.entrypoint,
 			}
+			runConfig.ClearEntrypoint = shouldClearImageEntrypoint(opts.entrypoint, opts.user)
 
 			dockerClient := docker.NewClient()
 
@@ -121,6 +122,27 @@ var Cmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func shouldClearImageEntrypoint(explicitEntrypoint string, user string) bool {
+	if explicitEntrypoint != "" || user == "" {
+		return false
+	}
+
+	identity := user
+	if idx := strings.Index(identity, ":"); idx >= 0 {
+		identity = identity[:idx]
+	}
+	if identity == "" {
+		return false
+	}
+
+	for _, r := range identity {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func init() {

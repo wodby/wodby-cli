@@ -25,10 +25,10 @@ type Client struct {
 
 // Config is config for Wodby API client.
 type Config struct {
-	Key    string `json:"key"`
-	Scheme string `json:"proto"`
-	Host   string `json:"host"`
-	Prefix string `json:"prefix"`
+	Key    string `json:"key" mapstructure:"key"`
+	Scheme string `json:"proto" mapstructure:"proto"`
+	Host   string `json:"host" mapstructure:"host"`
+	Prefix string `json:"prefix" mapstructure:"prefix"`
 }
 
 // ResTask represents api request result with a task.

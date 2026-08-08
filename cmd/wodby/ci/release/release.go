@@ -1,21 +1,33 @@
 package release
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"path"
+	"regexp"
 	"strings"
 
+	"github.com/distribution/reference"
+	"github.com/pkg/errors"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	"github.com/wodby/wodby-cli/pkg/config"
 	"github.com/wodby/wodby-cli/pkg/docker"
 	"github.com/wodby/wodby-cli/pkg/types"
 	"github.com/wodby/wodby-cli/pkg/utils"
+)
 
-	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
+const dockerTagMaxLength = 128
 
-	"regexp"
-
-	"github.com/pkg/errors"
+var (
+	invalidDockerTagChars  = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
+	tagValidationReference = func() reference.Named {
+		named, err := reference.WithName("wodby/validation")
+		if err != nil {
+			panic(err)
+		}
+		return named
+	}()
 )
 
 var v = viper.New()
@@ -120,44 +132,25 @@ var Cmd = &cobra.Command{
 					tag = fmt.Sprintf("%s:%s", service.Slug, config.Metadata.Number)
 				}
 
-				fmt.Printf("Pushing %s image...", service.Name)
+				extraTags, err := releaseExtraTags(tag, config.Metadata.Branch, opts.latestBranch, opts.branchTag)
+				if err != nil {
+					return err
+				}
 
+				fmt.Printf("Pushing %s image...", service.Name)
 				err = docker.Push(tag)
 				if err != nil {
 					return err
 				}
 
-				r := regexp.MustCompile(":.+$")
-
-				if config.Metadata.Branch != "" {
-					if config.Metadata.Branch == opts.latestBranch {
-						latestTag := r.ReplaceAllString(tag, ":latest")
-						err = docker.Tag(tag, latestTag)
-
-						if err != nil {
-							return err
-						}
-
-						err = docker.Push(latestTag)
-
-						if err != nil {
-							return err
-						}
+				for _, extraTag := range extraTags {
+					err = docker.Tag(tag, extraTag)
+					if err != nil {
+						return err
 					}
-
-					if opts.branchTag {
-						branchTag := r.ReplaceAllString(tag, ":"+config.Metadata.Branch)
-						err = docker.Tag(tag, branchTag)
-
-						if err != nil {
-							return err
-						}
-
-						err = docker.Push(branchTag)
-
-						if err != nil {
-							return err
-						}
+					err = docker.Push(extraTag)
+					if err != nil {
+						return err
 					}
 				}
 			}
@@ -167,8 +160,77 @@ var Cmd = &cobra.Command{
 	},
 }
 
+func releaseExtraTags(image string, branch string, latestBranch string, branchTag bool) ([]string, error) {
+	if branch == "" {
+		return nil, nil
+	}
+
+	named, err := reference.ParseNormalizedNamed(image)
+	if err != nil {
+		return nil, errors.Wrap(err, "invalid image reference")
+	}
+	base := reference.TrimNamed(named)
+
+	var tags []string
+	if branch == latestBranch {
+		latest, err := reference.WithTag(base, "latest")
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to create latest image reference")
+		}
+		tags = append(tags, reference.FamiliarString(latest))
+	}
+	if branchTag {
+		tag, err := dockerTagFromBranch(branch)
+		if err != nil {
+			return nil, err
+		}
+		branchImage, err := reference.WithTag(base, tag)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to create branch image reference")
+		}
+		tags = append(tags, reference.FamiliarString(branchImage))
+	}
+
+	return tags, nil
+}
+
+func dockerTagFromBranch(branch string) (string, error) {
+	if branch == "" {
+		return "", errors.New("cannot create an image tag from an empty git branch")
+	}
+
+	if len(branch) <= dockerTagMaxLength {
+		if _, err := reference.WithTag(tagValidationReference, branch); err == nil {
+			return branch, nil
+		}
+	}
+
+	base := invalidDockerTagChars.ReplaceAllString(branch, "-")
+	base = strings.TrimLeft(base, ".-")
+	if base == "" {
+		base = "branch"
+	}
+
+	hash := sha256.Sum256([]byte(branch))
+	suffix := fmt.Sprintf("-%x", hash[:4])
+	maxBaseLength := dockerTagMaxLength - len(suffix)
+	if len(base) > maxBaseLength {
+		base = base[:maxBaseLength]
+	}
+	base = strings.TrimRight(base, ".-")
+	if base == "" {
+		base = "branch"
+	}
+	tag := base + suffix
+
+	if _, err := reference.WithTag(tagValidationReference, tag); err != nil {
+		return "", errors.Wrap(err, "failed to create a valid image tag from git branch")
+	}
+	return tag, nil
+}
+
 func init() {
 	Cmd.Flags().StringVarP(&opts.tag, "tag", "t", "", "Name and optionally a tag in the 'name:tag' format. Use if you want to use custom docker registry")
 	Cmd.Flags().StringVarP(&opts.latestBranch, "latest-branch", "l", "master", "Update latest tag when built from this branch")
-	Cmd.Flags().BoolVarP(&opts.branchTag, "branch-tag", "b", false, "Additionally push tag with the current git branch name")
+	Cmd.Flags().BoolVarP(&opts.branchTag, "branch-tag", "b", false, "Additionally push a safe tag derived from the current git branch name")
 }

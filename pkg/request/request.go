@@ -4,7 +4,10 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
+
+const defaultHTTPTimeout = 30 * time.Second
 
 // Client sends http.Requests and returns http.Responses
 // or errors in case of failure.
@@ -76,7 +79,7 @@ func UserAgent(ua string) Decorator {
 
 // NewClient makes new HTTP client.
 func NewClient(logger *log.Logger, token string) Client {
-	client := Decorate(http.DefaultClient,
+	client := Decorate(newHTTPClient(),
 		Logging(logger),
 		Authorization(token),
 		ContentType("application/json"),
@@ -84,4 +87,8 @@ func NewClient(logger *log.Logger, token string) Client {
 	)
 
 	return client
+}
+
+func newHTTPClient() *http.Client {
+	return &http.Client{Timeout: defaultHTTPTimeout}
 }

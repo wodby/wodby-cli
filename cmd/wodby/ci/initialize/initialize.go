@@ -2,7 +2,6 @@ package initialize
 
 import (
 	"encoding/json"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -13,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/blang/semver"
-	"github.com/pborman/uuid"
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -92,7 +91,13 @@ var Cmd = &cobra.Command{
 			}
 
 			v1, err := semver.Make(version.VERSION)
+			if err != nil {
+				return errors.Wrap(err, "invalid current CLI version")
+			}
 			v2, err := semver.Make(ver)
+			if err != nil {
+				return errors.Wrap(err, "invalid minimum CLI version returned by API")
+			}
 			if v1.Compare(v2) == -1 {
 				return fmt.Errorf("current version of CLI (%s) is outdated, minimum required is %s, please upgrade", v1.String(), v2.String())
 			}
@@ -126,7 +131,7 @@ var Cmd = &cobra.Command{
 		if opts.dind {
 			dind = true
 		} else if config.Metadata.Provider == types.CircleCI {
-			source, err := ioutil.ReadFile(filepath.Join(opts.context, ".circleci/config.yml"))
+			source, err := os.ReadFile(filepath.Join(opts.context, ".circleci/config.yml"))
 			if err != nil {
 				return err
 			}
@@ -155,7 +160,7 @@ var Cmd = &cobra.Command{
 		if dind {
 			fmt.Print("Using docker in docker build schema. Creating data container...")
 
-			config.DataContainer = uuid.New()
+			config.DataContainer = uuid.NewString()
 
 			// We use working dir of the default service for data container.
 			output, err := exec.Command("docker", "pull", "alpine").CombinedOutput()
@@ -181,7 +186,7 @@ var Cmd = &cobra.Command{
 			return err
 		}
 
-		err = ioutil.WriteFile(path.Join(viper.GetString("ci_config_path")), content, 0600)
+		err = os.WriteFile(path.Join(viper.GetString("ci_config_path")), content, 0600)
 		if err != nil {
 			return err
 		}
@@ -212,7 +217,7 @@ var Cmd = &cobra.Command{
 					runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, config.WorkingDir))
 				}
 
-				args := []string{"chown", "-R", fmt.Sprintf("%s:%s", defaultUser, defaultUser), "."}
+				args := []string{"chown", "-R", docker.ChownSpec(defaultUser), "."}
 				err := dockerClient.Run(args, runConfig)
 
 				if err != nil {
@@ -269,5 +274,5 @@ func init() {
 	Cmd.Flags().BoolVar(&opts.fixPermissions, "fix-permissions", false, "Fix codebase permissions. Performed automatically for known CI environments. WARNING: make sure you run wodby ci init from the project directory")
 	Cmd.Flags().StringVarP(&opts.buildNumber, "build-num", "n", "", "Custom build number (used if can't identify automatically)")
 	Cmd.Flags().StringVar(&opts.url, "url", "", "Custom build url (used if can't acquire automatically)")
-	Cmd.Flags().StringVar(&opts.provider, "provider", "p", "Custom build provider name (used if can't identify automatically)")
+	Cmd.Flags().StringVarP(&opts.provider, "provider", "p", "", "Override detected build provider name")
 }

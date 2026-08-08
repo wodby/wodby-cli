@@ -91,13 +91,17 @@ type BuildMetadata struct {
 func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMetadata, error) {
 	var metadata *BuildMetadata
 
-	if os.Getenv("GITHUB_ACTION") != "" {
+	if os.Getenv("GITHUB_ACTIONS") != "" || os.Getenv("GITHUB_ACTION") != "" {
 		var branch string
 		var tag string
 		if os.Getenv("GITHUB_REF_TYPE") == "tag" {
-			tag = os.Getenv("GITHUB_REF")
+			tag = firstNonEmpty(os.Getenv("GITHUB_REF_NAME"), githubRefName(os.Getenv("GITHUB_REF")))
 		} else {
-			branch = os.Getenv("GITHUB_REF")
+			branch = firstNonEmpty(
+				os.Getenv("GITHUB_HEAD_REF"),
+				os.Getenv("GITHUB_REF_NAME"),
+				githubRefName(os.Getenv("GITHUB_REF")),
+			)
 		}
 
 		metadata = &BuildMetadata{
@@ -155,12 +159,20 @@ func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMe
 			RepoURL:  os.Getenv("GIT_URL"),
 		}
 	} else if os.Getenv("GITLAB_CI") != "" {
+		branch := os.Getenv("CI_COMMIT_BRANCH")
+		tag := os.Getenv("CI_COMMIT_TAG")
+		if tag != "" {
+			branch = ""
+		}
 		metadata = &BuildMetadata{
 			Provider: GitLab,
 			URL:      os.Getenv("CI_PIPELINE_URL"),
 			Number:   os.Getenv("CI_PIPELINE_IID"),
-			Branch:   os.Getenv("CI_COMMIT_BRANCH"),
+			Branch:   branch,
 			Commit:   os.Getenv("CI_COMMIT_SHA"),
+			Message:  os.Getenv("CI_COMMIT_MESSAGE"),
+			Tag:      tag,
+			Slug:     os.Getenv("CI_PROJECT_PATH"),
 			RepoURL:  os.Getenv("CI_REPOSITORY_URL"),
 		}
 	} else {
@@ -185,7 +197,7 @@ func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMe
 
 			if branch == "HEAD" {
 				branch = ""
-				out, err = exec.Command("git", "describe", "--tags").CombinedOutput()
+				out, err = exec.Command("git", "describe", "--tags", "--exact-match", "HEAD").CombinedOutput()
 
 				if err != nil {
 					fmt.Println("Failed to acquire tag info")
@@ -210,6 +222,16 @@ func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMe
 		} else {
 			metadata.Number = strconv.FormatInt(time.Now().Unix(), 10)
 		}
+	}
+
+	if provider != "" {
+		metadata.Provider = provider
+	}
+	if buildNumber != "" {
+		metadata.Number = buildNumber
+	}
+	if url != "" {
+		metadata.URL = url
 	}
 
 	if metadata.Message == "" && metadata.Commit != "" {
@@ -239,4 +261,22 @@ func NewBuildMetadata(provider string, buildNumber string, url string) (*BuildMe
 	}
 
 	return metadata, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func githubRefName(ref string) string {
+	for _, prefix := range []string{"refs/heads/", "refs/tags/"} {
+		if strings.HasPrefix(ref, prefix) {
+			return strings.TrimPrefix(ref, prefix)
+		}
+	}
+	return ref
 }

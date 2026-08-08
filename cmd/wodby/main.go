@@ -10,8 +10,9 @@ import (
 
 // RootCmd represents the base command when called without any subcommands.
 var RootCmd = &cobra.Command{
-	Use:   "wodby",
-	Short: "CLI client for Wodby",
+	Use:               "wodby",
+	Short:             "CLI client for Wodby",
+	CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 }
 
 func init() {

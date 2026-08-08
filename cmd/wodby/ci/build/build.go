@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"html/template"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -34,6 +35,7 @@ type options struct {
 type imageBuild struct {
 	dockerfile   string
 	buildArgs    map[string]string
+	redactions   []string
 	tags         []string
 	serviceNames []string
 }
@@ -48,7 +50,7 @@ const DockerfileTpl = `ARG WODBY_BASE_IMAGE
 FROM ${WODBY_BASE_IMAGE}
 ARG COPY_FROM
 ARG COPY_TO
-COPY --chown={{.DefaultUser}}:{{.DefaultUser}} ${COPY_FROM} ${COPY_TO}`
+COPY --chown={{.DefaultUserOwnership}} ${COPY_FROM} ${COPY_TO}`
 
 var v = viper.New()
 
@@ -116,9 +118,14 @@ var Cmd = &cobra.Command{
 		if config.DataContainer != "" {
 			fmt.Println("Synchronizing data container")
 
-			from := fmt.Sprintf("%s:%s", config.DataContainer, config.WorkingDir)
-			to := fmt.Sprintf("/tmp/wodby-build-%s", config.DataContainer)
-			output, err := exec.Command("docker", "cp", from, to).CombinedOutput()
+			context, err := prepareDataContainerContext(config.DataContainer)
+			if err != nil {
+				return err
+			}
+			defer os.RemoveAll(context)
+
+			from := fmt.Sprintf("%s:%s", config.DataContainer, dataContainerWorkingDirContents(config.WorkingDir))
+			output, err := exec.Command("docker", "cp", from, context).CombinedOutput()
 			if err != nil {
 				return errors.Wrap(err, string(output))
 			}
@@ -126,17 +133,16 @@ var Cmd = &cobra.Command{
 
 		var context string
 		if config.DataContainer != "" {
-			context = fmt.Sprintf("/tmp/wodby-build-%s", config.DataContainer)
+			context = dataContainerContextPath(config.DataContainer)
 		} else {
 			context = v.GetString("context")
 		}
 
-		if _, err := os.Stat(context + ".dockerignore"); os.IsNotExist(err) {
-			err = ioutil.WriteFile(path.Join(context+".dockerignore"), []byte(Dockerignore), 0600)
-			if err != nil {
-				return err
-			}
+		cleanupDockerignore, err := ensureDefaultDockerignore(context)
+		if err != nil {
+			return err
 		}
+		defer cleanupDockerignore()
 
 		dockerClient := docker.NewClient()
 
@@ -149,8 +155,9 @@ var Cmd = &cobra.Command{
 		imageBuilds := make(map[string]*imageBuild)
 
 		// Prepare image builds.
-		for _, service := range services {
+		for _, service := range orderedServices(services, config.BuildConfig.Default) {
 			buildArgs := make(map[string]string)
+			var redactions []string
 			buildArgs["COPY_FROM"] = opts.from
 			buildArgs["COPY_TO"] = opts.to
 			buildArgs["WODBY_BASE_IMAGE"] = service.Image
@@ -170,12 +177,15 @@ var Cmd = &cobra.Command{
 					return errors.Errorf("environment variable %s is not set", envName)
 				}
 
-				buildArgs[envName] = value
+				// Forward the variable by name so its value is not exposed in the
+				// process arguments or in the displayed Docker command.
+				buildArgs[envName] = ""
+				redactions = append(redactions, value)
 			}
 
 			// When user specified custom dockerfile template.
 			if opts.dockerfile != "" {
-				d, err := ioutil.ReadFile(context + "/" + opts.dockerfile)
+				d, err := os.ReadFile(filepath.Join(context, opts.dockerfile))
 
 				if err != nil {
 					return err
@@ -198,7 +208,7 @@ var Cmd = &cobra.Command{
 				return err
 			}
 
-			data := struct{ DefaultUser string }{DefaultUser: defaultUser}
+			data := struct{ DefaultUserOwnership string }{DefaultUserOwnership: docker.ChownSpec(defaultUser)}
 			var tpl bytes.Buffer
 
 			if err := t.Execute(&tpl, data); err != nil {
@@ -222,10 +232,12 @@ var Cmd = &cobra.Command{
 			if _, ok := imageBuilds[service.Image]; ok {
 				imageBuilds[service.Image].tags = append(imageBuilds[service.Image].tags, tag)
 				imageBuilds[service.Image].serviceNames = append(imageBuilds[service.Image].serviceNames, service.Name)
+				imageBuilds[service.Image].redactions = append(imageBuilds[service.Image].redactions, redactions...)
 			} else {
 				build := &imageBuild{
 					dockerfile:   dockerfile,
 					buildArgs:    buildArgs,
+					redactions:   redactions,
 					tags:         []string{tag},
 					serviceNames: []string{service.Name},
 				}
@@ -235,9 +247,10 @@ var Cmd = &cobra.Command{
 		}
 
 		// Building images.
-		for _, build := range imageBuilds {
+		for _, image := range orderedBuildImages(imageBuilds, services[config.BuildConfig.Default].Image) {
+			build := imageBuilds[image]
 			fmt.Printf("Building image for service(s) %s...\n", strings.Join(build.serviceNames, ", "))
-			err := dockerClient.Build(build.dockerfile, build.tags, context, build.buildArgs)
+			err := dockerClient.BuildWithRedactions(build.dockerfile, build.tags, context, build.buildArgs, build.redactions)
 
 			if err != nil {
 				return err
@@ -246,6 +259,82 @@ var Cmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func dataContainerContextPath(dataContainer string) string {
+	return filepath.Join(os.TempDir(), "wodby-build-"+dataContainer)
+}
+
+func prepareDataContainerContext(dataContainer string) (string, error) {
+	if dataContainer == "" || filepath.Base(dataContainer) != dataContainer {
+		return "", errors.Errorf("invalid data container name %q", dataContainer)
+	}
+
+	context := dataContainerContextPath(dataContainer)
+	if err := os.RemoveAll(context); err != nil {
+		return "", err
+	}
+	return context, nil
+}
+
+func dataContainerWorkingDirContents(workingDir string) string {
+	cleaned := path.Clean(workingDir)
+	if cleaned == "." || cleaned == "/" {
+		return "/."
+	}
+
+	return cleaned + "/."
+}
+
+func ensureDefaultDockerignore(context string) (func(), error) {
+	dockerignorePath := filepath.Join(context, ".dockerignore")
+	if _, err := os.Stat(dockerignorePath); err == nil {
+		return func() {}, nil
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	if err := os.WriteFile(dockerignorePath, []byte(Dockerignore), 0600); err != nil {
+		return nil, err
+	}
+
+	return func() {
+		_ = os.Remove(dockerignorePath)
+	}, nil
+}
+
+func orderedServices(services map[string]types.Service, defaultService string) []types.Service {
+	names := make([]string, 0, len(services))
+	for name := range services {
+		if name != defaultService {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+
+	ordered := make([]types.Service, 0, len(services))
+	if service, ok := services[defaultService]; ok {
+		ordered = append(ordered, service)
+	}
+	for _, name := range names {
+		ordered = append(ordered, services[name])
+	}
+	return ordered
+}
+
+func orderedBuildImages(builds map[string]*imageBuild, defaultImage string) []string {
+	images := make([]string, 0, len(builds))
+	for image := range builds {
+		if image != defaultImage {
+			images = append(images, image)
+		}
+	}
+	sort.Strings(images)
+
+	if _, ok := builds[defaultImage]; ok {
+		images = append([]string{defaultImage}, images...)
+	}
+	return images
 }
 
 func parseBuildArg(raw string) (string, string, error) {

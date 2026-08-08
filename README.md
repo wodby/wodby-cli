@@ -1,29 +1,51 @@
-# Wodby CLI
+# Wodby CLI 1.x
 
 [![Build Status](https://github.com/wodby/wodby-cli/workflows/Build/badge.svg)](https://github.com/wodby/wodby-cli/actions)
 [![Docker Pulls](https://img.shields.io/docker/pulls/wodby/wodby-cli.svg)](https://hub.docker.com/r/wodby/wodby-cli)
 [![Docker Stars](https://img.shields.io/docker/stars/wodby/wodby-cli.svg)](https://hub.docker.com/r/wodby/wodby-cli)
 [![Docker Layers](https://images.microbadger.com/badges/image/wodby/wodby-cli.svg)](https://microbadger.com/images/wodby/wodby-cli)
 
-This project provides a unified command line interface to [wodby.com](https://wodby.com).
+This branch contains Wodby CLI 1.x, the maintenance line for Wodby 1. It
+preserves the existing Wodby 1 commands and API behavior while receiving
+compatible dependency, CI, and reliability fixes.
+
+## Wodby and CLI versions
+
+The CLI major version must match the Wodby platform major version:
+
+| Wodby platform | CLI releases | Source branch | Status |
+| --- | --- | --- | --- |
+| Wodby 1 | [1.x](https://github.com/wodby/wodby-cli/releases/tag/1.0.0) | [`master`](https://github.com/wodby/wodby-cli/tree/master) | Maintenance |
+| Wodby 2 | [2.x](https://github.com/wodby/wodby-cli/releases/latest) | [`2.0`](https://github.com/wodby/wodby-cli/tree/2.0) | Active development |
+
+GitHub's **Latest** release tracks Wodby 2. Wodby 1 users should install an
+explicit 1.x release, currently [1.0.0](https://github.com/wodby/wodby-cli/releases/tag/1.0.0),
+instead of using the `/releases/latest` URL.
 
 ## Install
 
-Fetch the [latest release](https://github.com/wodby/wodby-cli/releases) for your platform:
-
-#### Linux (amd64)
+Install the current Wodby 1 release on Linux or macOS:
 
 ```bash
-export WODBY_CLI_LATEST_URL=$(curl -s https://api.github.com/repos/wodby/wodby-cli/releases/latest | grep linux-amd64 | grep browser_download_url | cut -d '"' -f 4)
-wget -qO- "${WODBY_CLI_LATEST_URL}" | sudo tar xz -C /usr/local/bin
+case "$(uname -s)" in
+  Linux) WODBY_CLI_OS=linux ;;
+  Darwin) WODBY_CLI_OS=darwin ;;
+  *) echo "unsupported OS: $(uname -s)" >&2; exit 1 ;;
+esac
+
+case "$(uname -m)" in
+  x86_64|amd64) WODBY_CLI_ARCH=amd64 ;;
+  arm64|aarch64) WODBY_CLI_ARCH=arm64 ;;
+  *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+esac
+
+WODBY_CLI_VERSION=1.0.0
+curl -fsSL "https://github.com/wodby/wodby-cli/releases/download/${WODBY_CLI_VERSION}/wodby-${WODBY_CLI_OS}-${WODBY_CLI_ARCH}.tar.gz" \
+  | sudo tar xz -C /usr/local/bin
 ```
 
-#### macOS
-
-```bash
-export WODBY_CLI_LATEST_URL=$(curl -s https://api.github.com/repos/wodby/wodby-cli/releases/latest | grep darwin-amd64 | grep browser_download_url | cut -d '"' -f 4)
-wget -qO- "${WODBY_CLI_LATEST_URL}" | tar xz -C /usr/local/bin
-```
+Windows users can download the matching archive from the
+[1.0.0 release](https://github.com/wodby/wodby-cli/releases/tag/1.0.0).
 
 ## Usage
 

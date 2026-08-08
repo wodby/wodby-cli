@@ -275,6 +275,75 @@ func TestBuildPlanSupportsServerExportShape(t *testing.T) {
 	}
 }
 
+func TestBuildPlanUsesPerAppServerRepositoryTargets(t *testing.T) {
+	export := Export{
+		Schema: ExportSchemaV2,
+		Source: &ExportSource{Kind: "server", UUID: "server-1"},
+		Apps: []AppExport{
+			{
+				App: App{
+					UUID: "app-1", Name: "first", Status: "ok",
+					Repository: &Repository{UUID: "repo-1", Status: "ok"},
+				},
+				Instances: []Instance{{UUID: "inst-1", Name: "prod", Type: "prod", Status: "ok", Stack: Stack{Name: "drupal11"}}},
+			},
+			{
+				App: App{
+					UUID: "app-2", Name: "second", Status: "ok",
+					Repository: &Repository{UUID: "repo-2", Status: "ok"},
+				},
+				Instances: []Instance{{UUID: "inst-2", Name: "prod", Type: "prod", Status: "ok", Stack: Stack{Name: "drupal11"}}},
+			},
+		},
+	}
+	plan, err := BuildPlan(export, PlanOptions{
+		SourceKind: "server",
+		SourceID:   "server-1",
+		SkipData:   true,
+		RepositoryByApp: map[string]RepositoryTargetPlan{
+			"app-1":  {CIIntegrationID: 11, RemoteGitRepoID: "remote-1"},
+			"second": {CIIntegrationID: 22, RemoteGitRepoID: "remote-2"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Apps[0].Repository.CIIntegrationID != 11 || plan.Apps[0].Repository.RemoteGitRepoID != "remote-1" ||
+		plan.Apps[1].Repository.CIIntegrationID != 22 || plan.Apps[1].Repository.RemoteGitRepoID != "remote-2" {
+		t.Fatalf("repository plans = %#v", plan.Apps)
+	}
+	if _, err := BuildPlan(export, PlanOptions{
+		SourceKind: "server",
+		SourceID:   "server-1",
+		RepositoryByApp: map[string]RepositoryTargetPlan{
+			"missing": {CIIntegrationID: 33, RemoteGitRepoID: "remote-3"},
+		},
+	}); err == nil || !strings.Contains(err.Error(), "was not found") {
+		t.Fatalf("unknown repository mapping error = %v", err)
+	}
+}
+
+func TestScopedMappingSupportsServerAppAndInstanceSelectors(t *testing.T) {
+	mapping := map[string]string{
+		"redis":                  "global",
+		"prod/redis":             "instance",
+		"first/redis":            "app",
+		"app-1/prod/redis":       "app-instance-name",
+		"app-1/instance-1/redis": "app-instance-uuid",
+	}
+	app := App{UUID: "app-1", Name: "first"}
+	if got, found := scopedMapping(mapping, app, "instance-1", "prod", "redis"); !found || got != "app-instance-uuid" {
+		t.Fatalf("most specific mapping = %q, found=%t", got, found)
+	}
+	delete(mapping, "app-1/instance-1/redis")
+	if got, found := scopedMapping(mapping, app, "instance-1", "prod", "redis"); !found || got != "app-instance-name" {
+		t.Fatalf("app/instance-name mapping = %q, found=%t", got, found)
+	}
+	if got, found := scopedMapping(mapping, App{UUID: "app-2", Name: "second"}, "instance-2", "stage", "redis"); !found || got != "global" {
+		t.Fatalf("global fallback mapping = %q, found=%t", got, found)
+	}
+}
+
 func TestBuildPlanSupportsEmptyV2ServerExport(t *testing.T) {
 	plan, err := BuildPlan(
 		Export{
@@ -287,7 +356,8 @@ func TestBuildPlanSupportsEmptyV2ServerExport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Apps == nil || len(plan.Apps) != 0 || plan.Summary.Apps != 0 || plan.Status != "source_inventory_unvalidated" {
+	if plan.Apps == nil || len(plan.Apps) != 0 || plan.Summary.Apps != 0 ||
+		plan.Status != "blocked" || plan.Summary.Blocking != 1 {
 		t.Fatalf("plan = %#v", plan)
 	}
 }

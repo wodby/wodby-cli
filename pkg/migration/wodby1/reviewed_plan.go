@@ -90,11 +90,21 @@ func (p Plan) ValidateReviewed() error {
 	if digest != p.PlanHash {
 		return invalidPlanError("plan hash does not match plan contents")
 	}
-	if p.Source.Kind != "app" || p.Source.ID == "" {
-		return invalidPlanError("customer plan must identify one source app")
+	if (p.Source.Kind != "app" && p.Source.Kind != "server") || p.Source.ID == "" {
+		return invalidPlanError("customer plan must identify a source app or server")
 	}
-	if len(p.Apps) != 1 || p.Apps[0].SourceUUID != p.Source.ID {
-		return invalidPlanError("customer plan must contain exactly the approved source app")
+	seenApps := map[string]bool{}
+	for _, app := range p.Apps {
+		if app.SourceUUID == "" || seenApps[app.SourceUUID] {
+			return invalidPlanError("customer plan contains an invalid source app set")
+		}
+		seenApps[app.SourceUUID] = true
+	}
+	if p.Source.Kind == "app" && (len(p.Apps) != 1 || p.Apps[0].SourceUUID != p.Source.ID) {
+		return invalidPlanError("customer app plan must contain exactly the approved source app")
+	}
+	if p.Source.Kind == "server" && len(p.Apps) == 0 {
+		return invalidPlanError("customer server plan must contain at least one source app")
 	}
 	return nil
 }
@@ -114,28 +124,53 @@ func PinReviewedTargets(current *Plan, reviewed Plan) error {
 	if err != nil {
 		return err
 	}
-	if len(candidate.Apps) != 1 ||
-		candidate.Source.Kind != reviewed.Source.Kind ||
-		candidate.Source.ID != reviewed.Source.ID ||
-		candidate.Apps[0].SourceUUID != reviewed.Apps[0].SourceUUID {
-		return currentPlanDriftError("source app changed")
+	if candidate.Source.Kind != reviewed.Source.Kind || candidate.Source.ID != reviewed.Source.ID {
+		return currentPlanDriftError("source changed")
 	}
-	if err := pinReviewedRepository(candidate.Apps[0].Repository, reviewed.Apps[0].Repository); err != nil {
-		return err
+	reviewedApps := make(map[string]AppPlan, len(reviewed.Apps))
+	for _, app := range reviewed.Apps {
+		if app.SourceUUID == "" || reviewedApps[app.SourceUUID].SourceUUID != "" {
+			return invalidPlanError("reviewed plan contains duplicate source apps")
+		}
+		reviewedApps[app.SourceUUID] = app
+	}
+	if len(candidate.Apps) != len(reviewedApps) {
+		return currentPlanDriftError("source app set changed")
+	}
+	for index := range candidate.Apps {
+		app := &candidate.Apps[index]
+		reviewedApp, found := reviewedApps[app.SourceUUID]
+		if !found {
+			return currentPlanDriftError("source app set changed")
+		}
+		if err := pinReviewedApp(app, reviewedApp); err != nil {
+			return err
+		}
 	}
 
-	reviewedInstances := make(map[string]InstancePlan, len(reviewed.Apps[0].Instances))
-	for _, instance := range reviewed.Apps[0].Instances {
+	*current = candidate
+	return nil
+}
+
+func pinReviewedApp(current *AppPlan, reviewed AppPlan) error {
+	if current == nil {
+		return invalidPlanError("current app plan is required")
+	}
+	if err := pinReviewedRepository(current.Repository, reviewed.Repository); err != nil {
+		return err
+	}
+	reviewedInstances := make(map[string]InstancePlan, len(reviewed.Instances))
+	for _, instance := range reviewed.Instances {
 		if _, exists := reviewedInstances[instance.SourceUUID]; exists {
 			return invalidPlanError("reviewed plan contains duplicate source instances")
 		}
 		reviewedInstances[instance.SourceUUID] = instance
 	}
-	if len(candidate.Apps[0].Instances) != len(reviewedInstances) {
+	if len(current.Instances) != len(reviewedInstances) {
 		return currentPlanDriftError("source instance set changed")
 	}
-	for index := range candidate.Apps[0].Instances {
-		instance := &candidate.Apps[0].Instances[index]
+	for index := range current.Instances {
+		instance := &current.Instances[index]
 		reviewedInstance, found := reviewedInstances[instance.SourceUUID]
 		if !found {
 			return currentPlanDriftError("source instance set changed")
@@ -144,8 +179,6 @@ func PinReviewedTargets(current *Plan, reviewed Plan) error {
 			return err
 		}
 	}
-
-	*current = candidate
 	return nil
 }
 

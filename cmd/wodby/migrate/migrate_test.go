@@ -35,6 +35,94 @@ func TestRetryAmbiguousFlagRequiresAnExactOperationID(t *testing.T) {
 	}
 }
 
+func TestWodby1AppCommandExamplesIncludeAPIKeyEnvironment(t *testing.T) {
+	examples := newWodby1AppCommand().Example
+	for _, expected := range []string{
+		"export WODBY1_SOURCE_TOKEN=...",
+		"export WODBY_API_KEY=...",
+	} {
+		if !strings.Contains(examples, expected) {
+			t.Fatalf("examples do not contain %q:\n%s", expected, examples)
+		}
+	}
+}
+
+func TestWodby1ServerCommandPlansEverySourceApp(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "owner", "ok", false)
+	defer fixture.Close()
+	fixture.setSourceKind("server")
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+
+	planPath := filepath.Join(t.TempDir(), "server-plan.json")
+	cmd := newWodby1ServerCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs(fixture.serverPlanArgs(planPath, "json"))
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	plan := readMigrationPlan(t, planPath)
+	if plan.Source.Kind != "server" || plan.Source.ID != "server-1" ||
+		len(plan.Apps) != 2 || plan.Summary.Apps != 2 || plan.Summary.Instances != 2 {
+		t.Fatalf("server plan = %#v", plan)
+	}
+	if got := fixture.sourceRequestPaths(); len(got) != 1 ||
+		got[0] != "GET /api/v4/migrations/v2/servers/server-1/export" {
+		t.Fatalf("source requests = %#v", got)
+	}
+}
+
+func TestWodby1ServerMutationUsesPerAppResumeState(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	fixture.setSourceKind("server")
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	dir := t.TempDir()
+	planPath := filepath.Join(dir, "server-plan.json")
+	statePath := filepath.Join(dir, "server-state.json")
+
+	planCmd := newWodby1ServerCommand()
+	planCmd.SilenceUsage = true
+	planCmd.SetOut(&bytes.Buffer{})
+	planCmd.SetArgs(fixture.serverPlanArgs(planPath, "text"))
+	if err := planCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	plan := readMigrationPlan(t, planPath)
+
+	args := fixture.serverPlanArgs(planPath, "text")
+	args = append(args,
+		"--state-file", statePath,
+		"--phase", "prepare",
+		"--approve-plan", plan.PlanHash,
+	)
+	cmd := newWodby1ServerCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "migrate source app demo (app-1)") {
+		t.Fatalf("prepare error = %v", err)
+	}
+
+	childStatePath := serverAppStatePath(statePath, "app-1")
+	data, readErr := os.ReadFile(childStatePath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	var state wodby1.MigrationState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Source.Kind != "app" || state.Source.ID != "app-1" {
+		t.Fatalf("child state source = %#v", state.Source)
+	}
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("aggregate state file should not be written: %v", err)
+	}
+}
+
 func TestWodby1AppCommandRequiresTargetSelectorsAndCredentials(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -301,6 +389,11 @@ func TestWodby1AppCommandRejectsInvalidLocalInputBeforeNetwork(t *testing.T) {
 				"--target-service-map", "php=nginx",
 			},
 			want: "conflicting mappings",
+		},
+		{
+			name: "source token",
+			args: []string{"--source-token", "short"},
+			want: "exactly 64 characters",
 		},
 	}
 
@@ -599,6 +692,18 @@ func TestArtifactPathsRejectSameCanonicalPlanAndStatePath(t *testing.T) {
 	}
 }
 
+func TestServerArtifactPathsRejectPlanAndChildStateCollision(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "server-state.json")
+	planPath := serverAppStatePath(statePath, "app-1")
+	err := validateServerArtifactPaths(planPath, statePath, wodby1.Export{
+		Apps: []wodby1.AppExport{{App: wodby1.App{UUID: "app-1"}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "per-app migration state path") {
+		t.Fatalf("collision error = %v", err)
+	}
+}
+
 type migrationAPIFixture struct {
 	t             *testing.T
 	role          string
@@ -614,6 +719,7 @@ type migrationAPIFixture struct {
 	sourceRequestToken string
 	mutations          int
 	sourceTitle        string
+	sourceKind         string
 	stackRevID         int
 	stackRevNumber     int
 }
@@ -631,6 +737,7 @@ func newMigrationAPIFixture(
 		status:         status,
 		platformAdmin:  platformAdmin,
 		sourceTitle:    "Demo",
+		sourceKind:     "app",
 		stackRevID:     71,
 		stackRevNumber: 4,
 	}
@@ -660,14 +767,56 @@ func (f *migrationAPIFixture) planArgs(planPath string, output string) []string 
 	}
 }
 
+func (f *migrationAPIFixture) serverPlanArgs(planPath string, output string) []string {
+	return []string{
+		"server-1",
+		"--source-base-url", f.source.URL,
+		"--source-token", testSourceToken,
+		"--target-org", "11",
+		"--target-project", "22",
+		"--target-cluster", "33",
+		"--target-env-map", "prod=production",
+		"--skip-code",
+		"--skip-data",
+		"--plan-file", planPath,
+		"--output", output,
+	}
+}
+
 func (f *migrationAPIFixture) handleSource(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.sourceRequests = append(f.sourceRequests, r.Method+" "+r.URL.RequestURI())
 	f.sourceRequestToken = r.Header.Get("X-API-Key")
 	title := f.sourceTitle
+	kind := f.sourceKind
 	f.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
+	if kind == "server" {
+		_ = json.NewEncoder(w).Encode(wodby1.Export{
+			Schema:          wodby1.ExportSchemaV2,
+			GeneratedAt:     1234,
+			Source:          &wodby1.ExportSource{Kind: "server", UUID: "server-1"},
+			SecretsIncluded: true,
+			Apps: []wodby1.AppExport{
+				{
+					App: wodby1.App{UUID: "app-1", Name: "demo", Title: title, Type: "app", Status: "ok"},
+					Instances: []wodby1.Instance{{
+						UUID: "instance-1", Name: "prod", Title: "Production", Type: "prod", Status: "ok",
+						Stack: wodby1.Stack{Name: "drupal11", Version: "11"},
+					}},
+				},
+				{
+					App: wodby1.App{UUID: "app-2", Name: "second", Title: "Second", Type: "app", Status: "ok"},
+					Instances: []wodby1.Instance{{
+						UUID: "instance-2", Name: "prod", Title: "Production", Type: "prod", Status: "ok",
+						Stack: wodby1.Stack{Name: "drupal11", Version: "11"},
+					}},
+				},
+			},
+		})
+		return
+	}
 	_ = json.NewEncoder(w).Encode(wodby1.Export{
 		Schema:          wodby1.ExportSchemaV2,
 		GeneratedAt:     1234,
@@ -813,6 +962,12 @@ func (f *migrationAPIFixture) setSourceTitle(title string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sourceTitle = title
+}
+
+func (f *migrationAPIFixture) setSourceKind(kind string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sourceKind = kind
 }
 
 func setMigrationTargetConfig(t *testing.T, endpoint string, apiKey string, accessToken string) {

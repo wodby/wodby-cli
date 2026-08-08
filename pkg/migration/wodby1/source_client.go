@@ -15,9 +15,11 @@ import (
 )
 
 const (
-	defaultSourceTimeout = 30 * time.Second
-	maxSourceExportSize  = 20 * 1024 * 1024
-	maxSourceErrorSize   = 4 * 1024
+	defaultSourceTimeout       = 30 * time.Second
+	defaultServerSourceTimeout = 2 * time.Minute
+	maxSourceExportSize        = 20 * 1024 * 1024
+	maxServerSourceExportSize  = 64 * 1024 * 1024
+	maxSourceErrorSize         = 4 * 1024
 )
 
 type SourceClient struct {
@@ -40,7 +42,7 @@ func NewSourceClient(baseURL string, token string) (*SourceClient, error) {
 	if !strings.EqualFold(parsed.Scheme, "https") && !isLoopbackHost(parsed.Hostname()) {
 		return nil, errors.New("Wodby 1 source base URL must use HTTPS (plain HTTP is allowed only for loopback development)")
 	}
-	token, err = normalizeSourceToken(token)
+	token, err = NormalizeSourceToken(token)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +74,9 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func normalizeSourceToken(token string) (string, error) {
+// NormalizeSourceToken validates and canonicalizes a Wodby 1 API token for
+// authenticated migration digests. Callers must still keep the result secret.
+func NormalizeSourceToken(token string) (string, error) {
 	token = strings.TrimSpace(token)
 	if len(token) >= len("token ") && strings.EqualFold(token[:len("token ")], "token ") {
 		token = strings.TrimSpace(token[len("token "):])
@@ -96,7 +100,28 @@ func (c *SourceClient) ExportApp(ctx context.Context, uuid string) (Export, erro
 	if err := validateSourceUUID(uuid); err != nil {
 		return Export{}, err
 	}
-	return c.getExport(ctx, "app", uuid, "/api/v4/migrations/v2/apps/"+url.PathEscape(uuid)+"/export")
+	return c.getExport(
+		ctx,
+		"app",
+		uuid,
+		"/api/v4/migrations/v2/apps/"+url.PathEscape(uuid)+"/export",
+		defaultSourceTimeout,
+		maxSourceExportSize,
+	)
+}
+
+func (c *SourceClient) ExportServer(ctx context.Context, uuid string) (Export, error) {
+	if err := validateSourceUUID(uuid); err != nil {
+		return Export{}, err
+	}
+	return c.getExport(
+		ctx,
+		"server",
+		uuid,
+		"/api/v4/migrations/v2/servers/"+url.PathEscape(uuid)+"/export",
+		defaultServerSourceTimeout,
+		maxServerSourceExportSize,
+	)
 }
 
 func validateSourceUUID(uuid string) error {
@@ -115,7 +140,14 @@ func validateSourceUUID(uuid string) error {
 	return nil
 }
 
-func (c *SourceClient) getExport(ctx context.Context, kind string, uuid string, path string) (Export, error) {
+func (c *SourceClient) getExport(
+	ctx context.Context,
+	kind string,
+	uuid string,
+	path string,
+	timeout time.Duration,
+	maxSize int64,
+) (Export, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.resolve(path, nil), nil)
 	if err != nil {
 		return Export{}, errors.WithStack(err)
@@ -125,18 +157,20 @@ func (c *SourceClient) getExport(ctx context.Context, kind string, uuid string, 
 		req.Header.Set("X-API-Key", strings.TrimSpace(c.token))
 	}
 
-	resp, err := c.httpClient.Do(req)
+	httpClient := *c.httpClient
+	httpClient.Timeout = timeout
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return Export{}, errors.WithStack(err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSourceExportSize+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSize+1))
 	if err != nil {
 		return Export{}, errors.WithStack(err)
 	}
-	if len(body) > maxSourceExportSize {
-		return Export{}, errors.Errorf("source migration export exceeds the %d-byte safety limit", maxSourceExportSize)
+	if int64(len(body)) > maxSize {
+		return Export{}, errors.Errorf("source migration export exceeds the %d-byte safety limit", maxSize)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		errorBody := body

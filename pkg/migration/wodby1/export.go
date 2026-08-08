@@ -462,6 +462,9 @@ func validateV2Identities(apps []AppExport) error {
 			return fmt.Errorf("%s duplicates app UUID %q", appPath, appExport.App.UUID)
 		}
 		appUUIDs[appExport.App.UUID] = true
+		if len(appExport.Instances) == 0 {
+			return fmt.Errorf("%s must contain at least one source instance", appPath)
+		}
 
 		instanceNames := map[string]bool{}
 		for instanceIndex, instance := range appExport.Instances {

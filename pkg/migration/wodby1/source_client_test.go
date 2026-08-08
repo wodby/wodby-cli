@@ -70,6 +70,41 @@ func TestSourceClientExportsApp(t *testing.T) {
 	}
 }
 
+func TestSourceClientExportsServer(t *testing.T) {
+	var gotPath string
+	var gotAPIKey string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAPIKey = r.Header.Get("X-API-Key")
+		_ = json.NewEncoder(w).Encode(Export{
+			Schema:          ExportSchemaV2,
+			Source:          &ExportSource{Kind: "server", UUID: "server-1"},
+			SecretsIncluded: true,
+			Apps:            []AppExport{},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewSourceClient(server.URL, testSourceToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	export, err := client.ExportServer(context.Background(), "server-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotPath != "/api/v4/migrations/v2/servers/server-1/export" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if gotAPIKey != testSourceToken {
+		t.Fatalf("X-API-Key = %q", gotAPIKey)
+	}
+	if export.Source == nil || export.Source.Kind != "server" || export.Source.UUID != "server-1" {
+		t.Fatalf("source = %#v", export.Source)
+	}
+}
+
 func TestDecodeExportRejectsUnsupportedSchema(t *testing.T) {
 	_, err := DecodeExport([]byte(`{"schema":"old","app":{"uuid":"app-1","name":"demo"}}`))
 	if err == nil {

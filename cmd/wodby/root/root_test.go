@@ -22,7 +22,7 @@ func TestAPIEndpointDefaults(t *testing.T) {
 	}
 }
 
-func TestMigrateCommandVisibleAndOnlyExposesAppMigration(t *testing.T) {
+func TestMigrateCommandExposesCustomerAppAndServerMigrations(t *testing.T) {
 	cmd := NewCommand()
 
 	migrate, _, err := cmd.Find([]string{"migrate"})
@@ -48,9 +48,14 @@ func TestMigrateCommandVisibleAndOnlyExposesAppMigration(t *testing.T) {
 	if wodby1 == nil || wodby1.Name() != "wodby1" {
 		t.Fatalf("unexpected Wodby 1 command = %#v", wodby1)
 	}
-	for _, child := range wodby1.Commands() {
-		if child.Name() == "server" {
-			t.Fatal("server-wide migration must not be exposed to customers")
-		}
+	server, _, err := cmd.Find([]string{"migrate", "wodby1", "server"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if server == nil || server.Use != "server SOURCE_SERVER_UUID" {
+		t.Fatalf("unexpected server command = %#v", server)
+	}
+	if server.Parent() != wodby1 {
+		t.Fatalf("server command parent = %#v, want Wodby 1", server.Parent())
 	}
 }

@@ -2,12 +2,14 @@ package migrate
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +40,7 @@ type options struct {
 
 	targetCIIntegrationID int
 	targetRemoteGitRepoID string
+	targetRepositoryMap   []string
 	targetCodeService     string
 	targetGitRef          string
 	targetGitRefType      string
@@ -62,6 +65,29 @@ type phaseOutput struct {
 	Status    wodby1.MigrationStatus `json:"status"`
 }
 
+type serverAppPhaseOutput struct {
+	SourceAppUUID string                 `json:"sourceAppUuid"`
+	Name          string                 `json:"name"`
+	StateFile     string                 `json:"stateFile"`
+	Status        wodby1.MigrationStatus `json:"status"`
+}
+
+type serverPhaseOutput struct {
+	Phase    wodby1.MigrationPhase  `json:"phase"`
+	PlanHash string                 `json:"planHash"`
+	Apps     []serverAppPhaseOutput `json:"apps"`
+}
+
+type serverAppExecution struct {
+	sourceAppUUID string
+	name          string
+	statePath     string
+	export        wodby1.Export
+	plan          wodby1.Plan
+	prepared      wodby1.PreparedMigration
+	executor      *wodby1.MigrationExecutor
+}
+
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "migrate",
@@ -74,9 +100,45 @@ func NewCommand() *cobra.Command {
 func newWodby1Command() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "wodby1",
-		Short: "Migrate a Wodby 1 application to Wodby 2",
+		Short: "Migrate Wodby 1 applications to Wodby 2",
 	}
-	cmd.AddCommand(newWodby1AppCommand())
+	cmd.AddCommand(newWodby1AppCommand(), newWodby1ServerCommand())
+	return cmd
+}
+
+func newWodby1ServerCommand() *cobra.Command {
+	opts := defaultOptions()
+	cmd := &cobra.Command{
+		Use:   "server SOURCE_SERVER_UUID",
+		Short: "Plan or run every application migration from a Wodby 1 server",
+		Long: `Migrate every application hosted on one Wodby 1 server through one
+reviewed plan. Each application has an isolated resume-state file and is
+processed sequentially. If multiple source applications have repositories,
+use --target-repository-map once per app or intentionally use --skip-code.
+Before sync-data, enable maintenance mode and create fresh backups for every
+source instance. Change DNS only after validating the prepared target and
+syncing data; finalize then validates DNS and deploys the staged routes.`,
+		Example: `  export WODBY1_SOURCE_TOKEN=...
+  export WODBY_API_KEY=...
+
+  wodby migrate wodby1 server SERVER_UUID --phase plan --skip-code [target and mapping options]
+  wodby migrate wodby1 server SERVER_UUID --phase prepare --approve-plan PLAN_HASH [same options]
+  wodby migrate wodby1 server SERVER_UUID --phase sync-data --approve-plan PLAN_HASH [same options]
+  wodby migrate wodby1 server SERVER_UUID --phase finalize --approve-plan PLAN_HASH [same options]
+  wodby migrate wodby1 server SERVER_UUID --phase verify --approve-plan PLAN_HASH [same options]`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runWodby1Server(cmd, args[0], opts)
+		},
+	}
+	bindFlags(cmd, opts)
+	cmd.Flags().StringArrayVar(
+		&opts.targetRepositoryMap,
+		"target-repository-map",
+		nil,
+		"Per-app Git target (APP=CI_INTEGRATION_ID:REMOTE_GIT_REPO_ID[:SERVICE])",
+	)
+	cmd.Flags().Lookup("state-file").Usage = "Base path for secure per-app resume-state files (defaults beside the plan)"
 	return cmd
 }
 
@@ -92,7 +154,10 @@ maintenance mode and create a fresh backup in Wodby 1. Update DNS only after
 sync-data succeeds and before finalize. If a target mutation is ambiguous,
 inspect Wodby 2 and pass --retry-ambiguous only with the exact operation ID
 printed by the command.`,
-		Example: `  wodby migrate wodby1 app APP_UUID --phase plan [target and mapping options]
+		Example: `  export WODBY1_SOURCE_TOKEN=...
+  export WODBY_API_KEY=...
+
+  wodby migrate wodby1 app APP_UUID --phase plan [target and mapping options]
   wodby migrate wodby1 app APP_UUID --phase prepare --approve-plan PLAN_HASH [same options]
   wodby migrate wodby1 app APP_UUID --phase sync-data --approve-plan PLAN_HASH [same options]
   wodby migrate wodby1 app APP_UUID --phase finalize --approve-plan PLAN_HASH [same options]
@@ -126,9 +191,9 @@ func bindFlags(cmd *cobra.Command, opts *options) {
 	cmd.Flags().StringVar(&opts.targetProject, "target-project", "", "Wodby 2 project ID or exact name")
 	cmd.Flags().StringVar(&opts.targetCluster, "target-cluster", "", "Wodby 2 cluster ID or exact name")
 	cmd.Flags().StringArrayVar(&opts.targetEnvMap, "target-env-map", nil, "Source-to-target environment mapping (SOURCE=TARGET)")
-	cmd.Flags().StringArrayVar(&opts.targetStackMap, "target-stack-map", nil, "Source-to-target stack mapping ([INSTANCE/]SOURCE=TARGET)")
-	cmd.Flags().StringArrayVar(&opts.targetServiceMap, "target-service-map", nil, "Source-to-target service mapping ([INSTANCE/]SOURCE=TARGET)")
-	cmd.Flags().StringArrayVar(&opts.targetImportMap, "target-import-map", nil, "Backup-to-import mapping ([INSTANCE/]COMPONENT=SERVICE:IMPORT)")
+	cmd.Flags().StringArrayVar(&opts.targetStackMap, "target-stack-map", nil, "Source-to-target stack mapping ([APP/][INSTANCE/]SOURCE=TARGET)")
+	cmd.Flags().StringArrayVar(&opts.targetServiceMap, "target-service-map", nil, "Source-to-target service mapping ([APP/][INSTANCE/]SOURCE=TARGET)")
+	cmd.Flags().StringArrayVar(&opts.targetImportMap, "target-import-map", nil, "Backup-to-import mapping ([APP/][INSTANCE/]COMPONENT=SERVICE:IMPORT)")
 
 	cmd.Flags().IntVar(&opts.targetCIIntegrationID, "target-ci-integration-id", 0, "Wodby 2 Git integration ID")
 	cmd.Flags().StringVar(&opts.targetRemoteGitRepoID, "target-remote-git-repo-id", "", "Repository ID in the selected Wodby 2 Git integration")
@@ -158,6 +223,10 @@ func runWodby1App(cmd *cobra.Command, sourceID string, opts *options) (runErr er
 	if err := validateOptions(opts); err != nil {
 		return err
 	}
+	opts.sourceToken, err = wodby1.NormalizeSourceToken(opts.sourceToken)
+	if err != nil {
+		return err
+	}
 
 	envMap, err := parseMapping(opts.targetEnvMap, "--target-env-map")
 	if err != nil {
@@ -172,6 +241,10 @@ func runWodby1App(cmd *cobra.Command, sourceID string, opts *options) (runErr er
 		return err
 	}
 	importMap, err := parseMapping(opts.targetImportMap, "--target-import-map")
+	if err != nil {
+		return err
+	}
+	sourceClient, err := wodby1.NewSourceClient(opts.sourceBaseURL, opts.sourceToken)
 	if err != nil {
 		return err
 	}
@@ -240,10 +313,6 @@ func runWodby1App(cmd *cobra.Command, sourceID string, opts *options) (runErr er
 		return err
 	}
 
-	sourceClient, err := wodby1.NewSourceClient(opts.sourceBaseURL, opts.sourceToken)
-	if err != nil {
-		return err
-	}
 	// The customer command transfers required credentials in memory. Wodby 1
 	// independently authorizes this export using the source organization role.
 	export, err := sourceClient.ExportApp(cmd.Context(), sourceID)
@@ -360,6 +429,310 @@ func runWodby1App(cmd *cobra.Command, sourceID string, opts *options) (runErr er
 	return printPhaseResult(cmd, plan, planPath, statePath, result)
 }
 
+func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr error) {
+	opts.sourceToken = firstNonBlank(opts.sourceToken, os.Getenv(sourceTokenEnv))
+	phase, err := parsePhase(opts.phase)
+	if err != nil {
+		return err
+	}
+	if err := validateOptions(opts); err != nil {
+		return err
+	}
+	opts.sourceToken, err = wodby1.NormalizeSourceToken(opts.sourceToken)
+	if err != nil {
+		return err
+	}
+
+	envMap, err := parseMapping(opts.targetEnvMap, "--target-env-map")
+	if err != nil {
+		return err
+	}
+	stackMap, err := parseMapping(opts.targetStackMap, "--target-stack-map")
+	if err != nil {
+		return err
+	}
+	serviceMap, err := parseMapping(opts.targetServiceMap, "--target-service-map")
+	if err != nil {
+		return err
+	}
+	importMap, err := parseMapping(opts.targetImportMap, "--target-import-map")
+	if err != nil {
+		return err
+	}
+	repositoryMap, err := parseRepositoryMapping(opts.targetRepositoryMap)
+	if err != nil {
+		return err
+	}
+	sourceClient, err := wodby1.NewSourceClient(opts.sourceBaseURL, opts.sourceToken)
+	if err != nil {
+		return err
+	}
+
+	planPath, statePath, err := artifactPaths(sourceID, opts.planFile, opts.stateFile)
+	if err != nil {
+		return err
+	}
+	stateLock, err := wodby1.AcquireMigrationStateLock(statePath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := stateLock.Close(); runErr == nil && err != nil {
+			runErr = err
+		}
+	}()
+
+	var reviewedPlan *wodby1.Plan
+	if phase != wodby1.MigrationPhasePlan {
+		reviewed, err := wodby1.LoadReviewedPlan(planPath)
+		if err != nil {
+			return errors.Wrap(err, "load reviewed migration plan")
+		}
+		if reviewed.Source.Kind != "server" || reviewed.Source.ID != sourceID {
+			return errors.New("reviewed migration plan does not match the requested source server")
+		}
+		if strings.TrimSpace(opts.approvePlan) != reviewed.PlanHash {
+			return errors.Errorf(
+				"mutation phase %s requires --approve-plan %s after reviewing %s",
+				phaseLabel(phase),
+				reviewed.PlanHash,
+				planPath,
+			)
+		}
+		if reviewed.Status == "blocked" || reviewed.Summary.Blocking != 0 {
+			return errors.Errorf(
+				"reviewed migration plan %s is blocked by %d review item(s); inspect %s",
+				reviewed.PlanHash,
+				reviewed.Summary.Blocking,
+				planPath,
+			)
+		}
+		reviewedPlan = &reviewed
+	}
+
+	targetClient, err := wodby1.NewTargetClient(types.APIConfig{
+		Endpoint: strings.TrimSpace(viper.GetString("api_base_url")),
+		Key:      strings.TrimSpace(viper.GetString("api_key")),
+	})
+	if err != nil {
+		return err
+	}
+	scope, err := targetClient.DiscoverTargetScope(cmd.Context(), wodby1.TargetScopeSelectors{
+		Org:     opts.targetOrg,
+		Project: opts.targetProject,
+		Cluster: opts.targetCluster,
+	})
+	if err != nil {
+		return err
+	}
+
+	export, err := sourceClient.ExportServer(cmd.Context(), sourceID)
+	if err != nil {
+		return err
+	}
+	if err := validateServerRepositoryOptions(export, opts); err != nil {
+		return err
+	}
+	if err := validateServerArtifactPaths(planPath, statePath, export); err != nil {
+		return err
+	}
+
+	selectors, err := wodby1.TargetEnvironmentSelectors(export, envMap)
+	if err != nil {
+		return err
+	}
+	resolved, err := targetClient.ResolveTargetEnvs(cmd.Context(), scope.Org.ID, selectors)
+	if err != nil {
+		return err
+	}
+	targetEnvs := make(map[string]wodby1.TargetEnv, len(resolved))
+	for _, item := range resolved {
+		targetEnvs[item.Selector] = item.Env
+	}
+
+	plan, err := wodby1.BuildPlan(export, wodby1.PlanOptions{
+		SourceKind:                    "server",
+		SourceID:                      sourceID,
+		TargetOrg:                     opts.targetOrg,
+		TargetProject:                 opts.targetProject,
+		TargetCluster:                 opts.targetCluster,
+		TargetEnvMap:                  envMap,
+		TargetOrgOwnerOrAdminVerified: true,
+		TargetScope:                   &scope,
+		TargetEnvs:                    targetEnvs,
+		TargetStackMap:                stackMap,
+		TargetServiceMap:              serviceMap,
+		TargetImportMap:               importMap,
+		Repository: wodby1.RepositoryTargetPlan{
+			CIIntegrationID: opts.targetCIIntegrationID,
+			RemoteGitRepoID: strings.TrimSpace(opts.targetRemoteGitRepoID),
+			Service:         strings.TrimSpace(opts.targetCodeService),
+		},
+		RepositoryByApp: repositoryMap,
+		SkipCode:        opts.skipCode,
+		SkipData:        opts.skipData,
+		RequireData:     !opts.skipData,
+	})
+	if err != nil {
+		return err
+	}
+	if reviewedPlan != nil {
+		if err := wodby1.PinReviewedTargets(&plan, *reviewedPlan); err != nil {
+			return err
+		}
+	}
+
+	allowedTargetAppIDs := map[string]int{}
+	stateBackedRecovery := map[string]bool{}
+	if reviewedPlan != nil {
+		for _, app := range reviewedPlan.Apps {
+			_, childPlan, _, err := wodby1.ScopeServerMigrationApp(
+				export,
+				*reviewedPlan,
+				wodby1.PreparedMigration{},
+				app.SourceUUID,
+				opts.sourceToken,
+			)
+			if err != nil {
+				return err
+			}
+			childStatePath := serverAppStatePath(statePath, app.SourceUUID)
+			targetID, allowRecovery, err := stateBackedTargetApp(childStatePath, childPlan)
+			if err != nil {
+				return err
+			}
+			allowedTargetAppIDs[app.SourceUUID] = targetID
+			stateBackedRecovery[app.SourceUUID] = allowRecovery
+		}
+	}
+	prepared, err := targetClient.PreflightTarget(cmd.Context(), export, &plan, wodby1.TargetPreflightOptions{
+		SkipCode:               opts.skipCode,
+		SkipData:               opts.skipData,
+		GitRef:                 opts.targetGitRef,
+		GitRefType:             opts.targetGitRefType,
+		AllowedTargetAppIDs:    allowedTargetAppIDs,
+		StateBackedAppRecovery: stateBackedRecovery,
+	})
+	if err != nil {
+		return err
+	}
+
+	if phase == wodby1.MigrationPhasePlan {
+		if err := writePlanFile(planPath, plan); err != nil {
+			return err
+		}
+		return printPlan(cmd, plan, planPath)
+	}
+	if plan.PlanHash != reviewedPlan.PlanHash {
+		return errors.Errorf(
+			"current source or migration options no longer match reviewed plan %s; run the plan phase again and review the new plan",
+			reviewedPlan.PlanHash,
+		)
+	}
+	if plan.Summary.Blocking != 0 {
+		return errors.Errorf(
+			"migration plan %s is blocked by %d review item(s); inspect %s",
+			plan.PlanHash,
+			plan.Summary.Blocking,
+			planPath,
+		)
+	}
+
+	executions := make([]serverAppExecution, 0, len(prepared.Apps))
+	for _, preparedApp := range prepared.Apps {
+		appUUID := preparedApp.App.App.UUID
+		childExport, childPlan, childPrepared, err := wodby1.ScopeServerMigrationApp(
+			export,
+			plan,
+			prepared,
+			appUUID,
+			opts.sourceToken,
+		)
+		if err != nil {
+			return err
+		}
+		childStatePath := serverAppStatePath(statePath, appUUID)
+		executor, err := wodby1.NewMigrationExecutor(targetClient, wodby1.MigrationExecutorOptions{
+			StatePath:               childStatePath,
+			PollInterval:            opts.pollInterval,
+			OperationTimeout:        opts.waitTimeout,
+			MaxBackupAge:            opts.maxBackupAge,
+			RetryAmbiguousOperation: opts.retryAmbiguous,
+			RefreshSource: func(ctx context.Context) (wodby1.Export, error) {
+				refreshed, err := sourceClient.ExportServer(ctx, sourceID)
+				if err != nil {
+					return wodby1.Export{}, err
+				}
+				return wodby1.ScopeServerExportApp(refreshed, appUUID, opts.sourceToken)
+			},
+		})
+		if err != nil {
+			return err
+		}
+		executions = append(executions, serverAppExecution{
+			sourceAppUUID: appUUID,
+			name:          preparedApp.App.App.Name,
+			statePath:     childStatePath,
+			export:        childExport,
+			plan:          childPlan,
+			prepared:      childPrepared,
+			executor:      executor,
+		})
+	}
+	if phase == wodby1.MigrationPhaseFinalize {
+		for _, execution := range executions {
+			if err := execution.executor.ValidateFinalize(
+				cmd.Context(),
+				execution.export,
+				execution.plan,
+				execution.prepared,
+				scope.Cluster,
+			); err != nil {
+				return errors.Wrapf(
+					err,
+					"validate finalization for source app %s (%s) with state file %s",
+					execution.name,
+					execution.sourceAppUUID,
+					execution.statePath,
+				)
+			}
+		}
+	}
+
+	results := make([]serverAppPhaseOutput, 0, len(executions))
+	for _, execution := range executions {
+		var result wodby1.MigrationPhaseResult
+		switch phase {
+		case wodby1.MigrationPhasePrepare:
+			result, err = execution.executor.Prepare(cmd.Context(), execution.export, execution.plan, execution.prepared)
+		case wodby1.MigrationPhaseSyncData:
+			result, err = execution.executor.SyncData(cmd.Context(), execution.export, execution.plan, execution.prepared)
+		case wodby1.MigrationPhaseFinalize:
+			result, err = execution.executor.Finalize(cmd.Context(), execution.export, execution.plan, execution.prepared, scope.Cluster)
+		case wodby1.MigrationPhaseVerify:
+			result, err = execution.executor.Verify(cmd.Context(), execution.export, execution.plan, execution.prepared)
+		default:
+			return errors.Errorf("unsupported migration phase %q", phase)
+		}
+		if err != nil {
+			return errors.Wrapf(
+				err,
+				"migrate source app %s (%s) with state file %s",
+				execution.name,
+				execution.sourceAppUUID,
+				execution.statePath,
+			)
+		}
+		results = append(results, serverAppPhaseOutput{
+			SourceAppUUID: execution.sourceAppUUID,
+			Name:          execution.name,
+			StateFile:     execution.statePath,
+			Status:        result.State.Status,
+		})
+	}
+	return printServerPhaseResult(cmd, plan, planPath, phase, results)
+}
+
 func validateOptions(opts *options) error {
 	if strings.TrimSpace(opts.sourceBaseURL) == "" {
 		return errors.New("--source-base-url is required")
@@ -457,9 +830,60 @@ func parseMapping(values []string, flag string) (map[string]string, error) {
 	return result, nil
 }
 
+func parseRepositoryMapping(values []string) (map[string]wodby1.RepositoryTargetPlan, error) {
+	result := map[string]wodby1.RepositoryTargetPlan{}
+	for _, value := range values {
+		key, target, ok := strings.Cut(strings.TrimSpace(value), "=")
+		key = strings.ToLower(strings.TrimSpace(key))
+		if !ok || key == "" || strings.TrimSpace(target) == "" {
+			return nil, fmt.Errorf("--target-repository-map value %q must use APP=CI_INTEGRATION_ID:REMOTE_GIT_REPO_ID[:SERVICE]", value)
+		}
+		parts := strings.SplitN(target, ":", 3)
+		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
+			return nil, fmt.Errorf("--target-repository-map value %q must use APP=CI_INTEGRATION_ID:REMOTE_GIT_REPO_ID[:SERVICE]", value)
+		}
+		integrationID, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil || integrationID <= 0 {
+			return nil, fmt.Errorf("--target-repository-map value %q must contain a positive CI integration ID", value)
+		}
+		mapping := wodby1.RepositoryTargetPlan{
+			CIIntegrationID: integrationID,
+			RemoteGitRepoID: strings.TrimSpace(parts[1]),
+		}
+		if len(parts) == 3 {
+			mapping.Service = strings.TrimSpace(parts[2])
+			if mapping.Service == "" {
+				return nil, fmt.Errorf("--target-repository-map value %q contains an empty target service", value)
+			}
+		}
+		if existing, exists := result[key]; exists && existing != mapping {
+			return nil, fmt.Errorf("--target-repository-map contains conflicting mappings for source app %q", key)
+		}
+		result[key] = mapping
+	}
+	return result, nil
+}
+
+func validateServerRepositoryOptions(export wodby1.Export, opts *options) error {
+	if opts == nil || opts.skipCode {
+		return nil
+	}
+	repositories := 0
+	for _, app := range export.AppExports() {
+		if app.App.Repository != nil {
+			repositories++
+		}
+	}
+	if repositories > 1 &&
+		(opts.targetCIIntegrationID != 0 || strings.TrimSpace(opts.targetRemoteGitRepoID) != "") {
+		return errors.New("a server export contains multiple source repositories; use --target-repository-map for each app instead of one shared Git target, or use --skip-code")
+	}
+	return nil
+}
+
 func artifactPaths(sourceID, planPath, statePath string) (string, string, error) {
 	if strings.TrimSpace(sourceID) == "" {
-		return "", "", errors.New("source app UUID is required")
+		return "", "", errors.New("source UUID is required")
 	}
 	if strings.TrimSpace(planPath) == "" {
 		planPath = "wodby1-" + sourceID + ".migration-plan.json"
@@ -485,6 +909,39 @@ func artifactPaths(sourceID, planPath, statePath string) (string, string, error)
 		return "", "", errors.New("--plan-file must not resolve to the migration state lock path")
 	}
 	return planPath, statePath, nil
+}
+
+func serverAppStatePath(basePath string, sourceAppUUID string) string {
+	digest := sha256.Sum256([]byte(sourceAppUUID))
+	suffix := fmt.Sprintf(".app-%x", digest[:8])
+	ext := filepath.Ext(basePath)
+	if ext == "" {
+		return basePath + suffix
+	}
+	return strings.TrimSuffix(basePath, ext) + suffix + ext
+}
+
+func validateServerArtifactPaths(planPath string, statePath string, export wodby1.Export) error {
+	seen := map[string]string{}
+	for _, app := range export.AppExports() {
+		childPath := serverAppStatePath(statePath, app.App.UUID)
+		same, err := sameArtifactPath(planPath, childPath)
+		if err != nil {
+			return err
+		}
+		if same {
+			return errors.Errorf("--plan-file must not resolve to the per-app migration state path for source app %q", app.App.UUID)
+		}
+		canonical, err := canonicalArtifactPath(childPath)
+		if err != nil {
+			return err
+		}
+		if existing, duplicate := seen[canonical]; duplicate {
+			return errors.Errorf("source apps %q and %q resolve to the same migration state path", existing, app.App.UUID)
+		}
+		seen[canonical] = app.App.UUID
+	}
+	return nil
 }
 
 func sameArtifactPath(first string, second string) (bool, error) {
@@ -618,6 +1075,35 @@ func printPhaseResult(
 	fmt.Fprintf(cmd.OutOrStdout(), "Plan hash: %s\n", plan.PlanHash)
 	fmt.Fprintf(cmd.OutOrStdout(), "Plan file: %s\n", planPath)
 	fmt.Fprintf(cmd.OutOrStdout(), "State file: %s\n", statePath)
+	return nil
+}
+
+func printServerPhaseResult(
+	cmd *cobra.Command,
+	plan wodby1.Plan,
+	planPath string,
+	phase wodby1.MigrationPhase,
+	apps []serverAppPhaseOutput,
+) error {
+	output := serverPhaseOutput{Phase: phase, PlanHash: plan.PlanHash, Apps: apps}
+	if planOutputJSON(cmd) {
+		encoder := json.NewEncoder(cmd.OutOrStdout())
+		encoder.SetIndent("", "  ")
+		return errors.WithStack(encoder.Encode(output))
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Server migration phase %s completed for %d app(s).\n", phaseLabel(phase), len(apps))
+	fmt.Fprintf(cmd.OutOrStdout(), "Plan hash: %s\n", plan.PlanHash)
+	fmt.Fprintf(cmd.OutOrStdout(), "Plan file: %s\n", planPath)
+	for _, app := range apps {
+		fmt.Fprintf(
+			cmd.OutOrStdout(),
+			"App %s (%s): status=%s state=%s\n",
+			app.Name,
+			app.SourceAppUUID,
+			app.Status,
+			app.StateFile,
+		)
+	}
 	return nil
 }
 

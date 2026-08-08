@@ -33,6 +33,7 @@ type PlanOptions struct {
 	TargetServiceMap              map[string]string
 	TargetImportMap               map[string]string
 	Repository                    RepositoryTargetPlan
+	RepositoryByApp               map[string]RepositoryTargetPlan
 	SkipCode                      bool
 	SkipData                      bool
 	RequireData                   bool
@@ -334,7 +335,31 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 	sort.SliceStable(appExports, func(i, j int) bool {
 		return compareApp(appExports[i].App, appExports[j].App) < 0
 	})
+	if opts.SourceKind == "server" && len(appExports) == 0 {
+		plan.addReview(SeverityBlocking, "", "", "source server", "source server does not contain any applications")
+	}
+	if err := validateRepositoryTargets(appExports, opts.RepositoryByApp); err != nil {
+		return Plan{}, err
+	}
+	if opts.SourceKind == "server" {
+		appNames := map[string]int{}
+		for _, appExport := range appExports {
+			appNames[strings.ToLower(strings.TrimSpace(appExport.App.Name))]++
+		}
+		for name, count := range appNames {
+			if name != "" && count > 1 {
+				plan.addReview(
+					SeverityBlocking,
+					"",
+					"",
+					"duplicate source app name",
+					fmt.Sprintf("%d source apps are named %q and cannot be created in one target organization", count, name),
+				)
+			}
+		}
+	}
 	for _, appExport := range appExports {
+		repositoryTarget := repositoryTargetForApp(appExport.App, opts)
 		appPlan := AppPlan{
 			SourceUUID:    appExport.App.UUID,
 			Name:          appExport.App.Name,
@@ -353,15 +378,15 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 				CredentialsRedacted: credentialsRedacted,
 				SourceStatus:        appExport.App.Repository.Status,
 				Action:              "connect",
-				TargetService:       strings.TrimSpace(opts.Repository.Service),
-				CIIntegrationID:     opts.Repository.CIIntegrationID,
-				RemoteGitRepoID:     strings.TrimSpace(opts.Repository.RemoteGitRepoID),
+				TargetService:       strings.TrimSpace(repositoryTarget.Service),
+				CIIntegrationID:     repositoryTarget.CIIntegrationID,
+				RemoteGitRepoID:     strings.TrimSpace(repositoryTarget.RemoteGitRepoID),
 			}
 			switch {
 			case opts.SkipCode:
 				appPlan.Repository.Action = "skip"
 				plan.addReview(SeveritySkipped, appPlan.Name, "", "repository", "source repository code is intentionally excluded from this migration")
-			case opts.Repository.CIIntegrationID <= 0 || strings.TrimSpace(opts.Repository.RemoteGitRepoID) == "":
+			case repositoryTarget.CIIntegrationID <= 0 || strings.TrimSpace(repositoryTarget.RemoteGitRepoID) == "":
 				plan.addReview(SeverityBlocking, appPlan.Name, "", "repository", "source repository requires --target-ci-integration-id and --target-remote-git-repo-id")
 			default:
 				plan.addReview(SeverityConfirmation, appPlan.Name, "", "repository", "source repository will use the explicitly selected Wodby 2 Git integration and remote repository")
@@ -447,6 +472,55 @@ func (p Plan) contentDigest() (string, error) {
 	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
 }
 
+func validateRepositoryTargets(apps []AppExport, targets map[string]RepositoryTargetPlan) error {
+	if len(targets) == 0 {
+		return nil
+	}
+	matched := make(map[string]int, len(targets))
+	for _, appExport := range apps {
+		app := appExport.App
+		keys := []string{
+			strings.ToLower(strings.TrimSpace(app.UUID)),
+			strings.ToLower(strings.TrimSpace(app.Name)),
+		}
+		seen := map[string]bool{}
+		for _, key := range keys {
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			if _, exists := targets[key]; exists {
+				matched[key]++
+			}
+		}
+		uuidTarget, byUUID := targets[keys[0]]
+		nameTarget, byName := targets[keys[1]]
+		if byUUID && byName && keys[0] != keys[1] && uuidTarget != nameTarget {
+			return fmt.Errorf("repository mappings for app %q conflict between its UUID and name", app.Name)
+		}
+	}
+	for key := range targets {
+		switch matched[key] {
+		case 0:
+			return fmt.Errorf("repository mapping source app %q was not found in the export", key)
+		case 1:
+		default:
+			return fmt.Errorf("repository mapping source app %q is ambiguous; use the app UUID", key)
+		}
+	}
+	return nil
+}
+
+func repositoryTargetForApp(app App, opts PlanOptions) RepositoryTargetPlan {
+	if target, exists := opts.RepositoryByApp[strings.ToLower(strings.TrimSpace(app.UUID))]; exists {
+		return target
+	}
+	if target, exists := opts.RepositoryByApp[strings.ToLower(strings.TrimSpace(app.Name))]; exists {
+		return target
+	}
+	return opts.Repository
+}
+
 // AddReviewItems merges target preflight findings into a plan and recomputes
 // its summary, status, and approval hash. Findings must contain metadata only;
 // callers must never place secret values or backup download URLs in Details.
@@ -500,6 +574,7 @@ func buildInstancePlan(plan *Plan, app App, instance Instance, opts PlanOptions,
 	}
 	mappedStack, hasExplicitStack := scopedMapping(
 		opts.TargetStackMap,
+		app,
 		instance.UUID,
 		instance.Name,
 		instance.Stack.Name,
@@ -640,7 +715,7 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 
 	switch service.Name {
 	case "apache":
-		if usesNginxInsteadOfApache(instance, opts) {
+		if usesNginxInsteadOfApache(app, instance, opts) {
 			servicePlan.TargetName = ""
 			servicePlan.Action = "skip"
 			plan.addReview(SeveritySkipped, app.Name, instance.Name, "service apache", "Apache is intentionally not migrated because the Wodby 2 app will use nginx")
@@ -664,7 +739,7 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 		servicePlan.Action = "substitute"
 		plan.addReview(SeverityConfirmation, app.Name, instance.Name, "service varnish", "varnish will be substituted with vinyl")
 	}
-	if mapped, found := scopedMapping(opts.TargetServiceMap, instance.UUID, instance.Name, service.Name); found {
+	if mapped, found := scopedMapping(opts.TargetServiceMap, app, instance.UUID, instance.Name, service.Name); found {
 		servicePlan.TargetName = mapped
 		servicePlan.Action = "map"
 		plan.addReview(
@@ -837,12 +912,13 @@ func sourceServiceEnabled(services []Service, name string) bool {
 	return false
 }
 
-func usesNginxInsteadOfApache(instance Instance, opts PlanOptions) bool {
+func usesNginxInsteadOfApache(app App, instance Instance, opts PlanOptions) bool {
 	if !sourceServiceEnabled(instance.Services, "nginx") {
 		return false
 	}
 	_, explicitlyMapped := scopedMapping(
 		opts.TargetServiceMap,
+		app,
 		instance.UUID,
 		instance.Name,
 		"apache",
@@ -890,7 +966,7 @@ func buildRoutePlan(plan *Plan, app App, instance Instance, domain Domain, basic
 		plan.addReview(SeveritySkipped, app.Name, instance.Name, "route "+domain.Name, "technical source route is intentionally excluded from the migration plan")
 		return routePlan
 	}
-	if domain.Service == "apache" && usesNginxInsteadOfApache(instance, opts) {
+	if domain.Service == "apache" && usesNginxInsteadOfApache(app, instance, opts) {
 		routePlan.Service = "nginx"
 		plan.addReview(
 			SeverityConfirmation,
@@ -1198,7 +1274,7 @@ func buildImportPlan(plan *Plan, app App, instance Instance, backup Backup, opts
 		plan.addReview(SeveritySkipped, app.Name, instance.Name, subject, "source backup data is intentionally excluded from this migration")
 		return importPlan
 	}
-	if mapped, found := scopedMapping(opts.TargetImportMap, instance.UUID, instance.Name, backup.Component); found {
+	if mapped, found := scopedMapping(opts.TargetImportMap, app, instance.UUID, instance.Name, backup.Component); found {
 		service, importName, ok := strings.Cut(mapped, ":")
 		service = strings.TrimSpace(service)
 		importName = strings.TrimSpace(importName)
@@ -1232,11 +1308,17 @@ func buildImportPlan(plan *Plan, app App, instance Instance, backup Backup, opts
 	return importPlan
 }
 
-func scopedMapping(mapping map[string]string, instanceUUID string, instanceName string, source string) (string, bool) {
+func scopedMapping(mapping map[string]string, app App, instanceUUID string, instanceName string, source string) (string, bool) {
 	if len(mapping) == 0 {
 		return "", false
 	}
 	keys := []string{
+		strings.ToLower(strings.TrimSpace(app.UUID + "/" + instanceUUID + "/" + source)),
+		strings.ToLower(strings.TrimSpace(app.UUID + "/" + instanceName + "/" + source)),
+		strings.ToLower(strings.TrimSpace(app.Name + "/" + instanceUUID + "/" + source)),
+		strings.ToLower(strings.TrimSpace(app.Name + "/" + instanceName + "/" + source)),
+		strings.ToLower(strings.TrimSpace(app.UUID + "/" + source)),
+		strings.ToLower(strings.TrimSpace(app.Name + "/" + source)),
 		strings.ToLower(strings.TrimSpace(instanceUUID + "/" + source)),
 		strings.ToLower(strings.TrimSpace(instanceName + "/" + source)),
 		strings.ToLower(strings.TrimSpace(instanceUUID)),

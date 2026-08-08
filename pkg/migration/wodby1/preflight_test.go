@@ -253,6 +253,55 @@ func TestPreflightTargetBlocksUnrelatedAppNameCollisionButAllowsStateBackedApp(t
 	}
 }
 
+func TestPreflightTargetPreparesEveryServerAppWithPerAppRecovery(t *testing.T) {
+	export := preflightFixtureExport(false)
+	export.Source = &ExportSource{Kind: "server", UUID: "server-1"}
+	export.Apps[0].Instances[0].Services = nil
+	second := export.Apps[0]
+	second.Instances = append([]Instance(nil), second.Instances...)
+	second.App.UUID = "app-2"
+	second.App.Name = "second"
+	second.App.Title = "Second"
+	second.Instances[0].UUID = "inst-2"
+	export.Apps = append(export.Apps, second)
+
+	options := preflightOwnerPlanOptions()
+	options.SourceKind = "server"
+	options.SourceID = "server-1"
+	options.SkipCode = true
+	options.SkipData = true
+	plan := preflightBuildPlan(t, export, options)
+	catalog := preflightOfficialCatalog()
+	catalog.apps = []TargetApp{{ID: 91, Name: "second", OrgID: 8}}
+	api := newPreflightTargetAPI(t, catalog)
+
+	prepared, err := api.client.PreflightTarget(
+		context.Background(),
+		export,
+		&plan,
+		TargetPreflightOptions{
+			SkipCode:            true,
+			SkipData:            true,
+			AllowedTargetAppIDs: map[string]int{"app-2": 91},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared.Apps) != 2 || prepared.App.App.UUID != "" || len(prepared.Instances) != 0 {
+		t.Fatalf("prepared server migration = %#v", prepared)
+	}
+	for _, appUUID := range []string{"app-1", "app-2"} {
+		child, found := prepared.ForApp(appUUID)
+		if !found || child.App.App.UUID != appUUID || len(child.Instances) != 1 {
+			t.Fatalf("prepared child %q = %#v, found=%t", appUUID, child, found)
+		}
+	}
+	if preflightHasReview(plan, SeverityBlocking, "target app name", "") {
+		t.Fatalf("state-backed server app was treated as a collision: %#v", plan.Review)
+	}
+}
+
 func TestPreflightTargetRequiresVerifiedOrgOwnerOrAdminPlan(t *testing.T) {
 	export := preflightFixtureExport(false)
 	export.Apps[0].Instances[0].Services = nil

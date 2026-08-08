@@ -284,9 +284,24 @@ func (e *MigrationExecutor) refreshDataImport(
 	return matches[0], nil
 }
 
-// Finalize verifies that every staged custom hostname resolves to the selected
-// cluster before deploying the routes. The source must remain write-frozen
-// when data was imported.
+// ValidateFinalize checks the preconditions for final traffic cutover without
+// starting a deployment. The source must remain write-frozen when data was
+// imported.
+func (e *MigrationExecutor) ValidateFinalize(
+	ctx context.Context,
+	export Export,
+	plan Plan,
+	prepared PreparedMigration,
+	cluster TargetCluster,
+) error {
+	state, _, err := e.loadState(export, plan, prepared)
+	if err != nil {
+		return err
+	}
+	return e.validateFinalizeReadiness(ctx, export, plan, prepared, cluster, state)
+}
+
+// Finalize revalidates cutover readiness, then deploys the staged routes.
 func (e *MigrationExecutor) Finalize(
 	ctx context.Context,
 	export Export,
@@ -298,27 +313,7 @@ func (e *MigrationExecutor) Finalize(
 	if err != nil {
 		return MigrationPhaseResult{}, err
 	}
-	if err := requirePreparedState(state); err != nil {
-		return MigrationPhaseResult{}, err
-	}
-	if preparedHasImports(prepared) {
-		if state.Source.BackupDigest == "" {
-			return MigrationPhaseResult{}, errors.New("data synchronization must complete before finalization")
-		}
-		if err := e.verifyCompletedImports(ctx, state, prepared); err != nil {
-			return MigrationPhaseResult{}, err
-		}
-		if err := requireMaintenanceMode(export, prepared); err != nil {
-			return MigrationPhaseResult{}, err
-		}
-	}
-	if cluster.ID != plan.Target.ClusterID {
-		return MigrationPhaseResult{}, errors.New("finalization cluster does not match the approved target")
-	}
-	if cluster.OrgID != plan.Target.OrgID || !strings.EqualFold(strings.TrimSpace(cluster.Status), "OK") {
-		return MigrationPhaseResult{}, errors.New("finalization cluster is not an available member of the approved organization")
-	}
-	if err := e.checkCustomDNS(ctx, plan, cluster); err != nil {
+	if err := e.validateFinalizeReadiness(ctx, export, plan, prepared, cluster, state); err != nil {
 		return MigrationPhaseResult{}, err
 	}
 	if err := e.startPhase(state, MigrationPhaseFinalize); err != nil {
@@ -334,15 +329,6 @@ func (e *MigrationExecutor) Finalize(
 		if err != nil {
 			return MigrationPhaseResult{}, errors.Wrap(err, "read target instance before final deployment")
 		}
-		if item.SkipCode {
-			services, err := e.target.ListAppServices(ctx, instance.ID)
-			if err != nil {
-				return MigrationPhaseResult{}, errors.Wrap(err, "read manually deployed target code services")
-			}
-			if err := validateManuallyDeployedCodeServices(item, services); err != nil {
-				return MigrationPhaseResult{}, err
-			}
-		}
 		if err := e.ensureTechnicalDeployment(ctx, state, item, instance, "finalize_deploy"); err != nil {
 			return MigrationPhaseResult{}, err
 		}
@@ -351,6 +337,57 @@ func (e *MigrationExecutor) Finalize(
 		}
 	}
 	return e.finishRunningPhase(state, MigrationPhaseFinalize)
+}
+
+func (e *MigrationExecutor) validateFinalizeReadiness(
+	ctx context.Context,
+	export Export,
+	plan Plan,
+	prepared PreparedMigration,
+	cluster TargetCluster,
+	state *MigrationState,
+) error {
+	if err := requirePreparedState(state); err != nil {
+		return err
+	}
+	if preparedHasImports(prepared) {
+		if state.Source.BackupDigest == "" {
+			return errors.New("data synchronization must complete before finalization")
+		}
+		if err := e.verifyCompletedImports(ctx, state, prepared); err != nil {
+			return err
+		}
+		if err := requireMaintenanceMode(export, prepared); err != nil {
+			return err
+		}
+	}
+	if cluster.ID != plan.Target.ClusterID {
+		return errors.New("finalization cluster does not match the approved target")
+	}
+	if cluster.OrgID != plan.Target.OrgID || !strings.EqualFold(strings.TrimSpace(cluster.Status), "OK") {
+		return errors.New("finalization cluster is not an available member of the approved organization")
+	}
+	if err := e.checkCustomDNS(ctx, plan, cluster); err != nil {
+		return err
+	}
+
+	for _, item := range prepared.Instances {
+		instanceState := state.Instances[item.Source.UUID]
+		if instanceState == nil || instanceState.TargetID <= 0 {
+			return errors.New("migration state is missing a prepared target instance")
+		}
+		if !item.SkipCode {
+			continue
+		}
+		services, err := e.target.ListAppServices(ctx, instanceState.TargetID)
+		if err != nil {
+			return errors.Wrap(err, "read manually deployed target code services")
+		}
+		if err := validateManuallyDeployedCodeServices(item, services); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Verify reads the migrated target resources and marks the migration complete

@@ -19,6 +19,8 @@ type TargetPreflightOptions struct {
 	GitRefType                  string
 	AllowedTargetAppID          int
 	AllowStateBackedAppRecovery bool
+	AllowedTargetAppIDs         map[string]int
+	StateBackedAppRecovery      map[string]bool
 }
 
 // PreparedMigration is an in-memory, secret-free target mapping. It is rebuilt
@@ -27,6 +29,25 @@ type TargetPreflightOptions struct {
 type PreparedMigration struct {
 	App       AppExport
 	Instances []PreparedInstance
+	Apps      []PreparedAppMigration
+}
+
+type PreparedAppMigration struct {
+	App       AppExport
+	Instances []PreparedInstance
+}
+
+// ForApp returns the single-app target mapping consumed by MigrationExecutor.
+func (p PreparedMigration) ForApp(sourceUUID string) (PreparedMigration, bool) {
+	for _, app := range p.Apps {
+		if app.App.App.UUID == sourceUUID {
+			return PreparedMigration{App: app.App, Instances: app.Instances, Apps: []PreparedAppMigration{app}}, true
+		}
+	}
+	if p.App.App.UUID == sourceUUID {
+		return PreparedMigration{App: p.App, Instances: p.Instances}, true
+	}
+	return PreparedMigration{}, false
 }
 
 type PreparedInstance struct {
@@ -74,67 +95,103 @@ func (c *TargetClient) PreflightTarget(
 	if plan == nil {
 		return PreparedMigration{}, errors.New("migration plan is required")
 	}
-	if err := export.ValidateSource("app", plan.Source.ID); err != nil {
+	if err := export.ValidateSource(plan.Source.Kind, plan.Source.ID); err != nil {
 		return PreparedMigration{}, err
 	}
-	appExports := export.AppExports()
-	if len(appExports) != 1 || len(plan.Apps) != 1 {
-		return PreparedMigration{}, errors.New("customer migration requires exactly one source app")
+	appExports := append([]AppExport(nil), export.AppExports()...)
+	if plan.Source.Kind == "app" && (len(appExports) != 1 || len(plan.Apps) != 1) {
+		return PreparedMigration{}, errors.New("application migration requires exactly one source app")
+	}
+	if len(appExports) != len(plan.Apps) {
+		return PreparedMigration{}, errors.New("migration plan app set does not match the source export")
 	}
 	if !plan.Target.DiscoveryVerified || !plan.Target.OrgOwnerOrAdminVerified {
 		return PreparedMigration{}, errors.New("target organization owner/admin discovery is required before preflight")
 	}
 
-	prepared := PreparedMigration{App: appExports[0], Instances: []PreparedInstance{}}
-	findings := []ReviewItem{}
-	existingApp, appFound, err := c.FindAppExact(ctx, plan.Target.OrgID, appExports[0].App.Name)
-	if err != nil {
-		return PreparedMigration{}, errors.Wrap(err, "check target app name availability")
-	}
-	if appFound &&
-		existingApp.ID != opts.AllowedTargetAppID &&
-		!opts.AllowStateBackedAppRecovery {
-		findings = append(findings, ReviewItem{
-			Severity: SeverityBlocking,
-			App:      appExports[0].App.Name,
-			Subject:  "target app name",
-			Message: fmt.Sprintf(
-				"target organization already contains app %q with ID %d; choose a different source app name or remove the unrelated target app",
-				existingApp.Name,
-				existingApp.ID,
-			),
-		})
-	}
-	planInstances := make(map[string]*InstancePlan, len(plan.Apps[0].Instances))
-	for index := range plan.Apps[0].Instances {
-		item := &plan.Apps[0].Instances[index]
-		planInstances[item.SourceUUID] = item
-	}
-
-	for _, sourceInstance := range appExports[0].Instances {
-		instancePlan, found := planInstances[sourceInstance.UUID]
-		if !found {
-			return PreparedMigration{}, errors.Errorf("migration plan is missing source instance %q", sourceInstance.UUID)
-		}
-		preparedInstance, instanceFindings, err := c.preflightInstance(
-			ctx,
-			appExports[0].App,
-			sourceInstance,
-			instancePlan,
-			plan.Target.OrgID,
-			plan.Target.ProjectID,
-			plan.Apps[0].Repository,
-			opts,
-		)
-		if err != nil {
-			return PreparedMigration{}, err
-		}
-		prepared.Instances = append(prepared.Instances, preparedInstance)
-		findings = append(findings, instanceFindings...)
-	}
-	sort.SliceStable(prepared.Instances, func(i, j int) bool {
-		return compareInstance(prepared.Instances[i].Source, prepared.Instances[j].Source) < 0
+	sort.SliceStable(appExports, func(i, j int) bool {
+		return compareApp(appExports[i].App, appExports[j].App) < 0
 	})
+	planApps := make(map[string]*AppPlan, len(plan.Apps))
+	for index := range plan.Apps {
+		item := &plan.Apps[index]
+		if item.SourceUUID == "" || planApps[item.SourceUUID] != nil {
+			return PreparedMigration{}, errors.New("migration plan contains an invalid source app set")
+		}
+		planApps[item.SourceUUID] = item
+	}
+	prepared := PreparedMigration{Apps: []PreparedAppMigration{}}
+	findings := []ReviewItem{}
+	for _, appExport := range appExports {
+		appPlan := planApps[appExport.App.UUID]
+		if appPlan == nil {
+			return PreparedMigration{}, errors.Errorf("migration plan is missing source app %q", appExport.App.UUID)
+		}
+		existingApp, appFound, err := c.FindAppExact(ctx, plan.Target.OrgID, appExport.App.Name)
+		if err != nil {
+			return PreparedMigration{}, errors.Wrap(err, "check target app name availability")
+		}
+		allowedTargetAppID := opts.AllowedTargetAppID
+		allowRecovery := opts.AllowStateBackedAppRecovery
+		if plan.Source.Kind == "server" {
+			allowedTargetAppID = opts.AllowedTargetAppIDs[appExport.App.UUID]
+			allowRecovery = opts.StateBackedAppRecovery[appExport.App.UUID]
+		}
+		if appFound && existingApp.ID != allowedTargetAppID && !allowRecovery {
+			findings = append(findings, ReviewItem{
+				Severity: SeverityBlocking,
+				App:      appExport.App.Name,
+				Subject:  "target app name",
+				Message: fmt.Sprintf(
+					"target organization already contains app %q with ID %d; choose a different source app name or remove the unrelated target app",
+					existingApp.Name,
+					existingApp.ID,
+				),
+			})
+		}
+
+		planInstances := make(map[string]*InstancePlan, len(appPlan.Instances))
+		for index := range appPlan.Instances {
+			item := &appPlan.Instances[index]
+			if item.SourceUUID == "" || planInstances[item.SourceUUID] != nil {
+				return PreparedMigration{}, errors.Errorf("migration plan for app %q contains an invalid source instance set", appExport.App.UUID)
+			}
+			planInstances[item.SourceUUID] = item
+		}
+		preparedApp := PreparedAppMigration{App: appExport, Instances: []PreparedInstance{}}
+		for _, sourceInstance := range appExport.Instances {
+			instancePlan, found := planInstances[sourceInstance.UUID]
+			if !found {
+				return PreparedMigration{}, errors.Errorf("migration plan is missing source instance %q", sourceInstance.UUID)
+			}
+			preparedInstance, instanceFindings, err := c.preflightInstance(
+				ctx,
+				appExport.App,
+				sourceInstance,
+				instancePlan,
+				plan.Target.OrgID,
+				plan.Target.ProjectID,
+				appPlan.Repository,
+				opts,
+			)
+			if err != nil {
+				return PreparedMigration{}, err
+			}
+			preparedApp.Instances = append(preparedApp.Instances, preparedInstance)
+			findings = append(findings, instanceFindings...)
+		}
+		if len(preparedApp.Instances) != len(planInstances) {
+			return PreparedMigration{}, errors.Errorf("migration plan instance set does not match source app %q", appExport.App.UUID)
+		}
+		sort.SliceStable(preparedApp.Instances, func(i, j int) bool {
+			return compareInstance(preparedApp.Instances[i].Source, preparedApp.Instances[j].Source) < 0
+		})
+		prepared.Apps = append(prepared.Apps, preparedApp)
+	}
+	if len(prepared.Apps) == 1 {
+		prepared.App = prepared.Apps[0].App
+		prepared.Instances = prepared.Apps[0].Instances
+	}
 	if err := plan.AddReviewItems(findings...); err != nil {
 		return PreparedMigration{}, err
 	}

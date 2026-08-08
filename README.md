@@ -1,14 +1,28 @@
-# Wodby CLI 2.0
+# Wodby CLI 2.x
 
 [![Build Status](https://github.com/wodby/wodby-cli/workflows/Build/badge.svg)](https://github.com/wodby/wodby-cli/actions)
 [![Docker Pulls](https://img.shields.io/docker/pulls/wodby/wodby-cli.svg)](https://hub.docker.com/r/wodby/wodby-cli)
 [![Docker Stars](https://img.shields.io/docker/stars/wodby/wodby-cli.svg)](https://hub.docker.com/r/wodby/wodby-cli)
 
-This project provides a unified command line interface to Wodby 2.0
+This branch contains Wodby CLI 2.x, the actively developed command line
+interface for Wodby 2.
+
+## Wodby and CLI versions
+
+The CLI major version must match the Wodby platform major version:
+
+| Wodby platform | CLI releases | Source branch | Status |
+| --- | --- | --- | --- |
+| Wodby 1 | [1.x](https://github.com/wodby/wodby-cli/releases/tag/1.0.0) | [`master`](https://github.com/wodby/wodby-cli/tree/master) | Maintenance |
+| Wodby 2 | [2.x](https://github.com/wodby/wodby-cli/releases/latest) | [`2.0`](https://github.com/wodby/wodby-cli/tree/2.0) | Active development |
+
+GitHub's **Latest** release tracks Wodby 2. Wodby 1 users should install an
+explicit 1.x release from the `master` line instead.
 
 ## Install
 
-Fetch the [latest release](https://github.com/wodby/wodby-cli/releases) for your platform:
+Fetch the [latest Wodby 2 release](https://github.com/wodby/wodby-cli/releases/latest)
+for your platform:
 
 #### Linux/macOS
 

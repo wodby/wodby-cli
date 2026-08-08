@@ -97,6 +97,74 @@ func TestBuildPlanCapturesManagedMigrationReviewItems(t *testing.T) {
 	}
 }
 
+func TestBuildPlanAppliesWodby2ServiceCompatibilityPolicy(t *testing.T) {
+	enabled := true
+	port := 80
+	export := Export{
+		Schema: ExportSchemaV2,
+		Source: &ExportSource{Kind: "app", UUID: "app-1"},
+		Apps: []AppExport{{
+			App: App{UUID: "app-1", Name: "demo", Status: "ok"},
+			Instances: []Instance{{
+				UUID: "instance-1", Name: "prod", Type: "prod", Status: "ok",
+				Stack: Stack{Name: "drupal10"},
+				Services: []Service{
+					{Name: "apache", Enabled: true},
+					{Name: "nginx", Enabled: true},
+					{Name: "redis", Enabled: true},
+					{Name: "varnish", Enabled: true},
+				},
+				Domains: []Domain{{
+					UUID: "domain-1", Name: "example.com", Type: "user", Status: "ok",
+					Enabled: &enabled, Service: "apache", ServiceProtocol: "http", PortNumber: &port,
+				}},
+			}},
+		}},
+	}
+
+	plan, err := BuildPlan(export, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance := &plan.Apps[0].Instances[0]
+	if service := preflightFindServicePlan(t, instance, "apache"); service.TargetName != "" || service.Action != "skip" {
+		t.Fatalf("apache service = %#v", service)
+	}
+	if service := preflightFindServicePlan(t, instance, "redis"); service.TargetName != "valkey" || service.Action != "substitute" {
+		t.Fatalf("redis service = %#v", service)
+	}
+	if service := preflightFindServicePlan(t, instance, "varnish"); service.TargetName != "vinyl" || service.Action != "substitute" {
+		t.Fatalf("varnish service = %#v", service)
+	}
+	if route := instance.Routes[0]; route.Service != "nginx" || route.Action != "create_backend" {
+		t.Fatalf("apache route replacement = %#v", route)
+	}
+	if !hasReviewMessage(plan.Review, SeveritySkipped, "Apache is intentionally not migrated") ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "redis will be substituted with valkey") ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "varnish will be substituted with vinyl") ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "Apache-backed source route") {
+		t.Fatalf("compatibility review = %#v", plan.Review)
+	}
+
+	explicit, err := BuildPlan(export, PlanOptions{
+		SourceKind: "app",
+		SourceID:   "app-1",
+		TargetServiceMap: map[string]string{
+			"instance-1/apache": "httpd",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicitInstance := &explicit.Apps[0].Instances[0]
+	if service := preflightFindServicePlan(t, explicitInstance, "apache"); service.TargetName != "httpd" || service.Action != "map" {
+		t.Fatalf("explicit apache service = %#v", service)
+	}
+	if route := explicitInstance.Routes[0]; route.Service != "apache" {
+		t.Fatalf("explicit apache route = %#v", route)
+	}
+}
+
 func TestBuildPlanSanitizesRepositoryCredentials(t *testing.T) {
 	export := Export{
 		Schema: ExportSchemaV1,

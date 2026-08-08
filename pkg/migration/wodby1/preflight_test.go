@@ -405,6 +405,65 @@ func TestPreflightTargetHonorsExplicitCustomStackAndServiceMappings(t *testing.T
 	}
 }
 
+func TestPreflightTargetAcceptsBuiltInServiceCompatibilityMappings(t *testing.T) {
+	export := preflightFixtureExport(false)
+	export.Apps[0].Instances[0].Services = []Service{
+		{Name: "apache", Enabled: true},
+		{Name: "nginx", Enabled: true},
+		{Name: "redis", Enabled: true},
+		{Name: "varnish", Enabled: true},
+	}
+	options := preflightOwnerPlanOptions()
+	options.SkipCode = true
+	options.SkipData = true
+	plan := preflightBuildPlan(t, export, options)
+	catalog := preflightTargetCatalog{
+		stacks: map[string]TargetStack{
+			"drupal11": {
+				ID: 7, Name: "drupal11", RevID: 71, LatestRevNumber: 4, OrgID: 8,
+			},
+		},
+		stackServices: map[int][]TargetStackService{
+			71: {
+				{ID: 11, Name: "nginx", Required: true, ServiceRevID: 101},
+				{ID: 12, Name: "valkey", ServiceRevID: 102},
+				{ID: 13, Name: "vinyl", ServiceRevID: 103},
+			},
+		},
+		revisions: map[int]TargetServiceRevision{
+			101: {ID: 101, ServiceID: 201, Name: "nginx", Manifest: &TargetServiceManifest{Name: "nginx"}},
+			102: {ID: 102, ServiceID: 202, Name: "valkey", Manifest: &TargetServiceManifest{Name: "valkey"}},
+			103: {ID: 103, ServiceID: 203, Name: "vinyl", Manifest: &TargetServiceManifest{Name: "vinyl"}},
+		},
+	}
+	api := newPreflightTargetAPI(t, catalog)
+	prepared, err := api.client.PreflightTarget(
+		context.Background(),
+		export,
+		&plan,
+		TargetPreflightOptions{SkipCode: true, SkipData: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Summary.Blocking != 0 {
+		t.Fatalf("compatibility mapping blockers = %#v", plan.Review)
+	}
+	instancePlan := &plan.Apps[0].Instances[0]
+	if service := preflightFindServicePlan(t, instancePlan, "apache"); service.Action != "skip" || service.TargetName != "" {
+		t.Fatalf("apache plan = %#v", service)
+	}
+	assertPreflightServicePlan(t, instancePlan, "nginx", "nginx", 11, 101)
+	assertPreflightServicePlan(t, instancePlan, "redis", "valkey", 12, 102)
+	assertPreflightServicePlan(t, instancePlan, "varnish", "vinyl", 13, 103)
+	preparedInstance := prepared.Instances[0]
+	if len(preparedInstance.Services) != 3 ||
+		preparedInstance.Services["redis"].Target.StackService.Name != "valkey" ||
+		preparedInstance.Services["varnish"].Target.StackService.Name != "vinyl" {
+		t.Fatalf("prepared compatibility services = %#v", preparedInstance.Services)
+	}
+}
+
 func TestPreflightTargetPreparesUniqueConnectBuildSource(t *testing.T) {
 	export := preflightFixtureExport(true)
 	export.Apps[0].Instances[0].Services = []Service{{Name: "php", Enabled: true}}

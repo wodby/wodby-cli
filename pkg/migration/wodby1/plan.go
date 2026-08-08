@@ -639,15 +639,30 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 	}
 
 	switch service.Name {
+	case "apache":
+		if usesNginxInsteadOfApache(instance, opts) {
+			servicePlan.TargetName = ""
+			servicePlan.Action = "skip"
+			plan.addReview(SeveritySkipped, app.Name, instance.Name, "service apache", "Apache is intentionally not migrated because the Wodby 2 app will use nginx")
+			return servicePlan
+		}
 	case "athenapdf":
 		servicePlan.TargetName = "gotenberg"
 		servicePlan.Action = "substitute"
 		plan.addReview(SeverityConfirmation, app.Name, instance.Name, "service athenapdf", "athenapdf will be substituted with gotenberg when the target stack supports it")
+	case "redis":
+		servicePlan.TargetName = "valkey"
+		servicePlan.Action = "substitute"
+		plan.addReview(SeverityConfirmation, app.Name, instance.Name, "service redis", "redis will be substituted with valkey")
 	case "rsyslog":
 		servicePlan.TargetName = ""
 		servicePlan.Action = "skip"
 		plan.addReview(SeveritySkipped, app.Name, instance.Name, "service rsyslog", "rsyslog is intentionally not migrated")
 		return servicePlan
+	case "varnish":
+		servicePlan.TargetName = "vinyl"
+		servicePlan.Action = "substitute"
+		plan.addReview(SeverityConfirmation, app.Name, instance.Name, "service varnish", "varnish will be substituted with vinyl")
 	}
 	if mapped, found := scopedMapping(opts.TargetServiceMap, instance.UUID, instance.Name, service.Name); found {
 		servicePlan.TargetName = mapped
@@ -822,6 +837,19 @@ func sourceServiceEnabled(services []Service, name string) bool {
 	return false
 }
 
+func usesNginxInsteadOfApache(instance Instance, opts PlanOptions) bool {
+	if !sourceServiceEnabled(instance.Services, "nginx") {
+		return false
+	}
+	_, explicitlyMapped := scopedMapping(
+		opts.TargetServiceMap,
+		instance.UUID,
+		instance.Name,
+		"apache",
+	)
+	return !explicitlyMapped
+}
+
 func buildRoutePlan(plan *Plan, app App, instance Instance, domain Domain, basicAuth bool, opts PlanOptions, requireStatus bool) RoutePlan {
 	enabled := domain.Enabled == nil || *domain.Enabled
 	routePlan := RoutePlan{
@@ -861,6 +889,16 @@ func buildRoutePlan(plan *Plan, app App, instance Instance, domain Domain, basic
 		routePlan.NeedsPortID = false
 		plan.addReview(SeveritySkipped, app.Name, instance.Name, "route "+domain.Name, "technical source route is intentionally excluded from the migration plan")
 		return routePlan
+	}
+	if domain.Service == "apache" && usesNginxInsteadOfApache(instance, opts) {
+		routePlan.Service = "nginx"
+		plan.addReview(
+			SeverityConfirmation,
+			app.Name,
+			instance.Name,
+			"route "+domain.Name,
+			"Apache-backed source route will use the migrated Wodby 2 nginx service",
+		)
 	}
 	host := strings.TrimSpace(domain.Name)
 	if host == "" {

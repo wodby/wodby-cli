@@ -2,6 +2,7 @@ package wodby1
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"sort"
@@ -110,6 +111,7 @@ type TargetServiceImportCapability struct {
 
 type TargetServiceManifest struct {
 	Name    string                          `json:"name"`
+	Raw     string                          `json:"raw,omitempty"`
 	Build   *TargetServiceBuildCapability   `json:"build,omitempty"`
 	Imports []TargetServiceImportCapability `json:"imports,omitempty"`
 }
@@ -131,6 +133,18 @@ type TargetServiceRevision struct {
 type TargetStackServiceInspection struct {
 	StackService    TargetStackService
 	ServiceRevision TargetServiceRevision
+}
+
+// TargetRemoteGitRepo is a repository exposed by a selected Wodby 2 Git
+// integration. ID is provider-specific and is resolved by the CLI rather than
+// accepted as customer input.
+type TargetRemoteGitRepo struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type targetRemoteGitRepoFilePresence struct {
+	Exists bool `json:"exists"`
 }
 
 type TargetApp struct {
@@ -166,30 +180,32 @@ type TargetAppInstance struct {
 // target API therefore generates the technical domain and expands the selected
 // stack revision's current service defaults.
 type TargetCreateAppInput struct {
-	OrgID                 int    `json:"orgId"`
-	Name                  string `json:"name"`
-	Title                 string `json:"title,omitempty"`
-	InstanceName          string `json:"instanceName"`
-	InstanceTitle         string `json:"instanceTitle,omitempty"`
-	ProjectID             int    `json:"projectId"`
-	StackRevID            int    `json:"stackRevId"`
-	ClusterID             int    `json:"clusterId"`
-	EnvID                 int    `json:"envId"`
-	CIIntegrationID       *int   `json:"ciIntegrationId,omitempty"`
-	RegistryIntegrationID *int   `json:"registryIntegrationId,omitempty"`
+	OrgID                  int    `json:"orgId"`
+	Name                   string `json:"name"`
+	Title                  string `json:"title,omitempty"`
+	InstanceName           string `json:"instanceName"`
+	InstanceTitle          string `json:"instanceTitle,omitempty"`
+	ProjectID              *int   `json:"projectId,omitempty"`
+	StackRevID             int    `json:"stackRevId"`
+	ClusterID              int    `json:"clusterId"`
+	EnvID                  int    `json:"envId"`
+	CIIntegrationID        *int   `json:"ciIntegrationId,omitempty"`
+	RegistryIntegrationID  *int   `json:"registryIntegrationId,omitempty"`
+	DeferInitialDeployment bool   `json:"deferInitialDeployment,omitempty"`
 }
 
 // TargetCreateAppInstanceInput also omits domain and services so Wodby 2
 // applies its server-side technical-domain and stack-service defaults.
 type TargetCreateAppInstanceInput struct {
-	AppID                 int    `json:"appId"`
-	InstanceName          string `json:"instanceName"`
-	InstanceTitle         string `json:"instanceTitle,omitempty"`
-	StackRevID            int    `json:"stackRevId"`
-	ClusterID             int    `json:"clusterId"`
-	EnvID                 int    `json:"envId"`
-	CIIntegrationID       *int   `json:"ciIntegrationId,omitempty"`
-	RegistryIntegrationID *int   `json:"registryIntegrationId,omitempty"`
+	AppID                  int    `json:"appId"`
+	InstanceName           string `json:"instanceName"`
+	InstanceTitle          string `json:"instanceTitle,omitempty"`
+	StackRevID             int    `json:"stackRevId"`
+	ClusterID              int    `json:"clusterId"`
+	EnvID                  int    `json:"envId"`
+	CIIntegrationID        *int   `json:"ciIntegrationId,omitempty"`
+	RegistryIntegrationID  *int   `json:"registryIntegrationId,omitempty"`
+	DeferInitialDeployment bool   `json:"deferInitialDeployment,omitempty"`
 }
 
 type TargetAppService struct {
@@ -209,6 +225,7 @@ type TargetAppService struct {
 	ConfigurationReady bool      `json:"configurationReady"`
 	AppInstanceID      int       `json:"appInstanceId"`
 	ServiceRevID       int       `json:"serviceRevId"`
+	ParentAppServiceID *int      `json:"parentAppServiceId,omitempty"`
 	CreatedAt          time.Time `json:"createdAt"`
 	UpdatedAt          time.Time `json:"updatedAt"`
 }
@@ -581,7 +598,7 @@ type TargetAppDeploymentsResponse struct {
 }
 
 // ResolveStackRevisionByName resolves an exact stack name from the selected
-// organization/project catalog. The list endpoint is required because custom
+// organization or project catalog. The list endpoint is required because custom
 // Wodby 2 stack names are namespace-qualified (for example "acme/drupal") and
 // therefore cannot be represented safely by the API's single path-segment
 // by-name route.
@@ -606,68 +623,11 @@ func (c *TargetClient) ResolveStackRevisionByName(
 	}
 	switch len(matches) {
 	case 0:
-		return TargetStack{}, errors.Errorf("target Wodby 2 stack name %q was not found in the selected project catalog", name)
+		return TargetStack{}, errors.Errorf("target Wodby 2 stack name %q was not found in the selected target catalog", name)
 	case 1:
 		return matches[0], nil
 	default:
 		return TargetStack{}, &TargetAmbiguousMatchError{Resource: "stack", Name: name, Count: len(matches)}
-	}
-}
-
-// resolveMigrationStackRevision preserves explicit customer selections exactly.
-// For an ordinary Wodby 1 catalog stack without a mapping, Wodby 2 may expose
-// only the organization-owned copy (for example "acme/drupal11"). Such a copy
-// is selected by exact origin revision name, with an exact organization-owned
-// stack name retained as a compatibility fallback.
-func (c *TargetClient) resolveMigrationStackRevision(
-	ctx context.Context,
-	orgID int,
-	projectID int,
-	stackPlan StackPlan,
-) (TargetStack, error) {
-	if stackPlan.ExplicitMapping {
-		return c.ResolveStackRevisionByName(ctx, orgID, projectID, stackPlan.Target)
-	}
-	if stackPlan.Custom {
-		return TargetStack{}, errors.Errorf(
-			"custom Wodby 1 stack %q requires an explicit --target-stack-map entry",
-			stackPlan.Name,
-		)
-	}
-
-	sourceName := strings.TrimSpace(stackPlan.Name)
-	stacks, err := c.listStackRevisionCandidates(ctx, orgID, projectID, sourceName)
-	if err != nil {
-		return TargetStack{}, err
-	}
-	matches := make([]TargetStack, 0, len(stacks))
-	for _, stack := range stacks {
-		if stack.Name == sourceName ||
-			(stack.OriginStackRevName != nil && *stack.OriginStackRevName == sourceName) {
-			matches = append(matches, stack)
-		}
-	}
-	if err := validateTargetStackMatches(matches, orgID); err != nil {
-		return TargetStack{}, err
-	}
-	switch len(matches) {
-	case 0:
-		return TargetStack{}, errors.Errorf(
-			"no target Wodby 2 stack in the selected project catalog matches Wodby 1 stack %q by exact name or origin; pass --target-stack-map to select one explicitly",
-			sourceName,
-		)
-	case 1:
-		return matches[0], nil
-	default:
-		ambiguous := &TargetAmbiguousMatchError{
-			Resource: "stack for Wodby 1 origin",
-			Name:     sourceName,
-			Count:    len(matches),
-		}
-		return TargetStack{}, errors.Wrap(
-			ambiguous,
-			"multiple target Wodby 2 stacks match the source stack; pass --target-stack-map to select one explicitly",
-		)
 	}
 }
 
@@ -680,8 +640,8 @@ func (c *TargetClient) listStackRevisionCandidates(
 	if err := targetRequirePositiveID("organization", orgID); err != nil {
 		return nil, err
 	}
-	if err := targetRequirePositiveID("project", projectID); err != nil {
-		return nil, err
+	if projectID < 0 {
+		return nil, errors.New("target project ID cannot be negative")
 	}
 	if search == "" || search != strings.TrimSpace(search) {
 		return nil, errors.New("target stack name must be non-empty without surrounding whitespace")
@@ -696,11 +656,13 @@ func (c *TargetClient) listStackRevisionCandidates(
 		}
 		seenPages[page] = true
 		query := url.Values{
-			"orgId":      []string{strconv.Itoa(orgID)},
-			"projectIds": []string{strconv.Itoa(projectID)},
-			"search":     []string{search},
-			"page":       []string{strconv.Itoa(page)},
-			"pageSize":   []string{"100"},
+			"orgId":    []string{strconv.Itoa(orgID)},
+			"search":   []string{search},
+			"page":     []string{strconv.Itoa(page)},
+			"pageSize": []string{"100"},
+		}
+		if projectID > 0 {
+			query.Set("projectIds", strconv.Itoa(projectID))
 		}
 		var response TargetStacksResponse
 		if err := c.client.Get(ctx, "/stacks", query, &response); err != nil {
@@ -827,6 +789,15 @@ func (c *TargetClient) GetServiceRevision(ctx context.Context, serviceRevID int)
 		return TargetServiceRevision{}, err
 	}
 	if item.Manifest != nil {
+		manifest, err := decodeTargetServiceManifest(item.Manifest)
+		if err != nil {
+			return TargetServiceRevision{}, errors.Wrapf(
+				err,
+				"target Wodby 2 service revision ID %d returned an invalid raw manifest",
+				serviceRevID,
+			)
+		}
+		item.Manifest = manifest
 		for _, capability := range item.Manifest.Imports {
 			if strings.TrimSpace(capability.Name) == "" {
 				return TargetServiceRevision{}, errors.Errorf("target Wodby 2 service revision ID %d returned an import capability without a name", serviceRevID)
@@ -834,6 +805,19 @@ func (c *TargetClient) GetServiceRevision(ctx context.Context, serviceRevID int)
 		}
 	}
 	return item, nil
+}
+
+func decodeTargetServiceManifest(projected *TargetServiceManifest) (*TargetServiceManifest, error) {
+	if projected == nil || strings.TrimSpace(projected.Raw) == "" {
+		return projected, nil
+	}
+
+	manifest := &TargetServiceManifest{}
+	if err := json.Unmarshal([]byte(projected.Raw), manifest); err != nil {
+		return nil, err
+	}
+	manifest.Raw = projected.Raw
+	return manifest, nil
 }
 
 func (c *TargetClient) InspectStackRevision(ctx context.Context, stackRevID int) ([]TargetStackServiceInspection, error) {
@@ -853,6 +837,63 @@ func (c *TargetClient) InspectStackRevision(ctx context.Context, stackRevID int)
 		})
 	}
 	return items, nil
+}
+
+// ListRemoteGitRepos returns the repositories visible through a Wodby 2 Git
+// integration, matching the repository selector used by the new-app form.
+func (c *TargetClient) ListRemoteGitRepos(ctx context.Context, integrationID int) ([]TargetRemoteGitRepo, error) {
+	if integrationID <= 0 {
+		return nil, errors.New("target Git integration ID must be positive")
+	}
+	items := []TargetRemoteGitRepo{}
+	path := fmt.Sprintf("/integrations/%d/options/remote-git-repos", integrationID)
+	if err := c.client.Get(ctx, path, nil, &items); err != nil {
+		return nil, errors.Wrapf(err, "list repositories from target Wodby 2 Git integration ID %d", integrationID)
+	}
+	for _, item := range items {
+		if strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Name) == "" {
+			return nil, errors.Errorf("target Wodby 2 Git integration ID %d returned a repository without an ID or name", integrationID)
+		}
+	}
+	return items, nil
+}
+
+// RemoteGitRepoFileExists checks a path at an exact repository ref through a
+// Wodby 2 Git integration, so private repositories never expose credentials to
+// the migration client.
+func (c *TargetClient) RemoteGitRepoFileExists(ctx context.Context, integrationID int, remoteGitRepoID, filePath, ref string) (bool, error) {
+	if integrationID <= 0 {
+		return false, errors.New("target Git integration ID must be positive")
+	}
+	remoteGitRepoID = strings.TrimSpace(remoteGitRepoID)
+	if remoteGitRepoID == "" {
+		return false, errors.New("target remote Git repository ID is required")
+	}
+	filePath = strings.TrimSpace(filePath)
+	if filePath == "" {
+		return false, errors.New("target remote Git repository file path is required")
+	}
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return false, errors.New("target remote Git repository ref is required")
+	}
+
+	query := url.Values{}
+	query.Set("remoteGitRepoId", remoteGitRepoID)
+	query.Set("path", filePath)
+	query.Set("ref", ref)
+	path := fmt.Sprintf("/integrations/%d/options/remote-git-repo-file", integrationID)
+	var result targetRemoteGitRepoFilePresence
+	if err := c.client.Get(ctx, path, query, &result); err != nil {
+		return false, errors.Wrapf(
+			err,
+			"check %q at ref %q in target Wodby 2 remote Git repository %q",
+			filePath,
+			ref,
+			remoteGitRepoID,
+		)
+	}
+	return result.Exists, nil
 }
 
 // FindStackServiceExact returns no match as found=false and refuses ambiguous
@@ -892,6 +933,29 @@ func (c *TargetClient) CreateApp(ctx context.Context, input TargetCreateAppInput
 		return TargetApp{}, errors.Errorf("created target Wodby 2 app name %q does not exactly match %q", item.Name, input.Name)
 	}
 	return item, nil
+}
+
+// FindAppByID reads an app without turning a definitive 404 into a generic
+// request failure. Migration resume uses this to distinguish a temporarily
+// failing target API from a target app that the customer deleted.
+func (c *TargetClient) FindAppByID(ctx context.Context, appID int) (TargetApp, bool, error) {
+	if err := targetRequirePositiveID("app", appID); err != nil {
+		return TargetApp{}, false, err
+	}
+	var item TargetApp
+	if err := c.client.Get(ctx, "/apps/"+strconv.Itoa(appID), nil, &item); err != nil {
+		if isTargetNotFound(err) {
+			return TargetApp{}, false, nil
+		}
+		return TargetApp{}, false, errors.Wrap(err, "get target Wodby 2 app")
+	}
+	if item.ID != appID {
+		return TargetApp{}, false, targetUnexpectedID("app", item.ID, appID)
+	}
+	if err := validateTargetApp(item, 0); err != nil {
+		return TargetApp{}, false, err
+	}
+	return item, true, nil
 }
 
 func (c *TargetClient) FindAppExact(ctx context.Context, orgID int, name string) (TargetApp, bool, error) {
@@ -1688,7 +1752,6 @@ func validateTargetStackService(item TargetStackService) error {
 func validateTargetCreateAppInput(input TargetCreateAppInput) error {
 	for label, id := range map[string]int{
 		"organization":   input.OrgID,
-		"project":        input.ProjectID,
 		"stack revision": input.StackRevID,
 		"cluster":        input.ClusterID,
 		"environment":    input.EnvID,
@@ -1700,7 +1763,10 @@ func validateTargetCreateAppInput(input TargetCreateAppInput) error {
 	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.InstanceName) == "" {
 		return errors.New("target app and initial instance names are required")
 	}
-	if err := targetValidateOptionalPositiveID("CI integration", input.CIIntegrationID); err != nil {
+	if err := targetValidateOptionalPositiveID("project", input.ProjectID); err != nil {
+		return err
+	}
+	if err := targetValidateOptionalNonNegativeID("CI integration", input.CIIntegrationID); err != nil {
 		return err
 	}
 	return targetValidateOptionalPositiveID("registry integration", input.RegistryIntegrationID)
@@ -1720,7 +1786,7 @@ func validateTargetCreateAppInstanceInput(input TargetCreateAppInstanceInput) er
 	if strings.TrimSpace(input.InstanceName) == "" {
 		return errors.New("target app instance name is required")
 	}
-	if err := targetValidateOptionalPositiveID("CI integration", input.CIIntegrationID); err != nil {
+	if err := targetValidateOptionalNonNegativeID("CI integration", input.CIIntegrationID); err != nil {
 		return err
 	}
 	return targetValidateOptionalPositiveID("registry integration", input.RegistryIntegrationID)
@@ -1776,6 +1842,9 @@ func validateTargetAppService(item TargetAppService, appInstanceID int) error {
 	}
 	if appInstanceID > 0 && item.AppInstanceID != appInstanceID {
 		return errors.Errorf("target Wodby 2 app service ID %d belongs to app instance ID %d, expected %d", item.ID, item.AppInstanceID, appInstanceID)
+	}
+	if err := targetValidateOptionalPositiveID("parent app service", item.ParentAppServiceID); err != nil {
+		return err
 	}
 	if strings.TrimSpace(item.Name) == "" {
 		return errors.Errorf("target Wodby 2 app service ID %d returned an empty name", item.ID)
@@ -2203,6 +2272,13 @@ func targetValidateOptionalPositiveID(label string, id *int) error {
 		return nil
 	}
 	return targetRequirePositiveID(label, *id)
+}
+
+func targetValidateOptionalNonNegativeID(label string, id *int) error {
+	if id != nil && *id < 0 {
+		return errors.Errorf("target %s ID must not be negative", label)
+	}
+	return nil
 }
 
 func targetUnexpectedID(label string, actual, expected int) error {

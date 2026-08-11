@@ -110,6 +110,20 @@ func (c *SourceClient) ExportApp(ctx context.Context, uuid string) (Export, erro
 	)
 }
 
+func (c *SourceClient) ExportInstance(ctx context.Context, uuid string) (Export, error) {
+	if err := validateSourceUUID(uuid); err != nil {
+		return Export{}, err
+	}
+	return c.getExport(
+		ctx,
+		"instance",
+		uuid,
+		"/api/v4/migrations/v2/instances/"+url.PathEscape(uuid)+"/export",
+		defaultSourceTimeout,
+		maxSourceExportSize,
+	)
+}
+
 func (c *SourceClient) ExportServer(ctx context.Context, uuid string) (Export, error) {
 	if err := validateSourceUUID(uuid); err != nil {
 		return Export{}, err

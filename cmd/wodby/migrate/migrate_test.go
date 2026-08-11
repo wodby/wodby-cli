@@ -47,22 +47,192 @@ func TestWodby1AppCommandExamplesIncludeAPIKeyEnvironment(t *testing.T) {
 	}
 }
 
+func TestWodby1InstanceCommandExamplesIdentifyCredentialsAndWorkflow(t *testing.T) {
+	examples := newWodby1InstanceCommand().Example
+	for _, required := range []string{
+		"WODBY1_SOURCE_TOKEN",
+		"WODBY_API_KEY",
+		"wodby migrate wodby1 instance INSTANCE_UUID --target-stack-id STACK_ID",
+		"--apply",
+		"--verify",
+	} {
+		if !strings.Contains(examples, required) {
+			t.Fatalf("examples missing %q:\n%s", required, examples)
+		}
+	}
+}
+
+func TestWodby1RepositorySelectionUsesNamesInsteadOfProviderIDs(t *testing.T) {
+	cmd := newWodby1InstanceCommand()
+	if cmd.Flags().Lookup("target-git-integration-id") == nil {
+		t.Fatal("--target-git-integration-id flag is missing")
+	}
+	if cmd.Flags().Lookup("target-repository-name") == nil {
+		t.Fatal("--target-repository-name flag is missing")
+	}
+	if cmd.Flags().Lookup("target-remote-git-repo-id") != nil {
+		t.Fatal("provider repository ID must not be a customer-facing migration flag")
+	}
+
+	mappings, err := parseRepositoryMapping([]string{
+		"app-1=44",
+		"app-2=55:acme/example",
+		"app-3=66:acme/other:php",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mappings["app-1"].GitIntegrationID != 44 || mappings["app-1"].RepositoryName != "" ||
+		mappings["app-2"].RepositoryName != "acme/example" ||
+		mappings["app-3"].RepositoryName != "acme/other" || mappings["app-3"].Service != "php" {
+		t.Fatalf("repository mappings = %#v", mappings)
+	}
+}
+
+func TestWodby1MigrationDefaultsToBuiltInWodbyCI(t *testing.T) {
+	cmd := newWodby1InstanceCommand()
+	flag := cmd.Flags().Lookup("target-ci-integration-id")
+	if flag == nil {
+		t.Fatal("--target-ci-integration-id flag is missing")
+	}
+	if flag.DefValue != "0" {
+		t.Fatalf("--target-ci-integration-id default = %q, want 0 for Wodby CI", flag.DefValue)
+	}
+}
+
+func TestWodby1MigrationExposesPreviewApplyVerifyWorkflow(t *testing.T) {
+	cmd := newWodby1InstanceCommand()
+	for _, name := range []string{"apply", "verify", "restart"} {
+		if cmd.Flags().Lookup(name) == nil {
+			t.Fatalf("--%s flag is missing", name)
+		}
+	}
+	for _, name := range []string{"phase", "approve-plan", "plan-file"} {
+		if cmd.Flags().Lookup(name) != nil {
+			t.Fatalf("legacy --%s flag must not be customer-facing", name)
+		}
+	}
+	force := cmd.Flags().Lookup("force")
+	if force == nil || !strings.Contains(force.Usage, "without maintenance mode") {
+		t.Fatal("--force must explicitly describe its limited live-source behavior")
+	}
+}
+
+func TestWodby1MigrationShowsUsageOnlyForCommandErrors(t *testing.T) {
+	t.Run("invalid arguments show usage", func(t *testing.T) {
+		var output bytes.Buffer
+		cmd := newWodby1InstanceCommand()
+		cmd.SetOut(&output)
+		cmd.SetErr(&output)
+		cmd.SetArgs(nil)
+
+		if err := cmd.Execute(); err == nil {
+			t.Fatal("expected missing source argument to fail")
+		}
+		if !strings.Contains(output.String(), "Usage:") {
+			t.Fatalf("command error did not show usage:\n%s", output.String())
+		}
+	})
+
+	t.Run("migration blockers suppress usage", func(t *testing.T) {
+		fixture := newMigrationAPIFixture(t, "owner", "ok", false)
+		defer fixture.Close()
+		fixture.setSourceKind("instance")
+		setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+
+		var output bytes.Buffer
+		cmd := newWodby1InstanceCommand()
+		cmd.SetOut(&output)
+		cmd.SetErr(&output)
+		args := fixture.instancePlanArgs("", "text")
+		args = append(args, "--skip-data=false", "--apply")
+		cmd.SetArgs(args)
+
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "blocking review item") {
+			t.Fatalf("error = %v, want migration blocker", err)
+		}
+		if strings.Contains(output.String(), "Usage:") {
+			t.Fatalf("migration blocker unexpectedly showed usage:\n%s", output.String())
+		}
+	})
+}
+
+func TestWodby1MigrationRecordsSelectedThirdPartyCI(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "owner", "ok", false)
+	defer fixture.Close()
+	fixture.setSourceKind("instance")
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+
+	var output bytes.Buffer
+	cmd := newWodby1InstanceCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&output)
+	args := fixture.instancePlanArgs("", "json")
+	args = append(args, "--target-ci-integration-id", "77")
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	var plan wodby1.Plan
+	if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.Target.CIIntegrationID != 77 {
+		t.Fatalf("target CI integration ID = %d, want 77", plan.Target.CIIntegrationID)
+	}
+}
+
+func TestWodby1InstanceCommandPlansOnlyRequestedInstance(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "owner", "ok", false)
+	defer fixture.Close()
+	fixture.setSourceKind("instance")
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+
+	var output bytes.Buffer
+	cmd := newWodby1InstanceCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&output)
+	cmd.SetArgs(fixture.instancePlanArgs("", "json"))
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	var plan wodby1.Plan
+	if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.Source.Kind != "instance" || plan.Source.ID != "instance-1" ||
+		len(plan.Apps) != 1 || len(plan.Apps[0].Instances) != 1 ||
+		plan.Apps[0].Instances[0].SourceUUID != "instance-1" {
+		t.Fatalf("instance plan = %#v", plan)
+	}
+	if got := fixture.sourceRequestPaths(); len(got) != 1 ||
+		got[0] != "GET /api/v4/migrations/v2/instances/instance-1/export" {
+		t.Fatalf("source requests = %#v", got)
+	}
+}
+
 func TestWodby1ServerCommandPlansEverySourceApp(t *testing.T) {
 	fixture := newMigrationAPIFixture(t, "owner", "ok", false)
 	defer fixture.Close()
 	fixture.setSourceKind("server")
 	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
 
-	planPath := filepath.Join(t.TempDir(), "server-plan.json")
+	var output bytes.Buffer
 	cmd := newWodby1ServerCommand()
 	cmd.SilenceUsage = true
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetArgs(fixture.serverPlanArgs(planPath, "json"))
+	cmd.SetOut(&output)
+	cmd.SetArgs(fixture.serverPlanArgs("", "json"))
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
 
-	plan := readMigrationPlan(t, planPath)
+	var plan wodby1.Plan
+	if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
 	if plan.Source.Kind != "server" || plan.Source.ID != "server-1" ||
 		len(plan.Apps) != 2 || plan.Summary.Apps != 2 || plan.Summary.Instances != 2 {
 		t.Fatalf("server plan = %#v", plan)
@@ -79,23 +249,13 @@ func TestWodby1ServerMutationUsesPerAppResumeState(t *testing.T) {
 	fixture.setSourceKind("server")
 	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
 	dir := t.TempDir()
-	planPath := filepath.Join(dir, "server-plan.json")
+	t.Setenv("TMPDIR", dir)
 	statePath := filepath.Join(dir, "server-state.json")
 
-	planCmd := newWodby1ServerCommand()
-	planCmd.SilenceUsage = true
-	planCmd.SetOut(&bytes.Buffer{})
-	planCmd.SetArgs(fixture.serverPlanArgs(planPath, "text"))
-	if err := planCmd.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	plan := readMigrationPlan(t, planPath)
-
-	args := fixture.serverPlanArgs(planPath, "text")
+	args := fixture.serverPlanArgs("", "text")
 	args = append(args,
 		"--state-file", statePath,
-		"--phase", "prepare",
-		"--approve-plan", plan.PlanHash,
+		"--apply",
 	)
 	cmd := newWodby1ServerCommand()
 	cmd.SilenceUsage = true
@@ -123,10 +283,203 @@ func TestWodby1ServerMutationUsesPerAppResumeState(t *testing.T) {
 	}
 }
 
-func TestWodby1AppCommandRequiresTargetSelectorsAndCredentials(t *testing.T) {
+func TestWodby1ServerResumePreservesSavedPlanAndExplainsContinuation(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	fixture.setSourceKind("server")
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	t.Setenv("TMPDIR", t.TempDir())
+	statePath := filepath.Join(t.TempDir(), "server-state.json")
+	args := append(fixture.serverPlanArgs("", "text"),
+		"--state-file", statePath,
+		"--apply",
+	)
+
+	first := newWodby1ServerCommand()
+	first.SilenceUsage = true
+	first.SetOut(&bytes.Buffer{})
+	first.SetArgs(args)
+	if err := first.Execute(); err == nil || !strings.Contains(err.Error(), "migrate source app demo") {
+		t.Fatalf("first server apply error = %v", err)
+	}
+	planPath, _, err := artifactPaths("server", "server-1", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	resume := newWodby1ServerCommand()
+	resume.SilenceUsage = true
+	resume.SetOut(&output)
+	resume.SetArgs(args)
+	if err := resume.Execute(); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("server resume error = %v", err)
+	}
+	after, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("server resume overwrote the saved applied plan")
+	}
+	text := output.String()
+	if !strings.Contains(text, "Server migration resume setup") ||
+		!strings.Contains(text, "Step 1/3: Load saved migration") ||
+		!strings.Contains(text, "Saved server plan: found") ||
+		!strings.Contains(text, "Mode: continue the saved server plan") ||
+		!strings.Contains(text, "Continuing the saved migration plan shown above") {
+		t.Fatalf("server resume output is unclear:\n%s", text)
+	}
+	if strings.Contains(text, planPath) || strings.Contains(text, statePath) {
+		t.Fatalf("server resume exposed artifact paths without --verbose:\n%s", text)
+	}
+}
+
+func TestWodby1ServerFreshApplyReplacesStalePlan(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	fixture.setSourceKind("server")
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	t.Setenv("TMPDIR", t.TempDir())
+	statePath := filepath.Join(t.TempDir(), "server-state.json")
+	planPath, _, err := artifactPaths("server", "server-1", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureArtifactDirectories(planPath, statePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planPath, []byte("stale plan\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	args := append(fixture.serverPlanArgs("", "text"),
+		"--state-file", statePath,
+		"--apply",
+	)
+	cmd := newWodby1ServerCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "migrate source app demo (app-1)") {
+		t.Fatalf("apply error = %v", err)
+	}
+
+	plan, err := wodby1.LoadReviewedPlan(planPath)
+	if err != nil {
+		t.Fatalf("load replaced plan: %v", err)
+	}
+	if plan.Source.Kind != "server" || plan.Source.ID != "server-1" {
+		t.Fatalf("replaced plan source = %#v", plan.Source)
+	}
+}
+
+func TestWodby1ServerRestartReplansAfterDefinitiveRejection(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	fixture.setSourceKind("server")
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	t.Setenv("TMPDIR", t.TempDir())
+	statePath := filepath.Join(t.TempDir(), "server-state.json")
+
+	var preview bytes.Buffer
+	previewCmd := newWodby1ServerCommand()
+	previewCmd.SilenceUsage = true
+	previewCmd.SetOut(&preview)
+	previewCmd.SetArgs(fixture.serverPlanArgs("", "json"))
+	if err := previewCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var oldPlan wodby1.Plan
+	if err := json.Unmarshal(preview.Bytes(), &oldPlan); err != nil {
+		t.Fatal(err)
+	}
+	planPath, _, err := artifactPaths("server", "server-1", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureArtifactDirectories(planPath, statePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePlanFile(planPath, oldPlan); err != nil {
+		t.Fatal(err)
+	}
+	childStatePath := serverAppStatePath(statePath, "app-1")
+	saveDefinitivelyRejectedState(t, childStatePath, wodby1.MigrationStateIdentity{
+		Source: wodby1.MigrationStateSourceIdentity{
+			Kind: "app", ID: "app-1", ConfigDigest: strings.Repeat("a", 64),
+		},
+		PlanHash: strings.Repeat("b", 64),
+		Target: wodby1.MigrationStateTarget{
+			OrgID: oldPlan.Target.OrgID, ProjectID: oldPlan.Target.ProjectID, ClusterID: oldPlan.Target.ClusterID,
+		},
+	}, []string{"instance-1"})
+	fixture.setSourceTitle("Changed after rejection")
+
+	args := append(fixture.serverPlanArgs("", "text"),
+		"--state-file", statePath,
+		"--apply",
+		"--restart",
+	)
+	cmd := newWodby1ServerCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs(args)
+	applyErr := cmd.Execute()
+	if applyErr == nil || !strings.Contains(applyErr.Error(), "migrate source app demo (app-1)") ||
+		strings.Contains(applyErr.Error(), "no longer match the applied plan") {
+		t.Fatalf("apply error = %v", applyErr)
+	}
+	newPlan, err := wodby1.LoadReviewedPlan(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newPlan.PlanHash == oldPlan.PlanHash {
+		t.Fatal("definitively rejected server migration kept the stale plan")
+	}
+}
+
+func TestWodby1ServerResumeStateRequiresSavedPlan(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	fixture.setSourceKind("server")
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	t.Setenv("TMPDIR", t.TempDir())
+	statePath := filepath.Join(t.TempDir(), "server-state.json")
+	childStatePath := serverAppStatePath(statePath, "app-1")
+	if err := os.WriteFile(childStatePath, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	args := append(fixture.serverPlanArgs("", "text"),
+		"--state-file", statePath,
+		"--apply",
+	)
+	cmd := newWodby1ServerCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "server migration state exists") ||
+		!strings.Contains(err.Error(), "plan is missing") {
+		t.Fatalf("apply error = %v", err)
+	}
+	if got := fixture.sourceRequestPaths(); len(got) != 0 {
+		t.Fatalf("source requests = %#v", got)
+	}
+}
+
+func TestWodby1AppCommandRequiresTargetClusterAndCredentials(t *testing.T) {
+	if flag := newWodby1AppCommand().Flags().Lookup("target-org"); flag != nil {
+		t.Fatal("--target-org must not be exposed; the API key selects the organization")
+	}
+
 	tests := []struct {
 		name       string
-		targetOrg  string
 		project    string
 		cluster    string
 		apiBaseURL string
@@ -135,32 +488,22 @@ func TestWodby1AppCommandRequiresTargetSelectorsAndCredentials(t *testing.T) {
 		want       string
 	}{
 		{
-			name: "organization", project: "22", cluster: "33",
+			name: "cluster", project: "22",
 			apiBaseURL: "https://target.example.test/v1", apiKey: "key",
-			want: "--target-org, --target-project, and --target-cluster are required",
+			want: "--target-cluster is required",
 		},
 		{
-			name: "project", targetOrg: "11", cluster: "33",
-			apiBaseURL: "https://target.example.test/v1", apiKey: "key",
-			want: "--target-org, --target-project, and --target-cluster are required",
-		},
-		{
-			name: "cluster", targetOrg: "11", project: "22",
-			apiBaseURL: "https://target.example.test/v1", apiKey: "key",
-			want: "--target-org, --target-project, and --target-cluster are required",
-		},
-		{
-			name: "target API base URL", targetOrg: "11", project: "22", cluster: "33",
+			name: "target API base URL", project: "22", cluster: "33",
 			apiKey: "key",
 			want:   "--api-base-url is required",
 		},
 		{
-			name: "target API credentials", targetOrg: "11", project: "22", cluster: "33",
+			name: "target API credentials", project: "22", cluster: "33",
 			apiBaseURL: "https://target.example.test/v1",
 			want:       "--api-key is required",
 		},
 		{
-			name: "target access token is not sufficient", targetOrg: "11", project: "22", cluster: "33",
+			name: "target access token is not sufficient", project: "22", cluster: "33",
 			apiBaseURL: "https://target.example.test/v1", access: "ci-token",
 			want: "--api-key is required",
 		},
@@ -174,7 +517,6 @@ func TestWodby1AppCommandRequiresTargetSelectorsAndCredentials(t *testing.T) {
 			cmd.SetArgs([]string{
 				"app-1",
 				"--source-token", testSourceToken,
-				"--target-org", tt.targetOrg,
 				"--target-project", tt.project,
 				"--target-cluster", tt.cluster,
 			})
@@ -193,16 +535,19 @@ func TestWodby1AppCommandUsesSelectedOrgOwnerOrAdminRole(t *testing.T) {
 			defer fixture.Close()
 			setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
 
-			planPath := filepath.Join(t.TempDir(), "plan.json")
+			var output bytes.Buffer
 			cmd := newWodby1AppCommand()
 			cmd.SilenceUsage = true
-			cmd.SetOut(&bytes.Buffer{})
-			cmd.SetArgs(fixture.planArgs(planPath, "json"))
+			cmd.SetOut(&output)
+			cmd.SetArgs(fixture.planArgs("", "json"))
 			if err := cmd.Execute(); err != nil {
 				t.Fatal(err)
 			}
 
-			plan := readMigrationPlan(t, planPath)
+			var plan wodby1.Plan
+			if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
+				t.Fatal(err)
+			}
 			if !plan.Target.OrgOwnerOrAdminVerified || plan.Target.OrgRole != role {
 				t.Fatalf("target authorization = %#v", plan.Target)
 			}
@@ -230,7 +575,7 @@ func TestWodby1AppCommandIgnoresPlatformAdminAndAuthorizesBeforeSecretExport(t *
 
 			cmd := newWodby1AppCommand()
 			cmd.SilenceUsage = true
-			cmd.SetArgs(fixture.planArgs(filepath.Join(t.TempDir(), "plan.json"), "text"))
+			cmd.SetArgs(fixture.planArgs("", "text"))
 			err := cmd.Execute()
 			if err == nil || !strings.Contains(err.Error(), "organization OWNER or ADMIN credentials are required") {
 				t.Fatalf("error = %v", err)
@@ -259,7 +604,7 @@ func TestWodby1AppCommandAutomaticallyRequestsSecretsAndHasNoSecretOptInFlags(t 
 	}
 	cmd.SilenceUsage = true
 	cmd.SetOut(&bytes.Buffer{})
-	args := fixture.planArgs(filepath.Join(t.TempDir(), "plan.json"), "json")
+	args := fixture.planArgs("", "json")
 	args = removeMigrationFlag(args, "--source-token")
 	cmd.SetArgs(args)
 	if err := cmd.Execute(); err != nil {
@@ -276,7 +621,7 @@ func TestWodby1AppCommandAutomaticallyRequestsSecretsAndHasNoSecretOptInFlags(t 
 	}
 }
 
-func TestWodby1AppCommandPreflightsAndWritesSecurePlan(t *testing.T) {
+func TestWodby1AppCommandPreviewsWithoutWritingArtifacts(t *testing.T) {
 	tests := []struct {
 		output string
 		check  func(*testing.T, []byte)
@@ -286,7 +631,12 @@ func TestWodby1AppCommandPreflightsAndWritesSecurePlan(t *testing.T) {
 			check: func(t *testing.T, output []byte) {
 				t.Helper()
 				if !bytes.Contains(output, []byte("Wodby 1 to Wodby 2 migration plan")) ||
-					!bytes.Contains(output, []byte("Plan file:")) {
+					!bytes.Contains(output, []byte("Target CI")) ||
+					!bytes.Contains(output, []byte("Wodby CI (built-in)")) ||
+					!bytes.Contains(output, []byte("Next step:")) ||
+					!bytes.Contains(output, []byte("No blockers found.")) ||
+					!bytes.Contains(output, []byte("same command with --apply")) ||
+					!bytes.Contains(output, []byte("did not create a plan, state, or lock file")) {
 					t.Fatalf("text output = %s", output)
 				}
 			},
@@ -299,7 +649,7 @@ func TestWodby1AppCommandPreflightsAndWritesSecurePlan(t *testing.T) {
 				if err := json.Unmarshal(output, &plan); err != nil {
 					t.Fatalf("decode JSON output: %v\n%s", err, output)
 				}
-				if plan.Schema != "wodby1-migration-plan/v3" || len(plan.PlanHash) != 64 {
+				if plan.Schema != wodby1.MigrationPlanSchema || len(plan.PlanHash) != 64 {
 					t.Fatalf("JSON plan = %#v", plan)
 				}
 			},
@@ -312,50 +662,48 @@ func TestWodby1AppCommandPreflightsAndWritesSecurePlan(t *testing.T) {
 			defer fixture.Close()
 			setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
 
-			planPath := filepath.Join(t.TempDir(), "migration-plan.json")
+			tempDir := t.TempDir()
+			t.Setenv("TMPDIR", tempDir)
 			var output bytes.Buffer
 			cmd := newWodby1AppCommand()
 			cmd.SilenceUsage = true
 			cmd.SetOut(&output)
-			cmd.SetArgs(fixture.planArgs(planPath, tt.output))
+			cmd.SetArgs(fixture.planArgs("", tt.output))
 			if err := cmd.Execute(); err != nil {
 				t.Fatal(err)
 			}
 			tt.check(t, output.Bytes())
 
-			info, err := os.Stat(planPath)
-			if err != nil {
-				t.Fatal(err)
+			if _, err := os.Stat(filepath.Join(tempDir, "wodby-migrations")); !os.IsNotExist(err) {
+				t.Fatalf("preview created temporary migration artifacts: %v", err)
 			}
-			if got := info.Mode().Perm(); got != 0600 {
-				t.Fatalf("plan permissions = %o, want 600", got)
-			}
-			plan := readMigrationPlan(t, planPath)
-			if plan.Target.OrgID != 11 ||
-				plan.Target.ProjectID != 22 ||
-				plan.Target.ClusterID != 33 ||
-				!plan.Target.DiscoveryVerified ||
-				!plan.Target.OrgOwnerOrAdminVerified {
-				t.Fatalf("target plan = %#v", plan.Target)
-			}
-			instance := plan.Apps[0].Instances[0]
-			if instance.TargetEnvID != 44 ||
-				instance.Stack.Target != "acme/drupal11" ||
-				instance.Stack.TargetID != 7 ||
-				instance.Stack.TargetRevID != 71 {
-				t.Fatalf("preflighted instance = %#v", instance)
+			if tt.output == "json" {
+				var plan wodby1.Plan
+				if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
+					t.Fatal(err)
+				}
+				if plan.Target.OrgID != 11 || plan.Target.ProjectID != 22 ||
+					plan.Target.ClusterID != 33 || !plan.Target.DiscoveryVerified ||
+					!plan.Target.OrgOwnerOrAdminVerified {
+					t.Fatalf("target plan = %#v", plan.Target)
+				}
+				instance := plan.Apps[0].Instances[0]
+				if instance.TargetEnvID != 44 || instance.Stack.Target != "acme/drupal11" ||
+					instance.Stack.TargetID != 7 || instance.Stack.TargetRevID != 71 {
+					t.Fatalf("preflighted instance = %#v", instance)
+				}
 			}
 
 			requests := fixture.targetRequestPaths()
 			for _, want := range []string{
-				"GET /v1/orgs/11",
+				"GET /v1/orgs",
 				"GET /v1/user",
 				"GET /v1/org-memberships?orgId=11",
 				"GET /v1/projects/22",
 				"GET /v1/clusters/33",
 				"GET /v1/clusters?orgId=11&projectIds=22",
 				"GET /v1/envs?orgId=11",
-				"GET /v1/stacks?orgId=11&page=1&pageSize=100&projectIds=22&search=drupal11",
+				"GET /v1/stacks/7",
 				"GET /v1/stack-revisions/71/services",
 			} {
 				if !containsMigrationRequest(requests, want) {
@@ -366,6 +714,552 @@ func TestWodby1AppCommandPreflightsAndWritesSecurePlan(t *testing.T) {
 	}
 }
 
+func TestWodby1AppCommandApplyWritesTemporaryPlanAndShowsPaths(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	tempDir := t.TempDir()
+	t.Setenv("TMPDIR", tempDir)
+
+	var output bytes.Buffer
+	cmd := newWodby1AppCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&output)
+	args := append(fixture.planArgs("", "text"), "--apply")
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "app creation is ambiguous") {
+		t.Fatalf("apply error = %v", err)
+	}
+	planPath, statePath, pathErr := artifactPaths("app", "app-1", "")
+	if pathErr != nil {
+		t.Fatal(pathErr)
+	}
+	for _, path := range []string{planPath, statePath} {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			t.Fatalf("stat %s: %v", path, statErr)
+		}
+		if got := info.Mode().Perm(); got != 0600 {
+			t.Fatalf("permissions for %s = %o, want 600", path, got)
+		}
+	}
+	text := output.String()
+	for _, expected := range []string{
+		"Applying the migration plan shown above",
+		"Temporary plan file: " + planPath,
+		"Temporary resume-state file: " + statePath,
+		"Starting migration",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("apply output missing %q:\n%s", expected, text)
+		}
+	}
+}
+
+func TestWodby1AppCommandResumePreservesSavedPlanAndExplainsContinuation(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	t.Setenv("TMPDIR", t.TempDir())
+	args := append(fixture.planArgs("", "text"), "--apply")
+
+	first := newWodby1AppCommand()
+	first.SilenceUsage = true
+	first.SetOut(&bytes.Buffer{})
+	first.SetArgs(args)
+	if err := first.Execute(); err == nil || !strings.Contains(err.Error(), "app creation is ambiguous") {
+		t.Fatalf("first apply error = %v", err)
+	}
+	planPath, statePath, err := artifactPaths("app", "app-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	resume := newWodby1AppCommand()
+	resume.SilenceUsage = true
+	resume.SetOut(&output)
+	resume.SetArgs(args)
+	if err := resume.Execute(); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("resume error = %v", err)
+	}
+	after, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("resume overwrote the saved applied plan")
+	}
+	text := output.String()
+	for _, expected := range []string{
+		"Resume setup",
+		"Step 1/3: Load saved migration",
+		"Saved plan: found",
+		"Resume state: found",
+		"Mode: continue the saved plan",
+		"Continuing the saved migration plan shown above",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("resume output missing %q:\n%s", expected, text)
+		}
+	}
+	if strings.Contains(text, planPath) || strings.Contains(text, statePath) {
+		t.Fatalf("resume exposed artifact paths without --verbose:\n%s", text)
+	}
+}
+
+func TestSingleResumeNoticeExplainsForceOverride(t *testing.T) {
+	previousVerbose := viper.GetBool("verbose")
+	viper.Set("verbose", false)
+	t.Cleanup(func() { viper.Set("verbose", previousVerbose) })
+	var output bytes.Buffer
+	cmd := newWodby1AppCommand()
+	cmd.SetOut(&output)
+	state := &wodby1.MigrationState{
+		Status: wodby1.MigrationStatusRunning,
+		Phase:  wodby1.MigrationPhaseSyncData,
+	}
+
+	printSingleResumeNotice(cmd, "/tmp/plan.json", "/tmp/state.json", state, true)
+
+	text := output.String()
+	wanted := []string{
+		"Resume setup",
+		"Step 1/3: Load saved migration",
+		"Status: Running",
+		"Resume from: Data import",
+		"Step 2/3: Select run mode",
+		"Mode: continue the saved plan",
+		"Step 3/3: Apply command options",
+		"--force: enabled",
+		"Maintenance-mode and backup-age requirements will be bypassed",
+		"A completed backup is still required; writes made after it are not included",
+	}
+	previous := -1
+	for _, item := range wanted {
+		index := strings.Index(text, item)
+		if index < 0 {
+			t.Fatalf("resume notice missing %q:\n%s", item, text)
+		}
+		if index < previous {
+			t.Fatalf("resume notice order is wrong for %q:\n%s", item, text)
+		}
+		previous = index
+	}
+	if strings.Contains(text, "/tmp/plan.json") || strings.Contains(text, "/tmp/state.json") {
+		t.Fatalf("resume notice exposed artifact paths without --verbose:\n%s", text)
+	}
+}
+
+func TestSingleResumeNoticeShowsArtifactPathsOnlyWhenVerbose(t *testing.T) {
+	previousVerbose := viper.GetBool("verbose")
+	viper.Set("verbose", true)
+	t.Cleanup(func() { viper.Set("verbose", previousVerbose) })
+	var output bytes.Buffer
+	cmd := newWodby1AppCommand()
+	cmd.SetOut(&output)
+
+	printSingleResumeNotice(cmd, "/tmp/plan.json", "/tmp/state.json", nil, false)
+
+	text := output.String()
+	for _, expected := range []string{
+		"Plan file: /tmp/plan.json",
+		"State file: /tmp/state.json",
+		"--force: disabled",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("verbose resume notice missing %q:\n%s", expected, text)
+		}
+	}
+}
+
+func TestMigrationProgressReporterFormatsProcessSteps(t *testing.T) {
+	var output bytes.Buffer
+	cmd := newWodby1AppCommand()
+	cmd.SetOut(&output)
+	report := migrationProgressReporter(cmd)
+
+	report("Starting resumable migration apply.")
+	report("Preflight: validate the existing source backup before target changes (--force allows post-backup writes to be excluded).")
+	report("Apply preflight passed; target changes may begin.")
+	report("Step: create or resume the target app and app instances.")
+	report("Target app created.")
+
+	text := output.String()
+	wanted := []string{
+		"Migration process",
+		"Step 1: validate the existing source backup before target changes",
+		"  Apply preflight passed; target changes may begin.",
+		"Step 2: create or resume the target app and app instances",
+		"  Target app created.",
+	}
+	previous := -1
+	for _, item := range wanted {
+		index := strings.Index(text, item)
+		if index < 0 || index < previous {
+			t.Fatalf("progress output missing or misordered %q:\n%s", item, text)
+		}
+		previous = index
+	}
+}
+
+func TestWodby1AppCommandRestartRejectsStateWithTargetMutationRisk(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	t.Setenv("TMPDIR", t.TempDir())
+	args := append(fixture.planArgs("", "text"), "--apply")
+
+	first := newWodby1AppCommand()
+	first.SilenceUsage = true
+	first.SetOut(&bytes.Buffer{})
+	first.SetArgs(args)
+	if err := first.Execute(); err == nil || !strings.Contains(err.Error(), "app creation is ambiguous") {
+		t.Fatalf("first apply error = %v", err)
+	}
+	sourceRequests := fixture.sourceRequestCount()
+	targetRequests := len(fixture.targetRequestPaths())
+
+	restart := newWodby1AppCommand()
+	restart.SilenceUsage = true
+	restart.SetOut(&bytes.Buffer{})
+	restart.SetArgs(append(args, "--restart"))
+	err := restart.Execute()
+	if err == nil || !strings.Contains(err.Error(), "records target mutations") ||
+		!strings.Contains(err.Error(), "continue without --restart") {
+		t.Fatalf("restart error = %v", err)
+	}
+	if fixture.sourceRequestCount() != sourceRequests || len(fixture.targetRequestPaths()) != targetRequests {
+		t.Fatal("unsafe restart made API requests before rejecting persisted mutation risk")
+	}
+}
+
+func TestWodby1AppCommandRestartsAfterSavedTargetWasDeleted(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	t.Setenv("TMPDIR", t.TempDir())
+
+	var preview bytes.Buffer
+	previewCmd := newWodby1AppCommand()
+	previewCmd.SilenceUsage = true
+	previewCmd.SetOut(&preview)
+	previewCmd.SetArgs(fixture.planArgs("", "json"))
+	if err := previewCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var plan wodby1.Plan
+	if err := json.Unmarshal(preview.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	planPath, statePath, err := artifactPaths("app", "app-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureArtifactDirectories(planPath, statePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePlanFile(planPath, plan); err != nil {
+		t.Fatal(err)
+	}
+	saveSuccessfulTargetState(t, statePath, migrationStateIdentity(plan), "instance-1", 101, 201)
+
+	var resumeOutput bytes.Buffer
+	resume := newWodby1AppCommand()
+	resume.SilenceUsage = true
+	resume.SetOut(&resumeOutput)
+	resume.SetErr(&resumeOutput)
+	resume.SetArgs(append(fixture.planArgs("", "text"), "--apply"))
+	err = resume.Execute()
+	if err == nil || !strings.Contains(err.Error(), "saved target app ID 101 no longer exists") ||
+		!strings.Contains(err.Error(), "--apply --restart") {
+		t.Fatalf("resume error = %v", err)
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("stale state was changed before explicit restart: %v", err)
+	}
+	resumeText := resumeOutput.String()
+	planNotice := strings.Index(resumeText, "Step 1/4: Load saved migration")
+	continueNotice := strings.Index(resumeText, "Step 2/4: Select run mode")
+	targetValidation := strings.Index(resumeText, "Step 4/4: Validate saved target")
+	missingError := strings.Index(resumeText, "saved target app ID 101 no longer exists")
+	if planNotice < 0 || continueNotice < planNotice || targetValidation < continueNotice || missingError < targetValidation {
+		t.Fatalf("stale-target output order is unclear:\n%s", resumeText)
+	}
+	if strings.Contains(resumeText, planPath) || strings.Contains(resumeText, statePath) {
+		t.Fatalf("stale-target output exposed artifact paths without --verbose:\n%s", resumeText)
+	}
+
+	var output bytes.Buffer
+	restart := newWodby1AppCommand()
+	restart.SilenceUsage = true
+	restart.SetOut(&output)
+	restart.SetArgs(append(fixture.planArgs("", "text"), "--apply", "--restart"))
+	err = restart.Execute()
+	if err == nil || !strings.Contains(err.Error(), "app creation is ambiguous") {
+		t.Fatalf("restart error = %v", err)
+	}
+	if !strings.Contains(output.String(), "Saved target app ID 101 no longer exists; --restart will replace its stale migration state.") {
+		t.Fatalf("restart output is unclear:\n%s", output.String())
+	}
+	state, err := wodby1.InspectMigrationState(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.App.TargetID == 101 {
+		t.Fatal("restart preserved the deleted target app ID")
+	}
+}
+
+func TestWodby1AppCommandFreshApplyReplacesStalePlan(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	t.Setenv("TMPDIR", t.TempDir())
+	planPath, statePath, err := artifactPaths("app", "app-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureArtifactDirectories(planPath, statePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planPath, []byte("stale plan\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newWodby1AppCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs(append(fixture.planArgs("", "text"), "--apply"))
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "app creation is ambiguous") {
+		t.Fatalf("apply error = %v", err)
+	}
+
+	plan, err := wodby1.LoadReviewedPlan(planPath)
+	if err != nil {
+		t.Fatalf("load replaced plan: %v", err)
+	}
+	if plan.Source.Kind != "app" || plan.Source.ID != "app-1" {
+		t.Fatalf("replaced plan source = %#v", plan.Source)
+	}
+}
+
+func TestWodby1AppCommandRestartReplansAfterDefinitiveRejection(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	t.Setenv("TMPDIR", t.TempDir())
+
+	var preview bytes.Buffer
+	previewCmd := newWodby1AppCommand()
+	previewCmd.SilenceUsage = true
+	previewCmd.SetOut(&preview)
+	previewCmd.SetArgs(fixture.planArgs("", "json"))
+	if err := previewCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var oldPlan wodby1.Plan
+	if err := json.Unmarshal(preview.Bytes(), &oldPlan); err != nil {
+		t.Fatal(err)
+	}
+	planPath, statePath, err := artifactPaths("app", "app-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureArtifactDirectories(planPath, statePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePlanFile(planPath, oldPlan); err != nil {
+		t.Fatal(err)
+	}
+	saveDefinitivelyRejectedState(t, statePath, migrationStateIdentity(oldPlan), []string{"instance-1"})
+	fixture.setSourceTitle("Changed after rejection")
+
+	continueCmd := newWodby1AppCommand()
+	continueCmd.SilenceUsage = true
+	continueCmd.SetOut(&bytes.Buffer{})
+	continueCmd.SetArgs(append(fixture.planArgs("", "text"), "--apply"))
+	continueErr := continueCmd.Execute()
+	if continueErr == nil || !strings.Contains(continueErr.Error(), "cannot continue from saved plan") ||
+		!strings.Contains(continueErr.Error(), "saved plan was not overwritten") {
+		t.Fatalf("continue error = %v", continueErr)
+	}
+	preservedPlan, err := wodby1.LoadReviewedPlan(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preservedPlan.PlanHash != oldPlan.PlanHash {
+		t.Fatal("default continuation overwrote the saved plan after drift")
+	}
+
+	cmd := newWodby1AppCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs(append(fixture.planArgs("", "text"), "--apply", "--restart"))
+	applyErr := cmd.Execute()
+	if applyErr == nil || !strings.Contains(applyErr.Error(), "app creation is ambiguous") ||
+		strings.Contains(applyErr.Error(), "no longer match the applied plan") {
+		t.Fatalf("apply error = %v", applyErr)
+	}
+	newPlan, err := wodby1.LoadReviewedPlan(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newPlan.PlanHash == oldPlan.PlanHash {
+		t.Fatal("definitively rejected migration kept the stale plan")
+	}
+}
+
+func TestWodby1AppCommandResumeStateRequiresSavedPlan(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	t.Setenv("TMPDIR", t.TempDir())
+	planPath, statePath, err := artifactPaths("app", "app-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureArtifactDirectories(planPath, statePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newWodby1AppCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs(append(fixture.planArgs("", "text"), "--apply"))
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "migration state exists") ||
+		!strings.Contains(err.Error(), "plan is missing") {
+		t.Fatalf("apply error = %v", err)
+	}
+	if got := fixture.sourceRequestPaths(); len(got) != 0 {
+		t.Fatalf("source requests = %#v", got)
+	}
+}
+
+func TestWodby1AppCommandApplyResumePinsSavedStackRevision(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	t.Setenv("TMPDIR", t.TempDir())
+	args := append(fixture.planArgs("", "text"), "--apply")
+
+	first := newWodby1AppCommand()
+	first.SilenceUsage = true
+	first.SetOut(&bytes.Buffer{})
+	first.SetArgs(args)
+	if err := first.Execute(); err == nil || !strings.Contains(err.Error(), "app creation is ambiguous") {
+		t.Fatalf("first apply error = %v", err)
+	}
+	planPath, _, err := artifactPaths("app", "app-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fixture.setLatestStackRevision(72, 5)
+	second := newWodby1AppCommand()
+	second.SilenceUsage = true
+	second.SetOut(&bytes.Buffer{})
+	second.SetArgs(args)
+	if err := second.Execute(); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("resumed apply error = %v", err)
+	}
+	requests := fixture.targetRequestPaths()
+	if !containsMigrationRequest(requests, "GET /v1/stack-revisions/71/services") {
+		t.Fatalf("resume did not inspect saved stack revision: %#v", requests)
+	}
+	if containsMigrationRequest(requests, "GET /v1/stack-revisions/72/services") {
+		t.Fatalf("resume substituted the latest stack revision: %#v", requests)
+	}
+	after, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("resumed apply changed the saved plan")
+	}
+}
+
+func TestWodby1AppCommandVerifyRequiresAppliedStateBeforeNetwork(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	setMigrationTargetConfig(t, "https://target.example.test/v1", "target-key", "")
+	cmd := newWodby1AppCommand()
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{
+		"app-1",
+		"--source-base-url", "https://source.example.test",
+		"--source-token", testSourceToken,
+		"--target-cluster", "33",
+		"--target-stack-id", "7",
+		"--verify",
+	})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "no applied migration state found") ||
+		!strings.Contains(err.Error(), "--apply first") {
+		t.Fatalf("verify error = %v", err)
+	}
+}
+
+func TestWodby1AppCommandPlansOrganizationOwnedTarget(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+
+	var jsonOutput bytes.Buffer
+	jsonCmd := newWodby1AppCommand()
+	jsonCmd.SilenceUsage = true
+	jsonCmd.SetOut(&jsonOutput)
+	jsonCmd.SetArgs(fixture.organizationPlanArgs("", "json"))
+	if err := jsonCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var plan wodby1.Plan
+	if err := json.Unmarshal(jsonOutput.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	cmd := newWodby1AppCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&output)
+	cmd.SetArgs(fixture.organizationPlanArgs("", "text"))
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if plan.Target.OrgID != 11 || plan.Target.ProjectID != 0 || plan.Target.Project != "" ||
+		plan.Target.ClusterID != 33 || !plan.Target.DiscoveryVerified {
+		t.Fatalf("target plan = %#v", plan.Target)
+	}
+	if !bytes.Contains(output.Bytes(), []byte("Target organization")) ||
+		bytes.Contains(output.Bytes(), []byte("Target project")) {
+		t.Fatalf("text plan does not show organization-owned target clearly:\n%s", output.Bytes())
+	}
+	requests := fixture.targetRequestPaths()
+	for _, unexpected := range []string{
+		"GET /v1/projects/22",
+		"GET /v1/clusters?orgId=11&projectIds=22",
+	} {
+		if containsMigrationRequest(requests, unexpected) {
+			t.Fatalf("organization-owned discovery made project-scoped request %q: %#v", unexpected, requests)
+		}
+	}
+	if !containsMigrationRequest(requests, "GET /v1/stacks/7") {
+		t.Fatalf("target requests = %#v, missing explicit stack lookup", requests)
+	}
+}
+
 func TestWodby1AppCommandRejectsInvalidLocalInputBeforeNetwork(t *testing.T) {
 	tests := []struct {
 		name string
@@ -373,9 +1267,19 @@ func TestWodby1AppCommandRejectsInvalidLocalInputBeforeNetwork(t *testing.T) {
 		want string
 	}{
 		{
-			name: "phase",
-			args: []string{"--phase", "copy-everything"},
-			want: "unsupported --phase",
+			name: "mutually exclusive actions",
+			args: []string{"--apply", "--verify", "--target-stack-id", "7"},
+			want: "--apply and --verify cannot be used together",
+		},
+		{
+			name: "restart requires apply",
+			args: []string{"--restart", "--target-stack-id", "7"},
+			want: "--restart requires --apply",
+		},
+		{
+			name: "force requires data import",
+			args: []string{"--force", "--skip-data", "--target-stack-id", "7"},
+			want: "--force cannot be used with --skip-data",
 		},
 		{
 			name: "mapping",
@@ -389,6 +1293,15 @@ func TestWodby1AppCommandRejectsInvalidLocalInputBeforeNetwork(t *testing.T) {
 				"--target-service-map", "php=nginx",
 			},
 			want: "conflicting mappings",
+		},
+		{
+			name: "missing target stack ID",
+			want: "--target-stack-id or --target-stack-map is required",
+		},
+		{
+			name: "target stack mapping must use ID",
+			args: []string{"--target-stack-map", "drupal11=acme/drupal11"},
+			want: "must be a positive stack ID",
 		},
 		{
 			name: "source token",
@@ -411,7 +1324,6 @@ func TestWodby1AppCommandRejectsInvalidLocalInputBeforeNetwork(t *testing.T) {
 				"app-1",
 				"--source-base-url", server.URL,
 				"--source-token", testSourceToken,
-				"--target-org", "11",
 				"--target-project", "22",
 				"--target-cluster", "33",
 			}
@@ -430,265 +1342,86 @@ func TestWodby1AppCommandRejectsInvalidLocalInputBeforeNetwork(t *testing.T) {
 	}
 }
 
-func TestWodby1MutationPhaseRequiresExactPlanApprovalBeforeWrites(t *testing.T) {
-	for _, approval := range []string{"", strings.Repeat("0", 64)} {
-		name := "missing"
-		if approval != "" {
-			name = "wrong"
-		}
-		t.Run(name, func(t *testing.T) {
-			fixture := newMigrationAPIFixture(t, "admin", "ok", false)
-			defer fixture.Close()
-			setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
-
-			planPath := filepath.Join(t.TempDir(), "plan.json")
-			planCmd := newWodby1AppCommand()
-			planCmd.SilenceUsage = true
-			planCmd.SetOut(&bytes.Buffer{})
-			planCmd.SetArgs(fixture.planArgs(planPath, "text"))
-			if err := planCmd.Execute(); err != nil {
-				t.Fatal(err)
-			}
-			plan := readMigrationPlan(t, planPath)
-			planBytes, err := os.ReadFile(planPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			args := fixture.planArgs(planPath, "text")
-			args = append(args, "--phase", "prepare")
-			if approval != "" {
-				args = append(args, "--approve-plan", approval)
-			}
-			cmd := newWodby1AppCommand()
-			cmd.SilenceUsage = true
-			cmd.SetOut(&bytes.Buffer{})
-			cmd.SetArgs(args)
-			err = cmd.Execute()
-			if err == nil || !strings.Contains(err.Error(), "requires --approve-plan") {
-				t.Fatalf("error = %v", err)
-			}
-
-			if !strings.Contains(err.Error(), plan.PlanHash) {
-				t.Fatalf("error %q does not require exact plan hash %q", err, plan.PlanHash)
-			}
-			if got := fixture.mutationCount(); got != 0 {
-				t.Fatalf("unapproved phase issued %d target mutation(s)", got)
-			}
-			after, err := os.ReadFile(planPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(after, planBytes) {
-				t.Fatal("unapproved mutation phase overwrote the reviewed plan")
-			}
-		})
+func TestPrintPreviewExplainsBlockingNextStep(t *testing.T) {
+	cmd := newWodby1InstanceCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	plan := wodby1.Plan{
+		Status:  "blocked",
+		Source:  wodby1.PlanSource{Kind: "instance"},
+		Summary: wodby1.PlanSummary{Blocking: 2},
 	}
-}
-
-func TestWodby1MutationPhaseRejectsMissingInsecureAndInvalidReviewedPlanBeforeNetwork(t *testing.T) {
-	tests := []struct {
-		name    string
-		prepare func(*testing.T, *migrationAPIFixture, string) string
-		want    string
-	}{
-		{
-			name: "missing",
-			prepare: func(_ *testing.T, _ *migrationAPIFixture, _ string) string {
-				return strings.Repeat("0", 64)
-			},
-			want: "load reviewed migration plan",
-		},
-		{
-			name: "insecure",
-			prepare: func(t *testing.T, fixture *migrationAPIFixture, path string) string {
-				t.Helper()
-				plan := runMigrationPlan(t, fixture, path)
-				if err := os.Chmod(path, 0644); err != nil {
-					t.Fatal(err)
-				}
-				return plan.PlanHash
-			},
-			want: "permissions are not 0600",
-		},
-		{
-			name: "invalid hash",
-			prepare: func(t *testing.T, fixture *migrationAPIFixture, path string) string {
-				t.Helper()
-				plan := runMigrationPlan(t, fixture, path)
-				plan.Apps[0].Title = "tampered"
-				writeMigrationPlan(t, path, plan)
-				return plan.PlanHash
-			},
-			want: "plan hash does not match",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			fixture := newMigrationAPIFixture(t, "admin", "ok", false)
-			defer fixture.Close()
-			setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "ignored-access-token")
-			planPath := filepath.Join(t.TempDir(), "plan.json")
-			approval := test.prepare(t, fixture, planPath)
-			sourceBefore := fixture.sourceRequestCount()
-			targetBefore := len(fixture.targetRequestPaths())
-
-			args := fixture.planArgs(planPath, "text")
-			args = append(args, "--phase", "prepare", "--approve-plan", approval)
-			cmd := newWodby1AppCommand()
-			cmd.SilenceUsage = true
-			cmd.SetArgs(args)
-			err := cmd.Execute()
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("error = %v, want text %q", err, test.want)
-			}
-			if fixture.sourceRequestCount() != sourceBefore ||
-				len(fixture.targetRequestPaths()) != targetBefore {
-				t.Fatal("invalid reviewed plan triggered an API request")
-			}
-			if fixture.mutationCount() != 0 {
-				t.Fatal("invalid reviewed plan triggered a target mutation")
-			}
-		})
-	}
-}
-
-func TestWodby1MutationPhasePinsReviewedStackRevisionAndDoesNotRewritePlan(t *testing.T) {
-	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
-	defer fixture.Close()
-	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
-	planPath := filepath.Join(t.TempDir(), "plan.json")
-	plan := runMigrationPlan(t, fixture, planPath)
-	reviewedBytes, err := os.ReadFile(planPath)
-	if err != nil {
+	if err := printPreview(cmd, plan); err != nil {
 		t.Fatal(err)
 	}
-	fixture.setLatestStackRevision(72, 5)
-
-	args := fixture.planArgs(planPath, "text")
-	args = append(args, "--phase", "prepare", "--approve-plan", plan.PlanHash)
-	cmd := newWodby1AppCommand()
-	cmd.SilenceUsage = true
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetArgs(args)
-	err = cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "app creation is ambiguous") {
-		t.Fatalf("prepare error = %v", err)
-	}
-	if fixture.mutationCount() != 1 {
-		t.Fatalf("target mutations = %d, want authorized create attempt", fixture.mutationCount())
-	}
-	requests := fixture.targetRequestPaths()
-	for _, want := range []string{
-		"GET /v1/stacks/7",
-		"GET /v1/stack-revisions/71",
-		"GET /v1/stack-revisions/71/services",
+	text := output.String()
+	for _, expected := range []string{
+		"Next step:",
+		"Fix the 2 blocking item(s) above",
+		"rerun this preview",
+		"cannot start until the plan has no blockers",
 	} {
-		if !containsMigrationRequest(requests, want) {
-			t.Fatalf("target requests = %#v, missing pinned read %q", requests, want)
+		if !strings.Contains(text, expected) {
+			t.Fatalf("blocked plan output does not contain %q:\n%s", expected, text)
 		}
 	}
-	if containsMigrationRequest(requests, "GET /v1/stack-revisions/72/services") {
-		t.Fatalf("prepare substituted latest stack revision: %#v", requests)
+	if strings.Contains(text, "--apply") {
+		t.Fatalf("blocked plan suggests applying:\n%s", text)
 	}
-	after, err := os.ReadFile(planPath)
+}
+
+func TestPrintBlockedApplyReviewSaysMigrationDidNotStart(t *testing.T) {
+	cmd := newWodby1InstanceCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	plan := wodby1.Plan{
+		Status:  "blocked",
+		Source:  wodby1.PlanSource{Kind: "instance"},
+		Summary: wodby1.PlanSummary{Blocking: 1},
+	}
+	if err := printBlockedApplyReview(cmd, plan); err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	if !strings.Contains(text, "Migration not started") ||
+		!strings.Contains(text, "Resolve the 1 blocking item") {
+		t.Fatalf("blocked apply output is unclear:\n%s", text)
+	}
+	if strings.Contains(text, "Applying the migration plan") {
+		t.Fatalf("blocked apply claims that migration is starting:\n%s", text)
+	}
+}
+
+func TestArtifactPathsDefaultToSystemTemporaryDirectoryWithoutCreatingIt(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("TMPDIR", tempDir)
+	planPath, statePath, err := artifactPaths("instance", "instance-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(after, reviewedBytes) {
-		t.Fatal("mutation phase rewrote the reviewed plan")
+	wantDir := filepath.Join(tempDir, "wodby-migrations")
+	if filepath.Dir(planPath) != wantDir || filepath.Dir(statePath) != wantDir {
+		t.Fatalf("artifact paths = %q, %q; want directory %q", planPath, statePath, wantDir)
+	}
+	if filepath.Base(planPath) != "wodby1-instance-instance-1.migration-plan.json" ||
+		filepath.Base(statePath) != "wodby1-instance-instance-1.migration-state.json" {
+		t.Fatalf("artifact paths = %q, %q", planPath, statePath)
+	}
+	if _, err := os.Stat(wantDir); !os.IsNotExist(err) {
+		t.Fatalf("artifact path calculation created directory: %v", err)
 	}
 }
 
-func TestWodby1MutationPhaseRejectsSourceAndOptionDriftWithoutRewritingPlan(t *testing.T) {
-	tests := []struct {
-		name   string
-		change func(*migrationAPIFixture, *[]string)
-	}{
-		{
-			name: "source changed",
-			change: func(fixture *migrationAPIFixture, _ *[]string) {
-				fixture.setSourceTitle("Changed title")
-			},
-		},
-		{
-			name: "options changed",
-			change: func(_ *migrationAPIFixture, args *[]string) {
-				*args = append(*args, "--target-stack-map", "drupal11=acme/drupal11")
-			},
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			fixture := newMigrationAPIFixture(t, "admin", "ok", false)
-			defer fixture.Close()
-			setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
-			planPath := filepath.Join(t.TempDir(), "plan.json")
-			plan := runMigrationPlan(t, fixture, planPath)
-			reviewedBytes, err := os.ReadFile(planPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			args := fixture.planArgs(planPath, "text")
-			args = append(args, "--phase", "prepare", "--approve-plan", plan.PlanHash)
-			test.change(fixture, &args)
-
-			cmd := newWodby1AppCommand()
-			cmd.SilenceUsage = true
-			cmd.SetArgs(args)
-			err = cmd.Execute()
-			if err == nil || !strings.Contains(err.Error(), "no longer match") {
-				t.Fatalf("error = %v", err)
-			}
-			if fixture.mutationCount() != 0 {
-				t.Fatalf("drift triggered %d target mutation(s)", fixture.mutationCount())
-			}
-			after, err := os.ReadFile(planPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(after, reviewedBytes) {
-				t.Fatal("drift rejection rewrote the reviewed plan")
-			}
-		})
-	}
-}
-
-func TestArtifactPathsRejectSameCanonicalPlanAndStatePath(t *testing.T) {
+func TestArtifactPathsRejectPlanAndStateCollision(t *testing.T) {
 	dir := t.TempDir()
-	realDir := filepath.Join(dir, "artifacts")
-	if err := os.Mkdir(realDir, 0700); err != nil {
+	t.Setenv("TMPDIR", dir)
+	planPath, _, err := artifactPaths("app", "app-1", "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	aliasDir := filepath.Join(dir, "alias")
-	if err := os.Symlink(realDir, aliasDir); err != nil {
-		t.Fatal(err)
-	}
-	planPath := filepath.Join(realDir, "migration.json")
-	stateAlias := filepath.Join(aliasDir, "migration.json")
-	if _, _, err := artifactPaths("app-1", planPath, stateAlias); err == nil ||
-		!strings.Contains(err.Error(), "different paths") {
+	if _, _, err := artifactPaths("app", "app-1", planPath); err == nil ||
+		!strings.Contains(err.Error(), "temporary migration plan path") {
 		t.Fatalf("artifactPaths() error = %v", err)
-	}
-
-	existing := filepath.Join(realDir, "existing.json")
-	hardlink := filepath.Join(realDir, "hardlink.json")
-	if err := os.WriteFile(existing, []byte("{}"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Link(existing, hardlink); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := artifactPaths("app-1", existing, hardlink); err == nil ||
-		!strings.Contains(err.Error(), "different paths") {
-		t.Fatalf("hard-linked artifactPaths() error = %v", err)
-	}
-
-	lockState := filepath.Join(realDir, "state.json")
-	if _, _, err := artifactPaths("app-1", lockState+".lock", lockState); err == nil ||
-		!strings.Contains(err.Error(), "state lock path") {
-		t.Fatalf("state-lock artifactPaths() error = %v", err)
 	}
 }
 
@@ -752,33 +1485,54 @@ func (f *migrationAPIFixture) Close() {
 }
 
 func (f *migrationAPIFixture) planArgs(planPath string, output string) []string {
+	_ = planPath
 	return []string{
 		"app-1",
 		"--source-base-url", f.source.URL,
 		"--source-token", testSourceToken,
-		"--target-org", "11",
 		"--target-project", "22",
 		"--target-cluster", "33",
+		"--target-stack-id", "7",
 		"--target-env-map", "prod=production",
 		"--skip-code",
 		"--skip-data",
-		"--plan-file", planPath,
 		"--output", output,
 	}
 }
 
+func (f *migrationAPIFixture) organizationPlanArgs(planPath string, output string) []string {
+	_ = planPath
+	return []string{
+		"app-1",
+		"--source-base-url", f.source.URL,
+		"--source-token", testSourceToken,
+		"--target-cluster", "33",
+		"--target-stack-id", "7",
+		"--target-env-map", "prod=production",
+		"--skip-code",
+		"--skip-data",
+		"--output", output,
+	}
+}
+
+func (f *migrationAPIFixture) instancePlanArgs(planPath string, output string) []string {
+	args := f.planArgs(planPath, output)
+	args[0] = "instance-1"
+	return args
+}
+
 func (f *migrationAPIFixture) serverPlanArgs(planPath string, output string) []string {
+	_ = planPath
 	return []string{
 		"server-1",
 		"--source-base-url", f.source.URL,
 		"--source-token", testSourceToken,
-		"--target-org", "11",
 		"--target-project", "22",
 		"--target-cluster", "33",
+		"--target-stack-id", "7",
 		"--target-env-map", "prod=production",
 		"--skip-code",
 		"--skip-data",
-		"--plan-file", planPath,
 		"--output", output,
 	}
 }
@@ -814,6 +1568,24 @@ func (f *migrationAPIFixture) handleSource(w http.ResponseWriter, r *http.Reques
 					}},
 				},
 			},
+		})
+		return
+	}
+	if kind == "instance" {
+		_ = json.NewEncoder(w).Encode(wodby1.Export{
+			Schema:          wodby1.ExportSchemaV2,
+			GeneratedAt:     1234,
+			Source:          &wodby1.ExportSource{Kind: "instance", UUID: "instance-1"},
+			SecretsIncluded: true,
+			Apps: []wodby1.AppExport{{
+				App: wodby1.App{
+					UUID: "app-1", Name: "demo", Title: title, Type: "app", Status: "ok",
+				},
+				Instances: []wodby1.Instance{{
+					UUID: "instance-1", Name: "prod", Title: "Production", Type: "prod", Status: "ok",
+					Stack: wodby1.Stack{Name: "drupal11", Version: "11"},
+				}},
+			}},
 		})
 		return
 	}
@@ -855,6 +1627,7 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 	userID := 7
 	cluster := wodby1.TargetCluster{
 		ID: 33, Name: "primary", Title: "Primary", Status: "OK", OrgID: 11,
+		OwnershipScope: wodby1.TargetOwnershipScopeOrg,
 		Capabilities: wodby1.TargetClusterCapabilities{
 			EnvoyGateway: true, RedirectRoutes: true,
 		},
@@ -863,6 +1636,8 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 	switch r.URL.Path {
 	case "/v1/apps":
 		writeMigrationJSON(w, []wodby1.TargetApp{})
+	case "/v1/orgs":
+		writeMigrationJSON(w, []wodby1.TargetOrg{{ID: 11, Name: "acme", Title: "Acme"}})
 	case "/v1/orgs/11":
 		writeMigrationJSON(w, wodby1.TargetOrg{ID: 11, Name: "acme", Title: "Acme"})
 	case "/v1/user":
@@ -885,7 +1660,7 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 		}})
 	case "/v1/stacks":
 		if r.URL.Query().Get("orgId") != "11" ||
-			r.URL.Query().Get("projectIds") != "22" ||
+			(r.URL.Query().Get("projectIds") != "" && r.URL.Query().Get("projectIds") != "22") ||
 			r.URL.Query().Get("search") != "drupal11" {
 			http.Error(w, "invalid stack query", http.StatusBadRequest)
 			return
@@ -985,49 +1760,6 @@ func setMigrationTargetConfig(t *testing.T, endpoint string, apiKey string, acce
 	})
 }
 
-func readMigrationPlan(t *testing.T, path string) wodby1.Plan {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var plan wodby1.Plan
-	if err := json.Unmarshal(data, &plan); err != nil {
-		t.Fatal(err)
-	}
-	return plan
-}
-
-func runMigrationPlan(
-	t *testing.T,
-	fixture *migrationAPIFixture,
-	path string,
-) wodby1.Plan {
-	t.Helper()
-	cmd := newWodby1AppCommand()
-	cmd.SilenceUsage = true
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetArgs(fixture.planArgs(path, "text"))
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	return readMigrationPlan(t, path)
-}
-
-func writeMigrationPlan(t *testing.T, path string, plan wodby1.Plan) {
-	t.Helper()
-	data, err := json.MarshalIndent(plan, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, append(data, '\n'), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(path, 0600); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func writeMigrationJSON(w http.ResponseWriter, value interface{}) {
 	_ = json.NewEncoder(w).Encode(value)
 }
@@ -1039,6 +1771,87 @@ func containsMigrationRequest(items []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func saveDefinitivelyRejectedState(
+	t *testing.T,
+	path string,
+	identity wodby1.MigrationStateIdentity,
+	instanceIDs []string,
+) {
+	t.Helper()
+	state, err := wodby1.NewMigrationState(identity, instanceIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.SetPhase(wodby1.MigrationPhasePrepare); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkAppOperationIntent("create"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkAppOperationFailure("create", "api_rejected"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.SetAppTarget(0, wodby1.MigrationResourceFailed); err != nil {
+		t.Fatal(err)
+	}
+	for _, sourceID := range instanceIDs {
+		if err := state.MarkInstanceOperationIntent(sourceID, "create"); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.MarkInstanceOperationFailure(sourceID, "create", "api_rejected"); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.SetInstanceTarget(sourceID, 0, wodby1.MigrationResourceFailed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := wodby1.SaveMigrationState(path, state); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func saveSuccessfulTargetState(
+	t *testing.T,
+	path string,
+	identity wodby1.MigrationStateIdentity,
+	sourceInstanceID string,
+	targetAppID int,
+	targetInstanceID int,
+) {
+	t.Helper()
+	state, err := wodby1.NewMigrationState(identity, []string{sourceInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.SetPhase(wodby1.MigrationPhasePrepare); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkAppOperationIntent("create"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkAppOperationSuccessWithIDs("create", targetAppID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.SetAppTarget(targetAppID, wodby1.MigrationResourceReady); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkInstanceOperationIntent(sourceInstanceID, "create"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkInstanceOperationSuccessWithIDs(sourceInstanceID, "create", targetInstanceID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.SetInstanceTarget(sourceInstanceID, targetInstanceID, wodby1.MigrationResourceReady); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.SetPhase(wodby1.MigrationPhaseSyncData); err != nil {
+		t.Fatal(err)
+	}
+	if err := wodby1.SaveMigrationState(path, state); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func removeMigrationFlag(args []string, flag string) []string {

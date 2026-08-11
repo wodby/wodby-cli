@@ -109,6 +109,15 @@ func TestRefreshDataImportObtainsNewURLForSameBoundSnapshot(t *testing.T) {
 	}
 }
 
+func TestPrepareDataSyncAcceptsSingleInstanceSource(t *testing.T) {
+	now := time.Unix(10_000, 0)
+	export, prepared := refreshDataImportFixture()
+	export.Source = &ExportSource{Kind: "instance", UUID: "instance-1"}
+	if _, err := PrepareDataSync(export, prepared, now, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBoundBackupStillValidatesSafetyMetadata(t *testing.T) {
 	now := time.Unix(20_000, 0)
 	for _, test := range []struct {
@@ -141,11 +150,33 @@ func TestBoundBackupStillValidatesSafetyMetadata(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			export, prepared := refreshDataImportFixture()
 			test.mutate(&export.Apps[0].Instances[0].Backups[0])
-			_, err := prepareDataSync(export, prepared, now, time.Hour, false)
+			_, err := prepareDataSync(export, prepared, now, time.Hour, dataSyncOptions{})
 			if err == nil || !strings.Contains(err.Error(), test.wantError) {
 				t.Fatalf("error = %v, want %q", err, test.wantError)
 			}
 		})
+	}
+}
+
+func TestPrepareDataSyncForceAllowsExistingBackupFromLiveSource(t *testing.T) {
+	now := time.Unix(10_000, 0)
+	export, prepared := refreshDataImportFixture()
+	export.Apps[0].Instances[0].Properties["maintenance_mode"] = false
+	export.Apps[0].Instances[0].Updated = 9_999
+	export.Apps[0].Instances[0].Backups[0].BackupCreated = 1_000
+	export.Apps[0].Instances[0].Backups[0].BackupUpdated = 1_100
+
+	_, err := prepareDataSync(export, prepared, now, time.Hour, dataSyncOptions{
+		requireFresh:    true,
+		allowLiveSource: true,
+	})
+	if err != nil {
+		t.Fatalf("forced old backup from a live source was rejected: %v", err)
+	}
+
+	_, err = PrepareDataSync(export, prepared, now, time.Hour)
+	if err == nil || !strings.Contains(err.Error(), "not in maintenance mode") {
+		t.Fatalf("strict data sync error = %v, want maintenance-mode failure", err)
 	}
 }
 

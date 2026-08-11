@@ -90,8 +90,8 @@ func (p Plan) ValidateReviewed() error {
 	if digest != p.PlanHash {
 		return invalidPlanError("plan hash does not match plan contents")
 	}
-	if (p.Source.Kind != "app" && p.Source.Kind != "server") || p.Source.ID == "" {
-		return invalidPlanError("customer plan must identify a source app or server")
+	if (p.Source.Kind != "app" && p.Source.Kind != "instance" && p.Source.Kind != "server") || p.Source.ID == "" {
+		return invalidPlanError("customer plan must identify a source app, instance, or server")
 	}
 	seenApps := map[string]bool{}
 	for _, app := range p.Apps {
@@ -103,8 +103,15 @@ func (p Plan) ValidateReviewed() error {
 	if p.Source.Kind == "app" && (len(p.Apps) != 1 || p.Apps[0].SourceUUID != p.Source.ID) {
 		return invalidPlanError("customer app plan must contain exactly the approved source app")
 	}
+	if p.Source.Kind == "instance" && (len(p.Apps) != 1 || len(p.Apps[0].Instances) != 1 ||
+		p.Apps[0].Instances[0].SourceUUID != p.Source.ID) {
+		return invalidPlanError("customer instance plan must contain exactly the approved source instance")
+	}
 	if p.Source.Kind == "server" && len(p.Apps) == 0 {
 		return invalidPlanError("customer server plan must contain at least one source app")
+	}
+	if p.Target.CIIntegrationID < 0 {
+		return invalidPlanError("target CI integration ID must not be negative")
 	}
 	return nil
 }
@@ -189,6 +196,15 @@ func pinReviewedRepository(current *RepositoryPlan, reviewed *RepositoryPlan) er
 	if current == nil {
 		return nil
 	}
+	if current.GitIntegrationID != reviewed.GitIntegrationID || current.RepositoryName != reviewed.RepositoryName {
+		return currentPlanDriftError("target Git integration or repository name changed")
+	}
+	if reviewed.Action != "skip" && reviewed.GitIntegrationID > 0 && reviewed.RepositoryName != "" {
+		if reviewed.RemoteGitRepoID == "" {
+			return invalidPlanError("reviewed target repository is missing its resolved remote ID")
+		}
+		current.RemoteGitRepoID = reviewed.RemoteGitRepoID
+	}
 	if current.TargetService != "" && current.TargetService != reviewed.TargetService {
 		return currentPlanDriftError("target code service changed")
 	}
@@ -206,8 +222,8 @@ func pinReviewedInstance(current *InstancePlan, reviewed InstancePlan) error {
 		reviewed.Stack.TargetVersion == "" {
 		return invalidPlanError("reviewed target stack is missing immutable identity")
 	}
-	if current.Stack.ExplicitMapping && current.Stack.Target != reviewed.Stack.Target {
-		return currentPlanDriftError("target stack mapping changed")
+	if current.Stack.ExplicitMapping && current.Stack.TargetID != reviewed.Stack.TargetID {
+		return currentPlanDriftError("target stack ID changed")
 	}
 	current.Stack.Target = reviewed.Stack.Target
 	current.Stack.TargetID = reviewed.Stack.TargetID

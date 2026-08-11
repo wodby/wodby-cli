@@ -70,6 +70,39 @@ func TestSourceClientExportsApp(t *testing.T) {
 	}
 }
 
+func TestSourceClientExportsInstance(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewEncoder(w).Encode(Export{
+			Schema:          ExportSchemaV2,
+			Source:          &ExportSource{Kind: "instance", UUID: "instance-1"},
+			SecretsIncluded: true,
+			Apps: []AppExport{{
+				App:       App{UUID: "app-1", Name: "demo"},
+				Instances: []Instance{sourceClientTestInstance()},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewSourceClient(server.URL, testSourceToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	export, err := client.ExportInstance(context.Background(), "instance-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotPath != "/api/v4/migrations/v2/instances/instance-1/export" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if export.Source == nil || export.Source.Kind != "instance" || export.Source.UUID != "instance-1" {
+		t.Fatalf("source = %#v", export.Source)
+	}
+}
+
 func TestSourceClientExportsServer(t *testing.T) {
 	var gotPath string
 	var gotAPIKey string
@@ -138,6 +171,69 @@ func TestDecodeExportPreservesLargeNumbersAndRejectsTrailingJSON(t *testing.T) {
 	}
 }
 
+func TestDecodeExportAcceptsLegacyEmptyServiceConfigurationArray(t *testing.T) {
+	export, err := DecodeExport([]byte(`{
+		"schema":"wodby1-migration/v2",
+		"source":{"kind":"instance","uuid":"instance-1"},
+		"apps":[{"app":{"uuid":"app-1","name":"demo"},"instances":[{
+			"uuid":"instance-1",
+			"name":"prod",
+			"type":"prod",
+			"stack":{"name":"drupal10"},
+			"services":[{"name":"php","configuration":[]}]
+		}]}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if export.Apps[0].Instances[0].Services[0].Configuration != nil {
+		t.Fatalf("configuration = %#v", export.Apps[0].Instances[0].Services[0].Configuration)
+	}
+}
+
+func TestDecodeExportPreservesServiceConfigurationObjects(t *testing.T) {
+	export, err := DecodeExport([]byte(`{
+		"schema":"wodby1-migration/v2",
+		"source":{"kind":"instance","uuid":"instance-1"},
+		"apps":[{"app":{"uuid":"app-1","name":"demo"},"instances":[{
+			"uuid":"instance-1",
+			"name":"prod",
+			"type":"prod",
+			"stack":{"name":"drupal10"},
+			"services":[{"name":"php","configuration":{"resources":{"memory":9007199254740993}}}]
+		}]}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resources, ok := export.Apps[0].Instances[0].Services[0].Configuration["resources"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("configuration = %#v", export.Apps[0].Instances[0].Services[0].Configuration)
+	}
+	memory, ok := resources["memory"].(json.Number)
+	if !ok || memory.String() != "9007199254740993" {
+		t.Fatalf("memory = %#v", resources["memory"])
+	}
+}
+
+func TestDecodeExportRejectsNonEmptyServiceConfigurationArray(t *testing.T) {
+	_, err := DecodeExport([]byte(`{
+		"schema":"wodby1-migration/v2",
+		"source":{"kind":"instance","uuid":"instance-1"},
+		"apps":[{"app":{"uuid":"app-1","name":"demo"},"instances":[{
+			"uuid":"instance-1",
+			"name":"prod",
+			"type":"prod",
+			"stack":{"name":"drupal10"},
+			"services":[{"name":"php","configuration":[{"resources":{}}]}]
+		}]}]
+	}`))
+	if err == nil || !strings.Contains(err.Error(), "legacy array form is allowed only when empty") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestDecodeExportRequiresV2SourceIdentity(t *testing.T) {
 	_, err := DecodeExport([]byte(`{"schema":"wodby1-migration/v2","apps":[]}`))
 	if err == nil || !strings.Contains(err.Error(), "identify its source") {
@@ -152,6 +248,19 @@ func TestDecodeAppExportRequiresAtLeastOneInstance(t *testing.T) {
 		"apps":[{"app":{"uuid":"app-1","name":"demo"},"instances":[]}]
 	}`))
 	if err == nil || !strings.Contains(err.Error(), "at least one source instance") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestDecodeInstanceExportRequiresExactlyRequestedInstance(t *testing.T) {
+	_, err := DecodeExport([]byte(`{
+		"schema":"wodby1-migration/v2",
+		"source":{"kind":"instance","uuid":"instance-1"},
+		"apps":[{"app":{"uuid":"app-1","name":"demo"},"instances":[
+			{"uuid":"instance-2","name":"stage","type":"stage","stack":{"name":"drupal"}}
+		]}]
+	}`))
+	if err == nil || !strings.Contains(err.Error(), "exactly its requested source instance") {
 		t.Fatalf("err = %v", err)
 	}
 }

@@ -253,6 +253,176 @@ func TestImportTerminalFailureIsRetriedAsNewAttempt(t *testing.T) {
 	}
 }
 
+func TestImportRecoveryQueriesByTargetService(t *testing.T) {
+	const (
+		instanceID = 20
+		serviceID  = 10
+		importID   = 501
+		taskID     = 601
+	)
+	createdAt := time.Now().UTC()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/imports":
+			writeTargetExecutionJSON(t, w, TargetOperationResult{
+				Success: true,
+				TaskID:  asyncTestIntPointer(taskID),
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/601":
+			writeTargetExecutionJSON(t, w, TargetTask{ID: taskID, UserID: 1, Status: "DONE"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/imports":
+			if got := r.URL.Query(); got.Get("appServiceId") != "10" {
+				t.Fatalf("import recovery query = %q", r.URL.RawQuery)
+			}
+			filesImport := TargetImport{
+				ID: importID, Name: "files", Status: "COMPLETED",
+				AppInstanceID: asyncTestIntPointer(instanceID),
+				AppServiceID:  asyncTestIntPointer(serviceID),
+				TaskID:        asyncTestIntPointer(taskID),
+				CreatedAt:     createdAt,
+			}
+			if r.URL.Query().Get("appInstanceId") == "" {
+				writeTargetExecutionJSON(t, w, []TargetImport{filesImport})
+				return
+			}
+			// Wodby 2 currently treats appInstanceId as the primary import
+			// filter and returns all imports for it, including another service.
+			writeTargetExecutionJSON(t, w, []TargetImport{
+				{
+					ID: 500, Name: "database", Status: "COMPLETED",
+					AppInstanceID: asyncTestIntPointer(instanceID),
+					AppServiceID:  asyncTestIntPointer(11),
+					TaskID:        asyncTestIntPointer(600),
+					CreatedAt:     createdAt.Add(-time.Minute),
+				},
+				filesImport,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/imports/501":
+			writeTargetExecutionJSON(t, w, TargetImport{
+				ID: importID, Name: "files", Status: "COMPLETED",
+				AppInstanceID: asyncTestIntPointer(instanceID),
+				AppServiceID:  asyncTestIntPointer(serviceID),
+				TaskID:        asyncTestIntPointer(taskID),
+				CreatedAt:     createdAt,
+			})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	item := PreparedDataImport{
+		SourceInstanceUUID: "instance-1",
+		Backup: Backup{
+			Component: "files",
+			URL:       "https://objects.example.test/files.tar.gz?signature=redacted",
+		},
+		Destination: PreparedImport{ImportName: "files"},
+	}
+	state, statePath := newExecutorTestState(t)
+	executor := newAsyncTestExecutor(t, server.URL, statePath, 100*time.Millisecond)
+
+	if err := executor.ensureImport(context.Background(), state, item, instanceID, serviceID); err != nil {
+		t.Fatalf("files import recovery: %v", err)
+	}
+	operation := state.Instances["instance-1"].Operations[importOperationKey("instance-1", "files", false)]
+	if operation.Status != MigrationOperationSucceeded || operation.TargetID != importID {
+		t.Fatalf("files import operation = %+v", operation)
+	}
+}
+
+func TestImportPrefersMirrorAndFallsBackToServerAfterDefinitiveFailure(t *testing.T) {
+	var posts atomic.Int32
+	var created sync.Map
+	var requestedURLs sync.Map
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/imports":
+			attempt := int(posts.Add(1))
+			body := decodeTargetExecutionObject(t, r)
+			input, ok := body["import"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("import body = %#v", body)
+			}
+			requestedURLs.Store(attempt, input["url"])
+			id := 500 + attempt
+			created.Store(id, time.Now().UTC())
+			writeTargetExecutionJSON(t, w, TargetOperationResult{Success: true})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/imports":
+			attempt := int(posts.Load())
+			id := 500 + attempt
+			createdAt, ok := created.Load(id)
+			if !ok {
+				t.Fatalf("list before import attempt was recorded")
+			}
+			writeTargetExecutionJSON(
+				t,
+				w,
+				[]TargetImport{asyncTestImport(id, 20, 10, "QUEUED", createdAt.(time.Time))},
+			)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/imports/"):
+			id := asyncTestPathID(t, r.URL.Path)
+			createdAt, ok := created.Load(id)
+			if !ok {
+				t.Fatalf("GET for unknown import ID %d", id)
+			}
+			status := "COMPLETED"
+			if id == 501 {
+				status = "ERRORED"
+			}
+			writeTargetExecutionJSON(t, w, asyncTestImport(id, 20, 10, status, createdAt.(time.Time)))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-instances/20":
+			writeTargetExecutionJSON(t, w, TargetAppInstance{
+				ID: 20, Name: "dev", Status: "OK", AppID: 1,
+				ClusterID: 2, EnvID: 3, StackID: 4, StackRevID: 5,
+			})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	item := PreparedDataImport{
+		SourceInstanceUUID: "instance-1",
+		Backup: Backup{
+			Component:   "database",
+			URL:         "https://node.example.test/database.sql.gz",
+			MirroredURL: "https://mirror.example.test/database.sql.gz",
+		},
+		Destination: PreparedImport{ImportName: "database"},
+	}
+	state, statePath := newExecutorTestState(t)
+	progress := []string{}
+	executor := newAsyncTestExecutor(t, server.URL, statePath, 100*time.Millisecond)
+	executor.progress = func(message string) {
+		progress = append(progress, message)
+	}
+
+	if err := executor.ensureImport(context.Background(), state, item, 20, 10); err != nil {
+		t.Fatalf("mirror fallback import: %v", err)
+	}
+	if posts.Load() != 2 {
+		t.Fatalf("import POSTs = %d, want 2", posts.Load())
+	}
+	wantURLs := []string{item.Backup.MirroredURL, item.Backup.URL}
+	for attempt, want := range wantURLs {
+		got, ok := requestedURLs.Load(attempt + 1)
+		if !ok || got != want {
+			t.Fatalf("attempt %d URL = %#v, want %q", attempt+1, got, want)
+		}
+	}
+	mirrorOperation := state.Instances["instance-1"].Operations[importOperationKey("instance-1", "database", true)]
+	serverOperation := state.Instances["instance-1"].Operations[importOperationKey("instance-1", "database", false)]
+	if mirrorOperation.Status != MigrationOperationFailed ||
+		serverOperation.Status != MigrationOperationSucceeded ||
+		serverOperation.TargetID != 502 {
+		t.Fatalf("mirror operation=%+v server operation=%+v", mirrorOperation, serverOperation)
+	}
+	if output := strings.Join(progress, "\n"); !strings.Contains(output, "retrying from the Wodby 1 server") {
+		t.Fatalf("fallback progress not reported:\n%s", output)
+	}
+}
+
 func TestBuildPollingTimeoutResumesAcceptedTargetWithoutDuplicatePost(t *testing.T) {
 	var posts atomic.Int32
 	var complete atomic.Bool

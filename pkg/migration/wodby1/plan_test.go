@@ -97,6 +97,137 @@ func TestBuildPlanCapturesManagedMigrationReviewItems(t *testing.T) {
 	}
 }
 
+func TestBuildPlanBlocksDataMigrationUntilFreezeAndFreshBackup(t *testing.T) {
+	instance := Instance{
+		UUID: "inst-1", Name: "prod", Type: "prod", Status: "ok", Updated: 200,
+		Stack:      Stack{Name: "drupal11"},
+		Properties: map[string]interface{}{"maintenance_mode": false},
+		Backups: []Backup{{
+			UUID: "file-db", BackupUUID: "backup-1", Component: "db",
+			URL: "https://backups.example.test/db.sql.gz", Status: "ok",
+			BackupCreated: 100, BackupUpdated: 110,
+		}},
+	}
+	export := Export{
+		Schema: ExportSchemaV2,
+		Source: &ExportSource{Kind: "instance", UUID: instance.UUID},
+		Apps: []AppExport{{
+			App:       App{UUID: "app-1", Name: "demo", Status: "ok"},
+			Instances: []Instance{instance},
+		}},
+	}
+	options := PlanOptions{
+		SourceKind: "instance", SourceID: instance.UUID, RequireData: true,
+	}
+
+	plan, err := BuildPlan(export, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasReviewMessage(plan.Review, SeverityBlocking, "not in maintenance mode") {
+		t.Fatalf("maintenance-mode blocker = %#v", plan.Review)
+	}
+	if !hasReviewMessage(plan.Review, SeverityBlocking, "[App instance] > Stack > Settings") ||
+		!hasReviewMessage(plan.Review, SeverityBlocking, "--force") {
+		t.Fatalf("maintenance-mode instructions = %#v", plan.Review)
+	}
+
+	forcedOptions := options
+	forcedOptions.AllowLiveSource = true
+	plan, err = BuildPlan(export, forcedOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasReviewMessage(plan.Review, SeverityBlocking, "maintenance mode") ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "writes") ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "[App instance] > Stack > Settings") {
+		t.Fatalf("forced existing-backup review = %#v", plan.Review)
+	}
+
+	export.Apps[0].Instances[0].Properties["maintenance_mode"] = true
+	plan, err = BuildPlan(export, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasReviewMessage(plan.Review, SeverityBlocking, "backup predates") {
+		t.Fatalf("post-freeze backup blocker = %#v", plan.Review)
+	}
+	plan, err = BuildPlan(export, forcedOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasReviewMessage(plan.Review, SeverityBlocking, "backup predates") ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "--force") {
+		t.Fatalf("forced pre-freeze backup review = %#v", plan.Review)
+	}
+
+	export.Apps[0].Instances[0].Backups[0].BackupCreated = 200
+	export.Apps[0].Instances[0].Backups[0].BackupUpdated = 210
+	plan, err = BuildPlan(export, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasReviewMessage(plan.Review, SeverityBlocking, "maintenance mode") ||
+		hasReviewMessage(plan.Review, SeverityBlocking, "backup predates") {
+		t.Fatalf("ready data migration remained blocked: %#v", plan.Review)
+	}
+}
+
+func TestForceExistingBackupReviewDoesNotChangeExecutablePlanHash(t *testing.T) {
+	base := Plan{
+		Schema: MigrationPlanSchema,
+		Source: PlanSource{
+			Kind: "instance", ID: "instance-1", Schema: ExportSchemaV2,
+			ConfigDigest: strings.Repeat("a", 64),
+		},
+		Target: PlanTarget{
+			OrgID: 1, ClusterID: 2, DiscoveryVerified: true,
+			OrgOwnerOrAdminVerified: true, OrgRole: "owner",
+		},
+		Apps: []AppPlan{{
+			SourceUUID: "app-1",
+			Instances:  []InstancePlan{{SourceUUID: "instance-1"}},
+		}},
+		Review: []ReviewItem{},
+	}
+	base.computeSummary()
+	baseHash, err := base.contentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	forced := base
+	forced.Review = append(forced.Review, ReviewItem{
+		Severity: SeverityConfirmation,
+		App:      "demo",
+		Instance: "dev",
+		Subject:  forceExistingBackupReviewSubject,
+		Message:  "writes after the selected backup will not be migrated",
+	})
+	forced.Summary = PlanSummary{}
+	forced.computeSummary()
+	forcedHash, err := forced.contentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forcedHash != baseHash {
+		t.Fatalf("force acknowledgement changed executable plan hash: %s != %s", forcedHash, baseHash)
+	}
+	forced.PlanHash = baseHash
+	if err := forced.ValidateReviewed(); err != nil {
+		t.Fatalf("force acknowledgement invalidated resumable plan: %v", err)
+	}
+
+	forced.Apps[0].Instances[0].TargetEnv = "production"
+	changedHash, err := forced.contentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedHash == baseHash {
+		t.Fatal("executable target change was incorrectly ignored")
+	}
+}
+
 func TestBuildPlanAppliesWodby2ServiceCompatibilityPolicy(t *testing.T) {
 	enabled := true
 	port := 80
@@ -110,9 +241,16 @@ func TestBuildPlanAppliesWodby2ServiceCompatibilityPolicy(t *testing.T) {
 				Stack: Stack{Name: "drupal10"},
 				Services: []Service{
 					{Name: "apache", Enabled: true},
+					{Name: "athenapdf", Enabled: true},
+					{Name: "crond", Enabled: true},
+					{Name: "mailhog", Enabled: true},
 					{Name: "nginx", Enabled: true},
+					{Name: "pma", Enabled: true},
 					{Name: "redis", Enabled: true},
+					{Name: "rsyslog", Enabled: true},
+					{Name: "sshd", Enabled: true},
 					{Name: "varnish", Enabled: true},
+					{Name: "xhprof", Enabled: true},
 				},
 				Domains: []Domain{{
 					UUID: "domain-1", Name: "example.com", Type: "user", Status: "ok",
@@ -130,18 +268,45 @@ func TestBuildPlanAppliesWodby2ServiceCompatibilityPolicy(t *testing.T) {
 	if service := preflightFindServicePlan(t, instance, "apache"); service.TargetName != "" || service.Action != "skip" {
 		t.Fatalf("apache service = %#v", service)
 	}
+	if service := preflightFindServicePlan(t, instance, "athenapdf"); service.TargetName != "gotenberg" || service.Action != "substitute" {
+		t.Fatalf("athenapdf service = %#v", service)
+	}
+	if service := preflightFindServicePlan(t, instance, "crond"); service.TargetName != "" || service.Action != "skip" {
+		t.Fatalf("crond service = %#v", service)
+	}
+	if service := preflightFindServicePlan(t, instance, "mailhog"); service.TargetName != "mailpit" || service.Action != "substitute" {
+		t.Fatalf("mailhog service = %#v", service)
+	}
+	if service := preflightFindServicePlan(t, instance, "pma"); service.TargetName != "phpmyadmin" || service.Action != "substitute" {
+		t.Fatalf("pma service = %#v", service)
+	}
 	if service := preflightFindServicePlan(t, instance, "redis"); service.TargetName != "valkey" || service.Action != "substitute" {
 		t.Fatalf("redis service = %#v", service)
 	}
+	if service := preflightFindServicePlan(t, instance, "rsyslog"); service.TargetName != "" || service.Action != "skip" {
+		t.Fatalf("rsyslog service = %#v", service)
+	}
+	if service := preflightFindServicePlan(t, instance, "sshd"); service.TargetName != "sshd" || service.Action != "substitute" {
+		t.Fatalf("sshd service = %#v", service)
+	}
 	if service := preflightFindServicePlan(t, instance, "varnish"); service.TargetName != "vinyl" || service.Action != "substitute" {
 		t.Fatalf("varnish service = %#v", service)
+	}
+	if service := preflightFindServicePlan(t, instance, "xhprof"); service.TargetName != "" || service.Action != "skip" {
+		t.Fatalf("xhprof service = %#v", service)
 	}
 	if route := instance.Routes[0]; route.Service != "nginx" || route.Action != "create_backend" {
 		t.Fatalf("apache route replacement = %#v", route)
 	}
 	if !hasReviewMessage(plan.Review, SeveritySkipped, "Apache is intentionally not migrated") ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "athenapdf will be substituted with gotenberg") ||
+		!hasReviewMessage(plan.Review, SeveritySkipped, "application cron jobs are migrated as Wodby 2 service cron schedules") ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "mailhog will be substituted with mailpit") ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "managed phpmyadmin service") ||
 		!hasReviewMessage(plan.Review, SeverityConfirmation, "redis will be substituted with valkey") ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "PHP SSH derivative service") ||
 		!hasReviewMessage(plan.Review, SeverityConfirmation, "varnish will be substituted with vinyl") ||
+		!hasReviewMessage(plan.Review, SeveritySkipped, "xhprof is intentionally not migrated") ||
 		!hasReviewMessage(plan.Review, SeverityConfirmation, "Apache-backed source route") {
 		t.Fatalf("compatibility review = %#v", plan.Review)
 	}
@@ -165,6 +330,42 @@ func TestBuildPlanAppliesWodby2ServiceCompatibilityPolicy(t *testing.T) {
 	}
 }
 
+func TestBuildPlanShowsCompatibilityTargetsForDisabledServices(t *testing.T) {
+	export := Export{
+		Schema: ExportSchemaV1,
+		App:    &App{UUID: "app-1", Name: "demo"},
+		Instances: []Instance{{
+			UUID: "instance-1", Name: "dev", Type: "dev", Stack: Stack{Name: "drupal"},
+			Services: []Service{
+				{Name: "athenapdf"},
+				{Name: "mailhog"},
+				{Name: "pma"},
+				{Name: "sshd"},
+			},
+		}},
+	}
+
+	plan, err := BuildPlan(export, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance := &plan.Apps[0].Instances[0]
+	for source, target := range map[string]string{
+		"athenapdf": "gotenberg",
+		"mailhog":   "mailpit",
+		"pma":       "phpmyadmin",
+		"sshd":      "sshd",
+	} {
+		service := preflightFindServicePlan(t, instance, source)
+		if service.TargetName != target || service.Action != "skip_disabled" {
+			t.Fatalf("%s service = %#v", source, service)
+		}
+	}
+	if plan.Summary.Confirmation != 0 {
+		t.Fatalf("disabled substitutions require confirmation: %#v", plan.Review)
+	}
+}
+
 func TestBuildPlanSanitizesRepositoryCredentials(t *testing.T) {
 	export := Export{
 		Schema: ExportSchemaV1,
@@ -183,7 +384,8 @@ func TestBuildPlanSanitizesRepositoryCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	repository := plan.Apps[0].Repository
-	if repository == nil || repository.URL != "https://git.example.com/org/repo.git" || !repository.CredentialsRedacted {
+	if repository == nil || repository.URL != "https://git.example.com/org/repo.git" ||
+		repository.RepositoryName != "org/repo" || !repository.CredentialsRedacted {
 		t.Fatalf("repository = %#v", repository)
 	}
 	data, err := json.Marshal(plan)
@@ -209,6 +411,22 @@ func TestBuildPlanSanitizesRepositoryCredentials(t *testing.T) {
 	multiAtURL, redacted := sanitizeRepositoryURL("https://user:p@ss@git.example.com/org/repo.git")
 	if multiAtURL != "https://git.example.com/org/repo.git" || !redacted {
 		t.Fatalf("multi-@ URL = %q, redacted = %t", multiAtURL, redacted)
+	}
+}
+
+func TestRepositoryNameFromURL(t *testing.T) {
+	tests := map[string]string{
+		"https://github.com/acme/example.git":             "acme/example",
+		"ssh://git@gitlab.example.test/team/site.git":     "team/site",
+		"git@bitbucket.org:acme/example.git":              "acme/example",
+		"https://git.example.test/group%20name/repo.git/": "group name/repo",
+		"https://git.example.test/":                       "",
+		"":                                                "",
+	}
+	for input, want := range tests {
+		if got := repositoryNameFromURL(input); got != want {
+			t.Errorf("repositoryNameFromURL(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 
@@ -301,22 +519,22 @@ func TestBuildPlanUsesPerAppServerRepositoryTargets(t *testing.T) {
 		SourceID:   "server-1",
 		SkipData:   true,
 		RepositoryByApp: map[string]RepositoryTargetPlan{
-			"app-1":  {CIIntegrationID: 11, RemoteGitRepoID: "remote-1"},
-			"second": {CIIntegrationID: 22, RemoteGitRepoID: "remote-2"},
+			"app-1":  {GitIntegrationID: 11, RepositoryName: "team/first"},
+			"second": {GitIntegrationID: 22, RepositoryName: "team/second"},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Apps[0].Repository.CIIntegrationID != 11 || plan.Apps[0].Repository.RemoteGitRepoID != "remote-1" ||
-		plan.Apps[1].Repository.CIIntegrationID != 22 || plan.Apps[1].Repository.RemoteGitRepoID != "remote-2" {
+	if plan.Apps[0].Repository.GitIntegrationID != 11 || plan.Apps[0].Repository.RepositoryName != "team/first" ||
+		plan.Apps[1].Repository.GitIntegrationID != 22 || plan.Apps[1].Repository.RepositoryName != "team/second" {
 		t.Fatalf("repository plans = %#v", plan.Apps)
 	}
 	if _, err := BuildPlan(export, PlanOptions{
 		SourceKind: "server",
 		SourceID:   "server-1",
 		RepositoryByApp: map[string]RepositoryTargetPlan{
-			"missing": {CIIntegrationID: 33, RemoteGitRepoID: "remote-3"},
+			"missing": {GitIntegrationID: 33, RepositoryName: "team/missing"},
 		},
 	}); err == nil || !strings.Contains(err.Error(), "was not found") {
 		t.Fatalf("unknown repository mapping error = %v", err)
@@ -654,6 +872,7 @@ func TestBuildPlanUsesVerifiedTargetDiscovery(t *testing.T) {
 		TargetProject: "site",
 		TargetCluster: "prod",
 		TargetScope:   &scope,
+		TargetStackID: 7,
 		TargetEnvs: map[string]TargetEnv{
 			"prod": {ID: 5, Name: "prod", Type: "PROD", OrgID: 2},
 		},
@@ -675,6 +894,43 @@ func TestBuildPlanUsesVerifiedTargetDiscovery(t *testing.T) {
 	}
 	if instance.Routes[0].Action != "create_redirect" {
 		t.Fatalf("route = %#v", instance.Routes[0])
+	}
+}
+
+func TestBuildPlanSupportsOrganizationOwnedTarget(t *testing.T) {
+	export := Export{
+		Schema: ExportSchemaV2,
+		Source: &ExportSource{Kind: "app", UUID: "app-1"},
+		Apps: []AppExport{{
+			App: App{UUID: "app-1", Name: "demo", Status: "ok"},
+			Instances: []Instance{{
+				UUID: "inst-1", Name: "prod", Type: "prod", Status: "ok",
+				Stack: Stack{Name: "drupal11"},
+			}},
+		}},
+	}
+	scope := TargetScopeDiscovery{
+		User:       TargetCurrentUser{ID: 1},
+		Membership: TargetOrgMembership{ID: 10, OrgID: 2, Role: "admin", Status: "ok"},
+		Org:        TargetOrg{ID: 2, Name: "acme"},
+		Cluster:    TargetCluster{ID: 4, Name: "prod", Status: "OK", OrgID: 2},
+	}
+	plan, err := BuildPlan(export, PlanOptions{
+		SourceKind:    "app",
+		SourceID:      "app-1",
+		TargetOrg:     "acme",
+		TargetCluster: "prod",
+		TargetScope:   &scope,
+		TargetStackID: 7,
+		TargetEnvs: map[string]TargetEnv{
+			"prod": {ID: 5, Name: "prod", Type: "PROD", OrgID: 2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != "target_scope_validated" || plan.Target.ProjectID != 0 || plan.Target.Project != "" {
+		t.Fatalf("target = %#v, status = %q, review = %#v", plan.Target, plan.Status, plan.Review)
 	}
 }
 
@@ -766,9 +1022,10 @@ func TestBuildPlanMarksUnresolvedPayloadsForReview(t *testing.T) {
 		Cluster:    TargetCluster{ID: 4, Name: "prod", Status: "OK", OrgID: 2},
 	}
 	plan, err := BuildPlan(export, PlanOptions{
-		SourceKind:  "app",
-		SourceID:    "app-1",
-		TargetScope: &scope,
+		SourceKind:    "app",
+		SourceID:      "app-1",
+		TargetScope:   &scope,
+		TargetStackID: 7,
 		TargetEnvs: map[string]TargetEnv{
 			"prod": {ID: 5, Name: "prod", Type: "PROD", OrgID: 2},
 		},
@@ -852,6 +1109,7 @@ func TestBuildPlanTreatsOptionalServicePropertiesAsEffectiveOnlyWhenServiceIsEna
 
 	disabledIntegration := cloneExportForTest(t, base)
 	disabledIntegration.Instances[0].Properties["cache_redis"] = false
+	disabledIntegration.Instances[0].Properties["cache_valkey"] = nil
 	disabledIntegration.Instances[0].Services = append(
 		disabledIntegration.Instances[0].Services,
 		Service{Name: "redis", Enabled: true},
@@ -860,9 +1118,9 @@ func TestBuildPlanTreatsOptionalServicePropertiesAsEffectiveOnlyWhenServiceIsEna
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Summary.Blocking != 1 ||
-		!hasReviewMessage(plan.Review, SeverityBlocking, "application integration is disabled") {
-		t.Fatalf("disabled effective integration was not blocked: %#v", plan.Review)
+	if plan.Summary.Blocking != 0 ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "application integration will be enabled") {
+		t.Fatalf("disabled source integration was not enabled for migration: %#v", plan.Review)
 	}
 
 	enabledIntegration := cloneExportForTest(t, disabledIntegration)

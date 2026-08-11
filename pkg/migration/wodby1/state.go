@@ -29,6 +29,7 @@ var (
 	ErrMigrationStateInsecure         = errors.New("migration state file permissions are not 0600")
 	ErrMigrationStateConcurrentUpdate = errors.New("migration state was updated by another process")
 	ErrMigrationStateInvalid          = errors.New("invalid migration state")
+	ErrMigrationStateUnsafeRestart    = errors.New("migration state contains target mutation risk")
 
 	stateKindPattern      = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 	stateIDPattern        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$`)
@@ -99,7 +100,7 @@ type MigrationStateSource struct {
 
 type MigrationStateTarget struct {
 	OrgID     int `json:"orgId"`
-	ProjectID int `json:"projectId"`
+	ProjectID int `json:"projectId,omitempty"`
 	ClusterID int `json:"clusterId"`
 }
 
@@ -217,6 +218,97 @@ func LoadMigrationState(path string, expected MigrationStateIdentity) (*Migratio
 	return state, nil
 }
 
+// InspectMigrationState securely reads and validates a state file without
+// imposing an expected identity. Callers must validate Identity before using
+// it to resume or replace state for a specific migration.
+func InspectMigrationState(path string) (*MigrationState, error) {
+	state, _, err := loadMigrationStateFile(path)
+	return state, err
+}
+
+// CanRestartSafely reports whether the state proves that no target mutation
+// succeeded, was accepted, or became ambiguous. Definitive API rejections in
+// the plan/prepare phases are restartable because the target rejected them
+// before creating or changing a resource.
+func (s *MigrationState) CanRestartSafely() bool {
+	if s == nil || s.Validate() != nil {
+		return false
+	}
+	if s.Status != MigrationStatusInitialized && s.Status != MigrationStatusFailed {
+		return false
+	}
+	if s.Phase != MigrationPhasePlan && s.Phase != MigrationPhasePrepare {
+		return false
+	}
+	if !restartableMigrationResource(s.App) {
+		return false
+	}
+	for _, instance := range s.Instances {
+		if instance == nil || !restartableMigrationResource(*instance) {
+			return false
+		}
+	}
+	return true
+}
+
+// RemoveRestartableMigrationState atomically revalidates the expected state
+// identity and restart safety before removing it. Callers must hold the
+// migration state lock so another CLI process cannot start a mutation between
+// inspection and removal.
+func RemoveRestartableMigrationState(path string, expected MigrationStateIdentity) error {
+	return removeMigrationState(path, expected, 0)
+}
+
+// RemoveMigrationStateAfterTargetDeletion replaces a state that contains
+// successful target mutations only after the caller has verified through the
+// target API that the recorded app ID no longer exists. The target ID is
+// revalidated under the state lock so stale callers cannot remove a different
+// migration's state.
+func RemoveMigrationStateAfterTargetDeletion(path string, expected MigrationStateIdentity, targetAppID int) error {
+	if targetAppID <= 0 {
+		return invalidStateError("deleted target app ID must be positive")
+	}
+	return removeMigrationState(path, expected, targetAppID)
+}
+
+func removeMigrationState(path string, expected MigrationStateIdentity, deletedTargetAppID int) error {
+	if err := expected.validate(); err != nil {
+		return err
+	}
+	state, info, err := loadMigrationStateFile(path)
+	if err != nil {
+		return err
+	}
+	if state.Identity() != expected {
+		return ErrMigrationStateIdentityMismatch
+	}
+	if deletedTargetAppID == 0 && !state.CanRestartSafely() {
+		return ErrMigrationStateUnsafeRestart
+	}
+	if deletedTargetAppID != 0 && state.App.TargetID != deletedTargetAppID {
+		return ErrMigrationStateIdentityMismatch
+	}
+	if err := verifyMigrationStateTargetUnchanged(path, info); err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove restartable migration state: %w", err)
+	}
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("open migration state directory for sync: %w", err)
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	if syncErr != nil {
+		return fmt.Errorf("sync migration state directory: %w", syncErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close migration state directory: %w", closeErr)
+	}
+	return nil
+}
+
 // SaveMigrationState atomically persists state with mode 0600. The state
 // revision provides optimistic protection against stale in-memory writers.
 func SaveMigrationState(path string, state *MigrationState) error {
@@ -326,6 +418,21 @@ func (s *MigrationState) Identity() MigrationStateIdentity {
 		PlanHash: s.PlanHash,
 		Target:   s.Target,
 	}
+}
+
+func restartableMigrationResource(resource MigrationResourceState) bool {
+	if resource.TargetID != 0 ||
+		(resource.Status != MigrationResourcePending && resource.Status != MigrationResourceFailed) {
+		return false
+	}
+	for _, operation := range resource.Operations {
+		if operation.Status != MigrationOperationFailed ||
+			operation.FailureCode != "api_rejected" ||
+			operation.TargetID != 0 || operation.TaskID != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // Validate verifies both the schema and every persisted field. Arbitrary
@@ -741,8 +848,8 @@ func (i MigrationStateIdentity) validate() error {
 	if !stateDigestPattern.MatchString(i.PlanHash) {
 		return invalidStateError("plan hash must be a lowercase SHA-256 digest")
 	}
-	if i.Target.OrgID <= 0 || i.Target.ProjectID <= 0 || i.Target.ClusterID <= 0 {
-		return invalidStateError("target org, project, and cluster IDs must be positive")
+	if i.Target.OrgID <= 0 || i.Target.ProjectID < 0 || i.Target.ClusterID <= 0 {
+		return invalidStateError("target org and cluster IDs must be positive and project ID cannot be negative")
 	}
 	return nil
 }

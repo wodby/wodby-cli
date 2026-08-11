@@ -34,6 +34,33 @@ func TestCreatedWithinOperationUsesTimestampBoundary(t *testing.T) {
 	}
 }
 
+func TestLoadStateUsesInstanceSourceIdentity(t *testing.T) {
+	export, prepared := refreshDataImportFixture()
+	export.Source = &ExportSource{Kind: "instance", UUID: "instance-1"}
+	configDigest, err := export.MigrationConfigDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := reviewedPlanFixture(t)
+	plan.Source.Kind = "instance"
+	plan.Source.ID = "instance-1"
+	plan.Source.ConfigDigest = configDigest
+	digest, err := plan.contentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.PlanHash = digest
+
+	executor := &MigrationExecutor{statePath: filepath.Join(t.TempDir(), "instance-state.json")}
+	state, initialized, err := executor.loadState(export, plan, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !initialized || state.Source.Kind != "instance" || state.Source.ID != "instance-1" {
+		t.Fatalf("initialized=%v source=%#v", initialized, state.Source)
+	}
+}
+
 func TestAmbiguousMutationIsNotRetriedByDefault(t *testing.T) {
 	state, statePath := newExecutorTestState(t)
 	const operation = "route.0123456789abcdef"
@@ -274,14 +301,67 @@ func TestClientRejectionIsDefinitiveFailure(t *testing.T) {
 		"instance-1",
 		operation,
 		"service setting update",
-		&rest.APIError{StatusCode: 422, Status: "422 Unprocessable Entity"},
+		&rest.APIError{
+			StatusCode: 422,
+			Status:     "422 Unprocessable Entity",
+			Message:    "setting value is invalid",
+		},
 	)
-	if err == nil || !strings.Contains(err.Error(), "HTTP 422") {
+	if err == nil || !strings.Contains(err.Error(), "HTTP 422") ||
+		!strings.Contains(err.Error(), "setting value is invalid") {
 		t.Fatalf("error = %v", err)
 	}
 	op := state.Instances["instance-1"].Operations[operation]
 	if op.Status != MigrationOperationFailed || op.FailureCode != "api_rejected" {
 		t.Fatalf("operation = %+v", op)
+	}
+}
+
+func TestDefinitiveAppCreateRejectionIncludesSafeStructuredDetail(t *testing.T) {
+	state, statePath := newExecutorTestState(t)
+	if err := state.MarkAppOperationIntent("create"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkInstanceOperationIntent("instance-1", "create"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveMigrationState(statePath, state); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := &MigrationExecutor{statePath: statePath}
+	err := executor.recordPairMutationError(
+		state,
+		"instance-1",
+		"create",
+		"app creation",
+		&rest.APIError{
+			StatusCode: http.StatusBadRequest,
+			Status:     "400 Bad Request",
+			Message:    "volume is invalid; details at https://signed.example/backup?token=secret",
+			Body:       "raw response containing another-secret",
+		},
+	)
+	if err == nil {
+		t.Fatal("expected app creation rejection")
+	}
+	if !strings.Contains(err.Error(), "volume is invalid") {
+		t.Fatalf("error omitted structured validation detail: %v", err)
+	}
+	for _, sensitive := range []string{"signed.example", "token=secret", "another-secret"} {
+		if strings.Contains(err.Error(), sensitive) {
+			t.Fatalf("error exposed %q: %v", sensitive, err)
+		}
+	}
+	if !strings.Contains(err.Error(), "[redacted URL]") {
+		t.Fatalf("error did not mark redacted URL: %v", err)
+	}
+	if state.App.Operations["create"].Status != MigrationOperationFailed ||
+		state.Instances["instance-1"].Operations["create"].Status != MigrationOperationFailed {
+		t.Fatalf("app/instance operations were not marked failed: app=%+v instance=%+v",
+			state.App.Operations["create"],
+			state.Instances["instance-1"].Operations["create"],
+		)
 	}
 }
 
@@ -485,6 +565,7 @@ func TestPrepareInstanceDoesNotApplyPayloadFromDisabledSourceService(t *testing.
 }
 
 func TestTechnicalDeploymentSkipsPostDeployOnlyForBuiltService(t *testing.T) {
+	parentServiceID := 20
 	build := TargetAppBuild{
 		ID: 30, AppServiceID: 20, Status: "COMPLETED",
 		AppServiceBuilds: []TargetAppServiceBuild{{
@@ -498,6 +579,7 @@ func TestTechnicalDeploymentSkipsPostDeployOnlyForBuiltService(t *testing.T) {
 		[]TargetAppService{
 			{ID: 10, Name: "database"},
 			{ID: 20, Name: "php"},
+			{ID: 25, Name: "sshd", ParentAppServiceID: &parentServiceID},
 			{ID: 30, Name: "cache"},
 		},
 		&build,
@@ -505,7 +587,7 @@ func TestTechnicalDeploymentSkipsPostDeployOnlyForBuiltService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(input.Services) != 3 {
+	if len(input.Services) != 4 {
 		t.Fatalf("deployment services = %#v", input.Services)
 	}
 	for _, service := range input.Services {
@@ -515,6 +597,11 @@ func TestTechnicalDeploymentSkipsPostDeployOnlyForBuiltService(t *testing.T) {
 				service.SkipPostDeployment == nil || !*service.SkipPostDeployment {
 				t.Fatalf("built service deployment = %#v", service)
 			}
+		case 25:
+			if service.AppServiceBuildID == nil || *service.AppServiceBuildID != 31 ||
+				service.SkipPostDeployment != nil {
+				t.Fatalf("derivative service deployment = %#v", service)
+			}
 		case 10, 30:
 			if service.AppServiceBuildID != nil || service.SkipPostDeployment != nil {
 				t.Fatalf("non-build service received build-only fields: %#v", service)
@@ -522,6 +609,19 @@ func TestTechnicalDeploymentSkipsPostDeployOnlyForBuiltService(t *testing.T) {
 		default:
 			t.Fatalf("unexpected deployment service: %#v", service)
 		}
+	}
+	actual := TargetAppDeployment{}
+	for index, service := range input.Services {
+		actual.AppServiceDeployments = append(actual.AppServiceDeployments, TargetAppServiceDeployment{
+			ID:                 100 + index,
+			AppServiceID:       service.AppServiceID,
+			AppServiceBuildID:  service.AppServiceBuildID,
+			SkipPostDeployment: service.SkipPostDeployment != nil && *service.SkipPostDeployment,
+			Force:              service.Force,
+		})
+	}
+	if !deploymentMatchesInput(actual, input) {
+		t.Fatalf("deployment with inherited derivative build did not match input: %#v", actual)
 	}
 }
 
@@ -808,6 +908,19 @@ func TestMigrationExecutorRunsMinimalCustomerLifecycle(t *testing.T) {
 				writeTargetExecutionJSON(t, w, []TargetApp{})
 			}
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/apps":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if _, found := body["projectId"]; found {
+				t.Fatalf("organization-owned app body contains projectId: %#v", body)
+			}
+			if body["ciIntegrationId"] != float64(0) {
+				t.Fatalf("migration app must default to Wodby CI: %#v", body)
+			}
+			if body["deferInitialDeployment"] != true {
+				t.Fatalf("migration app must defer the automatic initial deployment: %#v", body)
+			}
 			appCreated = true
 			writeTargetExecutionJSON(t, w, app)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-instances":
@@ -880,12 +993,12 @@ func TestMigrationExecutorRunsMinimalCustomerLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := Plan{
-		Schema: "wodby1-migration-plan/v3",
+		Schema: MigrationPlanSchema,
 		Source: PlanSource{
 			Kind: "app", ID: "app-1", Schema: ExportSchemaV2, ConfigDigest: configDigest,
 		},
 		Target: PlanTarget{
-			OrgID: 1, ProjectID: 2, ClusterID: 3,
+			OrgID: 1, ClusterID: 3,
 			OrgOwnerOrAdminVerified: true, DiscoveryVerified: true,
 		},
 		Apps: []AppPlan{{
@@ -921,33 +1034,161 @@ func TestMigrationExecutorRunsMinimalCustomerLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	progress := []string{}
 	executor, err := NewMigrationExecutor(client, MigrationExecutorOptions{
 		StatePath:        filepath.Join(t.TempDir(), "state.json"),
 		PollInterval:     time.Millisecond,
 		OperationTimeout: time.Second,
+		Progress: func(message string) {
+			progress = append(progress, message)
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := executor.Prepare(ctx, export, plan, prepared); err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
-	if _, err := executor.SyncData(ctx, export, plan, prepared); err != nil {
-		t.Fatalf("sync data: %v", err)
+	if _, err := executor.Apply(ctx, export, plan, prepared); err != nil {
+		t.Fatalf("apply: %v", err)
 	}
 	cluster := TargetCluster{
 		ID: 3, OrgID: 1, Status: "OK", IPs: []string{"203.0.113.10"},
 	}
-	if _, err := executor.Finalize(ctx, export, plan, prepared, cluster); err != nil {
-		t.Fatalf("finalize: %v", err)
-	}
-	result, err := executor.Verify(ctx, export, plan, prepared)
+	result, err := executor.Verify(ctx, export, plan, prepared, cluster)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	if result.State.Status != MigrationStatusComplete || deploymentID != 32 {
+	if result.State.Status != MigrationStatusComplete || deploymentID != 31 {
 		t.Fatalf("result status=%q deployments=%d", result.State.Status, deploymentID-30)
+	}
+	output := strings.Join(progress, "\n")
+	for _, expected := range []string{
+		`Creating target app "demo" with initial instance "prod"`,
+		`Target app "demo" created (ID 10).`,
+		`Initial target instance "prod" created (ID 20).`,
+		`Service "nginx" (ID 21) is already enabled.`,
+		`Launching target deployment for app instance ID 20...`,
+		`Target deployment ID 31 completed.`,
+		`skipping the second deployment`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("progress output does not contain %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestApplyChecksDataReadinessBeforeTargetRequests(t *testing.T) {
+	now := time.Unix(10_000, 0)
+	export, prepared := refreshDataImportFixture()
+	export.Source = &ExportSource{Kind: "instance", UUID: "instance-1"}
+	export.Apps[0].Instances[0].Properties["maintenance_mode"] = false
+	configDigest, err := export.MigrationConfigDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := Plan{
+		Schema: MigrationPlanSchema,
+		Source: PlanSource{
+			Kind: "instance", ID: "instance-1", Schema: ExportSchemaV2,
+			ConfigDigest: configDigest,
+		},
+		Target: PlanTarget{
+			OrgID: 1, ClusterID: 3,
+			OrgOwnerOrAdminVerified: true, DiscoveryVerified: true,
+		},
+		Apps: []AppPlan{{
+			SourceUUID: "app-1", Name: "demo",
+			Instances: []InstancePlan{{
+				SourceUUID: "instance-1", Name: "prod",
+			}},
+		}},
+		Status: "target_scope_validated",
+	}
+	plan.PlanHash, err = plan.contentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	targetRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetRequests++
+		t.Fatalf("apply made target request before data preflight: %s %s", r.Method, r.URL.String())
+	}))
+	defer server.Close()
+	client, err := NewTargetClient(types.APIConfig{Endpoint: server.URL + "/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := NewMigrationExecutor(client, MigrationExecutorOptions{
+		StatePath:        filepath.Join(t.TempDir(), "state.json"),
+		PollInterval:     time.Millisecond,
+		OperationTimeout: time.Second,
+		MaxBackupAge:     time.Hour,
+		Now:              func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = executor.Apply(context.Background(), export, plan, prepared)
+	if err == nil || !strings.Contains(err.Error(), "apply preflight failed before target changes") ||
+		!strings.Contains(err.Error(), "not in maintenance mode") {
+		t.Fatalf("apply error = %v", err)
+	}
+	if targetRequests != 0 {
+		t.Fatalf("target requests = %d, want 0", targetRequests)
+	}
+}
+
+func TestWaitAppInstanceOKWaitsForImportFinalization(t *testing.T) {
+	statuses := []string{"IMPORTING", "DEPLOYING", "OK"}
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/app-instances/20" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		status := statuses[requests]
+		requests++
+		writeTargetExecutionJSON(t, w, TargetAppInstance{
+			ID: 20, Name: "dev", Status: status, AppID: 10,
+			ClusterID: 3, EnvID: 4, StackID: 5, StackRevID: 6,
+		})
+	}))
+	defer server.Close()
+
+	progress := []string{}
+	executor := &MigrationExecutor{
+		target:           mustTargetExecutionClient(t, server.URL),
+		pollInterval:     time.Millisecond,
+		operationTimeout: time.Second,
+		progress: func(message string) {
+			progress = append(progress, message)
+		},
+	}
+	if err := executor.waitAppInstanceOK(context.Background(), 20, "start the files data import"); err != nil {
+		t.Fatal(err)
+	}
+	if requests != len(statuses) {
+		t.Fatalf("status requests = %d, want %d", requests, len(statuses))
+	}
+	output := strings.Join(progress, "\n")
+	for _, expected := range []string{
+		`is "IMPORTING"; waiting until it is OK to start the files data import`,
+		`is "DEPLOYING"; waiting until it is OK to start the files data import`,
+		`is OK; continuing`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("progress output does not contain %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestPlanHasCustomRoutes(t *testing.T) {
+	technical := InstancePlan{Routes: []RoutePlan{{Action: "skip_technical"}}}
+	if planHasCustomRoutes(&technical) {
+		t.Fatal("technical routes should not trigger a second deployment")
+	}
+	custom := InstancePlan{Routes: []RoutePlan{{Action: "create_backend"}}}
+	if !planHasCustomRoutes(&custom) {
+		t.Fatal("custom routes should trigger a second deployment")
 	}
 }
 

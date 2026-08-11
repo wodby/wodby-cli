@@ -40,18 +40,16 @@ func TestTargetClientResolvesAndInspectsStackRevision(t *testing.T) {
 			writeTargetExecutionJSON(t, w, TargetServiceRevision{
 				ID: 101, ServiceID: 201, Name: "drupal11-php",
 				Manifest: &TargetServiceManifest{
-					Name:  "drupal11-php",
-					Build: &TargetServiceBuildCapability{Connect: true},
+					Raw:   `{"name":"drupal11-php","build":{"connect":true}}`,
+					Build: &TargetServiceBuildCapability{},
 				},
 			})
 		case "/v1/service-revisions/102":
 			writeTargetExecutionJSON(t, w, TargetServiceRevision{
 				ID: 102, ServiceID: 202, Name: "mariadb",
 				Manifest: &TargetServiceManifest{
-					Name: "mariadb",
-					Imports: []TargetServiceImportCapability{{
-						Name: "database", Extensions: []string{"gz", "tar.gz"},
-					}},
+					Raw:     `{"name":"mariadb","imports":[{"name":"database","volume":"data","extensions":["gz","tar.gz"]}]}`,
+					Imports: []TargetServiceImportCapability{{}},
 				},
 			})
 		default:
@@ -76,6 +74,8 @@ func TestTargetClientResolvesAndInspectsStackRevision(t *testing.T) {
 	if len(inspections) != 2 || inspections[0].StackService.Name != "mariadb" ||
 		inspections[0].ServiceRevision.Manifest == nil ||
 		len(inspections[0].ServiceRevision.Manifest.Imports) != 1 ||
+		inspections[0].ServiceRevision.Manifest.Imports[0].Name != "database" ||
+		inspections[0].ServiceRevision.Manifest.Imports[0].Volume != "data" ||
 		inspections[1].StackService.Name != "php" ||
 		inspections[1].ServiceRevision.Manifest == nil ||
 		inspections[1].ServiceRevision.Manifest.Build == nil ||
@@ -94,161 +94,116 @@ func TestTargetClientResolvesAndInspectsStackRevision(t *testing.T) {
 	}
 }
 
-func TestResolveMigrationStackRevisionUsesExactOriginName(t *testing.T) {
-	sourceOrigin := "drupal11"
-	otherOrigin := "drupal10"
+func TestTargetClientRejectsInvalidRawServiceManifest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/stacks" {
+		if r.URL.Path != "/v1/service-revisions/101" {
 			http.NotFound(w, r)
 			return
 		}
-		if got := r.URL.Query().Get("search"); got != sourceOrigin {
-			t.Fatalf("stack search = %q, want %q", got, sourceOrigin)
-		}
-		writeTargetExecutionJSON(t, w, TargetStacksResponse{
-			Items: []TargetStack{
-				{
-					ID: 7, Name: "acme/drupal11", Status: "OK", RevID: 71,
-					OriginStackRevName: &sourceOrigin, OrgID: 8,
-				},
-				{
-					ID: 8, Name: "acme/drupal11-legacy", Status: "OK", RevID: 81,
-					OriginStackRevName: &otherOrigin, OrgID: 8,
-				},
-			},
-			TotalCount: 2,
+		writeTargetExecutionJSON(t, w, TargetServiceRevision{
+			ID: 101, ServiceID: 201,
+			Manifest: &TargetServiceManifest{Raw: `{"imports":`},
 		})
 	}))
 	defer server.Close()
 
 	client := mustTargetExecutionClient(t, server.URL)
-	stack, err := client.resolveMigrationStackRevision(
-		context.Background(),
-		8,
-		9,
-		StackPlan{Name: sourceOrigin, Target: sourceOrigin},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stack.ID != 7 || stack.Name != "acme/drupal11" {
-		t.Fatalf("resolved stack = %#v", stack)
+	_, err := client.GetServiceRevision(context.Background(), 101)
+	if err == nil || !strings.Contains(err.Error(), "returned an invalid raw manifest") {
+		t.Fatalf("err = %v", err)
 	}
 }
 
-func TestResolveMigrationStackRevisionPreservesExplicitName(t *testing.T) {
-	sourceOrigin := "drupal11"
+func TestTargetClientChecksRemoteGitRepoFileAtExactRef(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/stacks" {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/integrations/44/options/remote-git-repo-file" {
 			http.NotFound(w, r)
 			return
 		}
-		if got := r.URL.Query().Get("search"); got != "acme/selected" {
-			t.Fatalf("stack search = %q, want exact explicit name", got)
+		query := r.URL.Query()
+		if query.Get("remoteGitRepoId") != "acme/example" ||
+			query.Get("path") != ".wodby/pipeline.yml" || query.Get("ref") != "release/11.x" {
+			t.Fatalf("query = %q", r.URL.RawQuery)
 		}
-		writeTargetExecutionJSON(t, w, TargetStacksResponse{
-			Items: []TargetStack{
-				{
-					ID: 17, Name: "acme/selected", Status: "OK", RevID: 171,
-					OriginStackRevName: &sourceOrigin, OrgID: 8,
-				},
-				{
-					ID: 18, Name: "acme/drupal11", Status: "OK", RevID: 181,
-					OriginStackRevName: &sourceOrigin, OrgID: 8,
-				},
-			},
-			TotalCount: 2,
-		})
+		writeTargetExecutionJSON(t, w, map[string]bool{"exists": true})
 	}))
 	defer server.Close()
 
 	client := mustTargetExecutionClient(t, server.URL)
-	stack, err := client.resolveMigrationStackRevision(
+	exists, err := client.RemoteGitRepoFileExists(
 		context.Background(),
-		8,
-		9,
-		StackPlan{
-			Name: sourceOrigin, Target: "acme/selected", ExplicitMapping: true,
-		},
+		44,
+		"acme/example",
+		".wodby/pipeline.yml",
+		"release/11.x",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stack.ID != 17 || stack.Name != "acme/selected" {
-		t.Fatalf("resolved stack = %#v", stack)
+	if !exists {
+		t.Fatal("expected remote Git repository file to exist")
 	}
 }
 
-func TestResolveMigrationStackRevisionRequiresMappingForUnresolvedOrigin(t *testing.T) {
-	sourceOrigin := "drupal11"
-	otherOrigin := "drupal10"
+func TestTargetClientRejectsIncompleteRemoteGitRepoFileLookup(t *testing.T) {
+	client := &TargetClient{}
 	tests := []struct {
-		name      string
-		items     []TargetStack
-		ambiguous bool
-		want      string
+		name          string
+		integrationID int
+		repositoryID  string
+		filePath      string
+		ref           string
+		want          string
 	}{
-		{
-			name: "not found",
-			items: []TargetStack{{
-				ID: 7, Name: "acme/drupal11-old", Status: "OK", RevID: 71,
-				OriginStackRevName: &otherOrigin, OrgID: 8,
-			}},
-			want: "--target-stack-map",
-		},
-		{
-			name: "ambiguous",
-			items: []TargetStack{
-				{
-					ID: 7, Name: "acme/drupal11", Status: "OK", RevID: 71,
-					OriginStackRevName: &sourceOrigin, OrgID: 8,
-				},
-				{
-					ID: 8, Name: "acme/drupal11-1", Status: "OK", RevID: 81,
-					OriginStackRevName: &sourceOrigin, OrgID: 8,
-				},
-			},
-			ambiguous: true,
-			want:      "--target-stack-map",
-		},
-		{
-			name: "wrong organization",
-			items: []TargetStack{{
-				ID: 7, Name: "acme/drupal11", Status: "OK", RevID: 71,
-				OriginStackRevName: &sourceOrigin, OrgID: 99,
-			}},
-			want: "expected organization ID 8",
-		},
+		{name: "integration", repositoryID: "repo", filePath: "pipeline.yml", ref: "main", want: "integration ID"},
+		{name: "repository", integrationID: 1, filePath: "pipeline.yml", ref: "main", want: "repository ID"},
+		{name: "path", integrationID: 1, repositoryID: "repo", ref: "main", want: "file path"},
+		{name: "ref", integrationID: 1, repositoryID: "repo", filePath: "pipeline.yml", want: "repository ref"},
 	}
-
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != "/v1/stacks" {
-					http.NotFound(w, r)
-					return
-				}
-				writeTargetExecutionJSON(t, w, TargetStacksResponse{
-					Items: test.items, TotalCount: len(test.items),
-				})
-			}))
-			defer server.Close()
-
-			client := mustTargetExecutionClient(t, server.URL)
-			_, err := client.resolveMigrationStackRevision(
+			_, err := client.RemoteGitRepoFileExists(
 				context.Background(),
-				8,
-				9,
-				StackPlan{Name: sourceOrigin, Target: sourceOrigin},
+				test.integrationID,
+				test.repositoryID,
+				test.filePath,
+				test.ref,
 			)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("error = %v, want text %q", err, test.want)
-			}
-			var ambiguous *TargetAmbiguousMatchError
-			if got := errors.As(err, &ambiguous); got != test.ambiguous {
-				t.Fatalf("ambiguous error = %t, want %t: %v", got, test.ambiguous, err)
+				t.Fatalf("err = %v", err)
 			}
 		})
+	}
+}
+
+func TestTargetClientResolvesOrganizationOwnedStackWithoutProjectFilter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/stacks" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.URL.Query().Get("orgId"); got != "8" {
+			t.Fatalf("orgId = %q", got)
+		}
+		if _, found := r.URL.Query()["projectIds"]; found {
+			t.Fatalf("organization-owned stack query contains projectIds: %q", r.URL.RawQuery)
+		}
+		writeTargetExecutionJSON(t, w, TargetStacksResponse{
+			Items: []TargetStack{{
+				ID: 7, Name: "acme/drupal11", Status: "OK", RevID: 71, OrgID: 8,
+			}},
+			TotalCount: 1,
+		})
+	}))
+	defer server.Close()
+
+	client := mustTargetExecutionClient(t, server.URL)
+	stack, err := client.ResolveStackRevisionByName(context.Background(), 8, 0, "acme/drupal11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stack.ID != 7 {
+		t.Fatalf("stack = %#v", stack)
 	}
 }
 
@@ -279,6 +234,8 @@ func TestTargetClientCreatesAppAndInstanceWithServerDefaultsOmitted(t *testing.T
 			assertTargetExecutionNumber(t, body, "clusterId", 10)
 			assertTargetExecutionNumber(t, body, "envId", 11)
 			assertTargetExecutionNumber(t, body, "stackRevId", 12)
+			assertTargetExecutionNumber(t, body, "ciIntegrationId", 0)
+			assertTargetExecutionBool(t, body, "deferInitialDeployment", true)
 			writeTargetExecutionJSON(t, w, TargetApp{ID: 20, Name: "example", OrgID: 8})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/apps":
 			if r.URL.Query().Get("orgId") != "8" {
@@ -289,6 +246,8 @@ func TestTargetClientCreatesAppAndInstanceWithServerDefaultsOmitted(t *testing.T
 			body := decodeTargetExecutionObject(t, r)
 			assertTargetExecutionAbsent(t, body, "services", "domain")
 			assertTargetExecutionNumber(t, body, "appId", 20)
+			assertTargetExecutionNumber(t, body, "ciIntegrationId", 0)
+			assertTargetExecutionBool(t, body, "deferInitialDeployment", true)
 			writeTargetExecutionJSON(t, w, TargetAppInstance{
 				ID: 21, Name: "stage", AppID: 20, ClusterID: 10, EnvID: 11,
 				StackID: 5, StackRevID: 12,
@@ -308,9 +267,12 @@ func TestTargetClientCreatesAppAndInstanceWithServerDefaultsOmitted(t *testing.T
 	defer server.Close()
 
 	client := mustTargetExecutionClient(t, server.URL)
+	projectID := 9
+	wodbyCI := 0
 	app, err := client.CreateApp(context.Background(), TargetCreateAppInput{
-		OrgID: 8, Name: "example", InstanceName: "prod", ProjectID: 9,
-		StackRevID: 12, ClusterID: 10, EnvID: 11,
+		OrgID: 8, Name: "example", InstanceName: "prod", ProjectID: &projectID,
+		StackRevID: 12, ClusterID: 10, EnvID: 11, CIIntegrationID: &wodbyCI,
+		DeferInitialDeployment: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -321,6 +283,7 @@ func TestTargetClientCreatesAppAndInstanceWithServerDefaultsOmitted(t *testing.T
 
 	instance, err := client.CreateAppInstance(context.Background(), TargetCreateAppInstanceInput{
 		AppID: 20, InstanceName: "stage", StackRevID: 12, ClusterID: 10, EnvID: 11,
+		CIIntegrationID: &wodbyCI, DeferInitialDeployment: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -338,6 +301,32 @@ func TestTargetClientCreatesAppAndInstanceWithServerDefaultsOmitted(t *testing.T
 	}
 	if requests != 4 {
 		t.Fatalf("requests = %d, want 4", requests)
+	}
+}
+
+func TestTargetClientCreatesOrganizationOwnedAppWithoutProjectID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/apps" {
+			http.NotFound(w, r)
+			return
+		}
+		body := decodeTargetExecutionObject(t, r)
+		assertTargetExecutionAbsent(t, body, "projectId")
+		assertTargetExecutionNumber(t, body, "orgId", 8)
+		writeTargetExecutionJSON(t, w, TargetApp{ID: 20, Name: "example", OrgID: 8})
+	}))
+	defer server.Close()
+
+	client := mustTargetExecutionClient(t, server.URL)
+	app, err := client.CreateApp(context.Background(), TargetCreateAppInput{
+		OrgID: 8, Name: "example", InstanceName: "prod",
+		StackRevID: 12, ClusterID: 10, EnvID: 11,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app.ID != 20 {
+		t.Fatalf("app = %#v", app)
 	}
 }
 
@@ -669,6 +658,32 @@ func TestTargetClientListsInstanceConfigurationResources(t *testing.T) {
 	}
 }
 
+func TestTargetClientFindAppByIDDistinguishesMissingApp(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apps/17":
+			writeTargetExecutionJSON(t, w, TargetApp{ID: 17, Name: "demo", OrgID: 11})
+		case "/v1/apps/18":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			writeTargetExecutionJSON(t, w, map[string]string{"message": "app not found"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := mustTargetExecutionClient(t, server.URL)
+	app, found, err := client.FindAppByID(context.Background(), 17)
+	if err != nil || !found || app.ID != 17 {
+		t.Fatalf("existing app = %#v, found = %v, err = %v", app, found, err)
+	}
+	app, found, err = client.FindAppByID(context.Background(), 18)
+	if err != nil || found || app.ID != 0 {
+		t.Fatalf("missing app = %#v, found = %v, err = %v", app, found, err)
+	}
+}
+
 func TestTargetClientListsImportWithExactRelationship(t *testing.T) {
 	appInstanceID := 20
 	appServiceID := 30
@@ -929,6 +944,13 @@ func assertTargetExecutionNumber(t *testing.T, object map[string]any, field stri
 	t.Helper()
 	if got, ok := object[field].(float64); !ok || int(got) != want {
 		t.Fatalf("%s = %#v, want %d", field, object[field], want)
+	}
+}
+
+func assertTargetExecutionBool(t *testing.T, object map[string]any, field string, want bool) {
+	t.Helper()
+	if got, ok := object[field].(bool); !ok || got != want {
+		t.Fatalf("%s = %#v, want %t", field, object[field], want)
 	}
 }
 

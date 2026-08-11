@@ -169,6 +169,7 @@ func (e Export) BackupDigest() (string, error) {
 			backups := append([]Backup(nil), instance.Backups...)
 			for i := range backups {
 				backups[i].URL = ""
+				backups[i].MirroredURL = ""
 			}
 			sort.SliceStable(backups, func(i, j int) bool {
 				return canonicalJSON(backups[i]) < canonicalJSON(backups[j])
@@ -300,6 +301,67 @@ type Service struct {
 	SecretsRedacted []string               `json:"secrets_redacted,omitempty"`
 }
 
+func (s *Service) UnmarshalJSON(data []byte) error {
+	type serviceAlias Service
+	alias := serviceAlias{}
+	wire := struct {
+		*serviceAlias
+		Configuration json.RawMessage `json:"configuration"`
+	}{
+		serviceAlias: &alias,
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&wire); err != nil {
+		return err
+	}
+	if err := rejectTrailingJSON(decoder); err != nil {
+		return err
+	}
+
+	configuration, err := decodeServiceConfiguration(wire.Configuration)
+	if err != nil {
+		return err
+	}
+
+	*s = Service(alias)
+	s.Configuration = configuration
+	return nil
+}
+
+func decodeServiceConfiguration(data json.RawMessage) (map[string]interface{}, error) {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		return nil, nil
+	}
+
+	if data[0] == '[' {
+		var legacy []json.RawMessage
+		if err := json.Unmarshal(data, &legacy); err != nil {
+			return nil, err
+		}
+		if len(legacy) != 0 {
+			return nil, fmt.Errorf("service configuration must be a JSON object; the legacy array form is allowed only when empty")
+		}
+		return nil, nil
+	}
+	if data[0] != '{' {
+		return nil, fmt.Errorf("service configuration must be a JSON object")
+	}
+
+	var configuration map[string]interface{}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&configuration); err != nil {
+		return nil, err
+	}
+	if err := rejectTrailingJSON(decoder); err != nil {
+		return nil, err
+	}
+	return configuration, nil
+}
+
 type EnvVar struct {
 	Name           string   `json:"name"`
 	Value          string   `json:"value,omitempty"`
@@ -325,6 +387,7 @@ type Backup struct {
 	UUID          string `json:"uuid,omitempty"`
 	Component     string `json:"component,omitempty"`
 	URL           string `json:"url,omitempty"`
+	MirroredURL   string `json:"mirrored_url,omitempty"`
 	Status        string `json:"status,omitempty"`
 	Size          int64  `json:"size,omitempty"`
 	Created       int64  `json:"created,omitempty"`
@@ -372,7 +435,7 @@ func (e Export) Validate() error {
 		if e.Source == nil {
 			return fmt.Errorf("Wodby 1 migration/v2 export must identify its source")
 		}
-		if e.Source.Kind != "app" && e.Source.Kind != "server" {
+		if e.Source.Kind != "app" && e.Source.Kind != "instance" && e.Source.Kind != "server" {
 			return fmt.Errorf("Wodby 1 migration/v2 export has unsupported source kind %q", e.Source.Kind)
 		}
 		if e.Source.UUID == "" {
@@ -384,6 +447,12 @@ func (e Export) Validate() error {
 			}
 			if len(e.Apps[0].Instances) == 0 {
 				return fmt.Errorf("Wodby 1 migration/v2 app export must contain at least one source instance")
+			}
+		}
+		if e.Source.Kind == "instance" {
+			if len(e.Apps) != 1 || len(e.Apps[0].Instances) != 1 ||
+				e.Apps[0].Instances[0].UUID != e.Source.UUID {
+				return fmt.Errorf("Wodby 1 migration/v2 instance export must contain exactly its requested source instance")
 			}
 		}
 		if err := validateV2Identities(e.Apps); err != nil {
@@ -540,12 +609,14 @@ func scrubBackupURLs(export *Export) {
 		for instanceIndex := range export.Apps[appIndex].Instances {
 			for backupIndex := range export.Apps[appIndex].Instances[instanceIndex].Backups {
 				export.Apps[appIndex].Instances[instanceIndex].Backups[backupIndex].URL = ""
+				export.Apps[appIndex].Instances[instanceIndex].Backups[backupIndex].MirroredURL = ""
 			}
 		}
 	}
 	for instanceIndex := range export.Instances {
 		for backupIndex := range export.Instances[instanceIndex].Backups {
 			export.Instances[instanceIndex].Backups[backupIndex].URL = ""
+			export.Instances[instanceIndex].Backups[backupIndex].MirroredURL = ""
 		}
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -306,6 +308,145 @@ func TestTargetClientDiscoverTargetByIDs(t *testing.T) {
 	}
 }
 
+func TestTargetClientDiscoversOrganizationOwnedTargetWithoutProject(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.RequestURI())
+		var response any
+		switch r.URL.RequestURI() {
+		case "/v1/orgs":
+			response = []TargetOrg{{ID: 7, Name: "acme"}}
+		case "/v1/user":
+			response = TargetCurrentUser{ID: 1}
+		case "/v1/org-memberships?orgId=7":
+			response = targetAdminMemberships(1, 7)
+		case "/v1/clusters?orgId=7":
+			response = []TargetCluster{{
+				ID: 13, Name: "production", OrgID: 7, OwnershipScope: TargetOwnershipScopeOrg,
+			}}
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	client := mustTargetClient(t, server.URL)
+	result, err := client.DiscoverTargetScope(context.Background(), TargetScopeSelectors{
+		Cluster: "production",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Org.ID != 7 || result.Project.ID != 0 || result.Cluster.ID != 13 {
+		t.Fatalf("result = %#v", result)
+	}
+	wantRequests := []string{
+		"GET /v1/orgs",
+		"GET /v1/user",
+		"GET /v1/org-memberships?orgId=7",
+		"GET /v1/clusters?orgId=7",
+	}
+	if !reflect.DeepEqual(requests, wantRequests) {
+		t.Fatalf("requests:\n got: %#v\nwant: %#v", requests, wantRequests)
+	}
+}
+
+func TestTargetClientDefaultsToProjectOwnedClusterOwner(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.RequestURI())
+		var response any
+		switch r.URL.RequestURI() {
+		case "/v1/orgs":
+			response = []TargetOrg{{ID: 7, Name: "acme"}}
+		case "/v1/user":
+			response = TargetCurrentUser{ID: 1}
+		case "/v1/org-memberships?orgId=7":
+			response = targetAdminMemberships(1, 7)
+		case "/v1/clusters/13":
+			response = TargetCluster{
+				ID: 13, Name: "production", OrgID: 7,
+				OwnershipScope: TargetOwnershipScopeProject, OwnerProjectID: 11,
+			}
+		case "/v1/projects/11":
+			response = TargetProject{ID: 11, Name: "platform", Title: "Platform", OrgID: 7}
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	client := mustTargetClient(t, server.URL)
+	result, err := client.DiscoverTargetScope(context.Background(), TargetScopeSelectors{
+		Cluster: "13",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Project.ID != 11 || result.Project.Name != "platform" || result.Cluster.ID != 13 {
+		t.Fatalf("result = %#v", result)
+	}
+	wantRequests := []string{
+		"GET /v1/orgs",
+		"GET /v1/user",
+		"GET /v1/org-memberships?orgId=7",
+		"GET /v1/clusters/13",
+		"GET /v1/projects/11",
+	}
+	if !reflect.DeepEqual(requests, wantRequests) {
+		t.Fatalf("requests:\n got: %#v\nwant: %#v", requests, wantRequests)
+	}
+}
+
+func TestTargetClientRejectsAPIKeyThatExposesMultipleOrganizations(t *testing.T) {
+	server := newTargetDiscoveryServer(t, func(r *http.Request) any {
+		if r.URL.RequestURI() == "/v1/orgs" {
+			return []TargetOrg{{ID: 7, Name: "acme"}, {ID: 8, Name: "other"}}
+		}
+		return nil
+	})
+	defer server.Close()
+
+	client := mustTargetClient(t, server.URL)
+	_, err := client.DiscoverTargetScope(context.Background(), TargetScopeSelectors{Cluster: "13"})
+	if err == nil || !strings.Contains(err.Error(), "expected exactly one organization-scoped key") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestTargetClientRejectsProjectOwnedClusterWithoutOwnerProject(t *testing.T) {
+	server := newTargetDiscoveryServer(t, func(r *http.Request) any {
+		switch r.URL.RequestURI() {
+		case "/v1/orgs/7":
+			return TargetOrg{ID: 7, Name: "acme"}
+		case "/v1/user":
+			return TargetCurrentUser{ID: 1}
+		case "/v1/org-memberships?orgId=7":
+			return targetAdminMemberships(1, 7)
+		case "/v1/clusters/13":
+			return TargetCluster{
+				ID: 13, Name: "production", OrgID: 7,
+				OwnershipScope: TargetOwnershipScopeProject,
+			}
+		default:
+			return nil
+		}
+	})
+	defer server.Close()
+
+	client := mustTargetClient(t, server.URL)
+	_, err := client.DiscoverTargetScope(context.Background(), TargetScopeSelectors{
+		Org: "7", Cluster: "13",
+	})
+	if err == nil || !strings.Contains(err.Error(), "project-owned but did not return an owner project ID") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestTargetDiscoveryRelationshipBlockers(t *testing.T) {
 	t.Run("project organization", func(t *testing.T) {
 		server := newTargetDiscoveryServer(t, func(r *http.Request) any {
@@ -408,7 +549,13 @@ func TestTargetDiscoveryStableSelectorBlockers(t *testing.T) {
 	t.Run("required", func(t *testing.T) {
 		client := &TargetClient{}
 		_, err := client.DiscoverTargetScope(context.Background(), TargetScopeSelectors{})
-		assertTargetBlocker(t, err, TargetBlockerSelectorRequired, "target organization selector is required")
+		assertTargetBlocker(t, err, TargetBlockerSelectorRequired, "target cluster selector is required")
+	})
+
+	t.Run("cluster required without project", func(t *testing.T) {
+		client := &TargetClient{}
+		_, err := client.DiscoverTargetScope(context.Background(), TargetScopeSelectors{Org: "7"})
+		assertTargetBlocker(t, err, TargetBlockerSelectorRequired, "target cluster selector is required")
 	})
 
 	t.Run("invalid numeric", func(t *testing.T) {
@@ -447,6 +594,21 @@ func TestTargetDiscoveryStableSelectorBlockers(t *testing.T) {
 		assertTargetBlocker(t, err, TargetBlockerAmbiguous,
 			`target environment selector "prod" matched multiple resources`)
 	})
+}
+
+func TestTargetSelectorIDSupportsLargeWodbyIDs(t *testing.T) {
+	if strconv.IntSize < 64 {
+		t.Skip("large Wodby IDs require a 64-bit CLI build")
+	}
+
+	const selector = "213518072237423"
+	id, isID, err := targetSelectorID("cluster", selector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isID || strconv.Itoa(id) != selector {
+		t.Fatalf("targetSelectorID() = %d, %v", id, isID)
+	}
 }
 
 func newTargetDiscoveryServer(t *testing.T, response func(*http.Request) any) *httptest.Server {

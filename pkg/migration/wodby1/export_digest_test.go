@@ -32,7 +32,8 @@ func TestExportDigestsSeparateConfigurationAndBackupSnapshots(t *testing.T) {
 				Backups: []Backup{{
 					UUID: "file-1", BackupUUID: "backup-1", Component: "db",
 					Status: "ok", Size: 42, BackupCreated: 30,
-					URL: "https://backups.example.test/file?signature=one",
+					URL:         "https://backups.example.test/file?signature=one",
+					MirroredURL: "https://mirror.example.test/file?signature=one",
 				}},
 			}},
 		}},
@@ -41,6 +42,7 @@ func TestExportDigestsSeparateConfigurationAndBackupSnapshots(t *testing.T) {
 	rotatedURL := cloneExportForTest(t, base)
 	rotatedURL.GeneratedAt = 200
 	rotatedURL.Apps[0].Instances[0].Backups[0].URL = "https://backups.example.test/file?signature=two"
+	rotatedURL.Apps[0].Instances[0].Backups[0].MirroredURL = "https://mirror.example.test/file?signature=two"
 	assertSameExportDigest(t, base, rotatedURL)
 	assertSameConfigDigest(t, base, rotatedURL)
 	assertSameBackupDigest(t, base, rotatedURL)

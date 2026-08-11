@@ -16,6 +16,11 @@ type PreparedDataImport struct {
 	Destination        PreparedImport
 }
 
+type dataSyncOptions struct {
+	requireFresh    bool
+	allowLiveSource bool
+}
+
 // PrepareDataSync enforces the customer cutover contract before returning any
 // backup transfer URLs to the mutation loop: Wodby 1 must be write-frozen, every
 // approved component must have one fresh successful backup, and refreshed
@@ -26,7 +31,7 @@ func PrepareDataSync(
 	now time.Time,
 	maxBackupAge time.Duration,
 ) ([]PreparedDataImport, error) {
-	return prepareDataSync(export, prepared, now, maxBackupAge, true)
+	return prepareDataSync(export, prepared, now, maxBackupAge, dataSyncOptions{requireFresh: true})
 }
 
 func prepareDataSync(
@@ -34,12 +39,12 @@ func prepareDataSync(
 	prepared PreparedMigration,
 	now time.Time,
 	maxBackupAge time.Duration,
-	requireFresh bool,
+	opts dataSyncOptions,
 ) ([]PreparedDataImport, error) {
 	if maxBackupAge <= 0 {
 		return nil, errors.New("maximum backup age must be positive")
 	}
-	if err := export.ValidateSource("app", prepared.App.App.UUID); err != nil {
+	if err := validatePreparedMigrationSource(export, prepared); err != nil {
 		return nil, err
 	}
 	currentInstances := map[string]Instance{}
@@ -55,7 +60,7 @@ func prepareDataSync(
 		if !found {
 			return nil, errors.Errorf("source instance %q disappeared before data synchronization", target.Source.UUID)
 		}
-		if !sourceMaintenanceMode(current.Properties) {
+		if !opts.allowLiveSource && !sourceMaintenanceMode(current.Properties) {
 			return nil, errors.Errorf(
 				"source instance %q is not in maintenance mode; freeze writes before sync-data",
 				current.Name,
@@ -95,11 +100,17 @@ func prepareDataSync(
 				)
 			}
 			backup := backups[0]
-			if err := validateBackup(backup, now, maxBackupAge, requireFresh); err != nil {
+			// --force explicitly selects the existing snapshot, so its age is
+			// informational rather than a freshness gate. All structural and
+			// transport safety checks still run in validateBackup.
+			requireRecent := opts.requireFresh && !opts.allowLiveSource
+			if err := validateBackup(backup, now, maxBackupAge, requireRecent); err != nil {
 				return nil, errors.Wrapf(err, "source instance %q component %q", current.Name, component)
 			}
-			if err := validateBackupAfterFreeze(backup, current.Updated); err != nil {
-				return nil, errors.Wrapf(err, "source instance %q component %q", current.Name, component)
+			if !opts.allowLiveSource {
+				if err := validateBackupAfterFreeze(backup, current.Updated); err != nil {
+					return nil, errors.Wrapf(err, "source instance %q component %q", current.Name, component)
+				}
 			}
 			destination.Source = backup
 			result = append(result, PreparedDataImport{
@@ -126,6 +137,33 @@ func prepareDataSync(
 	return result, nil
 }
 
+func validatePreparedMigrationSource(export Export, prepared PreparedMigration) error {
+	if len(prepared.Instances) == 0 {
+		return errors.New("prepared migration does not contain a source instance")
+	}
+	if export.Source == nil {
+		return errors.New("data synchronization requires a Wodby 1 migration/v2 source identity")
+	}
+	switch export.Source.Kind {
+	case "app":
+		return export.ValidateSource("app", prepared.App.App.UUID)
+	case "instance":
+		if len(prepared.Instances) != 1 {
+			return errors.New("instance migration must contain exactly one prepared source instance")
+		}
+		if err := export.ValidateSource("instance", prepared.Instances[0].Source.UUID); err != nil {
+			return err
+		}
+		appExports := export.AppExports()
+		if len(appExports) != 1 || appExports[0].App.UUID != prepared.App.App.UUID {
+			return errors.New("source instance export parent app does not match the prepared migration")
+		}
+		return nil
+	default:
+		return errors.Errorf("unsupported data synchronization source kind %q", export.Source.Kind)
+	}
+}
+
 func validateBackupAfterFreeze(backup Backup, instanceUpdated int64) error {
 	if instanceUpdated <= 0 {
 		return errors.New("source instance update time is missing; cannot prove the backup was created after write freeze")
@@ -135,7 +173,7 @@ func validateBackupAfterFreeze(backup Backup, instanceUpdated int64) error {
 		created = backup.Created
 	}
 	if created < instanceUpdated {
-		return errors.New("backup predates the latest source instance change; create a new backup after enabling maintenance mode")
+		return errors.New("backup predates the latest source instance change; enable maintenance mode from [App instance] > Stack > Settings and create a new backup")
 	}
 	return nil
 }
@@ -167,16 +205,23 @@ func validateBackup(backup Backup, now time.Time, maxAge time.Duration, requireF
 		return errors.New("backup completion time is unexpectedly in the future")
 	}
 	if requireFresh && now.Sub(completedAt) > maxAge {
-		return fmt.Errorf("backup completion is older than %s", maxAge)
+		return fmt.Errorf("backup completion is older than %s; create a fresh backup, increase --max-backup-age, or use --force to intentionally import this existing snapshot", maxAge)
 	}
-	parsed, err := url.Parse(strings.TrimSpace(backup.URL))
-	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.Host == "" || parsed.User != nil {
+	if !validBackupTransferURL(backup.URL) {
 		return errors.New("backup URL must be an absolute HTTPS URL without embedded credentials")
 	}
 	if backup.Size < 0 {
 		return errors.New("backup size cannot be negative")
 	}
 	return nil
+}
+
+func validBackupTransferURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	return err == nil &&
+		strings.EqualFold(parsed.Scheme, "https") &&
+		parsed.Host != "" &&
+		parsed.User == nil
 }
 
 func sourceMaintenanceMode(properties map[string]interface{}) bool {

@@ -8,15 +8,18 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
-	MigrationPlanSchema = "wodby1-migration-plan/v3"
+	MigrationPlanSchema = "wodby1-migration-plan/v5"
 
 	SeverityBlocking     = "blocking"
 	SeverityConfirmation = "requires_confirmation"
 	SeverityManual       = "manual_follow_up"
 	SeveritySkipped      = "intentionally_skipped"
+
+	forceExistingBackupReviewSubject = "existing source backup (--force)"
 )
 
 type PlanOptions struct {
@@ -29,20 +32,23 @@ type PlanOptions struct {
 	TargetOrgOwnerOrAdminVerified bool
 	TargetScope                   *TargetScopeDiscovery
 	TargetEnvs                    map[string]TargetEnv
+	TargetStackID                 int
 	TargetStackMap                map[string]string
 	TargetServiceMap              map[string]string
 	TargetImportMap               map[string]string
+	TargetCIIntegrationID         int
 	Repository                    RepositoryTargetPlan
 	RepositoryByApp               map[string]RepositoryTargetPlan
 	SkipCode                      bool
 	SkipData                      bool
 	RequireData                   bool
+	AllowLiveSource               bool
 }
 
 type RepositoryTargetPlan struct {
-	CIIntegrationID int    `json:"ciIntegrationId,omitempty"`
-	RemoteGitRepoID string `json:"remoteGitRepoId,omitempty"`
-	Service         string `json:"service,omitempty"`
+	GitIntegrationID int    `json:"gitIntegrationId,omitempty"`
+	RepositoryName   string `json:"repositoryName,omitempty"`
+	Service          string `json:"service,omitempty"`
 }
 
 type Plan struct {
@@ -79,6 +85,7 @@ type PlanTarget struct {
 	ClusterID               int                        `json:"clusterId,omitempty"`
 	ClusterName             string                     `json:"clusterName,omitempty"`
 	ClusterStatus           string                     `json:"clusterStatus,omitempty"`
+	CIIntegrationID         int                        `json:"ciIntegrationId"`
 	OrgOwnerOrAdminVerified bool                       `json:"orgOwnerOrAdminVerified"`
 	DiscoveryVerified       bool                       `json:"discoveryVerified"`
 	Capabilities            *TargetClusterCapabilities `json:"capabilities,omitempty"`
@@ -118,7 +125,8 @@ type RepositoryPlan struct {
 	SourceStatus        string `json:"sourceStatus,omitempty"`
 	Action              string `json:"action"`
 	TargetService       string `json:"targetService,omitempty"`
-	CIIntegrationID     int    `json:"ciIntegrationId,omitempty"`
+	GitIntegrationID    int    `json:"gitIntegrationId,omitempty"`
+	RepositoryName      string `json:"repositoryName,omitempty"`
 	RemoteGitRepoID     string `json:"remoteGitRepoId,omitempty"`
 }
 
@@ -235,6 +243,9 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 	if err := export.Validate(); err != nil {
 		return Plan{}, err
 	}
+	if opts.TargetCIIntegrationID < 0 {
+		return Plan{}, fmt.Errorf("target CI integration ID must not be negative")
+	}
 	if export.Schema == ExportSchemaV2 {
 		if export.Source.Kind != opts.SourceKind || export.Source.UUID != opts.SourceID {
 			return Plan{}, fmt.Errorf(
@@ -274,6 +285,7 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 			Org:                     opts.TargetOrg,
 			Project:                 opts.TargetProject,
 			Cluster:                 opts.TargetCluster,
+			CIIntegrationID:         opts.TargetCIIntegrationID,
 			OrgOwnerOrAdminVerified: opts.TargetOrgOwnerOrAdminVerified,
 		},
 		Apps:   []AppPlan{},
@@ -283,8 +295,10 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 		capabilities := opts.TargetScope.Cluster.Capabilities
 		plan.Target.OrgID = opts.TargetScope.Org.ID
 		plan.Target.OrgName = opts.TargetScope.Org.Name
-		plan.Target.ProjectID = opts.TargetScope.Project.ID
-		plan.Target.ProjectName = opts.TargetScope.Project.Name
+		if opts.TargetScope.Project.ID > 0 {
+			plan.Target.ProjectID = opts.TargetScope.Project.ID
+			plan.Target.ProjectName = opts.TargetScope.Project.Name
+		}
 		plan.Target.ClusterID = opts.TargetScope.Cluster.ID
 		plan.Target.ClusterName = opts.TargetScope.Cluster.Name
 		plan.Target.ClusterStatus = opts.TargetScope.Cluster.Status
@@ -296,10 +310,13 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 		if !plan.Target.OrgOwnerOrAdminVerified {
 			plan.addReview(SeverityBlocking, "", "", "target authorization", "target discovery did not verify an active Wodby 2 organization owner or administrator")
 		}
-		if opts.TargetScope.Org.ID <= 0 || opts.TargetScope.Project.ID <= 0 || opts.TargetScope.Cluster.ID <= 0 {
+		if opts.TargetScope.Org.ID <= 0 || opts.TargetScope.Project.ID < 0 || opts.TargetScope.Cluster.ID <= 0 {
 			plan.addReview(SeverityBlocking, "", "", "target scope", "target discovery returned an invalid organization, project, or cluster ID")
 		}
-		if opts.TargetScope.Project.OrgID != opts.TargetScope.Org.ID ||
+		if strings.TrimSpace(opts.TargetProject) != "" && opts.TargetScope.Project.ID <= 0 {
+			plan.addReview(SeverityBlocking, "", "", "target scope", "target project selector was not resolved")
+		}
+		if (opts.TargetScope.Project.ID > 0 && opts.TargetScope.Project.OrgID != opts.TargetScope.Org.ID) ||
 			opts.TargetScope.Cluster.OrgID != opts.TargetScope.Org.ID {
 			plan.addReview(SeverityBlocking, "", "", "target scope", "target project or cluster does not belong to the selected organization")
 		}
@@ -371,6 +388,10 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 		}
 		if appExport.App.Repository != nil {
 			repositoryURL, credentialsRedacted := sanitizeRepositoryURL(appExport.App.Repository.URL)
+			repositoryName := strings.TrimSpace(repositoryTarget.RepositoryName)
+			if repositoryName == "" {
+				repositoryName = repositoryNameFromURL(repositoryURL)
+			}
 			appPlan.Repository = &RepositoryPlan{
 				SourceUUID:          appExport.App.Repository.UUID,
 				Title:               appExport.App.Repository.Title,
@@ -379,17 +400,17 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 				SourceStatus:        appExport.App.Repository.Status,
 				Action:              "connect",
 				TargetService:       strings.TrimSpace(repositoryTarget.Service),
-				CIIntegrationID:     repositoryTarget.CIIntegrationID,
-				RemoteGitRepoID:     strings.TrimSpace(repositoryTarget.RemoteGitRepoID),
+				GitIntegrationID:    repositoryTarget.GitIntegrationID,
+				RepositoryName:      repositoryName,
 			}
 			switch {
 			case opts.SkipCode:
 				appPlan.Repository.Action = "skip"
 				plan.addReview(SeveritySkipped, appPlan.Name, "", "repository", "source repository code is intentionally excluded from this migration")
-			case repositoryTarget.CIIntegrationID <= 0 || strings.TrimSpace(repositoryTarget.RemoteGitRepoID) == "":
-				plan.addReview(SeverityBlocking, appPlan.Name, "", "repository", "source repository requires --target-ci-integration-id and --target-remote-git-repo-id")
-			default:
-				plan.addReview(SeverityConfirmation, appPlan.Name, "", "repository", "source repository will use the explicitly selected Wodby 2 Git integration and remote repository")
+			case repositoryTarget.GitIntegrationID <= 0:
+				plan.addReview(SeverityBlocking, appPlan.Name, "", "repository", "source repository requires --target-git-integration-id; its remote repository ID will be resolved automatically by name")
+			case repositoryName == "":
+				plan.addReview(SeverityBlocking, appPlan.Name, "", "repository", "source repository name could not be derived; pass --target-repository-name with an exact name exposed by the selected Git integration (use --target-repository-map for a server app)")
 			}
 			if credentialsRedacted {
 				plan.addReview(SeverityConfirmation, appPlan.Name, "", "repository URL", "credentials or query data were removed from the repository URL before writing the plan")
@@ -452,6 +473,12 @@ func (p Plan) contentDigest() (string, error) {
 	if err := json.Unmarshal(data, &canonical); err != nil {
 		return "", err
 	}
+	// --force is an invocation-time acknowledgement that permits importing the
+	// already-selected backup while the source remains writable. It changes no
+	// target resource or import mapping and must be repeated on every resume, so
+	// its explanatory review item must not strand an in-progress migration that
+	// was created before the acknowledgement existed.
+	canonical.removeNonBindingReviewItems()
 	for appIndex := range canonical.Apps {
 		canonical.Apps[appIndex].SourceUpdated = 0
 		for instanceIndex := range canonical.Apps[appIndex].Instances {
@@ -470,6 +497,22 @@ func (p Plan) contentDigest() (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
+}
+
+func (p *Plan) removeNonBindingReviewItems() {
+	if p == nil {
+		return
+	}
+	review := p.Review[:0]
+	for _, item := range p.Review {
+		if item.Severity == SeverityConfirmation && item.Subject == forceExistingBackupReviewSubject {
+			continue
+		}
+		review = append(review, item)
+	}
+	p.Review = review
+	p.Summary = PlanSummary{}
+	p.computeSummary()
 }
 
 func validateRepositoryTargets(apps []AppExport, targets map[string]RepositoryTargetPlan) error {
@@ -563,13 +606,14 @@ func buildInstancePlan(plan *Plan, app App, instance Instance, opts PlanOptions,
 		TargetEnv:     targetEnv,
 		TargetEnvType: targetEnvType,
 		Stack: StackPlan{
-			UUID:         instance.Stack.UUID,
-			Name:         instance.Stack.Name,
-			Version:      instance.Stack.Version,
-			Custom:       instance.Stack.Custom,
-			AncestorUUID: instance.Stack.AncestorUUID,
-			AncestorName: instance.Stack.AncestorName,
-			Target:       strings.TrimSpace(instance.Stack.Name),
+			UUID:            instance.Stack.UUID,
+			Name:            instance.Stack.Name,
+			Version:         instance.Stack.Version,
+			Custom:          instance.Stack.Custom,
+			AncestorUUID:    instance.Stack.AncestorUUID,
+			AncestorName:    instance.Stack.AncestorName,
+			TargetID:        opts.TargetStackID,
+			ExplicitMapping: opts.TargetStackID > 0,
 		},
 	}
 	mappedStack, hasExplicitStack := scopedMapping(
@@ -580,8 +624,14 @@ func buildInstancePlan(plan *Plan, app App, instance Instance, opts PlanOptions,
 		instance.Stack.Name,
 	)
 	if hasExplicitStack {
-		instancePlan.Stack.ExplicitMapping = true
-		instancePlan.Stack.Target = mappedStack
+		targetID, err := strconv.Atoi(mappedStack)
+		if err != nil || targetID <= 0 {
+			plan.addReview(SeverityBlocking, app.Name, instance.Name, "target stack", fmt.Sprintf("target stack mapping %q must be a positive stack ID", mappedStack))
+			instancePlan.Stack.TargetID = 0
+		} else {
+			instancePlan.Stack.TargetID = targetID
+			instancePlan.Stack.ExplicitMapping = true
+		}
 	}
 	if ok && opts.TargetScope != nil {
 		resolved, found := opts.TargetEnvs[targetEnv]
@@ -626,16 +676,8 @@ func buildInstancePlan(plan *Plan, app App, instance Instance, opts PlanOptions,
 		}
 	}
 
-	if instance.Stack.Custom {
-		if !hasExplicitStack {
-			instancePlan.Stack.Target = ""
-			plan.addReview(SeverityBlocking, app.Name, instance.Name, "custom stack", "custom stack requires an explicit --target-stack-map entry")
-		} else {
-			plan.addReview(SeverityConfirmation, app.Name, instance.Name, "custom stack", fmt.Sprintf("custom stack will use explicitly selected Wodby 2 stack %q", instancePlan.Stack.Target))
-		}
-	}
-	if strings.TrimSpace(instancePlan.Stack.Target) == "" {
-		plan.addReview(SeverityBlocking, app.Name, instance.Name, "target stack", "target stack selector is empty")
+	if opts.TargetScope != nil && instancePlan.Stack.TargetID <= 0 {
+		plan.addReview(SeverityBlocking, app.Name, instance.Name, "target stack", "an explicit target stack ID is required; pass --target-stack-id or a scoped --target-stack-map entry")
 	}
 
 	status := strings.ToLower(strings.TrimSpace(instance.Status))
@@ -697,8 +739,75 @@ func buildInstancePlan(plan *Plan, app App, instance Instance, opts PlanOptions,
 			"source backup",
 			"at least one successful Wodby 1 backup is required to map data components; create a backup or use --skip-data",
 		)
+	} else if opts.RequireData && !opts.SkipData {
+		maintenanceMode := sourceMaintenanceMode(instance.Properties)
+		unsafeSnapshot := !maintenanceMode
+		if maintenanceMode {
+			for _, backup := range instance.Backups {
+				if validateBackupAfterFreeze(backup, instance.Updated) != nil {
+					unsafeSnapshot = true
+					break
+				}
+			}
+		}
+		if opts.AllowLiveSource && unsafeSnapshot {
+			plan.addReview(
+				SeverityConfirmation,
+				app.Name,
+				instance.Name,
+				forceExistingBackupReviewSubject,
+				forcedBackupWarning(instance.Backups),
+			)
+		} else if !maintenanceMode {
+			plan.addReview(
+				SeverityBlocking,
+				app.Name,
+				instance.Name,
+				"source maintenance mode",
+				"source instance is not in maintenance mode; enable it from [App instance] > Stack > Settings, create a fresh backup, and rerun the command. To intentionally import the existing backup and exclude later writes, rerun with --force",
+			)
+		} else {
+			for _, backup := range instance.Backups {
+				if err := validateBackupAfterFreeze(backup, instance.Updated); err != nil {
+					plan.addReview(
+						SeverityBlocking,
+						app.Name,
+						instance.Name,
+						"backup "+firstNonEmpty(backup.Component, backup.UUID),
+						err.Error(),
+					)
+				}
+			}
+		}
 	}
 	return instancePlan
+}
+
+func forcedBackupWarning(backups []Backup) string {
+	completed := int64(0)
+	for _, backup := range backups {
+		candidate := backup.BackupUpdated
+		if candidate <= 0 {
+			candidate = backup.Updated
+		}
+		if candidate <= 0 {
+			candidate = backup.BackupCreated
+		}
+		if candidate <= 0 {
+			candidate = backup.Created
+		}
+		if candidate > completed {
+			completed = candidate
+		}
+	}
+	when := "the selected backup was completed"
+	if completed > 0 {
+		when = "the selected backup completed at " + time.Unix(completed, 0).UTC().Format(time.RFC3339)
+	}
+	return fmt.Sprintf(
+		"--force will import the existing backup while the source may remain writable; writes made after %s will not be migrated. For a lossless cutover, enable maintenance mode from [App instance] > Stack > Settings and create a fresh backup instead",
+		when,
+	)
 }
 
 func buildServicePlan(plan *Plan, app App, instance Instance, service Service, opts PlanOptions) ServicePlan {
@@ -708,46 +817,69 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 		Enabled:    service.Enabled,
 		Action:     "migrate",
 	}
+	mapped, explicitlyMapped := scopedMapping(opts.TargetServiceMap, app, instance.UUID, instance.Name, service.Name)
+	confirmation := ""
+	if explicitlyMapped {
+		servicePlan.TargetName = mapped
+		servicePlan.Action = "map"
+		confirmation = fmt.Sprintf("source service will use explicitly selected Wodby 2 service %q", mapped)
+	} else {
+		switch service.Name {
+		case "apache":
+			if usesNginxInsteadOfApache(app, instance, opts) {
+				servicePlan.TargetName = ""
+				servicePlan.Action = "skip"
+				plan.addReview(SeveritySkipped, app.Name, instance.Name, "service apache", "Apache is intentionally not migrated because the Wodby 2 app will use nginx")
+				return servicePlan
+			}
+		case "athenapdf":
+			servicePlan.TargetName = "gotenberg"
+			servicePlan.Action = "substitute"
+			confirmation = "athenapdf will be substituted with gotenberg"
+		case "mailhog":
+			servicePlan.TargetName = "mailpit"
+			servicePlan.Action = "substitute"
+			confirmation = "mailhog will be substituted with mailpit"
+		case "pma":
+			servicePlan.TargetName = "phpmyadmin"
+			servicePlan.Action = "substitute"
+			confirmation = "pma will be substituted with the managed phpmyadmin service"
+		case "redis":
+			servicePlan.TargetName = "valkey"
+			servicePlan.Action = "substitute"
+			confirmation = "redis will be substituted with valkey"
+		case "crond":
+			servicePlan.TargetName = ""
+			servicePlan.Action = "skip"
+			plan.addReview(SeveritySkipped, app.Name, instance.Name, "service crond", "the Wodby 1 crond container is not migrated; application cron jobs are migrated as Wodby 2 service cron schedules")
+			return servicePlan
+		case "rsyslog", "xhprof":
+			servicePlan.TargetName = ""
+			servicePlan.Action = "skip"
+			plan.addReview(SeveritySkipped, app.Name, instance.Name, "service "+service.Name, service.Name+" is intentionally not migrated")
+			return servicePlan
+		case "sshd":
+			servicePlan.TargetName = "sshd"
+			servicePlan.Action = "substitute"
+			confirmation = "sshd will be mapped to the target PHP SSH derivative service"
+		case "varnish":
+			servicePlan.TargetName = "vinyl"
+			servicePlan.Action = "substitute"
+			confirmation = "varnish will be substituted with vinyl"
+		}
+	}
+
 	if !service.Enabled {
 		servicePlan.Action = "skip_disabled"
 		return servicePlan
 	}
-
-	switch service.Name {
-	case "apache":
-		if usesNginxInsteadOfApache(app, instance, opts) {
-			servicePlan.TargetName = ""
-			servicePlan.Action = "skip"
-			plan.addReview(SeveritySkipped, app.Name, instance.Name, "service apache", "Apache is intentionally not migrated because the Wodby 2 app will use nginx")
-			return servicePlan
-		}
-	case "athenapdf":
-		servicePlan.TargetName = "gotenberg"
-		servicePlan.Action = "substitute"
-		plan.addReview(SeverityConfirmation, app.Name, instance.Name, "service athenapdf", "athenapdf will be substituted with gotenberg when the target stack supports it")
-	case "redis":
-		servicePlan.TargetName = "valkey"
-		servicePlan.Action = "substitute"
-		plan.addReview(SeverityConfirmation, app.Name, instance.Name, "service redis", "redis will be substituted with valkey")
-	case "rsyslog":
-		servicePlan.TargetName = ""
-		servicePlan.Action = "skip"
-		plan.addReview(SeveritySkipped, app.Name, instance.Name, "service rsyslog", "rsyslog is intentionally not migrated")
-		return servicePlan
-	case "varnish":
-		servicePlan.TargetName = "vinyl"
-		servicePlan.Action = "substitute"
-		plan.addReview(SeverityConfirmation, app.Name, instance.Name, "service varnish", "varnish will be substituted with vinyl")
-	}
-	if mapped, found := scopedMapping(opts.TargetServiceMap, app, instance.UUID, instance.Name, service.Name); found {
-		servicePlan.TargetName = mapped
-		servicePlan.Action = "map"
+	if confirmation != "" {
 		plan.addReview(
 			SeverityConfirmation,
 			app.Name,
 			instance.Name,
 			"service "+service.Name,
-			fmt.Sprintf("source service will use explicitly selected Wodby 2 service %q", mapped),
+			confirmation,
 		)
 	}
 
@@ -881,6 +1013,13 @@ func validateInstanceProperties(plan *Plan, app App, instance Instance) {
 }
 
 func validateServiceToggleProperty(plan *Plan, app App, instance Instance, property string, service string) {
+	if !sourceServiceEnabled(instance.Services, service) {
+		// Wodby 1 keeps defaults for optional integrations even when the
+		// corresponding stack service is absent or disabled. In that case the
+		// property has no effective behavior to migrate, regardless of its
+		// serialized value.
+		return
+	}
 	raw, found := instance.Properties[property]
 	if !found {
 		return
@@ -890,14 +1029,8 @@ func validateServiceToggleProperty(plan *Plan, app App, instance Instance, prope
 		plan.addReview(SeverityBlocking, app.Name, instance.Name, "instance property "+property, "source property must be a boolean")
 		return
 	}
-	if !sourceServiceEnabled(instance.Services, service) {
-		// Wodby 1 keeps defaults for optional integrations even when the
-		// corresponding stack service is absent or disabled. In that case the
-		// property has no effective behavior to migrate.
-		return
-	}
 	if !enabled {
-		plan.addReview(SeverityBlocking, app.Name, instance.Name, "instance property "+property, fmt.Sprintf("source service %q is enabled but its application integration is disabled and cannot be represented automatically", service))
+		plan.addReview(SeverityConfirmation, app.Name, instance.Name, "instance property "+property, fmt.Sprintf("source service %q is enabled; its application integration will be enabled through the mapped Wodby 2 service", service))
 	} else {
 		plan.addReview(SeverityConfirmation, app.Name, instance.Name, "instance property "+property, fmt.Sprintf("enabled source integration will be preserved through mapped service %q", service))
 	}
@@ -1239,6 +1372,35 @@ func sanitizeRepositoryURL(raw string) (string, bool) {
 		redacted = true
 	}
 	return parsed.String(), redacted
+}
+
+func repositoryNameFromURL(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+
+	repositoryPath := ""
+	if strings.Contains(value, "://") {
+		parsed, err := url.Parse(value)
+		if err != nil {
+			return ""
+		}
+		repositoryPath = parsed.Path
+	} else if separator := strings.Index(value, ":"); separator >= 0 {
+		repositoryPath = value[separator+1:]
+	}
+	repositoryPath = strings.Trim(strings.TrimSpace(repositoryPath), "/")
+	if repositoryPath == "" {
+		return ""
+	}
+	if decoded, err := url.PathUnescape(repositoryPath); err == nil {
+		repositoryPath = decoded
+	}
+	if len(repositoryPath) > len(".git") && strings.EqualFold(repositoryPath[len(repositoryPath)-len(".git"):], ".git") {
+		repositoryPath = repositoryPath[:len(repositoryPath)-len(".git")]
+	}
+	return strings.Trim(strings.TrimSpace(repositoryPath), "/")
 }
 
 func isSCPRepositoryURL(value string) bool {

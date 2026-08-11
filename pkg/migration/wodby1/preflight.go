@@ -9,6 +9,8 @@ import (
 	"github.com/pkg/errors"
 )
 
+const wodbyCIPipelinePath = ".wodby/pipeline.yml"
+
 // TargetPreflightOptions contains the explicit customer choices that affect
 // target-side migration preparation. Mapping selectors themselves are already
 // recorded in Plan.
@@ -99,8 +101,13 @@ func (c *TargetClient) PreflightTarget(
 		return PreparedMigration{}, err
 	}
 	appExports := append([]AppExport(nil), export.AppExports()...)
-	if plan.Source.Kind == "app" && (len(appExports) != 1 || len(plan.Apps) != 1) {
-		return PreparedMigration{}, errors.New("application migration requires exactly one source app")
+	if (plan.Source.Kind == "app" || plan.Source.Kind == "instance") &&
+		(len(appExports) != 1 || len(plan.Apps) != 1) {
+		return PreparedMigration{}, errors.New("app or instance migration requires exactly one source app")
+	}
+	if plan.Source.Kind == "instance" &&
+		(len(appExports[0].Instances) != 1 || appExports[0].Instances[0].UUID != plan.Source.ID) {
+		return PreparedMigration{}, errors.New("instance migration requires exactly the requested source instance")
 	}
 	if len(appExports) != len(plan.Apps) {
 		return PreparedMigration{}, errors.New("migration plan app set does not match the source export")
@@ -138,17 +145,27 @@ func (c *TargetClient) PreflightTarget(
 			allowRecovery = opts.StateBackedAppRecovery[appExport.App.UUID]
 		}
 		if appFound && existingApp.ID != allowedTargetAppID && !allowRecovery {
+			instanceNames := make([]string, 0, len(appExport.Instances))
+			for _, instance := range appExport.Instances {
+				instanceNames = append(instanceNames, fmt.Sprintf("%q", instance.Name))
+			}
 			findings = append(findings, ReviewItem{
 				Severity: SeverityBlocking,
 				App:      appExport.App.Name,
 				Subject:  "target app name",
 				Message: fmt.Sprintf(
-					"target organization already contains app %q with ID %d; choose a different source app name or remove the unrelated target app",
+					"target organization already contains app %q with ID %d; this blocks creation of planned target instance(s) %s. The migration will not overwrite or adopt the existing app or any of its instances. Remove or rename the unrelated target app, or resume with the original migration state file if that state created it",
 					existingApp.Name,
 					existingApp.ID,
+					strings.Join(instanceNames, ", "),
 				),
 			})
 		}
+		repositoryFindings, err := c.resolveRepositoryPlan(ctx, appExport.App, appPlan.Repository, opts.SkipCode)
+		if err != nil {
+			return PreparedMigration{}, err
+		}
+		findings = append(findings, repositoryFindings...)
 
 		planInstances := make(map[string]*InstancePlan, len(appPlan.Instances))
 		for index := range appPlan.Instances {
@@ -186,6 +203,13 @@ func (c *TargetClient) PreflightTarget(
 		sort.SliceStable(preparedApp.Instances, func(i, j int) bool {
 			return compareInstance(preparedApp.Instances[i].Source, preparedApp.Instances[j].Source) < 0
 		})
+		if plan.Target.CIIntegrationID == 0 && !opts.SkipCode {
+			pipelineFindings, err := c.preflightWodbyCIPipelines(ctx, preparedApp, appPlan.Repository)
+			if err != nil {
+				return PreparedMigration{}, err
+			}
+			findings = append(findings, pipelineFindings...)
+		}
 		prepared.Apps = append(prepared.Apps, preparedApp)
 	}
 	if len(prepared.Apps) == 1 {
@@ -198,6 +222,154 @@ func (c *TargetClient) PreflightTarget(
 	return prepared, nil
 }
 
+// preflightWodbyCIPipelines checks every distinct source ref used by an app,
+// while reporting a missing pipeline against each affected instance.
+func (c *TargetClient) preflightWodbyCIPipelines(
+	ctx context.Context,
+	app PreparedAppMigration,
+	repository *RepositoryPlan,
+) ([]ReviewItem, error) {
+	if repository == nil || repository.GitIntegrationID <= 0 ||
+		strings.TrimSpace(repository.RemoteGitRepoID) == "" {
+		return nil, nil
+	}
+
+	type refKey struct {
+		ref     string
+		refType string
+	}
+	presence := map[refKey]bool{}
+	checked := map[refKey]bool{}
+	findings := []ReviewItem{}
+	for _, instance := range app.Instances {
+		if instance.BuildSource == nil || instance.BuildSource.Input.GitRef == nil ||
+			instance.BuildSource.Input.GitRefType == nil {
+			continue
+		}
+		key := refKey{
+			ref:     strings.TrimSpace(*instance.BuildSource.Input.GitRef),
+			refType: strings.TrimSpace(*instance.BuildSource.Input.GitRefType),
+		}
+		if !checked[key] {
+			exists, err := c.RemoteGitRepoFileExists(
+				ctx,
+				repository.GitIntegrationID,
+				repository.RemoteGitRepoID,
+				wodbyCIPipelinePath,
+				key.ref,
+			)
+			if err != nil {
+				return nil, err
+			}
+			presence[key] = exists
+			checked[key] = true
+		}
+		if presence[key] {
+			continue
+		}
+
+		message := fmt.Sprintf(
+			"repository %q does not contain required Wodby CI pipeline %q at Git %s %q; add the pipeline before applying the migration",
+			repository.RepositoryName,
+			wodbyCIPipelinePath,
+			strings.ToLower(key.refType),
+			key.ref,
+		)
+		if guidance := wodbyCIPipelineGuidance(app.App.App, instance.Source); guidance != "" {
+			message += ". " + guidance
+		}
+		findings = append(findings, ReviewItem{
+			Severity: SeverityBlocking,
+			App:      app.App.App.Name,
+			Instance: instance.Source.Name,
+			Subject:  "Wodby CI pipeline",
+			Message:  message,
+		})
+	}
+	return findings, nil
+}
+
+func wodbyCIPipelineGuidance(app App, instance Instance) string {
+	candidates := []string{app.Type, instance.Stack.Name, instance.Stack.AncestorName}
+	for _, candidate := range candidates {
+		normalized := strings.ToLower(strings.TrimSpace(candidate))
+		switch {
+		case strings.Contains(normalized, "drupal"):
+			return "For Drupal, copy and adapt https://github.com/wodby/drupal-vanilla/blob/11.x/.wodby/pipeline.yml and, if needed, https://github.com/wodby/drupal-vanilla/blob/11.x/.wodby/post-deployment.yml"
+		case strings.Contains(normalized, "wordpress"):
+			return "For WordPress, copy and adapt https://github.com/wodby/wordpress-vanilla/blob/main/.wodby/pipeline.yml and, if needed, https://github.com/wodby/wordpress-vanilla/blob/main/.wodby/post-deployment.yml; both are available under https://github.com/wodby/wordpress-vanilla/tree/main/.wodby"
+		}
+	}
+	return ""
+}
+
+func (c *TargetClient) resolveRepositoryPlan(
+	ctx context.Context,
+	app App,
+	plan *RepositoryPlan,
+	skipCode bool,
+) ([]ReviewItem, error) {
+	if skipCode || plan == nil || plan.Action == "skip" ||
+		plan.GitIntegrationID <= 0 || strings.TrimSpace(plan.RepositoryName) == "" {
+		return nil, nil // The base plan records incomplete customer selections.
+	}
+
+	repositories, err := c.ListRemoteGitRepos(ctx, plan.GitIntegrationID)
+	if err != nil {
+		return nil, err
+	}
+	desiredName := strings.TrimSpace(plan.RepositoryName)
+	matches := make([]TargetRemoteGitRepo, 0, 1)
+	for _, repository := range repositories {
+		if strings.TrimSpace(repository.Name) == desiredName {
+			matches = append(matches, repository)
+		}
+	}
+	if len(matches) == 0 {
+		return []ReviewItem{{
+			Severity: SeverityBlocking,
+			App:      app.Name,
+			Subject:  "repository",
+			Message: fmt.Sprintf(
+				"repository %q was not found in the selected Wodby 2 Git integration; pass --target-repository-name with an exact name exposed by that integration (or --target-repository-map %s=GIT_INTEGRATION_ID:REPOSITORY_NAME for this app in a server migration)",
+				desiredName,
+				app.Name,
+			),
+		}}, nil
+	}
+	if len(matches) > 1 {
+		return []ReviewItem{{
+			Severity: SeverityBlocking,
+			App:      app.Name,
+			Subject:  "repository",
+			Message: fmt.Sprintf(
+				"repository name %q matched %d repositories in the selected Wodby 2 Git integration; the integration must expose a unique exact name",
+				desiredName,
+				len(matches),
+			),
+		}}, nil
+	}
+	resolvedID := strings.TrimSpace(matches[0].ID)
+	if pinnedID := strings.TrimSpace(plan.RemoteGitRepoID); pinnedID != "" && pinnedID != resolvedID {
+		return nil, errors.Errorf(
+			"reviewed target repository %q no longer matches remote repository ID %q in Wodby 2 Git integration ID %d",
+			desiredName,
+			pinnedID,
+			plan.GitIntegrationID,
+		)
+	}
+	plan.RemoteGitRepoID = resolvedID
+	return []ReviewItem{{
+		Severity: SeverityConfirmation,
+		App:      app.Name,
+		Subject:  "repository",
+		Message: fmt.Sprintf(
+			"repository %q will be connected through the selected Wodby 2 Git integration when the target app is configured",
+			desiredName,
+		),
+	}}, nil
+}
+
 func (c *TargetClient) preflightInstance(
 	ctx context.Context,
 	app App,
@@ -208,7 +380,7 @@ func (c *TargetClient) preflightInstance(
 	repositoryPlan *RepositoryPlan,
 	opts TargetPreflightOptions,
 ) (PreparedInstance, []ReviewItem, error) {
-	pinned := plan.Stack.TargetID != 0 || plan.Stack.TargetRevID != 0
+	pinned := plan.Stack.TargetRevID != 0
 	stack, err := c.resolvePreflightStackRevision(
 		ctx, targetOrgID, targetProjectID, plan.Stack,
 	)
@@ -232,7 +404,11 @@ func (c *TargetClient) preflightInstance(
 		App:      app.Name,
 		Instance: source.Name,
 		Subject:  "target stack revision",
-		Message:  fmt.Sprintf("target stack %s revision ID %d will be used", stack.Name, stack.RevID),
+		Message: fmt.Sprintf(
+			"target stack %s (%s) will be used",
+			stack.Name,
+			plan.Stack.TargetVersion,
+		),
 	}}
 
 	sourceByName := make(map[string]Service, len(source.Services))
@@ -269,6 +445,17 @@ func (c *TargetClient) preflightInstance(
 					Message:  fmt.Sprintf("target stack has no service named %q", servicePlan.TargetName),
 				})
 			}
+			continue
+		}
+		if sourceService.Enabled && sourceService.Name == "sshd" &&
+			servicePlan.Action == "substitute" && !isPHPSSHDerivativeTarget(inspection) {
+			findings = append(findings, ReviewItem{
+				Severity: SeverityBlocking,
+				App:      app.Name,
+				Instance: source.Name,
+				Subject:  "service sshd",
+				Message:  fmt.Sprintf("target service %q is not a PHP SSH derivative", servicePlan.TargetName),
+			})
 			continue
 		}
 		if pinned {
@@ -425,14 +612,28 @@ func (c *TargetClient) preflightInstance(
 func (c *TargetClient) resolvePreflightStackRevision(
 	ctx context.Context,
 	targetOrgID int,
-	targetProjectID int,
+	_ int,
 	plan StackPlan,
 ) (TargetStack, error) {
-	pinned := plan.TargetID != 0 || plan.TargetRevID != 0
-	if !pinned {
-		return c.resolveMigrationStackRevision(ctx, targetOrgID, targetProjectID, plan)
+	if plan.TargetID <= 0 {
+		return TargetStack{}, errors.New("explicit target stack ID is required")
 	}
-	if plan.TargetID <= 0 || plan.TargetRevID <= 0 || strings.TrimSpace(plan.Target) == "" {
+	if plan.TargetRevID == 0 {
+		stack, err := c.GetStack(ctx, plan.TargetID)
+		if err != nil {
+			return TargetStack{}, err
+		}
+		if stack.OrgID != targetOrgID {
+			return TargetStack{}, errors.Errorf(
+				"selected target stack ID %d belongs to organization ID %d, expected %d",
+				stack.ID,
+				stack.OrgID,
+				targetOrgID,
+			)
+		}
+		return stack, nil
+	}
+	if strings.TrimSpace(plan.Target) == "" {
 		return TargetStack{}, errors.New("reviewed target stack pins are incomplete")
 	}
 	stack, err := c.GetStack(ctx, plan.TargetID)
@@ -502,6 +703,24 @@ func indexStackInspections(items []TargetStackServiceInspection) (map[string]Tar
 	return result, nil
 }
 
+func isTargetServiceDerivative(item TargetStackServiceInspection) bool {
+	stackType := strings.ToLower(strings.TrimSpace(item.StackService.Type))
+	revisionType := strings.ToLower(strings.TrimSpace(item.ServiceRevision.Type))
+	return stackType != "" && revisionType != "" && stackType != revisionType
+}
+
+func isPHPSSHDerivativeTarget(item TargetStackServiceInspection) bool {
+	if !isTargetServiceDerivative(item) || !strings.EqualFold(strings.TrimSpace(item.StackService.Type), "ssh") {
+		return false
+	}
+	serviceName := item.ServiceRevision.Name
+	if item.ServiceRevision.Manifest != nil && strings.TrimSpace(item.ServiceRevision.Manifest.Name) != "" {
+		serviceName = item.ServiceRevision.Manifest.Name
+	}
+	serviceName = strings.ToLower(strings.TrimSpace(serviceName))
+	return serviceName == "php" || strings.Contains(serviceName, "-php")
+}
+
 func prepareBuildSource(
 	app App,
 	instance Instance,
@@ -515,7 +734,8 @@ func prepareBuildSource(
 	}
 	buildServices := make([]TargetStackServiceInspection, 0, 1)
 	for _, inspection := range inspections {
-		if inspection.ServiceRevision.Manifest == nil ||
+		if isTargetServiceDerivative(inspection) ||
+			inspection.ServiceRevision.Manifest == nil ||
 			inspection.ServiceRevision.Manifest.Build == nil ||
 			!inspection.ServiceRevision.Manifest.Build.Connect ||
 			!effective[inspection.StackService.Name] {
@@ -535,7 +755,8 @@ func prepareBuildSource(
 			Message:  "the target stack requires a build source but the Wodby 1 app has no repository; use --skip-code only for an intentional partial migration",
 		}}
 	}
-	if repositoryPlan == nil || repositoryPlan.CIIntegrationID <= 0 ||
+	if repositoryPlan == nil || repositoryPlan.GitIntegrationID <= 0 ||
+		strings.TrimSpace(repositoryPlan.RepositoryName) == "" ||
 		strings.TrimSpace(repositoryPlan.RemoteGitRepoID) == "" {
 		return nil, nil // The base plan already records the blocking mapping.
 	}
@@ -598,7 +819,7 @@ func prepareBuildSource(
 		}}
 	}
 
-	integrationID := repositoryPlan.CIIntegrationID
+	integrationID := repositoryPlan.GitIntegrationID
 	remoteRepoID := repositoryPlan.RemoteGitRepoID
 	return &PreparedBuildSource{
 			ServiceName: selected.StackService.Name,
@@ -654,26 +875,43 @@ func resolveImportDestination(
 			})
 		}
 	}
-	if plan.TargetService != "" || plan.TargetImport != "" {
+	targetService := plan.TargetService
+	targetImport := plan.TargetImport
+	defaultFilesMapping := targetService == "" && targetImport == "" && expectedImport == "files"
+	if defaultFilesMapping {
+		targetService = "files-nfs"
+		targetImport = "files"
+	}
+	if targetService != "" || targetImport != "" {
 		filtered := candidates[:0]
 		for _, candidate := range candidates {
-			if candidate.ServiceName == plan.TargetService && candidate.ImportName == plan.TargetImport {
+			if candidate.ServiceName == targetService && candidate.ImportName == targetImport {
 				filtered = append(filtered, candidate)
 			}
 		}
 		candidates = filtered
 	}
 	if len(candidates) != 1 {
+		message := fmt.Sprintf(
+			"backup component %q matched %d enabled target imports; provide an unambiguous --target-import-map",
+			backup.Component,
+			len(candidates),
+		)
+		if defaultFilesMapping {
+			message = fmt.Sprintf(
+				"backup component %q requires enabled target service %q capability %q; matched %d",
+				backup.Component,
+				targetService,
+				targetImport,
+				len(candidates),
+			)
+		}
 		return nil, []ReviewItem{{
 			Severity: SeverityBlocking,
 			App:      app.Name,
 			Instance: instance.Name,
 			Subject:  "backup " + backup.Component,
-			Message: fmt.Sprintf(
-				"backup component %q matched %d enabled target imports; provide an unambiguous --target-import-map",
-				backup.Component,
-				len(candidates),
-			),
+			Message:  message,
 		}}
 	}
 	selected := candidates[0]

@@ -35,8 +35,7 @@ func TestPreflightTargetResolvesOfficialStackServicesAndRehashesPlan(t *testing.
 
 	options := preflightOwnerPlanOptions()
 	options.Repository = RepositoryTargetPlan{
-		CIIntegrationID: 44,
-		RemoteGitRepoID: "remote-repo-17",
+		GitIntegrationID: 44,
 	}
 	plan := preflightBuildPlan(t, export, options)
 	hashBefore := plan.PlanHash
@@ -84,6 +83,11 @@ func TestPreflightTargetResolvesOfficialStackServicesAndRehashesPlan(t *testing.
 	if instancePlan.BuildServiceID != 11 ||
 		instancePlan.BuildServiceRevID != 101 {
 		t.Fatalf("instance build service pins = %#v", instancePlan)
+	}
+	if repository := plan.Apps[0].Repository; repository == nil ||
+		repository.RepositoryName != "acme/example" ||
+		repository.RemoteGitRepoID != "remote-repo-17" {
+		t.Fatalf("resolved repository = %#v", repository)
 	}
 
 	if len(prepared.Instances) != 1 {
@@ -138,14 +142,150 @@ func TestPreflightTargetResolvesOfficialStackServicesAndRehashesPlan(t *testing.
 
 	wantPaths := []string{
 		"/v1/apps",
-		"/v1/stacks",
+		"/v1/integrations/44/options/remote-git-repos",
+		"/v1/stacks/7",
 		"/v1/stack-revisions/71/services",
 		"/v1/service-revisions/103",
 		"/v1/service-revisions/102",
 		"/v1/service-revisions/101",
+		"/v1/integrations/44/options/remote-git-repo-file",
 	}
 	if got := api.requestPaths(); !equalPreflightStrings(got, wantPaths) {
 		t.Fatalf("target API paths = %#v, want %#v", got, wantPaths)
+	}
+}
+
+func TestPreflightTargetBlocksRepositoryNameMissingFromIntegration(t *testing.T) {
+	export := preflightFixtureExport(true)
+	export.Apps[0].Instances[0].Services = []Service{{Name: "php", Enabled: true}}
+	options := preflightOwnerPlanOptions()
+	options.Repository = RepositoryTargetPlan{
+		GitIntegrationID: 44,
+		RepositoryName:   "acme/renamed",
+	}
+	plan := preflightBuildPlan(t, export, options)
+	catalog := preflightSingleBuildCatalog("php", false)
+	catalog.remoteGitRepos = map[int][]TargetRemoteGitRepo{
+		44: {{ID: "remote-repo-17", Name: "acme/example"}},
+	}
+	api := newPreflightTargetAPI(t, catalog)
+
+	prepared, err := api.client.PreflightTarget(
+		context.Background(),
+		export,
+		&plan,
+		TargetPreflightOptions{SkipData: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Instances[0].BuildSource != nil {
+		t.Fatalf("missing repository produced build source %#v", prepared.Instances[0].BuildSource)
+	}
+	if plan.Apps[0].Repository.RemoteGitRepoID != "" ||
+		!preflightHasReview(plan, SeverityBlocking, "repository", "--target-repository-name") {
+		t.Fatalf("missing repository review = %#v", plan.Review)
+	}
+}
+
+func TestPreflightTargetBlocksMissingWodbyCIPipelineWithStackGuidance(t *testing.T) {
+	tests := []struct {
+		name      string
+		appType   string
+		stackName string
+		links     []string
+	}{
+		{
+			name:      "Drupal",
+			appType:   "drupal",
+			stackName: "drupal11",
+			links: []string{
+				"https://github.com/wodby/drupal-vanilla/blob/11.x/.wodby/pipeline.yml",
+				"https://github.com/wodby/drupal-vanilla/blob/11.x/.wodby/post-deployment.yml",
+			},
+		},
+		{
+			name:      "WordPress",
+			appType:   "wordpress",
+			stackName: "wordpress",
+			links: []string{
+				"https://github.com/wodby/wordpress-vanilla/blob/main/.wodby/pipeline.yml",
+				"https://github.com/wodby/wordpress-vanilla/blob/main/.wodby/post-deployment.yml",
+				"https://github.com/wodby/wordpress-vanilla/tree/main/.wodby",
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			export := preflightFixtureExport(true)
+			export.Apps[0].App.Type = test.appType
+			export.Apps[0].Instances[0].Stack.Name = test.stackName
+			export.Apps[0].Instances[0].Services = []Service{{Name: "php", Enabled: true}}
+			options := preflightOwnerPlanOptions()
+			options.Repository = RepositoryTargetPlan{GitIntegrationID: 44}
+			options.SkipData = true
+			plan := preflightBuildPlan(t, export, options)
+			catalog := preflightSingleBuildCatalog("php", false)
+			catalog.remoteGitRepoFiles = map[string]bool{
+				preflightRemoteGitRepoFileKey(44, "remote-repo-17", wodbyCIPipelinePath, "main"): false,
+			}
+			api := newPreflightTargetAPI(t, catalog)
+
+			_, err := api.client.PreflightTarget(
+				context.Background(),
+				export,
+				&plan,
+				TargetPreflightOptions{SkipData: true},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var message string
+			for _, item := range plan.Review {
+				if item.Severity == SeverityBlocking && item.Subject == "Wodby CI pipeline" {
+					message = item.Message
+					break
+				}
+			}
+			if message == "" || !strings.Contains(message, wodbyCIPipelinePath) ||
+				!strings.Contains(message, `branch "main"`) {
+				t.Fatalf("missing pipeline review = %#v", plan.Review)
+			}
+			for _, link := range test.links {
+				if !strings.Contains(message, link) {
+					t.Fatalf("pipeline review %q does not contain %q", message, link)
+				}
+			}
+		})
+	}
+}
+
+func TestPreflightTargetDoesNotRequireWodbyCIPipelineForThirdPartyCI(t *testing.T) {
+	export := preflightFixtureExport(true)
+	export.Apps[0].Instances[0].Services = []Service{{Name: "php", Enabled: true}}
+	options := preflightOwnerPlanOptions()
+	options.Repository = RepositoryTargetPlan{GitIntegrationID: 44}
+	options.TargetCIIntegrationID = 72
+	options.SkipData = true
+	plan := preflightBuildPlan(t, export, options)
+	api := newPreflightTargetAPI(t, preflightSingleBuildCatalog("php", false))
+
+	_, err := api.client.PreflightTarget(
+		context.Background(),
+		export,
+		&plan,
+		TargetPreflightOptions{SkipData: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preflightHasReview(plan, SeverityBlocking, "Wodby CI pipeline", "") {
+		t.Fatalf("third-party CI unexpectedly requires a Wodby CI pipeline: %#v", plan.Review)
+	}
+	for _, path := range api.requestPaths() {
+		if strings.HasSuffix(path, "/options/remote-git-repo-file") {
+			t.Fatalf("third-party CI performed Wodby CI pipeline lookup: %#v", api.requestPaths())
+		}
 	}
 }
 
@@ -233,6 +373,9 @@ func TestPreflightTargetBlocksUnrelatedAppNameCollisionButAllowsStateBackedApp(t
 	}
 	if !preflightHasReview(blocked, SeverityBlocking, "target app name", "already contains app") {
 		t.Fatalf("collision review = %#v", blocked.Review)
+	}
+	if !preflightHasReview(blocked, SeverityBlocking, "target app name", `instance(s) "prod"`) {
+		t.Fatalf("collision review does not identify the blocked target instance: %#v", blocked.Review)
 	}
 
 	resumed := preflightBuildPlan(t, export, options)
@@ -393,15 +536,16 @@ func TestPreflightTargetHonorsExplicitCustomStackAndServiceMappings(t *testing.T
 
 	options := preflightOwnerPlanOptions()
 	options.TargetStackMap = map[string]string{
-		"inst-1": "acme/drupal11",
+		"inst-1": "17",
 	}
+	options.TargetStackID = 0
 	options.TargetServiceMap = map[string]string{
 		"inst-1/legacy-web": "php",
 	}
 	options.SkipCode = true
 	options.SkipData = true
 	plan := preflightBuildPlan(t, export, options)
-	if plan.Apps[0].Instances[0].Stack.Target != "acme/drupal11" ||
+	if plan.Apps[0].Instances[0].Stack.TargetID != 17 ||
 		!plan.Apps[0].Instances[0].Stack.ExplicitMapping {
 		t.Fatalf("custom target stack = %#v", plan.Apps[0].Instances[0].Stack)
 	}
@@ -458,9 +602,16 @@ func TestPreflightTargetAcceptsBuiltInServiceCompatibilityMappings(t *testing.T)
 	export := preflightFixtureExport(false)
 	export.Apps[0].Instances[0].Services = []Service{
 		{Name: "apache", Enabled: true},
+		{Name: "athenapdf", Enabled: true},
+		{Name: "crond", Enabled: true},
+		{Name: "mailhog", Enabled: true},
 		{Name: "nginx", Enabled: true},
+		{Name: "pma", Enabled: true},
 		{Name: "redis", Enabled: true},
+		{Name: "rsyslog", Enabled: true},
+		{Name: "sshd", Enabled: true},
 		{Name: "varnish", Enabled: true},
+		{Name: "xhprof", Enabled: true},
 	}
 	options := preflightOwnerPlanOptions()
 	options.SkipCode = true
@@ -477,12 +628,20 @@ func TestPreflightTargetAcceptsBuiltInServiceCompatibilityMappings(t *testing.T)
 				{ID: 11, Name: "nginx", Required: true, ServiceRevID: 101},
 				{ID: 12, Name: "valkey", ServiceRevID: 102},
 				{ID: 13, Name: "vinyl", ServiceRevID: 103},
+				{ID: 14, Name: "gotenberg", ServiceRevID: 104},
+				{ID: 15, Name: "mailpit", ServiceRevID: 105},
+				{ID: 16, Name: "phpmyadmin", ServiceRevID: 106},
+				{ID: 17, Name: "sshd", Type: "ssh", ServiceRevID: 107},
 			},
 		},
 		revisions: map[int]TargetServiceRevision{
 			101: {ID: 101, ServiceID: 201, Name: "nginx", Manifest: &TargetServiceManifest{Name: "nginx"}},
 			102: {ID: 102, ServiceID: 202, Name: "valkey", Manifest: &TargetServiceManifest{Name: "valkey"}},
 			103: {ID: 103, ServiceID: 203, Name: "vinyl", Manifest: &TargetServiceManifest{Name: "vinyl"}},
+			104: {ID: 104, ServiceID: 204, Name: "gotenberg", Type: "service", Manifest: &TargetServiceManifest{Name: "gotenberg"}},
+			105: {ID: 105, ServiceID: 205, Name: "mailpit", Type: "service", Manifest: &TargetServiceManifest{Name: "mailpit"}},
+			106: {ID: 106, ServiceID: 206, Name: "phpmyadmin", Type: "service", Manifest: &TargetServiceManifest{Name: "phpmyadmin"}},
+			107: {ID: 107, ServiceID: 207, Name: "drupal11-php", Type: "service", Manifest: &TargetServiceManifest{Name: "drupal11-php"}},
 		},
 	}
 	api := newPreflightTargetAPI(t, catalog)
@@ -502,14 +661,78 @@ func TestPreflightTargetAcceptsBuiltInServiceCompatibilityMappings(t *testing.T)
 	if service := preflightFindServicePlan(t, instancePlan, "apache"); service.Action != "skip" || service.TargetName != "" {
 		t.Fatalf("apache plan = %#v", service)
 	}
+	assertPreflightServicePlan(t, instancePlan, "athenapdf", "gotenberg", 14, 104)
+	if service := preflightFindServicePlan(t, instancePlan, "crond"); service.Action != "skip" || service.TargetName != "" {
+		t.Fatalf("crond plan = %#v", service)
+	}
+	assertPreflightServicePlan(t, instancePlan, "mailhog", "mailpit", 15, 105)
 	assertPreflightServicePlan(t, instancePlan, "nginx", "nginx", 11, 101)
+	assertPreflightServicePlan(t, instancePlan, "pma", "phpmyadmin", 16, 106)
 	assertPreflightServicePlan(t, instancePlan, "redis", "valkey", 12, 102)
+	assertPreflightServicePlan(t, instancePlan, "sshd", "sshd", 17, 107)
 	assertPreflightServicePlan(t, instancePlan, "varnish", "vinyl", 13, 103)
 	preparedInstance := prepared.Instances[0]
-	if len(preparedInstance.Services) != 3 ||
+	if len(preparedInstance.Services) != 7 ||
+		preparedInstance.Services["athenapdf"].Target.StackService.Name != "gotenberg" ||
+		preparedInstance.Services["mailhog"].Target.StackService.Name != "mailpit" ||
+		preparedInstance.Services["pma"].Target.StackService.Name != "phpmyadmin" ||
 		preparedInstance.Services["redis"].Target.StackService.Name != "valkey" ||
+		preparedInstance.Services["sshd"].Target.StackService.Name != "sshd" ||
 		preparedInstance.Services["varnish"].Target.StackService.Name != "vinyl" {
 		t.Fatalf("prepared compatibility services = %#v", preparedInstance.Services)
+	}
+}
+
+func TestPreflightTargetUsesPHPParentAsBuildServiceInsteadOfSSHDerivative(t *testing.T) {
+	export := preflightFixtureExport(true)
+	export.Apps[0].Instances[0].Services = []Service{
+		{Name: "php", Enabled: true},
+		{Name: "sshd", Enabled: true},
+	}
+	export.Apps[0].Instances[0].Properties = map[string]interface{}{
+		"git_target_value": "main",
+		"git_target_type":  "branch",
+		"deployment_type":  "git",
+	}
+	options := preflightOwnerPlanOptions()
+	options.Repository = RepositoryTargetPlan{
+		GitIntegrationID: 44,
+	}
+	plan := preflightBuildPlan(t, export, options)
+	manifest := &TargetServiceManifest{
+		Name:  "drupal11-php",
+		Build: &TargetServiceBuildCapability{Connect: true},
+	}
+	catalog := preflightTargetCatalog{
+		stacks: map[string]TargetStack{
+			"drupal11": {ID: 7, Name: "drupal11", RevID: 71, LatestRevNumber: 4, OrgID: 8},
+		},
+		stackServices: map[int][]TargetStackService{
+			71: {
+				{ID: 11, Name: "php", Type: "service", Required: true, ServiceRevID: 101},
+				{ID: 12, Name: "sshd", Type: "ssh", ServiceRevID: 101},
+			},
+		},
+		revisions: map[int]TargetServiceRevision{
+			101: {ID: 101, ServiceID: 201, Name: "drupal11-php", Type: "service", Manifest: manifest},
+		},
+	}
+	api := newPreflightTargetAPI(t, catalog)
+
+	prepared, err := api.client.PreflightTarget(
+		context.Background(),
+		export,
+		&plan,
+		TargetPreflightOptions{SkipData: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Summary.Blocking != 0 {
+		t.Fatalf("derivative build mapping blockers = %#v", plan.Review)
+	}
+	if prepared.Instances[0].BuildSource == nil || prepared.Instances[0].BuildSource.ServiceName != "php" {
+		t.Fatalf("build source = %#v", prepared.Instances[0].BuildSource)
 	}
 }
 
@@ -523,8 +746,7 @@ func TestPreflightTargetPreparesUniqueConnectBuildSource(t *testing.T) {
 	}
 	options := preflightOwnerPlanOptions()
 	options.Repository = RepositoryTargetPlan{
-		CIIntegrationID: 55,
-		RemoteGitRepoID: "remote-repo-29",
+		GitIntegrationID: 55,
 	}
 	plan := preflightBuildPlan(t, export, options)
 	catalog := preflightSingleBuildCatalog("php", false)
@@ -602,8 +824,7 @@ func TestPreflightTargetRejectsAmbiguousConnectBuildServicesUnlessExplicit(t *te
 
 	ambiguousOptions := preflightOwnerPlanOptions()
 	ambiguousOptions.Repository = RepositoryTargetPlan{
-		CIIntegrationID: 44,
-		RemoteGitRepoID: "remote-repo-17",
+		GitIntegrationID: 44,
 	}
 	ambiguousPlan := preflightBuildPlan(t, export, ambiguousOptions)
 	prepared, err := api.client.PreflightTarget(
@@ -823,6 +1044,41 @@ func TestPreflightTargetResolvesUniqueImportsAndRequiresMapForAmbiguity(t *testi
 		}
 	})
 
+	t.Run("files default remains files-nfs when another files import exists", func(t *testing.T) {
+		catalog := preflightDataCatalog(false)
+		catalog.stackServices[71] = append(catalog.stackServices[71], TargetStackService{
+			ID: 14, Name: "other-files", ServiceRevID: 104,
+		})
+		catalog.revisions[104] = TargetServiceRevision{
+			ID: 104, Name: "other-files", ServiceID: 204,
+			Manifest: &TargetServiceManifest{
+				Name: "other-files",
+				Imports: []TargetServiceImportCapability{
+					{Name: "files", Volume: "data"},
+				},
+			},
+		}
+		plan := preflightBuildPlan(t, export, preflightOwnerPlanOptions())
+		api := newPreflightTargetAPI(t, catalog)
+		prepared, err := api.client.PreflightTarget(
+			context.Background(),
+			export,
+			&plan,
+			TargetPreflightOptions{SkipCode: true},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.Summary.Blocking != 0 {
+			t.Fatalf("files import blockers = %#v", plan.Review)
+		}
+		assertPreflightImportPlan(t, &plan.Apps[0].Instances[0], "files", "files-nfs", "files", 13)
+		files := prepared.Instances[0].Imports["backup-files"]
+		if files.ServiceName != "files-nfs" || files.ImportName != "files" {
+			t.Fatalf("prepared files import = %#v", files)
+		}
+	})
+
 	t.Run("explicit database import map", func(t *testing.T) {
 		options := preflightOwnerPlanOptions()
 		options.TargetImportMap = map[string]string{
@@ -917,11 +1173,13 @@ func TestNormalizeGitRefType(t *testing.T) {
 }
 
 type preflightTargetCatalog struct {
-	apps           []TargetApp
-	stacks         map[string]TargetStack
-	stackRevisions map[int]TargetStackRevision
-	stackServices  map[int][]TargetStackService
-	revisions      map[int]TargetServiceRevision
+	apps               []TargetApp
+	remoteGitRepos     map[int][]TargetRemoteGitRepo
+	remoteGitRepoFiles map[string]bool
+	stacks             map[string]TargetStack
+	stackRevisions     map[int]TargetStackRevision
+	stackServices      map[int][]TargetStackService
+	revisions          map[int]TargetServiceRevision
 }
 
 type preflightTargetAPI struct {
@@ -945,6 +1203,52 @@ func newPreflightTargetAPI(t *testing.T, catalog preflightTargetCatalog) *prefli
 		switch {
 		case request.URL.Path == "/v1/apps":
 			preflightWriteJSON(w, catalog.apps)
+		case strings.HasPrefix(request.URL.Path, "/v1/integrations/") &&
+			strings.HasSuffix(request.URL.Path, "/options/remote-git-repo-file"):
+			value := strings.TrimSuffix(
+				strings.TrimPrefix(request.URL.Path, "/v1/integrations/"),
+				"/options/remote-git-repo-file",
+			)
+			integrationID, err := strconv.Atoi(value)
+			if err != nil {
+				http.Error(w, "invalid integration ID", http.StatusBadRequest)
+				return
+			}
+			query := request.URL.Query()
+			key := preflightRemoteGitRepoFileKey(
+				integrationID,
+				query.Get("remoteGitRepoId"),
+				query.Get("path"),
+				query.Get("ref"),
+			)
+			exists := true
+			if configured, found := catalog.remoteGitRepoFiles[key]; found {
+				exists = configured
+			}
+			preflightWriteJSON(w, map[string]bool{"exists": exists})
+		case strings.HasPrefix(request.URL.Path, "/v1/integrations/") &&
+			strings.HasSuffix(request.URL.Path, "/options/remote-git-repos"):
+			value := strings.TrimSuffix(
+				strings.TrimPrefix(request.URL.Path, "/v1/integrations/"),
+				"/options/remote-git-repos",
+			)
+			integrationID, err := strconv.Atoi(value)
+			if err != nil {
+				http.Error(w, "invalid integration ID", http.StatusBadRequest)
+				return
+			}
+			if catalog.remoteGitRepos != nil {
+				preflightWriteJSON(w, catalog.remoteGitRepos[integrationID])
+				return
+			}
+			repositories := []TargetRemoteGitRepo{}
+			switch integrationID {
+			case 44:
+				repositories = append(repositories, TargetRemoteGitRepo{ID: "remote-repo-17", Name: "acme/example"})
+			case 55:
+				repositories = append(repositories, TargetRemoteGitRepo{ID: "remote-repo-29", Name: "acme/example"})
+			}
+			preflightWriteJSON(w, repositories)
 		case request.URL.Path == "/v1/stacks":
 			if request.URL.Query().Get("orgId") != "8" ||
 				request.URL.Query().Get("projectIds") != "9" {
@@ -973,6 +1277,9 @@ func newPreflightTargetAPI(t *testing.T, catalog preflightTargetCatalog) *prefli
 			}
 			for _, stack := range catalog.stacks {
 				if stack.ID == stackID {
+					if stack.Status == "" {
+						stack.Status = "OK"
+					}
 					preflightWriteJSON(w, stack)
 					return
 				}
@@ -1033,6 +1340,10 @@ func newPreflightTargetAPI(t *testing.T, catalog preflightTargetCatalog) *prefli
 	}
 	api.client = client
 	return api
+}
+
+func preflightRemoteGitRepoFileKey(integrationID int, remoteGitRepoID, filePath, ref string) string {
+	return strings.Join([]string{strconv.Itoa(integrationID), remoteGitRepoID, filePath, ref}, "\x00")
 }
 
 func (a *preflightTargetAPI) requestPaths() []string {
@@ -1220,6 +1531,7 @@ func preflightOwnerPlanOptions() PlanOptions {
 		TargetOrg:     "acme",
 		TargetProject: "customer",
 		TargetCluster: "production",
+		TargetStackID: 7,
 		TargetScope: &TargetScopeDiscovery{
 			User: TargetCurrentUser{
 				ID: userID, Email: "owner@example.test", IsAdmin: false,

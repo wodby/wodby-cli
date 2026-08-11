@@ -122,6 +122,121 @@ func TestMigrationStateAtomicSaveAndReload(t *testing.T) {
 	}
 }
 
+func TestMigrationStateRestartSafety(t *testing.T) {
+	t.Run("initialized", func(t *testing.T) {
+		state := mustNewMigrationState(t)
+		if !state.CanRestartSafely() {
+			t.Fatal("initialized state should be restartable")
+		}
+	})
+
+	t.Run("definitive API rejection", func(t *testing.T) {
+		state := mustNewMigrationState(t)
+		if err := state.SetPhase(MigrationPhasePrepare); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.MarkAppOperationIntent("create"); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.MarkAppOperationFailure("create", "api_rejected"); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.MarkInstanceOperationIntent("instance-a", "create"); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.MarkInstanceOperationFailure("instance-a", "create", "api_rejected"); err != nil {
+			t.Fatal(err)
+		}
+		if !state.CanRestartSafely() {
+			t.Fatal("definitively rejected create should be restartable")
+		}
+	})
+
+	t.Run("successful mutation", func(t *testing.T) {
+		state := mustNewMigrationState(t)
+		if err := state.MarkAppOperationIntent("create"); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.MarkAppOperationSuccessWithIDs("create", 101, 0); err != nil {
+			t.Fatal(err)
+		}
+		if state.CanRestartSafely() {
+			t.Fatal("successful mutation must not be restartable")
+		}
+	})
+
+	t.Run("ambiguous mutation", func(t *testing.T) {
+		state := mustNewMigrationState(t)
+		if err := state.MarkAppOperationIntent("create"); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.MarkAppOperationAmbiguous("create"); err != nil {
+			t.Fatal(err)
+		}
+		if state.CanRestartSafely() {
+			t.Fatal("ambiguous mutation must not be restartable")
+		}
+	})
+}
+
+func TestRemoveRestartableMigrationState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "migration-state.json")
+	state := mustNewMigrationState(t)
+	if err := state.SetPhase(MigrationPhasePrepare); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkAppOperationIntent("create"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkAppOperationFailure("create", "api_rejected"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveMigrationState(path, state); err != nil {
+		t.Fatal(err)
+	}
+
+	inspected, err := InspectMigrationState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspected.Identity() != state.Identity() || !inspected.CanRestartSafely() {
+		t.Fatalf("inspected state = %#v", inspected)
+	}
+	if err := RemoveRestartableMigrationState(path, state.Identity()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removed state stat error = %v", err)
+	}
+}
+
+func TestRemoveMigrationStateAfterTargetDeletion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "migration-state.json")
+	state := mustNewMigrationState(t)
+	if err := state.MarkAppOperationIntent("create"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkAppOperationSuccessWithIDs("create", 101, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.SetAppTarget(101, MigrationResourceReady); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveMigrationState(path, state); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RemoveMigrationStateAfterTargetDeletion(path, state.Identity(), 102); !errors.Is(err, ErrMigrationStateIdentityMismatch) {
+		t.Fatalf("mismatched deleted target error = %v", err)
+	}
+	if err := RemoveMigrationStateAfterTargetDeletion(path, state.Identity(), 101); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removed state stat error = %v", err)
+	}
+}
+
 func TestMigrationStateIdentityMismatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "migration-state.json")
 	state := mustNewMigrationState(t)
@@ -154,6 +269,23 @@ func TestMigrationStateIdentityMismatch(t *testing.T) {
 		[]string{"instance-a"},
 	); !errors.Is(err, ErrMigrationStateIdentityMismatch) {
 		t.Fatalf("load instance-set mismatch error = %v", err)
+	}
+}
+
+func TestMigrationStateAcceptsOrganizationOwnedTarget(t *testing.T) {
+	identity := testMigrationStateIdentity()
+	identity.Target.ProjectID = 0
+	state, err := NewMigrationState(identity, []string{"instance-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Target.ProjectID != 0 {
+		t.Fatalf("target = %#v", state.Target)
+	}
+
+	identity.Target.ProjectID = -1
+	if _, err := NewMigrationState(identity, []string{"instance-a"}); err == nil {
+		t.Fatal("negative target project ID must be rejected")
 	}
 }
 

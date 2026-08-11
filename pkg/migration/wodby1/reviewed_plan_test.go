@@ -119,6 +119,7 @@ func TestPinReviewedTargetsCopiesOnlyResolvedImmutableIdentity(t *testing.T) {
 	}
 	current.PlanHash = ""
 	current.Apps[0].Repository.TargetService = ""
+	current.Apps[0].Repository.RemoteGitRepoID = ""
 	instance := &current.Apps[0].Instances[0]
 	instance.Stack.Target = "drupal11"
 	instance.Stack.TargetID = 0
@@ -149,6 +150,9 @@ func TestPinReviewedTargetsCopiesOnlyResolvedImmutableIdentity(t *testing.T) {
 		pinned.BuildServiceID != 11 ||
 		pinned.BuildServiceRevID != 101 {
 		t.Fatalf("pinned plan = %#v", current)
+	}
+	if current.Apps[0].Repository.RemoteGitRepoID != "remote-1" {
+		t.Fatalf("pinned repository = %#v", current.Apps[0].Repository)
 	}
 	if pinned.Imports[0].SourceUUID != "fresh-backup-file" ||
 		pinned.Imports[0].BackupCreated != 999 ||
@@ -183,6 +187,30 @@ func TestPinReviewedTargetsRejectsChangedOptionsWithoutMutatingCurrent(t *testin
 	}
 }
 
+func TestValidateReviewedAcceptsExactlyOneInstanceSource(t *testing.T) {
+	plan := reviewedPlanFixture(t)
+	plan.Source.Kind = "instance"
+	plan.Source.ID = "instance-1"
+	digest, err := plan.contentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.PlanHash = digest
+	if err := plan.ValidateReviewed(); err != nil {
+		t.Fatal(err)
+	}
+
+	plan.Apps[0].Instances[0].SourceUUID = "instance-2"
+	digest, err = plan.contentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.PlanHash = digest
+	if err := plan.ValidateReviewed(); err == nil || !strings.Contains(err.Error(), "approved source instance") {
+		t.Fatalf("ValidateReviewed() error = %v", err)
+	}
+}
+
 func reviewedPlanFixture(t *testing.T) Plan {
 	t.Helper()
 	plan := Plan{
@@ -206,8 +234,8 @@ func reviewedPlanFixture(t *testing.T) Plan {
 			Type:       "app",
 			Repository: &RepositoryPlan{
 				SourceUUID: "repo-1", Action: "connect",
-				TargetService:   "php",
-				CIIntegrationID: 44, RemoteGitRepoID: "remote-1",
+				TargetService: "php", RepositoryName: "acme/example",
+				GitIntegrationID: 44, RemoteGitRepoID: "remote-1",
 			},
 			Instances: []InstancePlan{{
 				SourceUUID: "instance-1", Name: "prod", Title: "Production",

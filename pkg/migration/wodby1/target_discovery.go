@@ -20,6 +20,9 @@ const (
 	TargetBlockerAmbiguous        = "ambiguous"
 	TargetBlockerWrongOrg         = "wrong_organization"
 	TargetBlockerWrongProject     = "wrong_project"
+
+	TargetOwnershipScopeOrg     = "org"
+	TargetOwnershipScopeProject = "project"
 )
 
 type TargetOrg struct {
@@ -42,14 +45,16 @@ type TargetClusterCapabilities struct {
 }
 
 type TargetCluster struct {
-	ID           int                       `json:"id"`
-	Name         string                    `json:"name"`
-	Title        string                    `json:"title"`
-	Status       string                    `json:"status"`
-	OrgID        int                       `json:"orgId"`
-	IPs          []string                  `json:"ips,omitempty"`
-	Hostname     *string                   `json:"hostname,omitempty"`
-	Capabilities TargetClusterCapabilities `json:"capabilities"`
+	ID             int                       `json:"id"`
+	Name           string                    `json:"name"`
+	Title          string                    `json:"title"`
+	Status         string                    `json:"status"`
+	OrgID          int                       `json:"orgId"`
+	OwnershipScope string                    `json:"ownershipScope"`
+	OwnerProjectID int                       `json:"ownerProjectId,omitempty"`
+	IPs            []string                  `json:"ips,omitempty"`
+	Hostname       *string                   `json:"hostname,omitempty"`
+	Capabilities   TargetClusterCapabilities `json:"capabilities"`
 }
 
 type TargetEnv struct {
@@ -240,25 +245,21 @@ func (c *TargetClient) GetEnv(ctx context.Context, id int) (TargetEnv, error) {
 	return item, nil
 }
 
-// DiscoverTargetScope resolves the exact organization selector, verifies that
-// the authenticated account is an active OWNER or ADMIN of that organization,
-// and then resolves the project and cluster selectors. Cluster availability
-// to the selected project is verified through the projectIds list filter.
+// DiscoverTargetScope derives the target organization from the API key (or
+// validates an explicitly expected organization), verifies that the
+// authenticated account is an active OWNER or ADMIN, and then resolves the
+// optional project and required cluster selectors. When a project is selected,
+// cluster availability is verified through the projectIds list filter. Without
+// an explicit project, a project-owned cluster defaults the target app to its
+// owner project; organization-owned clusters keep the target app
+// organization-owned.
 func (c *TargetClient) DiscoverTargetScope(ctx context.Context, selectors TargetScopeSelectors) (TargetScopeDiscovery, error) {
-	orgSelector, err := normalizeTargetSelector("organization", selectors.Org)
-	if err != nil {
-		return TargetScopeDiscovery{}, err
-	}
-	projectSelector, err := normalizeTargetSelector("project", selectors.Project)
-	if err != nil {
-		return TargetScopeDiscovery{}, err
-	}
 	clusterSelector, err := normalizeTargetSelector("cluster", selectors.Cluster)
 	if err != nil {
 		return TargetScopeDiscovery{}, err
 	}
 
-	org, err := c.resolveOrg(ctx, orgSelector)
+	org, err := c.resolveTargetOrg(ctx, selectors.Org)
 	if err != nil {
 		return TargetScopeDiscovery{}, err
 	}
@@ -266,13 +267,27 @@ func (c *TargetClient) DiscoverTargetScope(ctx context.Context, selectors Target
 	if err != nil {
 		return TargetScopeDiscovery{}, err
 	}
-	project, err := c.resolveProject(ctx, org.ID, projectSelector)
-	if err != nil {
-		return TargetScopeDiscovery{}, err
+	var project TargetProject
+	projectSelector := strings.TrimSpace(selectors.Project)
+	if projectSelector != "" {
+		projectSelector, err = normalizeTargetSelector("project", projectSelector)
+		if err != nil {
+			return TargetScopeDiscovery{}, err
+		}
+		project, err = c.resolveProject(ctx, org.ID, projectSelector)
+		if err != nil {
+			return TargetScopeDiscovery{}, err
+		}
 	}
 	cluster, err := c.resolveCluster(ctx, org.ID, project.ID, clusterSelector)
 	if err != nil {
 		return TargetScopeDiscovery{}, err
+	}
+	if project.ID == 0 {
+		project, err = c.resolveClusterOwnerProject(ctx, org.ID, cluster)
+		if err != nil {
+			return TargetScopeDiscovery{}, err
+		}
 	}
 
 	return TargetScopeDiscovery{
@@ -282,6 +297,59 @@ func (c *TargetClient) DiscoverTargetScope(ctx context.Context, selectors Target
 		Project:    project,
 		Cluster:    cluster,
 	}, nil
+}
+
+// resolveTargetOrg derives the destination from the organization-scoped API
+// key when no selector is supplied. An explicit selector remains supported by
+// the discovery package for callers that need to validate an expected org.
+func (c *TargetClient) resolveTargetOrg(ctx context.Context, selector string) (TargetOrg, error) {
+	selector = strings.TrimSpace(selector)
+	if selector != "" {
+		normalized, err := normalizeTargetSelector("organization", selector)
+		if err != nil {
+			return TargetOrg{}, err
+		}
+		return c.resolveOrg(ctx, normalized)
+	}
+
+	orgs, err := c.ListOrgs(ctx)
+	if err != nil {
+		return TargetOrg{}, errors.Wrap(err, "resolve target organization from Wodby 2 API key")
+	}
+	switch len(orgs) {
+	case 0:
+		return TargetOrg{}, errors.New("target Wodby 2 API key does not expose an organization")
+	case 1:
+		return orgs[0], nil
+	default:
+		return TargetOrg{}, errors.Errorf(
+			"target Wodby 2 API key exposed %d organizations; expected exactly one organization-scoped key",
+			len(orgs),
+		)
+	}
+}
+
+func (c *TargetClient) resolveClusterOwnerProject(ctx context.Context, orgID int, cluster TargetCluster) (TargetProject, error) {
+	switch strings.ToLower(strings.TrimSpace(cluster.OwnershipScope)) {
+	case TargetOwnershipScopeOrg:
+		return TargetProject{}, nil
+	case TargetOwnershipScopeProject:
+		if cluster.OwnerProjectID <= 0 {
+			return TargetProject{}, errors.Errorf(
+				"target cluster %q is project-owned but did not return an owner project ID",
+				cluster.Name,
+			)
+		}
+		return c.resolveProject(ctx, orgID, strconv.Itoa(cluster.OwnerProjectID))
+	case "":
+		return TargetProject{}, errors.Errorf("target cluster %q did not return an ownership scope", cluster.Name)
+	default:
+		return TargetProject{}, errors.Errorf(
+			"target cluster %q returned unsupported ownership scope %q",
+			cluster.Name,
+			cluster.OwnershipScope,
+		)
+	}
 }
 
 // DiscoverTarget performs complete read-only target discovery. Callers that
@@ -472,6 +540,9 @@ func (c *TargetClient) resolveCluster(ctx context.Context, orgID int, projectID 
 			return TargetCluster{}, err
 		}
 	}
+	if projectID == 0 {
+		return item, nil
+	}
 
 	projectClusters, err := c.ListClusters(ctx, orgID, []int{projectID})
 	if err != nil {
@@ -557,7 +628,7 @@ func targetSelectorID(resource string, selector string) (int, bool, error) {
 	if !looksLikeInteger(selector) {
 		return 0, false, nil
 	}
-	id, err := strconv.ParseInt(selector, 10, 32)
+	id, err := strconv.ParseInt(selector, 10, strconv.IntSize)
 	if err != nil || id <= 0 {
 		return 0, false, &TargetDiscoveryBlocker{
 			Code:     TargetBlockerSelectorInvalid,

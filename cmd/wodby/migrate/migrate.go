@@ -52,11 +52,12 @@ type options struct {
 	targetGitRef           string
 	targetGitRefType       string
 
-	skipCode         bool
-	skipData         bool
-	force            bool
-	excludeApps      []string
-	excludeInstances []string
+	skipCode               bool
+	skipData               bool
+	force                  bool
+	allowUnsupportedDrupal bool
+	excludeApps            []string
+	excludeInstances       []string
 
 	stateFile      string
 	pollInterval   time.Duration
@@ -274,6 +275,12 @@ func bindFlags(cmd *cobra.Command, opts *options) {
 	cmd.Flags().BoolVar(&opts.skipCode, "skip-code", false, "Intentionally omit repository/build-source migration")
 	cmd.Flags().BoolVar(&opts.skipData, "skip-data", false, "Intentionally omit database and files imports")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "Import an existing backup without maintenance mode or an age limit; excludes later writes and does not bypass other blockers")
+	cmd.Flags().BoolVar(
+		&opts.allowUnsupportedDrupal,
+		"allow-unsupported-drupal",
+		false,
+		"Allow Drupal 8/9 stack metadata only after confirming the application code has already been upgraded to Drupal 10 or newer",
+	)
 
 	cmd.Flags().StringVar(&opts.stateFile, "state-file", "", "Secure resume-state path (defaults to the system temporary directory)")
 	cmd.Flags().DurationVar(&opts.pollInterval, "poll-interval", 2*time.Second, "Target operation polling interval")
@@ -534,11 +541,12 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 			RepositoryName:   strings.TrimSpace(opts.targetRepositoryName),
 			Service:          strings.TrimSpace(opts.targetCodeService),
 		},
-		SkipCode:        opts.skipCode,
-		SkipData:        opts.skipData,
-		RequireData:     !opts.skipData,
-		AllowLiveSource: opts.force,
-		Selection:       &selection,
+		SkipCode:               opts.skipCode,
+		SkipData:               opts.skipData,
+		RequireData:            !opts.skipData,
+		AllowLiveSource:        opts.force,
+		AllowUnsupportedDrupal: opts.allowUnsupportedDrupal,
+		Selection:              &selection,
 	})
 	if err != nil {
 		return err
@@ -882,12 +890,13 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 			RepositoryName:   strings.TrimSpace(opts.targetRepositoryName),
 			Service:          strings.TrimSpace(opts.targetCodeService),
 		},
-		RepositoryByApp: repositoryMap,
-		SkipCode:        opts.skipCode,
-		SkipData:        opts.skipData,
-		RequireData:     !opts.skipData,
-		AllowLiveSource: opts.force,
-		Selection:       &selection,
+		RepositoryByApp:        repositoryMap,
+		SkipCode:               opts.skipCode,
+		SkipData:               opts.skipData,
+		RequireData:            !opts.skipData,
+		AllowLiveSource:        opts.force,
+		AllowUnsupportedDrupal: opts.allowUnsupportedDrupal,
+		Selection:              &selection,
 	})
 	if err != nil {
 		return err

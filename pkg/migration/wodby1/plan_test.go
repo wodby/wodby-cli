@@ -394,6 +394,7 @@ func TestBuildPlanTreatsForkedManagedDrupalAndWordPressStacksAsManaged(t *testin
 		blocking bool
 	}{
 		{name: "metadata drupal 10", stack: Stack{Name: "customer-fork", Type: "drupal10", Custom: true}},
+		{name: "metadata drupal 8", stack: Stack{Name: "customer-fork", Type: "drupal8", Custom: true}, blocking: true},
 		{name: "metadata drupal 9", stack: Stack{Name: "customer-fork", Type: "drupal9", Custom: true}, blocking: true},
 		{name: "legacy ancestor wordpress", stack: Stack{Name: "customer-fork", Custom: true, AncestorName: "wordpress"}},
 	} {
@@ -439,13 +440,46 @@ func TestBuildPlanTreatsForkedManagedDrupalAndWordPressStacksAsManaged(t *testin
 			if !hasReviewMessage(plan.Review, SeverityConfirmation, "SMTP endpoint will be rewritten from mailhog:25 to mailpit:1025") {
 				t.Fatalf("SMTP endpoint rewrite missing: %#v", plan.Review)
 			}
-			if got := hasReviewMessage(plan.Review, SeverityBlocking, "does not support Drupal 9"); got != test.blocking {
-				t.Fatalf("Drupal 9 compatibility blocker = %t, want %t: %#v", got, test.blocking, plan.Review)
+			if got := hasReviewMessage(plan.Review, SeverityBlocking, "does not support Drupal"); got != test.blocking {
+				t.Fatalf("Drupal compatibility blocker = %t, want %t: %#v", got, test.blocking, plan.Review)
 			}
 			if instance.Stack.Type != test.stack.Type {
 				t.Fatalf("planned stack type = %q, want %q", instance.Stack.Type, test.stack.Type)
 			}
 		})
+	}
+}
+
+func TestBuildPlanAllowsConfirmedDrupal8And9ButNeverDrupal7(t *testing.T) {
+	for _, major := range []string{"8", "9"} {
+		export := selectionTestExport("instance", "inst-dev")
+		export.Apps[0].Instances = export.Apps[0].Instances[1:]
+		export.Apps[0].Instances[0].Stack = Stack{Name: "customer-fork", Type: "drupal" + major, Custom: true}
+		plan, err := BuildPlan(export, PlanOptions{
+			SourceKind: "instance", SourceID: "inst-dev", SkipCode: true, SkipData: true,
+			AllowUnsupportedDrupal: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hasReviewMessage(plan.Review, SeverityBlocking, "does not support Drupal") ||
+			!hasReviewMessage(plan.Review, SeverityConfirmation, "does not inspect application code") {
+			t.Fatalf("Drupal %s review = %#v", major, plan.Review)
+		}
+	}
+
+	export := selectionTestExport("instance", "inst-dev")
+	export.Apps[0].Instances = export.Apps[0].Instances[1:]
+	export.Apps[0].Instances[0].Stack = Stack{Name: "drupal7", Type: "drupal7"}
+	plan, err := BuildPlan(export, PlanOptions{
+		SourceKind: "instance", SourceID: "inst-dev", SkipCode: true, SkipData: true,
+		AllowUnsupportedDrupal: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasReviewMessage(plan.Review, SeverityBlocking, "Drupal 7 cannot be migrated") {
+		t.Fatalf("Drupal 7 review = %#v", plan.Review)
 	}
 }
 

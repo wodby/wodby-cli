@@ -135,6 +135,13 @@ func TestWodby1MigrationExclusionFlagsMatchCommandScope(t *testing.T) {
 	}
 }
 
+func TestWodby1MigrationExposesUnsupportedDrupalOverride(t *testing.T) {
+	flag := newWodby1AppCommand().Flags().Lookup("allow-unsupported-drupal")
+	if flag == nil || !strings.Contains(flag.Usage, "Drupal 10 or newer") {
+		t.Fatalf("--allow-unsupported-drupal flag = %#v", flag)
+	}
+}
+
 func TestWodby1MigrationShowsUsageOnlyForCommandErrors(t *testing.T) {
 	t.Run("invalid arguments show usage", func(t *testing.T) {
 		var output bytes.Buffer

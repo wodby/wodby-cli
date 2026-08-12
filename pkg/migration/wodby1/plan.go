@@ -44,6 +44,7 @@ type PlanOptions struct {
 	SkipData                      bool
 	RequireData                   bool
 	AllowLiveSource               bool
+	AllowUnsupportedDrupal        bool
 	Selection                     *SourceSelection
 }
 
@@ -689,15 +690,7 @@ func buildInstancePlan(plan *Plan, app App, instance Instance, opts PlanOptions,
 			ExplicitMapping: opts.TargetStackID > 0,
 		},
 	}
-	if sourceStackFamily(instance.Stack) == "drupal9" {
-		plan.addReview(
-			SeverityBlocking,
-			app.Name,
-			instance.Name,
-			"source stack compatibility",
-			"Wodby 2 does not support Drupal 9; upgrade the Wodby 1 app to Drupal 10 or 11 and confirm it works before migrating",
-		)
-	}
+	addSourceStackCompatibilityReview(plan, app, instance, opts.AllowUnsupportedDrupal)
 	mappedStack, hasExplicitStack := scopedMapping(
 		opts.TargetStackMap,
 		app,
@@ -1073,14 +1066,51 @@ func canonicalStackFamily(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	compact := strings.NewReplacer("-", "", "_", "", " ", "").Replace(normalized)
 	switch compact {
+	case "drupal7":
+		return "drupal7"
+	case "drupal8":
+		return "drupal8"
 	case "drupal9":
 		return "drupal9"
-	case "drupal", "drupal7", "drupal8", "drupal10", "drupal11":
+	case "drupal", "drupal10", "drupal11":
 		return "drupal"
 	case "wordpress":
 		return "wordpress"
 	default:
 		return ""
+	}
+}
+
+func addSourceStackCompatibilityReview(plan *Plan, app App, instance Instance, allowUnsupported bool) {
+	family := sourceStackFamily(instance.Stack)
+	switch family {
+	case "drupal7":
+		plan.addReview(
+			SeverityBlocking,
+			app.Name,
+			instance.Name,
+			"source stack compatibility",
+			"Drupal 7 cannot be migrated into a Wodby 2 managed Drupal stack; upgrade it through a supported path or migrate it manually",
+		)
+	case "drupal8", "drupal9":
+		major := strings.TrimPrefix(family, "drupal")
+		if !allowUnsupported {
+			plan.addReview(
+				SeverityBlocking,
+				app.Name,
+				instance.Name,
+				"source stack compatibility",
+				fmt.Sprintf("Wodby 2 does not support Drupal %s stack metadata; confirm the application code already runs Drupal 10 or newer, then rerun with --allow-unsupported-drupal", major),
+			)
+			return
+		}
+		plan.addReview(
+			SeverityConfirmation,
+			app.Name,
+			instance.Name,
+			"IMPORTANT: source Drupal version",
+			fmt.Sprintf("Drupal %s stack metadata is being overridden; the CLI does not inspect application code, so verify the application already runs Drupal 10 or newer before applying", major),
+		)
 	}
 }
 

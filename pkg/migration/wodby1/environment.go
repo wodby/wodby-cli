@@ -2,6 +2,50 @@ package wodby1
 
 import "strings"
 
+var wodby1EnvironmentReferenceReplacements = []string{
+	"WODBY_INSTANCE_NAME", "WODBY_APP_INSTANCE_NAME",
+	"WODBY_INSTANCE_TYPE", "WODBY_ENV_TYPE",
+	"WODBY_ENVIRONMENT_NAME", "WODBY_ENV_NAME",
+	"WODBY_ENVIRONMENT_TYPE", "WODBY_ENV_TYPE",
+	"WODBY_HOST_PRIMARY", "WODBY_PRIMARY_HOST",
+	"WODBY_URL_PRIMARY", "WODBY_PRIMARY_URL",
+	"APP_BUILD_NUM", "WODBY_BUILD_NUMBER",
+}
+
+var wodby1GeneratedEnvironmentNames = map[string]bool{
+	"APP_BUILD_NUM":          true,
+	"APP_ROOT":               true,
+	"CONF_DIR":               true,
+	"FILES_DIR":              true,
+	"HTTP_ROOT":              true,
+	"PHP_FPM_ENV_VARS":       true,
+	"WODBY_APP_DOCROOT":      true,
+	"WODBY_APP_NAME":         true,
+	"WODBY_APP_ROOT":         true,
+	"WODBY_APP_UUID":         true,
+	"WODBY_CONF":             true,
+	"WODBY_DIR_CONF":         true,
+	"WODBY_ENVIRONMENT_NAME": true,
+	"WODBY_ENVIRONMENT_TYPE": true,
+	"WODBY_HOST_PRIMARY":     true,
+	"WODBY_HOSTS":            true,
+	"WODBY_INSTANCE_NAME":    true,
+	"WODBY_INSTANCE_TYPE":    true,
+	"WODBY_INSTANCE_UUID":    true,
+	"WODBY_URL_PRIMARY":      true,
+}
+
+// migratedEnvironmentReferences updates references in customer-defined values
+// and commands to the equivalent Wodby 2 runtime variables. Wodby-generated
+// definitions themselves are not copied; the target platform supplies them.
+func migratedEnvironmentReferences(value string) string {
+	return strings.NewReplacer(wodby1EnvironmentReferenceReplacements...).Replace(value)
+}
+
+func isWodby1GeneratedEnvironmentName(name string) bool {
+	return wodby1GeneratedEnvironmentNames[strings.ToUpper(strings.TrimSpace(name))]
+}
+
 func serviceTargetNamesFromPlans(plans []ServicePlan) map[string]string {
 	targets := make(map[string]string, len(plans))
 	for _, service := range plans {
@@ -30,7 +74,7 @@ func serviceTargetNamesFromPrepared(prepared PreparedInstance) map[string]string
 // implied by hardcoded service substitutions. It deliberately does not rewrite
 // arbitrary strings: only known endpoint variables are changed.
 func migratedEnvironmentValue(source Service, variable EnvVar, serviceTargets map[string]string) string {
-	value := variable.Value
+	value := migratedEnvironmentReferences(variable.Value)
 	sourceHost, targetHost, mapped := mappedSMTPHost(source, serviceTargets)
 	if !mapped {
 		return value

@@ -1165,6 +1165,9 @@ func sourceEnvVarRequiresMigration(properties map[string]interface{}, envVar Env
 	if !envVar.Enabled {
 		return false
 	}
+	if isWodby1GeneratedEnvironmentName(envVar.Name) {
+		return false
+	}
 	origin := strings.ToLower(strings.TrimSpace(envVar.Origin))
 	if origin != "default" && origin != "computed" {
 		return true
@@ -1185,13 +1188,6 @@ func validateInstanceProperties(plan *Plan, app App, instance Instance) {
 		defaultValue bool
 		onNonDefault func(bool)
 	}{
-		{
-			name:         "post_deploy",
-			defaultValue: true,
-			onNonDefault: func(bool) {
-				plan.addReview(SeverityConfirmation, app.Name, instance.Name, "post-deployment hooks", "Wodby 2 service post-deployment hooks will be skipped to preserve the source setting")
-			},
-		},
 		{
 			name:         "git_autopull",
 			defaultValue: false,

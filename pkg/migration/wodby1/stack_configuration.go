@@ -263,7 +263,7 @@ func preparedStackSettings(appName, targetName string, items []stackConfigServic
 			if values[name] == nil {
 				values[name] = map[string]string{}
 			}
-			values[name][item.instance.Source.UUID] = value
+			values[name][item.instance.Source.UUID] = migratedEnvironmentReferences(value)
 		}
 	}
 	result := map[string]string{}
@@ -313,12 +313,13 @@ func preparedStackCrons(appName, targetName string, items []stackConfigServiceIn
 			if title == "" {
 				title = "Migrated Wodby 1 cron"
 			}
-			name := "w1-" + shortDigest(targetName, title, cron.Crontab, cron.Command)
+			command := migratedEnvironmentReferences(cron.Command)
+			name := "w1-" + shortDigest(targetName, title, cron.Crontab, command)
 			observations[name] = append(observations[name], stackCronObservation{
 				instanceID: item.instance.Source.UUID,
 				envType:    envType,
 				cron: PreparedStackCronSchedule{
-					Name: name, Title: title, Crontab: cron.Crontab, Command: cron.Command,
+					Name: name, Title: title, Crontab: cron.Crontab, Command: command,
 					Disabled: item.instance.DisableCronSchedules,
 				},
 			})

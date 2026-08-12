@@ -36,7 +36,11 @@ func ScopeServerExportApp(export Export, sourceAppUUID string, authKey string) (
 		Source:          &ExportSource{Kind: "app", UUID: sourceAppUUID},
 		SecretsIncluded: export.SecretsIncluded,
 		Apps:            []AppExport{*selected},
-		Issues:          append([]ExportIssue(nil), export.Issues...),
+		Issues: filterSelectionIssues(
+			export.Issues,
+			export.AppExports(),
+			SourceSelection{IncludedApps: []SelectedApp{selectedApp(*selected)}},
+		),
 	}
 	if err := child.ValidateSource("app", sourceAppUUID); err != nil {
 		return Export{}, err
@@ -103,6 +107,13 @@ func ScopeServerMigrationApp(
 	if err != nil {
 		return Export{}, Plan{}, PreparedMigration{}, fmt.Errorf("compute app-scoped plan backup digest: %w", err)
 	}
+	childPlan.Selection = SourceSelection{IncludedApps: []SelectedApp{selectedApp(childExport.AppExports()[0])}}
+	for _, excluded := range plan.Selection.ExcludedInstances {
+		if excluded.AppUUID == sourceAppUUID {
+			childPlan.Selection.ExcludedInstances = append(childPlan.Selection.ExcludedInstances, excluded)
+		}
+	}
+	canonicalizeSelection(&childPlan.Selection)
 	childPlan.Apps = []AppPlan{*selected}
 	childPlan.Review = make([]ReviewItem, 0, len(plan.Review))
 	for _, item := range plan.Review {

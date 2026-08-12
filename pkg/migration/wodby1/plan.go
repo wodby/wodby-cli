@@ -44,6 +44,7 @@ type PlanOptions struct {
 	SkipData                      bool
 	RequireData                   bool
 	AllowLiveSource               bool
+	Selection                     *SourceSelection
 }
 
 type RepositoryTargetPlan struct {
@@ -53,14 +54,15 @@ type RepositoryTargetPlan struct {
 }
 
 type Plan struct {
-	Schema   string       `json:"schema"`
-	PlanHash string       `json:"planHash"`
-	Source   PlanSource   `json:"source"`
-	Target   PlanTarget   `json:"target"`
-	Summary  PlanSummary  `json:"summary"`
-	Apps     []AppPlan    `json:"apps"`
-	Review   []ReviewItem `json:"review"`
-	Status   string       `json:"status"`
+	Schema    string          `json:"schema"`
+	PlanHash  string          `json:"planHash"`
+	Source    PlanSource      `json:"source"`
+	Selection SourceSelection `json:"selection"`
+	Target    PlanTarget      `json:"target"`
+	Summary   PlanSummary     `json:"summary"`
+	Apps      []AppPlan       `json:"apps"`
+	Review    []ReviewItem    `json:"review"`
+	Status    string          `json:"status"`
 }
 
 type PlanSource struct {
@@ -296,8 +298,15 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 			CIIntegrationID:         opts.TargetCIIntegrationID,
 			OrgOwnerOrAdminVerified: opts.TargetOrgOwnerOrAdminVerified,
 		},
-		Apps:   []AppPlan{},
-		Review: []ReviewItem{},
+		Selection: sourceSelectionForPlan(export, opts.Selection),
+		Apps:      []AppPlan{},
+		Review:    []ReviewItem{},
+	}
+	for _, app := range plan.Selection.ExcludedApps {
+		plan.addReview(SeveritySkipped, app.Name, "", "source selection", fmt.Sprintf("app %q (%s) is excluded from this migration", app.Name, app.UUID))
+	}
+	for _, instance := range plan.Selection.ExcludedInstances {
+		plan.addReview(SeveritySkipped, instance.AppName, instance.Name, "source selection", fmt.Sprintf("instance %q (%s) is excluded from this migration", instance.Name, instance.UUID))
 	}
 	if opts.TargetScope != nil {
 		capabilities := opts.TargetScope.Cluster.Capabilities

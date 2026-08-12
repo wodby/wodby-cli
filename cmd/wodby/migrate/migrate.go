@@ -52,9 +52,11 @@ type options struct {
 	targetGitRef           string
 	targetGitRefType       string
 
-	skipCode bool
-	skipData bool
-	force    bool
+	skipCode         bool
+	skipData         bool
+	force            bool
+	excludeApps      []string
+	excludeInstances []string
 
 	stateFile      string
 	pollInterval   time.Duration
@@ -179,6 +181,18 @@ migrated apps before changing DNS, then use --verify. When per-app state exists,
 	}
 	bindFlags(cmd, opts)
 	cmd.Flags().StringArrayVar(
+		&opts.excludeApps,
+		"exclude-app",
+		nil,
+		"Exclude an app by exact UUID or name (repeatable)",
+	)
+	cmd.Flags().StringArrayVar(
+		&opts.excludeInstances,
+		"exclude-instance",
+		nil,
+		"Exclude an instance by UUID or APP/INSTANCE (repeatable)",
+	)
+	cmd.Flags().StringArrayVar(
 		&opts.targetRepositoryMap,
 		"target-repository-map",
 		nil,
@@ -215,6 +229,12 @@ state exists, --apply preserves the saved plan and continues completed work;
 		},
 	}
 	bindFlags(cmd, opts)
+	cmd.Flags().StringArrayVar(
+		&opts.excludeInstances,
+		"exclude-instance",
+		nil,
+		"Exclude an instance by exact UUID or name (repeatable)",
+	)
 	return cmd
 }
 
@@ -475,6 +495,10 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 	if err != nil {
 		return err
 	}
+	export, selection, err := wodby1.SelectExport(export, sourceKind, opts.excludeApps, opts.excludeInstances, opts.sourceToken)
+	if err != nil {
+		return err
+	}
 
 	selectors, err := wodby1.TargetEnvironmentSelectors(export, envMap)
 	if err != nil {
@@ -514,6 +538,7 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 		SkipData:        opts.skipData,
 		RequireData:     !opts.skipData,
 		AllowLiveSource: opts.force,
+		Selection:       &selection,
 	})
 	if err != nil {
 		return err
@@ -606,7 +631,11 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 		AllowLiveSource:         opts.force,
 		Progress:                migrationProgressReporter(cmd),
 		RefreshSource: func(ctx context.Context) (wodby1.Export, error) {
-			return exportSource(ctx, sourceID)
+			refreshed, err := exportSource(ctx, sourceID)
+			if err != nil {
+				return wodby1.Export{}, err
+			}
+			return wodby1.ApplySourceSelection(refreshed, plan.Selection, opts.sourceToken)
 		},
 	})
 	if err != nil {
@@ -808,6 +837,10 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 	if err != nil {
 		return err
 	}
+	export, selection, err := wodby1.SelectExport(export, "server", opts.excludeApps, opts.excludeInstances, opts.sourceToken)
+	if err != nil {
+		return err
+	}
 	if err := validateServerRepositoryOptions(export, opts); err != nil {
 		return err
 	}
@@ -854,6 +887,7 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 		SkipData:        opts.skipData,
 		RequireData:     !opts.skipData,
 		AllowLiveSource: opts.force,
+		Selection:       &selection,
 	})
 	if err != nil {
 		return err
@@ -989,6 +1023,10 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 			Progress:                migrationProgressReporter(cmd),
 			RefreshSource: func(ctx context.Context) (wodby1.Export, error) {
 				refreshed, err := sourceClient.ExportServer(ctx, sourceID)
+				if err != nil {
+					return wodby1.Export{}, err
+				}
+				refreshed, err = wodby1.ApplySourceSelection(refreshed, plan.Selection, opts.sourceToken)
 				if err != nil {
 					return wodby1.Export{}, err
 				}

@@ -118,6 +118,23 @@ func TestWodby1MigrationExposesPreviewApplyVerifyWorkflow(t *testing.T) {
 	}
 }
 
+func TestWodby1MigrationExclusionFlagsMatchCommandScope(t *testing.T) {
+	instance := newWodby1InstanceCommand()
+	if instance.Flags().Lookup("exclude-app") != nil || instance.Flags().Lookup("exclude-instance") != nil {
+		t.Fatal("instance migration must not expose exclusion flags")
+	}
+
+	app := newWodby1AppCommand()
+	if app.Flags().Lookup("exclude-app") != nil || app.Flags().Lookup("exclude-instance") == nil {
+		t.Fatal("app migration must expose only --exclude-instance")
+	}
+
+	server := newWodby1ServerCommand()
+	if server.Flags().Lookup("exclude-app") == nil || server.Flags().Lookup("exclude-instance") == nil {
+		t.Fatal("server migration must expose app and instance exclusions")
+	}
+}
+
 func TestWodby1MigrationShowsUsageOnlyForCommandErrors(t *testing.T) {
 	t.Run("invalid arguments show usage", func(t *testing.T) {
 		var output bytes.Buffer

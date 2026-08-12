@@ -54,6 +54,9 @@ func TestScopeServerMigrationAppCreatesIndependentExecutableArtifacts(t *testing
 		childPrepared.App.App.UUID != "app-1" || len(childPrepared.Instances) != 1 {
 		t.Fatalf("scoped migration = export %#v plan %#v prepared %#v", childExport.Source, childPlan.Apps, childPrepared)
 	}
+	if len(childPlan.Selection.IncludedApps) != 1 || childPlan.Selection.IncludedApps[0].UUID != "app-1" {
+		t.Fatalf("child selection = %#v", childPlan.Selection)
+	}
 	for _, item := range childPlan.Review {
 		if item.App == "second" {
 			t.Fatalf("child plan retained another app's review: %#v", childPlan.Review)

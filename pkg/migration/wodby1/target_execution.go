@@ -71,6 +71,31 @@ type TargetDuplicateStackInput struct {
 	SourceRevID int  `json:"sourceRevId"`
 }
 
+type TargetCatalogService struct {
+	ID              int       `json:"id"`
+	Name            string    `json:"name"`
+	Title           string    `json:"title"`
+	Type            string    `json:"type"`
+	Status          string    `json:"status"`
+	External        bool      `json:"external"`
+	Public          bool      `json:"public"`
+	RevID           int       `json:"revId"`
+	LatestRevNumber int       `json:"latestRevNumber"`
+	OrgID           int       `json:"orgId"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+type TargetCreateStackServiceInput struct {
+	StackID          int    `json:"stackId"`
+	ServiceID        int    `json:"serviceId"`
+	Name             string `json:"name"`
+	Title            string `json:"title"`
+	Required         bool   `json:"required"`
+	Replicas         int    `json:"replicas"`
+	ServiceRevPinned *bool  `json:"serviceRevPinned,omitempty"`
+}
+
 // TargetStackRevision is the immutable stack revision read back by ID before a
 // reviewed migration plan is allowed to mutate the target.
 type TargetStackRevision struct {
@@ -148,6 +173,54 @@ func (c *TargetClient) DuplicateStack(ctx context.Context, stackID int, input Ta
 	}
 	if item.OriginStackRevID == nil || *item.OriginStackRevID != input.SourceRevID {
 		return TargetStack{}, errors.Errorf("duplicated target stack does not identify catalog revision ID %d as its origin", input.SourceRevID)
+	}
+	return item, nil
+}
+
+func (c *TargetClient) ResolveServiceExact(ctx context.Context, targetOrgID int, name string) (TargetCatalogService, TargetServiceRevision, error) {
+	if err := targetRequirePositiveID("organization", targetOrgID); err != nil {
+		return TargetCatalogService{}, TargetServiceRevision{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return TargetCatalogService{}, TargetServiceRevision{}, errors.New("target service name is required")
+	}
+	var service TargetCatalogService
+	if err := c.client.Get(ctx, "/services/by-name/"+url.PathEscape(name), nil, &service); err != nil {
+		return TargetCatalogService{}, TargetServiceRevision{}, errors.Wrapf(err, "resolve target Wodby 2 service %q", name)
+	}
+	if err := validateTargetCatalogService(service, targetOrgID, name); err != nil {
+		return TargetCatalogService{}, TargetServiceRevision{}, err
+	}
+	revision, err := c.GetServiceRevision(ctx, service.RevID)
+	if err != nil {
+		return TargetCatalogService{}, TargetServiceRevision{}, err
+	}
+	if revision.ServiceID != service.ID {
+		return TargetCatalogService{}, TargetServiceRevision{}, errors.New("target service revision belongs to a different service")
+	}
+	return service, revision, nil
+}
+
+func (c *TargetClient) CreateStackService(ctx context.Context, input TargetCreateStackServiceInput) (TargetStackService, error) {
+	if err := targetRequirePositiveID("stack", input.StackID); err != nil {
+		return TargetStackService{}, err
+	}
+	if err := targetRequirePositiveID("service", input.ServiceID); err != nil {
+		return TargetStackService{}, err
+	}
+	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Title) == "" || input.Replicas < 0 {
+		return TargetStackService{}, errors.New("target stack service name, title, and non-negative replicas are required")
+	}
+	var item TargetStackService
+	if err := c.client.Post(ctx, "/stack-services", nil, input, &item); err != nil {
+		return TargetStackService{}, errors.Wrap(err, "add target Wodby 2 stack service")
+	}
+	if err := validateTargetStackService(item); err != nil {
+		return TargetStackService{}, err
+	}
+	if item.Name != input.Name {
+		return TargetStackService{}, errors.Errorf("created target stack service name %q does not match %q", item.Name, input.Name)
 	}
 	return item, nil
 }
@@ -1105,6 +1178,14 @@ func (c *TargetClient) GetStackRevision(
 	ctx context.Context,
 	stackRevID int,
 ) (TargetStackRevision, error) {
+	return c.getStackRevision(ctx, stackRevID, false)
+}
+
+func (c *TargetClient) getStackRevision(
+	ctx context.Context,
+	stackRevID int,
+	allowDraft bool,
+) (TargetStackRevision, error) {
 	if err := targetRequirePositiveID("stack revision", stackRevID); err != nil {
 		return TargetStackRevision{}, err
 	}
@@ -1124,7 +1205,7 @@ func (c *TargetClient) GetStackRevision(
 			stackRevID,
 		)
 	}
-	if item.Draft {
+	if item.Draft && !allowDraft {
 		return TargetStackRevision{}, errors.Errorf(
 			"target Wodby 2 stack revision ID %d is a draft",
 			stackRevID,
@@ -2117,6 +2198,28 @@ func validateTargetStack(item TargetStack) error {
 	}
 	if !strings.EqualFold(strings.TrimSpace(item.Status), "OK") {
 		return errors.Errorf("target Wodby 2 stack %q has status %q", item.Name, item.Status)
+	}
+	return nil
+}
+
+func validateTargetCatalogService(item TargetCatalogService, targetOrgID int, expectedName string) error {
+	if err := targetRequirePositiveID("service", item.ID); err != nil {
+		return err
+	}
+	if err := targetRequirePositiveID("service revision", item.RevID); err != nil {
+		return err
+	}
+	if err := targetRequirePositiveID("service organization", item.OrgID); err != nil {
+		return err
+	}
+	if item.Name != expectedName || strings.TrimSpace(item.Title) == "" {
+		return errors.Errorf("target service response does not exactly match %q", expectedName)
+	}
+	if !item.Public && item.OrgID != targetOrgID {
+		return errors.Errorf("target service %q belongs to organization ID %d", item.Name, item.OrgID)
+	}
+	if !strings.EqualFold(strings.TrimSpace(item.Status), "OK") {
+		return errors.Errorf("target service %q status is %q", item.Name, item.Status)
 	}
 	return nil
 }

@@ -56,6 +56,7 @@ type options struct {
 	skipData               bool
 	force                  bool
 	allowUnsupportedDrupal bool
+	addMissingServices     bool
 	excludeApps            []string
 	excludeInstances       []string
 
@@ -241,11 +242,12 @@ state exists, --apply preserves the saved plan and continues completed work;
 
 func defaultOptions() *options {
 	return &options{
-		sourceBaseURL: defaultSourceBaseURL,
-		pollInterval:  2 * time.Second,
-		waitTimeout:   30 * time.Minute,
-		maxBackupAge:  time.Hour,
-		output:        "text",
+		sourceBaseURL:      defaultSourceBaseURL,
+		pollInterval:       2 * time.Second,
+		waitTimeout:        30 * time.Minute,
+		maxBackupAge:       time.Hour,
+		output:             "text",
+		addMissingServices: true,
 	}
 }
 
@@ -280,6 +282,12 @@ func bindFlags(cmd *cobra.Command, opts *options) {
 		"allow-unsupported-drupal",
 		false,
 		"Allow Drupal 8/9 stack metadata only after confirming the application code has already been upgraded to Drupal 10 or newer",
+	)
+	cmd.Flags().BoolVar(
+		&opts.addMissingServices,
+		"add-missing-services",
+		true,
+		"Add mapped services missing from the target stack when an exact Wodby 2 service is available",
 	)
 
 	cmd.Flags().StringVar(&opts.stateFile, "state-file", "", "Secure resume-state path (defaults to the system temporary directory)")
@@ -560,6 +568,7 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 		GitRefType:                  opts.targetGitRefType,
 		AllowedTargetAppID:          allowedTargetAppID,
 		AllowStateBackedAppRecovery: allowTargetAppRecovery,
+		AddMissingServices:          opts.addMissingServices,
 	})
 	if err != nil {
 		return err
@@ -942,6 +951,7 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 		GitRefType:             opts.targetGitRefType,
 		AllowedTargetAppIDs:    allowedTargetAppIDs,
 		StateBackedAppRecovery: stateBackedRecovery,
+		AddMissingServices:     opts.addMissingServices,
 	})
 	if err != nil {
 		return err

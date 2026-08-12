@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/wodby/wodby-cli/pkg/api/rest"
 )
 
 const wodbyCIPipelinePath = ".wodby/pipeline.yml"
@@ -24,6 +25,7 @@ type TargetPreflightOptions struct {
 	AllowStateBackedAppRecovery bool
 	AllowedTargetAppIDs         map[string]int
 	StateBackedAppRecovery      map[string]bool
+	AddMissingServices          bool
 }
 
 // PreparedMigration is an in-memory, secret-free target mapping. It is rebuilt
@@ -34,23 +36,25 @@ type PreparedMigration struct {
 	Instances          []PreparedInstance
 	Apps               []PreparedAppMigration
 	StackConfiguration PreparedStackConfiguration
+	StackAdditions     []PreparedStackServiceAddition
 }
 
 type PreparedAppMigration struct {
 	App                AppExport
 	Instances          []PreparedInstance
 	StackConfiguration PreparedStackConfiguration
+	StackAdditions     []PreparedStackServiceAddition
 }
 
 // ForApp returns the single-app target mapping consumed by MigrationExecutor.
 func (p PreparedMigration) ForApp(sourceUUID string) (PreparedMigration, bool) {
 	for _, app := range p.Apps {
 		if app.App.App.UUID == sourceUUID {
-			return PreparedMigration{App: app.App, Instances: app.Instances, Apps: []PreparedAppMigration{app}, StackConfiguration: app.StackConfiguration}, true
+			return PreparedMigration{App: app.App, Instances: app.Instances, Apps: []PreparedAppMigration{app}, StackConfiguration: app.StackConfiguration, StackAdditions: app.StackAdditions}, true
 		}
 	}
 	if p.App.App.UUID == sourceUUID {
-		return PreparedMigration{App: p.App, Instances: p.Instances, StackConfiguration: p.StackConfiguration}, true
+		return PreparedMigration{App: p.App, Instances: p.Instances, StackConfiguration: p.StackConfiguration, StackAdditions: p.StackAdditions}, true
 	}
 	return PreparedMigration{}, false
 }
@@ -68,6 +72,7 @@ type PreparedInstance struct {
 	DisableCronSchedules bool
 	DisableCustomRoutes  bool
 	TargetEnvType        string
+	StackAdditions       []PreparedStackServiceAddition
 }
 
 // PreparedStackConfiguration is the application-wide configuration applied to
@@ -75,6 +80,14 @@ type PreparedInstance struct {
 // refs remain instance-level because Wodby 2 models them on app services.
 type PreparedStackConfiguration struct {
 	Services map[string]PreparedStackServiceConfiguration
+}
+
+type PreparedStackServiceAddition struct {
+	Name              string
+	Title             string
+	ServiceID         int
+	ServiceRevisionID int
+	Inspection        TargetStackServiceInspection
 }
 
 type PreparedStackServiceConfiguration struct {
@@ -240,6 +253,9 @@ func (c *TargetClient) PreflightTarget(
 		if len(preparedApp.Instances) != len(planInstances) {
 			return PreparedMigration{}, errors.Errorf("migration plan instance set does not match source app %q", appExport.App.UUID)
 		}
+		stackAdditions, additionFindings := mergePreparedStackAdditions(appExport.App.Name, preparedApp.Instances)
+		preparedApp.StackAdditions = stackAdditions
+		findings = append(findings, additionFindings...)
 		sort.SliceStable(preparedApp.Instances, func(i, j int) bool {
 			return compareInstance(preparedApp.Instances[i].Source, preparedApp.Instances[j].Source) < 0
 		})
@@ -270,6 +286,7 @@ func (c *TargetClient) PreflightTarget(
 		prepared.App = prepared.Apps[0].App
 		prepared.Instances = prepared.Apps[0].Instances
 		prepared.StackConfiguration = prepared.Apps[0].StackConfiguration
+		prepared.StackAdditions = prepared.Apps[0].StackAdditions
 	}
 	findings = append(findings, targetServiceCapacityFindings(plan, prepared, opts)...)
 	if err := plan.AddReviewItems(findings...); err != nil {
@@ -574,16 +591,59 @@ func (c *TargetClient) preflightInstance(
 		}
 		inspection, exists := byName[servicePlan.TargetName]
 		if !exists {
-			if sourceService.Enabled {
+			if !sourceService.Enabled {
+				continue
+			}
+			if !opts.AddMissingServices && !servicePlan.AddToStack {
 				findings = append(findings, ReviewItem{
 					Severity: SeverityBlocking,
 					App:      app.Name,
 					Instance: source.Name,
 					Subject:  "service " + sourceService.Name,
-					Message:  fmt.Sprintf("target stack has no service named %q", servicePlan.TargetName),
+					Message:  fmt.Sprintf("target stack has no service named %q; rerun with --add-missing-services or map it to an existing stack service", servicePlan.TargetName),
 				})
+				continue
 			}
-			continue
+			catalogService, serviceRevision, resolveErr := c.ResolveServiceExact(ctx, targetOrgID, servicePlan.TargetName)
+			if resolveErr != nil {
+				var apiErr *rest.APIError
+				if errors.As(resolveErr, &apiErr) && apiErr.StatusCode == 404 {
+					findings = append(findings, ReviewItem{
+						Severity: SeverityBlocking,
+						App:      app.Name,
+						Instance: source.Name,
+						Subject:  "service " + sourceService.Name,
+						Message:  fmt.Sprintf("target stack has no service named %q and no exact accessible Wodby 2 service could be added; use --target-service-map with an available service name", servicePlan.TargetName),
+					})
+					continue
+				}
+				return PreparedInstance{}, nil, resolveErr
+			}
+			if servicePlan.AddToStack {
+				if servicePlan.CatalogServiceID != catalogService.ID || servicePlan.CatalogServiceRevID != serviceRevision.ID {
+					return PreparedInstance{}, nil, errors.Errorf("reviewed additional service %q no longer matches service ID %d and revision ID %d", servicePlan.TargetName, servicePlan.CatalogServiceID, servicePlan.CatalogServiceRevID)
+				}
+			} else {
+				servicePlan.AddToStack = true
+				servicePlan.CatalogServiceID = catalogService.ID
+				servicePlan.CatalogServiceRevID = serviceRevision.ID
+			}
+			inspection = TargetStackServiceInspection{
+				StackService: TargetStackService{
+					Name: servicePlan.TargetName, Title: catalogService.Title, Type: serviceRevision.Type,
+					ServiceRevID: serviceRevision.ID, ServiceRevName: serviceRevision.Name,
+					ServiceRevVersion: serviceRevision.Version, Replicas: 1,
+				},
+				ServiceRevision: serviceRevision,
+			}
+			byName[servicePlan.TargetName] = inspection
+			findings = append(findings, ReviewItem{
+				Severity: SeverityConfirmation,
+				App:      app.Name,
+				Instance: source.Name,
+				Subject:  "additional stack service " + servicePlan.TargetName,
+				Message:  fmt.Sprintf("target stack does not include %q; exact Wodby 2 service ID %d (revision ID %d) will be added to the app's dedicated stack", servicePlan.TargetName, catalogService.ID, serviceRevision.ID),
+			})
 		}
 		if sourceService.Enabled && sourceService.Name == "sshd" &&
 			servicePlan.Action == "substitute" && !isPHPSSHDerivativeTarget(inspection) {
@@ -596,7 +656,7 @@ func (c *TargetClient) preflightInstance(
 			})
 			continue
 		}
-		if pinned {
+		if pinned && !servicePlan.AddToStack {
 			if servicePlan.TargetID <= 0 || servicePlan.TargetServiceRevID <= 0 {
 				return PreparedInstance{}, nil, errors.Errorf(
 					"reviewed target service %q is missing immutable IDs",
@@ -624,8 +684,10 @@ func (c *TargetClient) preflightInstance(
 			continue
 		}
 		targetOwners[servicePlan.TargetName] = sourceService.Name
-		servicePlan.TargetID = inspection.StackService.ID
-		servicePlan.TargetServiceRevID = inspection.StackService.ServiceRevID
+		if !servicePlan.AddToStack {
+			servicePlan.TargetID = inspection.StackService.ID
+			servicePlan.TargetServiceRevID = inspection.StackService.ServiceRevID
+		}
 		if sourceService.Enabled {
 			versionFinding, hasVersionFinding, err := resolveServiceVersion(
 				servicePlan,
@@ -674,6 +736,20 @@ func (c *TargetClient) preflightInstance(
 		DisableCronSchedules: disableCronSchedules,
 		DisableCustomRoutes:  disableCustomRoutes,
 		TargetEnvType:        strings.ToUpper(strings.TrimSpace(plan.TargetEnvType)),
+	}
+	for _, servicePlan := range plan.Services {
+		if !servicePlan.AddToStack {
+			continue
+		}
+		mapping, ok := preparedServices[servicePlan.SourceName]
+		if !ok {
+			continue
+		}
+		prepared.StackAdditions = append(prepared.StackAdditions, PreparedStackServiceAddition{
+			Name: servicePlan.TargetName, Title: mapping.Target.StackService.Title,
+			ServiceID: servicePlan.CatalogServiceID, ServiceRevisionID: servicePlan.CatalogServiceRevID,
+			Inspection: mapping.Target,
+		})
 	}
 	for _, sourceService := range source.Services {
 		for _, variable := range sourceService.EnvVars {

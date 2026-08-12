@@ -115,6 +115,88 @@ func TestEnsureGeneratedTargetStackDuplicatesOnceAndResumes(t *testing.T) {
 	}
 }
 
+func TestEnsureTargetStackServicesAddsReviewedServiceToDraft(t *testing.T) {
+	draftRevisionID := 13
+	created := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/stacks/5":
+			item := TargetStack{ID: 5, Name: "app-stack", Status: "OK", RevID: 12, OrgID: 1}
+			if created {
+				item.DraftRevID = &draftRevisionID
+			}
+			writeTargetExecutionJSON(t, w, item)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/stack-revisions/12/services":
+			writeTargetExecutionJSON(t, w, []TargetStackService{{ID: 11, Name: "php", ServiceRevID: 101}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/stack-revisions/13":
+			writeTargetExecutionJSON(t, w, TargetStackRevision{ID: 13, StackID: 5, Number: 2, Draft: true})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/stack-revisions/13/services":
+			writeTargetExecutionJSON(t, w, []TargetStackService{
+				{ID: 31, Name: "php", ServiceRevID: 101},
+				{ID: 32, Name: "search", Title: "Search", ServiceRevID: 202},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/service-revisions/101":
+			writeTargetExecutionJSON(t, w, TargetServiceRevision{ID: 101, ServiceID: 201, Name: "php"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/service-revisions/202":
+			writeTargetExecutionJSON(t, w, TargetServiceRevision{ID: 202, ServiceID: 302, Name: "search"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/stack-services":
+			var body TargetCreateStackServiceInput
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.StackID != 5 || body.ServiceID != 302 || body.Name != "search" || body.ServiceRevPinned == nil || !*body.ServiceRevPinned {
+				t.Fatalf("stack service body = %#v", body)
+			}
+			created = true
+			writeTargetExecutionJSON(t, w, TargetStackService{ID: 32, Name: "search", Title: "Search", ServiceRevID: 202})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	state, statePath := newExecutorTestState(t)
+	client := mustTargetExecutionClient(t, server.URL)
+	executor := &MigrationExecutor{target: client, statePath: statePath}
+	base := TargetStackServiceInspection{
+		StackService:    TargetStackService{ID: 11, Name: "php", ServiceRevID: 101},
+		ServiceRevision: TargetServiceRevision{ID: 101, ServiceID: 201, Name: "php"},
+	}
+	additional := TargetStackServiceInspection{
+		StackService:    TargetStackService{Name: "search", Title: "Search", ServiceRevID: 202},
+		ServiceRevision: TargetServiceRevision{ID: 202, ServiceID: 302, Name: "search"},
+	}
+	prepared := PreparedMigration{
+		App: AppExport{App: App{UUID: "app-1", Name: "demo"}},
+		Instances: []PreparedInstance{{
+			Source:        Instance{UUID: "instance-1", Name: "prod"},
+			Stack:         TargetStack{ID: 5, Name: "app-stack", Status: "OK", RevID: 12, OrgID: 1},
+			StackServices: []TargetStackServiceInspection{base},
+			Services: map[string]PreparedService{
+				"search": {Target: additional},
+			},
+			EffectiveState: map[string]bool{"php": true, "search": true},
+		}},
+		StackAdditions: []PreparedStackServiceAddition{{
+			Name: "search", Title: "Search", ServiceID: 302, ServiceRevisionID: 202, Inspection: additional,
+		}},
+	}
+	plan := Plan{Target: PlanTarget{OrgID: 1}, Apps: []AppPlan{{
+		SourceUUID: "app-1", Instances: []InstancePlan{{SourceUUID: "instance-1", Stack: StackPlan{CreateTarget: true}}},
+	}}}
+	bound, err := executor.ensureTargetStackServices(context.Background(), state, plan, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created || bound.Instances[0].Stack.RevID != draftRevisionID || bound.Instances[0].Services["search"].Target.StackService.ID != 32 {
+		t.Fatalf("bound additional stack service = %#v", bound.Instances[0])
+	}
+	operation := state.App.Operations[operationKey("stack_service_add", "search")]
+	if operation.Status != MigrationOperationSucceeded || operation.TargetID != 32 {
+		t.Fatalf("stack service operation = %#v", operation)
+	}
+}
+
 func TestLoadStateUsesInstanceSourceIdentity(t *testing.T) {
 	export, prepared := refreshDataImportFixture()
 	export.Source = &ExportSource{Kind: "instance", UUID: "instance-1"}

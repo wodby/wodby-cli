@@ -283,6 +283,16 @@ func pinReviewedInstance(current *InstancePlan, reviewed InstancePlan) error {
 		}
 		service.TargetVersion = reviewedService.TargetVersion
 		service.VersionAction = reviewedService.VersionAction
+		if reviewedService.AddToStack {
+			if reviewedService.CatalogServiceID <= 0 || reviewedService.CatalogServiceRevID <= 0 ||
+				reviewedService.TargetID != 0 || reviewedService.TargetServiceRevID != 0 {
+				return invalidPlanError("reviewed additional target service pins are invalid")
+			}
+			service.AddToStack = true
+			service.CatalogServiceID = reviewedService.CatalogServiceID
+			service.CatalogServiceRevID = reviewedService.CatalogServiceRevID
+			continue
+		}
 		if reviewedService.TargetID == 0 && reviewedService.TargetServiceRevID == 0 {
 			continue
 		}

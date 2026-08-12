@@ -55,6 +55,10 @@ func PrintReview(w io.Writer, plan Plan) {
 					if service.Enabled {
 						state = "enabled"
 					}
+					stackChange := "reuse"
+					if service.AddToStack {
+						stackChange = "add service"
+					}
 					rows = append(rows, []string{
 						service.SourceName,
 						target,
@@ -63,11 +67,12 @@ func PrintReview(w io.Writer, plan Plan) {
 						emptyDash(service.VersionAction),
 						state,
 						service.Action,
+						stackChange,
 						strconv.Itoa(service.EnvVars),
 						strconv.Itoa(service.CronJobs),
 					})
 				}
-				printReviewTable(w, "      ", []string{"Source", "Target", "Source version", "Target version", "Version action", "State", "Action", "Env vars", "Cron jobs"}, rows)
+				printReviewTable(w, "      ", []string{"Source", "Target", "Source version", "Target version", "Version action", "State", "Action", "Stack change", "Env vars", "Cron jobs"}, rows)
 			}
 			if len(instance.Routes) != 0 {
 				fmt.Fprintf(w, "    Routes:\n")

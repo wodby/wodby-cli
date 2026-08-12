@@ -6,6 +6,36 @@ import (
 	"strings"
 )
 
+func mergePreparedStackAdditions(appName string, instances []PreparedInstance) ([]PreparedStackServiceAddition, []ReviewItem) {
+	byName := map[string]PreparedStackServiceAddition{}
+	findings := []ReviewItem{}
+	for _, instance := range instances {
+		for _, addition := range instance.StackAdditions {
+			current, exists := byName[addition.Name]
+			if exists && (current.ServiceID != addition.ServiceID || current.ServiceRevisionID != addition.ServiceRevisionID) {
+				findings = append(findings, stackConfigBlocker(
+					appName,
+					instance.Source.Name,
+					"additional stack service "+addition.Name,
+					"app instances resolve different Wodby 2 service revisions for one shared stack",
+				))
+				continue
+			}
+			byName[addition.Name] = addition
+		}
+	}
+	names := make([]string, 0, len(byName))
+	for name := range byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	result := make([]PreparedStackServiceAddition, 0, len(names))
+	for _, name := range names {
+		result = append(result, byName[name])
+	}
+	return result, findings
+}
+
 type stackConfigServiceInstance struct {
 	instance PreparedInstance
 	source   Service

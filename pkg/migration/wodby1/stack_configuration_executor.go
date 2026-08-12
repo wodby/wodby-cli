@@ -11,6 +11,86 @@ import (
 
 const stackPublishOperation = "stack_config_publish"
 
+func (e *MigrationExecutor) ensureTargetStackServices(
+	ctx context.Context,
+	state *MigrationState,
+	plan Plan,
+	prepared PreparedMigration,
+) (PreparedMigration, error) {
+	if len(prepared.StackAdditions) == 0 || len(prepared.Instances) == 0 {
+		return prepared, nil
+	}
+	current, err := e.target.GetStack(ctx, prepared.Instances[0].Stack.ID)
+	if err != nil {
+		return PreparedMigration{}, errors.Wrap(err, "read target stack before adding services")
+	}
+	if current.OrgID != plan.Target.OrgID || current.Public {
+		return PreparedMigration{}, errors.New("target stack service additions no longer match migration ownership")
+	}
+	if !migrationCreatesTargetStack(plan, prepared) && current.DraftRevID != nil && !stackConfigurationStarted(state) {
+		return PreparedMigration{}, errors.New("explicit target stack has an unpublished draft; publish or discard it before applying the migration")
+	}
+	revisionID := current.RevID
+	if current.DraftRevID != nil {
+		revisionID = *current.DraftRevID
+	}
+	inspections, err := e.target.InspectStackRevision(ctx, revisionID)
+	if err != nil {
+		return PreparedMigration{}, errors.Wrap(err, "inspect target stack before adding services")
+	}
+	byName, err := indexStackInspections(inspections)
+	if err != nil {
+		return PreparedMigration{}, err
+	}
+	e.reportProgress("Step: add mapped services missing from target stack %q (ID %d).", current.Name, current.ID)
+	for _, addition := range prepared.StackAdditions {
+		matching, exists := byName[addition.Name]
+		matches := exists && matching.StackService.ServiceRevID == addition.ServiceRevisionID
+		if exists && !matches {
+			return PreparedMigration{}, errors.Errorf("target stack service %q uses revision ID %d, expected reviewed revision ID %d", addition.Name, matching.StackService.ServiceRevID, addition.ServiceRevisionID)
+		}
+		operation := operationKey("stack_service_add", addition.Name)
+		run, err := e.beginStackConfigurationMutation(state, operation, matches, matching.StackService.ID)
+		if err != nil {
+			return PreparedMigration{}, err
+		}
+		if !run {
+			continue
+		}
+		pinned := true
+		e.reportProgress("  Adding service %q from Wodby 2 service ID %d (revision ID %d)...", addition.Name, addition.ServiceID, addition.ServiceRevisionID)
+		created, createErr := e.target.CreateStackService(ctx, TargetCreateStackServiceInput{
+			StackID: current.ID, ServiceID: addition.ServiceID, Name: addition.Name,
+			Title: addition.Title, Required: false, Replicas: 1, ServiceRevPinned: &pinned,
+		})
+		if createErr != nil {
+			return PreparedMigration{}, e.recordStackConfigurationMutationError(state, operation, "stack service creation", createErr)
+		}
+		if created.ServiceRevID != addition.ServiceRevisionID {
+			if markErr := state.MarkAppOperationAmbiguousWithIDs(operation, created.ID, 0); markErr != nil {
+				return PreparedMigration{}, markErr
+			}
+			if saveErr := SaveMigrationState(e.statePath, state); saveErr != nil {
+				return PreparedMigration{}, saveErr
+			}
+			return PreparedMigration{}, errors.Errorf("added stack service %q resolved to revision ID %d instead of reviewed revision ID %d; inspect the target before resuming", addition.Name, created.ServiceRevID, addition.ServiceRevisionID)
+		}
+		if err := e.completeStackConfigurationMutation(state, operation, created.ID); err != nil {
+			return PreparedMigration{}, err
+		}
+		e.reportProgress("  Stack service %q added (ID %d).", addition.Name, created.ID)
+	}
+	current, err = e.target.GetStack(ctx, current.ID)
+	if err != nil {
+		return PreparedMigration{}, errors.Wrap(err, "read target stack after adding services")
+	}
+	revisionID = current.RevID
+	if current.DraftRevID != nil {
+		revisionID = *current.DraftRevID
+	}
+	return e.bindTargetStackRevision(ctx, prepared, current, revisionID, true)
+}
+
 func (e *MigrationExecutor) bindAppliedTargetStack(
 	ctx context.Context,
 	state *MigrationState,
@@ -32,13 +112,13 @@ func (e *MigrationExecutor) bindAppliedTargetStack(
 	if err != nil {
 		return PreparedMigration{}, errors.Wrap(err, "read applied target stack")
 	}
-	if stackConfigurationHasChanges(prepared.StackConfiguration) {
+	if stackConfigurationHasChanges(prepared.StackConfiguration) || len(prepared.StackAdditions) != 0 {
 		operation, ok := state.App.Operations[stackPublishOperation]
 		if !ok || operation.Status != MigrationOperationSucceeded || operation.TargetID != stack.ID || operation.TaskID != stack.RevID {
 			return PreparedMigration{}, errors.New("migration state does not contain the published target stack configuration revision")
 		}
 	}
-	return e.bindGeneratedStack(ctx, prepared, stack)
+	return e.bindTargetStackRevision(ctx, prepared, stack, stack.RevID, len(prepared.StackAdditions) != 0)
 }
 
 func (e *MigrationExecutor) ensureTargetStackConfiguration(
@@ -47,7 +127,7 @@ func (e *MigrationExecutor) ensureTargetStackConfiguration(
 	plan Plan,
 	prepared PreparedMigration,
 ) (PreparedMigration, error) {
-	if len(prepared.Instances) == 0 || !stackConfigurationHasChanges(prepared.StackConfiguration) {
+	if len(prepared.Instances) == 0 || (!stackConfigurationHasChanges(prepared.StackConfiguration) && len(prepared.StackAdditions) == 0) {
 		return prepared, nil
 	}
 	stack := prepared.Instances[0].Stack
@@ -107,7 +187,7 @@ func (e *MigrationExecutor) ensureTargetStackConfiguration(
 			if operation.TargetID != current.ID || operation.TaskID != current.RevID {
 				return PreparedMigration{}, errors.New("published target stack revision no longer matches migration state")
 			}
-			return e.bindGeneratedStack(ctx, prepared, current)
+			return e.bindTargetStackRevision(ctx, prepared, current, current.RevID, true)
 		}
 		// A publish response may have been lost. If every configuration item is
 		// present in the active revision, recover the idempotent operation.
@@ -132,7 +212,7 @@ func (e *MigrationExecutor) ensureTargetStackConfiguration(
 			return PreparedMigration{}, err
 		}
 		e.reportProgress("Recovered published target stack revision ID %d from migration state.", current.RevID)
-		return e.bindGeneratedStack(ctx, prepared, current)
+		return e.bindTargetStackRevision(ctx, prepared, current, current.RevID, true)
 	}
 
 	if operationSucceeded(&state.App, stackPublishOperation) {
@@ -160,7 +240,7 @@ func (e *MigrationExecutor) ensureTargetStackConfiguration(
 		return PreparedMigration{}, err
 	}
 	e.reportProgress("Target stack %q configuration published as revision ID %d.", published.Name, published.RevID)
-	return e.bindGeneratedStack(ctx, prepared, published)
+	return e.bindTargetStackRevision(ctx, prepared, published, published.RevID, true)
 }
 
 func (e *MigrationExecutor) ensureStackServiceVersionOptions(ctx context.Context, state *MigrationState, service TargetStackService, desired []TargetStackServiceOptionInput) error {

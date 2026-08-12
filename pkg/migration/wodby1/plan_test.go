@@ -1227,8 +1227,8 @@ func TestBuildPlanMarksUnresolvedPayloadsForReview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Status != "blocked" || plan.Summary.Blocking != 1 ||
-		plan.Summary.Confirmation < 3 || plan.Summary.Manual != 0 {
+	if plan.Status != "requires_review" || plan.Summary.Blocking != 0 ||
+		plan.Summary.Confirmation < 4 || plan.Summary.Manual != 0 {
 		t.Fatalf("status = %q, summary = %#v, review = %#v", plan.Status, plan.Summary, plan.Review)
 	}
 }

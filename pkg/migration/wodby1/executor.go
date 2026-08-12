@@ -184,6 +184,10 @@ func (e *MigrationExecutor) Prepare(
 	if err != nil {
 		return MigrationPhaseResult{}, err
 	}
+	prepared, err = e.ensureTargetStackServices(ctx, state, plan, prepared)
+	if err != nil {
+		return MigrationPhaseResult{}, err
+	}
 	prepared, err = e.ensureTargetStackConfiguration(ctx, state, plan, prepared)
 	if err != nil {
 		return MigrationPhaseResult{}, err
@@ -420,15 +424,30 @@ func (e *MigrationExecutor) bindGeneratedStack(
 	prepared PreparedMigration,
 	generated TargetStack,
 ) (PreparedMigration, error) {
-	revision, err := e.target.GetStackRevision(ctx, generated.RevID)
+	return e.bindTargetStackRevision(ctx, prepared, generated, generated.RevID, false)
+}
+
+func (e *MigrationExecutor) bindTargetStackRevision(
+	ctx context.Context,
+	prepared PreparedMigration,
+	generated TargetStack,
+	revisionID int,
+	requireAdditions bool,
+) (PreparedMigration, error) {
+	additionByName := make(map[string]PreparedStackServiceAddition, len(prepared.StackAdditions))
+	for _, addition := range prepared.StackAdditions {
+		additionByName[addition.Name] = addition
+	}
+	revision, err := e.target.getStackRevision(ctx, revisionID, true)
 	if err != nil {
 		return PreparedMigration{}, errors.Wrap(err, "read configured target stack revision")
 	}
 	if revision.StackID != generated.ID {
 		return PreparedMigration{}, errors.New("configured target stack revision belongs to a different stack")
 	}
+	generated.RevID = revisionID
 	generated.RevisionManifest = revision.Manifest
-	inspections, err := e.target.InspectStackRevision(ctx, generated.RevID)
+	inspections, err := e.target.InspectStackRevision(ctx, revisionID)
 	if err != nil {
 		return PreparedMigration{}, errors.Wrap(err, "inspect generated target stack")
 	}
@@ -443,24 +462,42 @@ func (e *MigrationExecutor) bindGeneratedStack(
 		instance.Services = clonePreparedServices(instance.Services)
 		instance.Imports = clonePreparedImports(instance.Imports)
 		instance.ImportByComponent = clonePreparedImports(instance.ImportByComponent)
+		instance.EffectiveState = clonePreparedEffectiveState(instance.EffectiveState)
 		blueprintByName, err := indexStackInspections(instance.StackServices)
 		if err != nil {
 			return PreparedMigration{}, err
 		}
-		for name, target := range byName {
-			blueprintService, ok := blueprintByName[name]
+		for name, blueprintService := range blueprintByName {
+			target, ok := byName[name]
 			if !ok || blueprintService.StackService.ServiceRevID != target.StackService.ServiceRevID {
 				return PreparedMigration{}, errors.Errorf("generated target stack service %q does not match the reviewed catalog revision", name)
 			}
 		}
-		if len(byName) != len(blueprintByName) {
-			return PreparedMigration{}, errors.New("generated target stack service set does not match the reviewed catalog revision")
+		for name, target := range byName {
+			if _, exists := blueprintByName[name]; exists {
+				continue
+			}
+			addition, exists := additionByName[name]
+			if !exists || addition.ServiceRevisionID != target.StackService.ServiceRevID {
+				return PreparedMigration{}, errors.Errorf("generated target stack contains unexpected service %q", name)
+			}
+		}
+		if requireAdditions {
+			for name, addition := range additionByName {
+				target, exists := byName[name]
+				if !exists || target.StackService.ServiceRevID != addition.ServiceRevisionID {
+					return PreparedMigration{}, errors.Errorf("generated target stack is missing reviewed additional service %q", name)
+				}
+			}
 		}
 		instance.Stack = generated
 		instance.StackServices = inspections
 		for sourceName, mapping := range instance.Services {
 			target, ok := byName[mapping.Target.StackService.Name]
 			if !ok {
+				if _, planned := additionByName[mapping.Target.StackService.Name]; planned && !requireAdditions {
+					continue
+				}
 				return PreparedMigration{}, errors.Errorf("generated target stack is missing mapped service %q", mapping.Target.StackService.Name)
 			}
 			mapping.Target = target
@@ -469,6 +506,9 @@ func (e *MigrationExecutor) bindGeneratedStack(
 		for key, item := range instance.Imports {
 			target, ok := byName[item.StackService.StackService.Name]
 			if !ok {
+				if _, planned := additionByName[item.ServiceName]; planned && !requireAdditions {
+					continue
+				}
 				return PreparedMigration{}, errors.Errorf("generated target stack is missing import service %q", item.ServiceName)
 			}
 			item.StackService = target
@@ -477,13 +517,21 @@ func (e *MigrationExecutor) bindGeneratedStack(
 		for key, item := range instance.ImportByComponent {
 			target, ok := byName[item.StackService.StackService.Name]
 			if !ok {
+				if _, planned := additionByName[item.ServiceName]; planned && !requireAdditions {
+					continue
+				}
 				return PreparedMigration{}, errors.Errorf("generated target stack is missing import service %q", item.ServiceName)
 			}
 			item.StackService = target
 			instance.ImportByComponent[key] = item
 		}
+		for name := range byName {
+			if _, exists := instance.EffectiveState[name]; !exists {
+				instance.EffectiveState[name] = false
+			}
+		}
 	}
-	prepared.Apps = []PreparedAppMigration{{App: prepared.App, Instances: prepared.Instances, StackConfiguration: prepared.StackConfiguration}}
+	prepared.Apps = []PreparedAppMigration{{App: prepared.App, Instances: prepared.Instances, StackConfiguration: prepared.StackConfiguration, StackAdditions: prepared.StackAdditions}}
 	return prepared, nil
 }
 
@@ -497,6 +545,14 @@ func clonePreparedServices(source map[string]PreparedService) map[string]Prepare
 
 func clonePreparedImports(source map[string]PreparedImport) map[string]PreparedImport {
 	result := make(map[string]PreparedImport, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
+}
+
+func clonePreparedEffectiveState(source map[string]bool) map[string]bool {
+	result := make(map[string]bool, len(source))
 	for key, value := range source {
 		result[key] = value
 	}

@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	MigrationPlanSchema = "wodby1-migration-plan/v7"
+	MigrationPlanSchema = "wodby1-migration-plan/v8"
 
 	SeverityBlocking     = "blocking"
 	SeverityConfirmation = "requires_confirmation"
@@ -188,18 +188,21 @@ type ImportPlan struct {
 }
 
 type ServicePlan struct {
-	SourceName         string `json:"sourceName"`
-	SourceVersion      string `json:"sourceVersion,omitempty"`
-	TargetName         string `json:"targetName,omitempty"`
-	TargetVersion      string `json:"targetVersion,omitempty"`
-	VersionAction      string `json:"versionAction,omitempty"`
-	VersionExplicit    bool   `json:"versionExplicit,omitempty"`
-	TargetID           int    `json:"targetId,omitempty"`
-	TargetServiceRevID int    `json:"targetServiceRevId,omitempty"`
-	Enabled            bool   `json:"enabled"`
-	Action             string `json:"action"`
-	EnvVars            int    `json:"envVars"`
-	CronJobs           int    `json:"cronJobs"`
+	SourceName          string `json:"sourceName"`
+	SourceVersion       string `json:"sourceVersion,omitempty"`
+	TargetName          string `json:"targetName,omitempty"`
+	TargetVersion       string `json:"targetVersion,omitempty"`
+	VersionAction       string `json:"versionAction,omitempty"`
+	VersionExplicit     bool   `json:"versionExplicit,omitempty"`
+	TargetID            int    `json:"targetId,omitempty"`
+	TargetServiceRevID  int    `json:"targetServiceRevId,omitempty"`
+	AddToStack          bool   `json:"addToStack,omitempty"`
+	CatalogServiceID    int    `json:"catalogServiceId,omitempty"`
+	CatalogServiceRevID int    `json:"catalogServiceRevId,omitempty"`
+	Enabled             bool   `json:"enabled"`
+	Action              string `json:"action"`
+	EnvVars             int    `json:"envVars"`
+	CronJobs            int    `json:"cronJobs"`
 }
 
 type RoutePlan struct {
@@ -1057,7 +1060,7 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 		}
 	}
 	if len(service.Configuration) != 0 {
-		plan.addReview(SeverityBlocking, app.Name, instance.Name, "service "+service.Name, "source service configuration contains overrides that the migration executor cannot apply safely")
+		plan.addReview(SeverityConfirmation, app.Name, instance.Name, "service "+service.Name, fmt.Sprintf("%d service setting override(s) will be applied to the shared target stack", len(service.Configuration)))
 	}
 	if servicePlan.EnvVars > 0 {
 		plan.addReview(SeverityConfirmation, app.Name, instance.Name, "service "+service.Name, fmt.Sprintf("%d custom environment variable(s) will be reconciled on the mapped target service", servicePlan.EnvVars))

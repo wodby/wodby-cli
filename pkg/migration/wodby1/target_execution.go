@@ -32,6 +32,10 @@ const (
 	TargetRouteSettingRequestBodySize = "REQUEST_BODY_SIZE"
 	TargetRouteSettingSessionAffinity = "SESSION_AFFINITY"
 	TargetRouteSettingPathRewrite     = "PATH_REWRITE"
+	TargetRouteSettingHSTS            = "HSTS"
+
+	TargetRouteSettingHSTSEnabled           = "enabled"
+	TargetRouteSettingHSTSIncludeSubdomains = "include_subdomains"
 )
 
 // TargetAmbiguousMatchError indicates that a natural-key lookup returned more
@@ -2647,7 +2651,8 @@ func targetValidRouteSetting(name string) bool {
 		TargetRouteSettingNoIndex,
 		TargetRouteSettingRequestBodySize,
 		TargetRouteSettingSessionAffinity,
-		TargetRouteSettingPathRewrite:
+		TargetRouteSettingPathRewrite,
+		TargetRouteSettingHSTS:
 		return true
 	default:
 		return false

@@ -995,6 +995,24 @@ func TestTargetExecutionRejectsWrongResponseRelationships(t *testing.T) {
 	}
 }
 
+func TestTargetValidRouteSettingsIncludesHSTS(t *testing.T) {
+	for _, name := range []string{
+		TargetRouteSettingHTTPSRedirect,
+		TargetRouteSettingNoIndex,
+		TargetRouteSettingRequestBodySize,
+		TargetRouteSettingSessionAffinity,
+		TargetRouteSettingPathRewrite,
+		TargetRouteSettingHSTS,
+	} {
+		if !targetValidRouteSetting(name) {
+			t.Fatalf("targetValidRouteSetting(%q) = false", name)
+		}
+	}
+	if targetValidRouteSetting("UNKNOWN") {
+		t.Fatal("targetValidRouteSetting(UNKNOWN) = true")
+	}
+}
+
 func mustTargetExecutionClient(t *testing.T, serverURL string) *TargetClient {
 	t.Helper()
 	client, err := NewTargetClient(types.APIConfig{Endpoint: serverURL + "/v1"})

@@ -1384,10 +1384,6 @@ func buildRoutePlan(plan *Plan, app App, instance Instance, domain Domain, basic
 		routePlan.ReviewRequired = true
 		plan.addReview(SeverityBlocking, app.Name, instance.Name, "route "+domain.Name, "custom TLS material requires an explicit secure migration path")
 	}
-	if domain.HSTS || domain.HSTSSubdomains {
-		routePlan.ReviewRequired = true
-		plan.addReview(SeverityBlocking, app.Name, instance.Name, "route "+domain.Name, "HSTS settings are not supported by the automated Wodby 2 route migration")
-	}
 	if protocol := strings.ToLower(strings.TrimSpace(domain.ServiceProtocol)); protocol != "" && protocol != "http" {
 		routePlan.ReviewRequired = true
 		plan.addReview(SeverityBlocking, app.Name, instance.Name, "route "+domain.Name, fmt.Sprintf("source route protocol %q is not supported by Wodby 2 app routes", domain.ServiceProtocol))
@@ -1411,6 +1407,13 @@ func buildRoutePlan(plan *Plan, app App, instance Instance, domain Domain, basic
 			routePlan.Settings,
 			RouteSettingPlan{Name: "NO_INDEX", Value: strconv.FormatBool(!*domain.Indexed)},
 		)
+	}
+	if domain.HSTS {
+		value := TargetRouteSettingHSTSEnabled
+		if domain.HSTSSubdomains {
+			value = TargetRouteSettingHSTSIncludeSubdomains
+		}
+		routePlan.Settings = append(routePlan.Settings, RouteSettingPlan{Name: TargetRouteSettingHSTS, Value: value})
 	}
 
 	if routePlan.Redirect {

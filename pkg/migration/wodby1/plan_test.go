@@ -996,6 +996,101 @@ func TestBuildPlanPreservesIndexedTrueAsNoIndexFalse(t *testing.T) {
 	}
 }
 
+func TestBuildPlanPreservesHSTS(t *testing.T) {
+	port := 80
+	tests := []struct {
+		name        string
+		hsts        bool
+		subdomains  bool
+		wantSetting *RouteSettingPlan
+	}{
+		{
+			name:        "enabled",
+			hsts:        true,
+			wantSetting: &RouteSettingPlan{Name: TargetRouteSettingHSTS, Value: TargetRouteSettingHSTSEnabled},
+		},
+		{
+			name:        "include subdomains",
+			hsts:        true,
+			subdomains:  true,
+			wantSetting: &RouteSettingPlan{Name: TargetRouteSettingHSTS, Value: TargetRouteSettingHSTSIncludeSubdomains},
+		},
+		{
+			name:       "subdomains without HSTS has no effect",
+			subdomains: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			export := Export{
+				Schema: ExportSchemaV1,
+				App:    &App{UUID: "app-1", Name: "demo"},
+				Instances: []Instance{{
+					UUID: "inst-1", Name: "prod", Type: "prod", Stack: Stack{Name: "drupal10"},
+					Domains: []Domain{{
+						Name: "example.com", Type: "user", HSTS: tt.hsts, HSTSSubdomains: tt.subdomains,
+						Service: "nginx", PortNumber: &port,
+					}},
+				}},
+			}
+
+			plan, err := BuildPlan(export, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			settings := plan.Apps[0].Instances[0].Routes[0].Settings
+			if tt.wantSetting == nil {
+				if len(settings) != 0 {
+					t.Fatalf("settings = %#v, want none", settings)
+				}
+			} else if len(settings) != 1 || settings[0] != *tt.wantSetting {
+				t.Fatalf("settings = %#v, want %#v", settings, *tt.wantSetting)
+			}
+			if len(plan.Review) != 0 {
+				t.Fatalf("review = %#v, want no HSTS blocker", plan.Review)
+			}
+		})
+	}
+}
+
+func TestBuildRoutePlanPreservesHSTSOnRedirectRoute(t *testing.T) {
+	indexed := false
+	sslRequired := true
+	port := 80
+	plan := Plan{}
+	route := buildRoutePlan(
+		&plan,
+		App{Name: "demo"},
+		Instance{UUID: "inst-1", Name: "prod"},
+		Domain{
+			Name: "example.com", Type: "user", Service: "nginx", PortNumber: &port,
+			Indexed: &indexed, SSLRequired: &sslRequired, HSTS: true, HSTSSubdomains: true,
+			RedirectTarget: "www.example.com",
+		},
+		false,
+		PlanOptions{TargetScope: &TargetScopeDiscovery{
+			Cluster: TargetCluster{Capabilities: TargetClusterCapabilities{RedirectRoutes: true}},
+		}},
+		false,
+	)
+
+	if route.Action != "create_redirect" {
+		t.Fatalf("action = %q, want create_redirect", route.Action)
+	}
+	want := []RouteSettingPlan{
+		{Name: TargetRouteSettingHSTS, Value: TargetRouteSettingHSTSIncludeSubdomains},
+		{Name: TargetRouteSettingHTTPSRedirect, Value: "true"},
+		{Name: TargetRouteSettingNoIndex, Value: "true"},
+	}
+	if !reflect.DeepEqual(route.Settings, want) {
+		t.Fatalf("settings = %#v, want %#v", route.Settings, want)
+	}
+	if len(plan.Review) != 0 {
+		t.Fatalf("review = %#v, want no HSTS blocker", plan.Review)
+	}
+}
+
 func TestBuildPlanUsesVerifiedTargetDiscovery(t *testing.T) {
 	port := 80
 	export := Export{

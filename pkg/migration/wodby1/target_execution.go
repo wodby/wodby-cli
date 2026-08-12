@@ -532,12 +532,24 @@ type TargetUpdateStackServiceCronScheduleInput struct {
 }
 
 type TargetServiceManifest struct {
-	Name          string                          `json:"name"`
-	Raw           string                          `json:"raw,omitempty"`
-	Build         *TargetServiceBuildCapability   `json:"build,omitempty"`
-	Imports       []TargetServiceImportCapability `json:"imports,omitempty"`
-	CronSchedules []TargetServiceCronSchedule     `json:"cron,omitempty"`
-	Options       []TargetServiceOption           `json:"options,omitempty"`
+	Name          string                               `json:"name"`
+	Raw           string                               `json:"raw,omitempty"`
+	Build         *TargetServiceBuildCapability        `json:"build,omitempty"`
+	Imports       []TargetServiceImportCapability      `json:"imports,omitempty"`
+	Backups       []TargetServiceBackupCapability      `json:"backups,omitempty"`
+	Integrations  []TargetServiceIntegrationCapability `json:"integrations,omitempty"`
+	CronSchedules []TargetServiceCronSchedule          `json:"cron,omitempty"`
+	Options       []TargetServiceOption                `json:"options,omitempty"`
+}
+
+type TargetServiceBackupCapability struct {
+	Name  string `json:"name"`
+	Title string `json:"title,omitempty"`
+}
+
+type TargetServiceIntegrationCapability struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
 }
 
 type TargetServiceRevision struct {
@@ -1263,6 +1275,16 @@ func (c *TargetClient) GetServiceRevision(ctx context.Context, serviceRevID int)
 		for _, capability := range item.Manifest.Imports {
 			if strings.TrimSpace(capability.Name) == "" {
 				return TargetServiceRevision{}, errors.Errorf("target Wodby 2 service revision ID %d returned an import capability without a name", serviceRevID)
+			}
+		}
+		for _, capability := range item.Manifest.Backups {
+			if strings.TrimSpace(capability.Name) == "" {
+				return TargetServiceRevision{}, errors.Errorf("target Wodby 2 service revision ID %d returned a backup capability without a name", serviceRevID)
+			}
+		}
+		for _, capability := range item.Manifest.Integrations {
+			if strings.TrimSpace(capability.Name) == "" || strings.TrimSpace(capability.Type) == "" {
+				return TargetServiceRevision{}, errors.Errorf("target Wodby 2 service revision ID %d returned an invalid integration capability", serviceRevID)
 			}
 		}
 	}

@@ -100,6 +100,26 @@ func (e *MigrationExecutor) bindAppliedTargetStack(
 	if len(prepared.Instances) == 0 {
 		return PreparedMigration{}, errors.New("prepared migration has no target stack")
 	}
+	resolved := map[string]int{}
+	for index := range prepared.Integrations {
+		integration := &prepared.Integrations[index]
+		if integration.VariableProvider != nil {
+			providerOperation := state.App.Operations[operationKey("variable_provider", integration.Key)]
+			if providerOperation.Status != MigrationOperationSucceeded || providerOperation.TargetID <= 0 || providerOperation.TaskID <= 0 {
+				return PreparedMigration{}, errors.Errorf("migration state does not contain resolved variable provider %q", integration.Key)
+			}
+			integration.ProviderID = providerOperation.TargetID
+			integration.ProviderRevID = providerOperation.TaskID
+		}
+		operation := state.App.Operations[operationKey("integration_resolve", integration.Key)]
+		if operation.Status != MigrationOperationSucceeded || operation.TargetID <= 0 {
+			return PreparedMigration{}, errors.Errorf("migration state does not contain resolved integration %q", integration.Key)
+		}
+		resolved[integration.Key] = operation.TargetID
+	}
+	if err := bindPreparedIntegrationIDs(&prepared, resolved); err != nil {
+		return PreparedMigration{}, err
+	}
 	stackID := prepared.Instances[0].Stack.ID
 	if migrationCreatesTargetStack(plan, prepared) {
 		operation, ok := state.App.Operations[generatedStackOperation]
@@ -170,6 +190,9 @@ func (e *MigrationExecutor) ensureTargetStackConfiguration(
 			return PreparedMigration{}, err
 		}
 		if err := e.ensureStackServiceEnvVars(ctx, state, inspection.StackService, configuration.EnvVars); err != nil {
+			return PreparedMigration{}, err
+		}
+		if err := e.ensureStackServiceIntegrations(ctx, state, inspection.StackService, configuration.Integrations); err != nil {
 			return PreparedMigration{}, err
 		}
 		if err := e.ensureStackServiceCronSchedules(ctx, state, inspection.StackService, configuration.CronSchedules); err != nil {
@@ -384,6 +407,47 @@ func (e *MigrationExecutor) ensureStackServiceCronSchedules(ctx context.Context,
 	return nil
 }
 
+func (e *MigrationExecutor) ensureStackServiceIntegrations(ctx context.Context, state *MigrationState, service TargetStackService, desired []PreparedStackIntegrationLink) error {
+	if len(desired) == 0 {
+		return nil
+	}
+	current, err := e.target.ListStackServiceIntegrations(ctx, service.ID)
+	if err != nil {
+		return err
+	}
+	for _, link := range desired {
+		matches := []TargetStackServiceIntegration{}
+		for _, existing := range current {
+			if existing.Name == link.Name {
+				matches = append(matches, existing)
+			}
+		}
+		if len(matches) > 1 {
+			return &TargetAmbiguousMatchError{Resource: "stack service integration", Name: link.Name, Count: len(matches)}
+		}
+		if len(matches) == 1 && matches[0].IntegrationID != link.IntegrationID {
+			return errors.Errorf("stack service %q already has integration %q bound to ID %d instead of reviewed ID %d", service.Name, link.Name, matches[0].IntegrationID, link.IntegrationID)
+		}
+		operation := operationKey("stack_integration", service.Name, link.Name)
+		run, err := e.beginStackConfigurationMutation(state, operation, len(matches) == 1, service.ID)
+		if err != nil || !run {
+			return err
+		}
+		e.reportProgress("  Attaching integration ID %d as %q on stack service %q...", link.IntegrationID, link.Name, service.Name)
+		created, err := e.target.CreateStackServiceIntegration(ctx, service.ID, TargetCreateStackServiceIntegrationInput{
+			Name: link.Name, IntegrationID: link.IntegrationID,
+		})
+		if err != nil {
+			return e.recordStackConfigurationMutationError(state, operation, "stack service integration creation", err)
+		}
+		current = append(current, created)
+		if err := e.completeStackConfigurationMutation(state, operation, created.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (e *MigrationExecutor) beginStackConfigurationMutation(state *MigrationState, operation string, matches bool, targetID int) (bool, error) {
 	current, exists := state.App.Operations[operation]
 	if exists && current.Status == MigrationOperationSucceeded {
@@ -471,6 +535,21 @@ func (e *MigrationExecutor) targetStackConfigurationMatches(ctx context.Context,
 		for _, cron := range configuration.CronSchedules {
 			matches := matchingStackCronSchedules(crons, cron.Name, cron.EnvType)
 			if len(matches) != 1 || !stackCronScheduleMatches(matches[0], cron) {
+				return false, nil
+			}
+		}
+		integrations, err := e.target.ListStackServiceIntegrations(ctx, service.StackService.ID)
+		if err != nil {
+			return false, err
+		}
+		for _, desired := range configuration.Integrations {
+			matches := 0
+			for _, actual := range integrations {
+				if actual.Name == desired.Name && actual.IntegrationID == desired.IntegrationID {
+					matches++
+				}
+			}
+			if matches != 1 {
 				return false, nil
 			}
 		}

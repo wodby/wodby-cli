@@ -99,6 +99,18 @@ func (p Plan) ValidateReviewed() error {
 			return invalidPlanError("customer plan contains an invalid source app set")
 		}
 		seenApps[app.SourceUUID] = true
+		seenIntegrations := map[string]bool{}
+		for _, integration := range app.Integrations {
+			if integration.Key == "" || seenIntegrations[integration.Key] {
+				return invalidPlanError("customer plan contains an invalid integration set")
+			}
+			seenIntegrations[integration.Key] = true
+			validAction := integration.Action == integrationActionResolve && integration.ProviderID > 0 && integration.ProviderRevID > 0 ||
+				integration.Action == integrationActionVariableProvider && integration.ProviderID == 0 && integration.ProviderRevID == 0
+			if integration.ProviderName == "" || integration.Kind == "" || !validAction {
+				return invalidPlanError("customer plan contains an invalid target integration mapping")
+			}
+		}
 	}
 	if p.Source.Kind == "app" && (len(p.Apps) != 1 || p.Apps[0].SourceUUID != p.Source.ID) {
 		return invalidPlanError("customer app plan must contain exactly the approved source app")
@@ -171,6 +183,11 @@ func pinReviewedApp(current *AppPlan, reviewed AppPlan) error {
 	}
 	if err := pinReviewedRepository(current.Repository, reviewed.Repository); err != nil {
 		return err
+	}
+	if len(current.Integrations) == 0 {
+		current.Integrations = append([]IntegrationPlan(nil), reviewed.Integrations...)
+	} else if !sameIntegrationPlans(current.Integrations, reviewed.Integrations) {
+		return currentPlanDriftError("target integration mapping changed")
 	}
 	reviewedInstances := make(map[string]InstancePlan, len(reviewed.Instances))
 	for _, instance := range reviewed.Instances {

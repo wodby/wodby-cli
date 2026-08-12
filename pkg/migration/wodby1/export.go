@@ -230,20 +230,34 @@ type Repository struct {
 }
 
 type Instance struct {
-	UUID       string                 `json:"uuid"`
-	Name       string                 `json:"name"`
-	Title      string                 `json:"title"`
-	Type       string                 `json:"type"`
-	Status     string                 `json:"status,omitempty"`
-	Updated    int64                  `json:"updated,omitempty"`
-	Server     *Server                `json:"server,omitempty"`
-	Stack      Stack                  `json:"stack"`
-	Properties map[string]interface{} `json:"properties,omitempty"`
-	Attributes map[string]interface{} `json:"attributes,omitempty"`
-	BasicAuth  *BasicAuth             `json:"basic_auth,omitempty"`
-	Domains    []Domain               `json:"domains,omitempty"`
-	Services   []Service              `json:"services,omitempty"`
-	Backups    []Backup               `json:"backups,omitempty"`
+	UUID         string                 `json:"uuid"`
+	Name         string                 `json:"name"`
+	Title        string                 `json:"title"`
+	Type         string                 `json:"type"`
+	Status       string                 `json:"status,omitempty"`
+	Updated      int64                  `json:"updated,omitempty"`
+	Server       *Server                `json:"server,omitempty"`
+	Stack        Stack                  `json:"stack"`
+	Properties   map[string]interface{} `json:"properties,omitempty"`
+	Attributes   map[string]interface{} `json:"attributes,omitempty"`
+	BasicAuth    *BasicAuth             `json:"basic_auth,omitempty"`
+	Domains      []Domain               `json:"domains,omitempty"`
+	Services     []Service              `json:"services,omitempty"`
+	Backups      []Backup               `json:"backups,omitempty"`
+	BackupConfig *BackupConfig          `json:"backup_config,omitempty"`
+}
+
+type BackupConfig struct {
+	Enabled         bool   `json:"enabled"`
+	Depth           int    `json:"depth,omitempty"`
+	Time            string `json:"time,omitempty"`
+	Provider        string `json:"provider,omitempty"`
+	Region          string `json:"region,omitempty"`
+	Bucket          string `json:"bucket,omitempty"`
+	AccessKeyID     string `json:"access_key_id,omitempty"`
+	SecretAccessKey string `json:"secret_access_key,omitempty"`
+	Secret          bool   `json:"secret,omitempty"`
+	SecretRedacted  bool   `json:"secret_redacted,omitempty"`
 }
 
 type Server struct {

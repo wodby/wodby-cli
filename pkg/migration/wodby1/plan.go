@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	MigrationPlanSchema = "wodby1-migration-plan/v8"
+	MigrationPlanSchema = "wodby1-migration-plan/v9"
 
 	SeverityBlocking     = "blocking"
 	SeverityConfirmation = "requires_confirmation"
@@ -82,6 +82,7 @@ type PlanTarget struct {
 	OrgID                   int                        `json:"orgId,omitempty"`
 	OrgName                 string                     `json:"orgName,omitempty"`
 	OrgRole                 string                     `json:"orgRole,omitempty"`
+	OrgDefaultTimeZone      string                     `json:"orgDefaultTimeZone,omitempty"`
 	Project                 string                     `json:"project,omitempty"`
 	ProjectID               int                        `json:"projectId,omitempty"`
 	ProjectName             string                     `json:"projectName,omitempty"`
@@ -112,15 +113,27 @@ type PlanSummary struct {
 }
 
 type AppPlan struct {
-	SourceUUID    string          `json:"sourceUuid"`
-	Name          string          `json:"name"`
-	Title         string          `json:"title"`
-	Type          string          `json:"type"`
-	SourceStatus  string          `json:"sourceStatus,omitempty"`
-	SourceCreated int64           `json:"sourceCreated,omitempty"`
-	SourceUpdated int64           `json:"sourceUpdated,omitempty"`
-	Repository    *RepositoryPlan `json:"repository,omitempty"`
-	Instances     []InstancePlan  `json:"instances"`
+	SourceUUID    string            `json:"sourceUuid"`
+	Name          string            `json:"name"`
+	Title         string            `json:"title"`
+	Type          string            `json:"type"`
+	SourceStatus  string            `json:"sourceStatus,omitempty"`
+	SourceCreated int64             `json:"sourceCreated,omitempty"`
+	SourceUpdated int64             `json:"sourceUpdated,omitempty"`
+	Repository    *RepositoryPlan   `json:"repository,omitempty"`
+	Integrations  []IntegrationPlan `json:"integrations,omitempty"`
+	Instances     []InstancePlan    `json:"instances"`
+}
+
+type IntegrationPlan struct {
+	Key           string   `json:"key"`
+	ProviderName  string   `json:"providerName"`
+	ProviderID    int      `json:"providerId"`
+	ProviderRevID int      `json:"providerRevId"`
+	Kind          string   `json:"kind"`
+	Service       string   `json:"service,omitempty"`
+	Action        string   `json:"action"`
+	Variables     []string `json:"variables,omitempty"`
 }
 
 type RepositoryPlan struct {
@@ -332,6 +345,7 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 		plan.Target.Capabilities = &capabilities
 		plan.Target.OrgCapabilities = opts.TargetScope.Org.Capabilities
 		plan.Target.Subscription = opts.TargetScope.Org.Subscription
+		plan.Target.OrgDefaultTimeZone = opts.TargetScope.Org.DefaultTimeZone
 		if !plan.Target.OrgOwnerOrAdminVerified {
 			plan.addReview(SeverityBlocking, "", "", "target authorization", "target discovery did not verify an active Wodby 2 organization owner or administrator")
 		}

@@ -28,15 +28,17 @@ type TargetPreflightOptions struct {
 	AddMissingServices          bool
 }
 
-// PreparedMigration is an in-memory, secret-free target mapping. It is rebuilt
-// from the approved plan on every phase instead of being persisted in the
-// state file. Mutation phases pin and read back the reviewed immutable IDs.
+// PreparedMigration is an in-memory target mapping. It can contain protected
+// values needed for stack variables or integrations, so it is rebuilt from the
+// source export and approved plan on every run and is never persisted in the
+// plan or state file. Mutation phases pin and read back immutable target IDs.
 type PreparedMigration struct {
 	App                AppExport
 	Instances          []PreparedInstance
 	Apps               []PreparedAppMigration
 	StackConfiguration PreparedStackConfiguration
 	StackAdditions     []PreparedStackServiceAddition
+	Integrations       []PreparedIntegration
 }
 
 type PreparedAppMigration struct {
@@ -44,17 +46,18 @@ type PreparedAppMigration struct {
 	Instances          []PreparedInstance
 	StackConfiguration PreparedStackConfiguration
 	StackAdditions     []PreparedStackServiceAddition
+	Integrations       []PreparedIntegration
 }
 
 // ForApp returns the single-app target mapping consumed by MigrationExecutor.
 func (p PreparedMigration) ForApp(sourceUUID string) (PreparedMigration, bool) {
 	for _, app := range p.Apps {
 		if app.App.App.UUID == sourceUUID {
-			return PreparedMigration{App: app.App, Instances: app.Instances, Apps: []PreparedAppMigration{app}, StackConfiguration: app.StackConfiguration, StackAdditions: app.StackAdditions}, true
+			return PreparedMigration{App: app.App, Instances: app.Instances, Apps: []PreparedAppMigration{app}, StackConfiguration: app.StackConfiguration, StackAdditions: app.StackAdditions, Integrations: app.Integrations}, true
 		}
 	}
 	if p.App.App.UUID == sourceUUID {
-		return PreparedMigration{App: p.App, Instances: p.Instances, StackConfiguration: p.StackConfiguration, StackAdditions: p.StackAdditions}, true
+		return PreparedMigration{App: p.App, Instances: p.Instances, StackConfiguration: p.StackConfiguration, StackAdditions: p.StackAdditions, Integrations: p.Integrations}, true
 	}
 	return PreparedMigration{}, false
 }
@@ -73,6 +76,11 @@ type PreparedInstance struct {
 	DisableCustomRoutes  bool
 	TargetEnvType        string
 	StackAdditions       []PreparedStackServiceAddition
+	BackupDestination    *PreparedBackupDestination
+	CIIntegrationKey     string
+	CIIntegrationID      int
+	UsesWodbyCI          bool
+	ExternalCIOnly       bool
 }
 
 // PreparedStackConfiguration is the application-wide configuration applied to
@@ -95,6 +103,43 @@ type PreparedStackServiceConfiguration struct {
 	EnvVars        []PreparedStackEnvVar
 	Settings       map[string]string
 	CronSchedules  []PreparedStackCronSchedule
+	Integrations   []PreparedStackIntegrationLink
+}
+
+type PreparedIntegration struct {
+	Key              string
+	ProviderName     string
+	ProviderID       int
+	ProviderRevID    int
+	Name             string
+	Title            string
+	Kind             string
+	Service          string
+	Scope            *string
+	Fields           []TargetIntegrationFieldInput
+	TargetID         int
+	VariableProvider *PreparedVariableProvider
+}
+
+type PreparedVariableProvider struct {
+	Name   string
+	Title  string
+	Fields []TargetVariableProviderFieldInput
+}
+
+type PreparedStackIntegrationLink struct {
+	Name           string
+	IntegrationKey string
+	IntegrationID  int
+}
+
+type PreparedBackupDestination struct {
+	IntegrationKey string
+	IntegrationID  int
+	Bucket         string
+	Auto           bool
+	Disabled       bool
+	TimeZone       string
 }
 
 type PreparedStackEnvVar struct {
@@ -272,7 +317,12 @@ func (c *TargetClient) PreflightTarget(
 		}
 		preparedApp.StackConfiguration = stackConfiguration
 		findings = append(findings, stackFindings...)
-		if appUsesExplicitTargetStack(appPlan) && stackConfigurationHasChanges(stackConfiguration) {
+		integrationFindings, err := c.prepareAppIntegrations(ctx, &preparedApp, appPlan, plan.Target)
+		if err != nil {
+			return PreparedMigration{}, err
+		}
+		findings = append(findings, integrationFindings...)
+		if appUsesExplicitTargetStack(appPlan) && stackConfigurationHasChanges(preparedApp.StackConfiguration) {
 			findings = append(findings, ReviewItem{
 				Severity: SeverityConfirmation,
 				App:      appExport.App.Name,
@@ -282,11 +332,17 @@ func (c *TargetClient) PreflightTarget(
 		}
 		prepared.Apps = append(prepared.Apps, preparedApp)
 	}
+	sharedVariableFindings, err := prepareSharedVariableIntegrations(&prepared, plan)
+	if err != nil {
+		return PreparedMigration{}, err
+	}
+	findings = append(findings, sharedVariableFindings...)
 	if len(prepared.Apps) == 1 {
 		prepared.App = prepared.Apps[0].App
 		prepared.Instances = prepared.Apps[0].Instances
 		prepared.StackConfiguration = prepared.Apps[0].StackConfiguration
 		prepared.StackAdditions = prepared.Apps[0].StackAdditions
+		prepared.Integrations = prepared.Apps[0].Integrations
 	}
 	findings = append(findings, targetServiceCapacityFindings(plan, prepared, opts)...)
 	if err := plan.AddReviewItems(findings...); err != nil {
@@ -373,7 +429,8 @@ func (c *TargetClient) preflightWodbyCIPipelines(
 	checked := map[refKey]bool{}
 	findings := []ReviewItem{}
 	for _, instance := range app.Instances {
-		if instance.BuildSource == nil || instance.BuildSource.Input.GitRef == nil ||
+		if strings.EqualFold(strings.TrimSpace(stringProperty(instance.Source.Properties, "deployment_type")), "ci") ||
+			!instance.UsesWodbyCI || instance.BuildSource == nil || instance.BuildSource.Input.GitRef == nil ||
 			instance.BuildSource.Input.GitRefType == nil {
 			continue
 		}
@@ -736,6 +793,7 @@ func (c *TargetClient) preflightInstance(
 		DisableCronSchedules: disableCronSchedules,
 		DisableCustomRoutes:  disableCustomRoutes,
 		TargetEnvType:        strings.ToUpper(strings.TrimSpace(plan.TargetEnvType)),
+		UsesWodbyCI:          true,
 	}
 	for _, servicePlan := range plan.Services {
 		if !servicePlan.AddToStack {
@@ -1082,7 +1140,7 @@ func prepareBuildSource(
 			Message:  "source Git ref and ref type are required; pass --target-git-ref and --target-git-ref-type",
 		}}
 	}
-	if deploymentType := strings.ToLower(stringProperty(instance.Properties, "deployment_type")); deploymentType != "" && deploymentType != "git" {
+	if deploymentType := strings.ToLower(stringProperty(instance.Properties, "deployment_type")); deploymentType != "" && deploymentType != "git" && deploymentType != "ci" {
 		return nil, []ReviewItem{{
 			Severity: SeverityBlocking,
 			App:      app.Name,

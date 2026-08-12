@@ -26,12 +26,13 @@ const (
 )
 
 type TargetOrg struct {
-	ID           int                    `json:"id"`
-	Name         string                 `json:"name"`
-	Title        string                 `json:"title"`
-	Domain       string                 `json:"domain,omitempty"`
-	Capabilities *TargetOrgCapabilities `json:"capabilities,omitempty"`
-	Subscription *TargetOrgSubscription `json:"subscription,omitempty"`
+	ID              int                    `json:"id"`
+	Name            string                 `json:"name"`
+	Title           string                 `json:"title"`
+	Domain          string                 `json:"domain,omitempty"`
+	DefaultTimeZone string                 `json:"defaultTimeZone,omitempty"`
+	Capabilities    *TargetOrgCapabilities `json:"capabilities,omitempty"`
+	Subscription    *TargetOrgSubscription `json:"subscription,omitempty"`
 }
 
 type TargetOrgCapabilities struct {

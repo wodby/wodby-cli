@@ -939,7 +939,7 @@ func TestVerifyServiceCronsRequiresDrupalPHPDefaultDisabled(t *testing.T) {
 	}
 }
 
-func TestTechnicalDeploymentSkipsPostDeployOnlyForBuiltService(t *testing.T) {
+func TestTechnicalDeploymentPreservesTargetPostDeploymentHooks(t *testing.T) {
 	parentServiceID := 20
 	build := TargetAppBuild{
 		ID: 30, AppServiceID: 20, Status: "COMPLETED",
@@ -969,7 +969,7 @@ func TestTechnicalDeploymentSkipsPostDeployOnlyForBuiltService(t *testing.T) {
 		switch service.AppServiceID {
 		case 20:
 			if service.AppServiceBuildID == nil || *service.AppServiceBuildID != 31 ||
-				service.SkipPostDeployment == nil || !*service.SkipPostDeployment {
+				service.SkipPostDeployment != nil {
 				t.Fatalf("built service deployment = %#v", service)
 			}
 		case 25:

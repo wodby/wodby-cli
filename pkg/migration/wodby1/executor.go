@@ -188,6 +188,10 @@ func (e *MigrationExecutor) Prepare(
 	if err != nil {
 		return MigrationPhaseResult{}, err
 	}
+	prepared, err = e.ensureTargetIntegrations(ctx, state, plan, prepared)
+	if err != nil {
+		return MigrationPhaseResult{}, err
+	}
 	prepared, err = e.ensureTargetStackConfiguration(ctx, state, plan, prepared)
 	if err != nil {
 		return MigrationPhaseResult{}, err
@@ -244,6 +248,9 @@ func (e *MigrationExecutor) Prepare(
 		if err := e.waitAppInstanceOK(ctx, instance.ID, "finish target preparation"); err != nil {
 			return MigrationPhaseResult{}, errors.Wrap(err, "wait for target instance after deployment")
 		}
+	}
+	if err := e.ensureBackupPresets(ctx, state, prepared, instances); err != nil {
+		return MigrationPhaseResult{}, err
 	}
 
 	if err := state.SetAppTarget(app.ID, MigrationResourceReady); err != nil {
@@ -531,7 +538,7 @@ func (e *MigrationExecutor) bindTargetStackRevision(
 			}
 		}
 	}
-	prepared.Apps = []PreparedAppMigration{{App: prepared.App, Instances: prepared.Instances, StackConfiguration: prepared.StackConfiguration, StackAdditions: prepared.StackAdditions}}
+	prepared.Apps = []PreparedAppMigration{{App: prepared.App, Instances: prepared.Instances, StackConfiguration: prepared.StackConfiguration, StackAdditions: prepared.StackAdditions, Integrations: prepared.Integrations}}
 	return prepared, nil
 }
 
@@ -901,6 +908,9 @@ func (e *MigrationExecutor) Verify(
 	if err != nil {
 		return MigrationPhaseResult{}, err
 	}
+	if err := e.verifyTargetIntegrations(ctx, state, plan, prepared); err != nil {
+		return MigrationPhaseResult{}, errors.Wrap(err, "verify target integrations")
+	}
 	if stackConfigurationHasChanges(prepared.StackConfiguration) {
 		matches, err := e.targetStackConfigurationMatches(ctx, prepared.Instances[0].Stack.RevID, prepared.StackConfiguration)
 		if err != nil {
@@ -943,6 +953,9 @@ func (e *MigrationExecutor) Verify(
 		if err := state.SetInstanceTarget(item.Source.UUID, instance.ID, MigrationResourceReady); err != nil {
 			return MigrationPhaseResult{}, err
 		}
+	}
+	if err := e.verifyBackupPresets(ctx, state, prepared); err != nil {
+		return MigrationPhaseResult{}, errors.Wrap(err, "verify target backup presets")
 	}
 	if err := state.SetAppTarget(app.ID, MigrationResourceReady); err != nil {
 		return MigrationPhaseResult{}, err
@@ -1321,7 +1334,7 @@ func (e *MigrationExecutor) ensureApp(
 	if plan.Target.ProjectID > 0 {
 		projectID = &plan.Target.ProjectID
 	}
-	ciIntegrationID := plan.Target.CIIntegrationID
+	ciIntegrationID := initial.CIIntegrationID
 	createInput := TargetCreateAppInput{
 		OrgID:                  plan.Target.OrgID,
 		Name:                   sourceApp.Name,
@@ -1469,7 +1482,7 @@ func (e *MigrationExecutor) ensureInstance(
 		)
 	}
 
-	ciIntegrationID := plan.Target.CIIntegrationID
+	ciIntegrationID := prepared.CIIntegrationID
 	input := TargetCreateAppInstanceInput{
 		AppID:                  app.ID,
 		InstanceName:           prepared.Source.Name,
@@ -2670,14 +2683,18 @@ func (e *MigrationExecutor) ensureTechnicalDeployment(
 		if err != nil {
 			return err
 		}
-		build, err = e.ensureBuild(
-			ctx,
-			state,
-			prepared.Source.UUID,
-			instance.ID,
-			service.ID,
-			prepared.BuildSource.Input,
-		)
+		if prepared.ExternalCIOnly {
+			build, err = e.ensureExternalCIBuild(ctx, state, prepared.Source.UUID, instance.ID, service.ID, prepared.BuildSource.Input)
+		} else {
+			build, err = e.ensureBuild(
+				ctx,
+				state,
+				prepared.Source.UUID,
+				instance.ID,
+				service.ID,
+				prepared.BuildSource.Input,
+			)
+		}
 		if err != nil {
 			return err
 		}
@@ -2706,7 +2723,6 @@ func technicalDeploymentInput(
 	build *TargetAppBuild,
 ) (TargetCreateAppDeploymentInput, error) {
 	input := TargetCreateAppDeploymentInput{Services: []TargetAppServiceDeploymentInput{}}
-	skipPostDeployment := !sourceBoolProperty(prepared.Source.Properties, "post_deploy", true)
 	skippedCodeServices := skippedCodeServiceNames(prepared)
 	serviceBuildID := 0
 	if build != nil {
@@ -2731,9 +2747,6 @@ func technicalDeploymentInput(
 			(service.ParentAppServiceID != nil && *service.ParentAppServiceID == build.AppServiceID))
 		if usesBuild {
 			item.AppServiceBuildID = &serviceBuildID
-			if build.AppServiceID == service.ID && skipPostDeployment {
-				item.SkipPostDeployment = &skipPostDeployment
-			}
 		}
 		input.Services = append(input.Services, item)
 	}
@@ -2747,6 +2760,60 @@ func technicalDeploymentInput(
 		return input.Services[i].AppServiceID < input.Services[j].AppServiceID
 	})
 	return input, nil
+}
+
+func (e *MigrationExecutor) ensureExternalCIBuild(
+	ctx context.Context,
+	state *MigrationState,
+	sourceID string,
+	instanceID int,
+	serviceID int,
+	source TargetBuildSourceInput,
+) (*TargetAppBuild, error) {
+	operation := operationKey("external_ci_build", strconv.Itoa(serviceID))
+	resource := state.Instances[sourceID]
+	if resource == nil {
+		return nil, errors.New("migration instance state is missing")
+	}
+	if current, ok := resource.Operations[operation]; ok && current.Status == MigrationOperationSucceeded {
+		build, err := e.target.GetAppBuild(ctx, current.TargetID)
+		if err != nil {
+			return nil, errors.Wrap(err, "read saved Custom CI build")
+		}
+		if !strings.EqualFold(strings.TrimSpace(build.Status), "COMPLETED") || !buildMatchesApprovedSource(build, instanceID, serviceID, source) {
+			return nil, errors.New("saved Custom CI build no longer matches the migrated service and Git ref")
+		}
+		e.reportProgress("Reusing completed Custom CI build ID %d from migration state.", build.ID)
+		return &build, nil
+	}
+	builds, err := e.target.ListAppBuilds(ctx, instanceID, TargetPageOptions{Page: 1, PageSize: 100})
+	if err != nil {
+		return nil, errors.Wrap(err, "list Custom CI builds")
+	}
+	for _, build := range builds.Items {
+		if strings.EqualFold(strings.TrimSpace(build.Status), "COMPLETED") && buildMatchesApprovedSource(build, instanceID, serviceID, source) {
+			if _, exists := resource.Operations[operation]; exists {
+				if err := promoteInstanceOperationForRecovery(state, sourceID, operation); err != nil {
+					return nil, err
+				}
+			} else if err := state.MarkInstanceOperationIntent(sourceID, operation); err != nil {
+				return nil, err
+			}
+			if err := state.MarkInstanceOperationSuccessWithIDs(sourceID, operation, build.ID, 0); err != nil {
+				return nil, err
+			}
+			if err := SaveMigrationState(e.statePath, state); err != nil {
+				return nil, err
+			}
+			e.reportProgress("Adopted completed Custom CI build ID %d.", build.ID)
+			return &build, nil
+		}
+	}
+	return nil, errors.Errorf(
+		"target instance ID %d is configured for Custom CI but has no completed build for service ID %d and the reviewed Git ref; run the target app's third-party CI pipeline once, then rerun the same --apply command",
+		instanceID,
+		serviceID,
+	)
 }
 
 func skippedCodeServiceNames(prepared PreparedInstance) map[string]struct{} {
@@ -3209,18 +3276,6 @@ func deploymentMatchesInput(item TargetAppDeployment, input TargetCreateAppDeplo
 		}
 	}
 	return true
-}
-
-func sourceBoolProperty(properties map[string]interface{}, name string, defaultValue bool) bool {
-	value, found := properties[name]
-	if !found || value == nil {
-		return defaultValue
-	}
-	enabled, ok := value.(bool)
-	if !ok {
-		return defaultValue
-	}
-	return enabled
 }
 
 func (e *MigrationExecutor) ensureCustomRoutes(

@@ -29,6 +29,21 @@ func PrintReview(w io.Writer, plan Plan) {
 
 	for _, app := range plan.Apps {
 		fmt.Fprintf(w, "\nApp: %s\n", firstNonEmpty(app.Title, app.Name))
+		if len(app.Integrations) != 0 {
+			fmt.Fprintln(w, "  Integrations:")
+			rows := make([][]string, 0, len(app.Integrations))
+			for _, integration := range app.Integrations {
+				provider := integration.ProviderName
+				if integration.ProviderID > 0 {
+					provider = fmt.Sprintf("%s (ID %d, revision %d)", provider, integration.ProviderID, integration.ProviderRevID)
+				}
+				rows = append(rows, []string{
+					integration.Kind, provider, emptyDash(integration.Service), integration.Action,
+					emptyDash(strings.Join(integration.Variables, ", ")),
+				})
+			}
+			printReviewTable(w, "    ", []string{"Kind", "Provider", "Service", "Action", "Variables"}, rows)
+		}
 		for _, instance := range app.Instances {
 			fmt.Fprintf(
 				w,
@@ -198,6 +213,14 @@ func reviewOverviewRows(plan Plan) [][]string {
 	targetCI := "Wodby CI (built-in)"
 	if plan.Target.CIIntegrationID != 0 {
 		targetCI = "Selected third-party CI integration"
+	} else {
+		for _, app := range plan.Apps {
+			for _, integration := range app.Integrations {
+				if integration.Kind == "ci" {
+					targetCI = "Wodby CI by default; Custom CI for source ci deployments"
+				}
+			}
+		}
 	}
 	rows = append(rows, []string{"Target CI", targetCI})
 	if plan.Target.Subscription != nil && plan.Target.Subscription.Plan != nil {

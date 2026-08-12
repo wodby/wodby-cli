@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -34,6 +35,7 @@ type options struct {
 	apply         bool
 	verify        bool
 	restart       bool
+	yes           bool
 
 	targetProject    string
 	targetCluster    string
@@ -257,6 +259,7 @@ func bindFlags(cmd *cobra.Command, opts *options) {
 	cmd.Flags().BoolVar(&opts.apply, "apply", false, "Create the target and import data using the displayed plan")
 	cmd.Flags().BoolVar(&opts.verify, "verify", false, "Verify the applied migration after testing and DNS cutover")
 	cmd.Flags().BoolVar(&opts.restart, "restart", false, "Start a new applied plan only when saved state proves that no target mutation occurred (requires --apply)")
+	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "Approve a new migration plan without an interactive prompt")
 
 	cmd.Flags().StringVar(&opts.targetProject, "target-project", "", "Wodby 2 project ID or exact name (defaults to a project-owned cluster's owner; otherwise organization-owned)")
 	cmd.Flags().StringVar(&opts.targetCluster, "target-cluster", "", "Wodby 2 cluster ID or exact name")
@@ -613,6 +616,11 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 		}
 		if err := printApplyReview(cmd, plan, resumeState != nil); err != nil {
 			return err
+		}
+		if resumeState == nil {
+			if err := confirmApply(cmd, opts.yes); err != nil {
+				return err
+			}
 		}
 		if restartStateIdentity != nil {
 			var err error
@@ -992,6 +1000,11 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 		}
 		if err := printApplyReview(cmd, plan, reviewedPlan != nil); err != nil {
 			return err
+		}
+		if reviewedPlan == nil {
+			if err := confirmApply(cmd, opts.yes); err != nil {
+				return err
+			}
 		}
 		if len(restartStateIdentities) != 0 {
 			if err := removeRestartableServerMigrationStates(statePath, restartStateIdentities); err != nil {
@@ -1616,6 +1629,29 @@ func printApplyReview(cmd *cobra.Command, plan wodby1.Plan, continuing bool) err
 	} else {
 		fmt.Fprintln(cmd.OutOrStdout(), "\nApplying the migration plan shown above.")
 	}
+	return nil
+}
+
+func confirmApply(cmd *cobra.Command, approved bool) error {
+	if approved {
+		if !planOutputJSON(cmd) {
+			fmt.Fprintln(cmd.OutOrStdout(), cliColor(cmd.OutOrStdout(), cliColorGreen, "Migration approved with --yes."))
+		}
+		return nil
+	}
+	if planOutputJSON(cmd) {
+		return errors.New("--output json requires --yes when starting a new migration apply")
+	}
+	fmt.Fprint(cmd.OutOrStdout(), "\nProceed with this migration? [y/N] ")
+	line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return errors.Wrap(err, "read migration confirmation")
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	if answer != "y" && answer != "yes" {
+		return errors.New("migration canceled; no plan, state, or target resource was created")
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), cliColor(cmd.OutOrStdout(), cliColorGreen, "Migration approved."))
 	return nil
 }
 

@@ -102,7 +102,7 @@ func TestWodby1MigrationDefaultsToBuiltInWodbyCI(t *testing.T) {
 
 func TestWodby1MigrationExposesPreviewApplyVerifyWorkflow(t *testing.T) {
 	cmd := newWodby1InstanceCommand()
-	for _, name := range []string{"apply", "verify", "restart"} {
+	for _, name := range []string{"apply", "verify", "restart", "yes"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Fatalf("--%s flag is missing", name)
 		}
@@ -115,6 +115,46 @@ func TestWodby1MigrationExposesPreviewApplyVerifyWorkflow(t *testing.T) {
 	force := cmd.Flags().Lookup("force")
 	if force == nil || !strings.Contains(force.Usage, "without maintenance mode") {
 		t.Fatal("--force must explicitly describe its limited live-source behavior")
+	}
+}
+
+func TestConfirmApplyRequiresAnExplicitAnswer(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{name: "yes", input: "yes\n"},
+		{name: "short yes", input: "Y\n"},
+		{name: "no", input: "no\n", wantErr: true},
+		{name: "empty", input: "\n", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := newWodby1InstanceCommand()
+			var output bytes.Buffer
+			cmd.SetIn(strings.NewReader(test.input))
+			cmd.SetOut(&output)
+			err := confirmApply(cmd, false)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("confirmApply() error = %v", err)
+			}
+			if !strings.Contains(output.String(), "Proceed with this migration? [y/N]") {
+				t.Fatalf("confirmation prompt missing: %q", output.String())
+			}
+		})
+	}
+}
+
+func TestConfirmApplySupportsNonInteractiveApproval(t *testing.T) {
+	cmd := newWodby1InstanceCommand()
+	var output bytes.Buffer
+	cmd.SetIn(strings.NewReader(""))
+	cmd.SetOut(&output)
+	if err := confirmApply(cmd, true); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "[y/N]") || !strings.Contains(output.String(), "approved with --yes") {
+		t.Fatalf("non-interactive approval output = %q", output.String())
 	}
 }
 
@@ -1544,6 +1584,7 @@ func (f *migrationAPIFixture) planArgs(planPath string, output string) []string 
 		"--target-env-map", "prod=production",
 		"--skip-code",
 		"--skip-data",
+		"--yes",
 		"--output", output,
 	}
 }
@@ -1559,6 +1600,7 @@ func (f *migrationAPIFixture) organizationPlanArgs(planPath string, output strin
 		"--target-env-map", "prod=production",
 		"--skip-code",
 		"--skip-data",
+		"--yes",
 		"--output", output,
 	}
 }
@@ -1581,6 +1623,7 @@ func (f *migrationAPIFixture) serverPlanArgs(planPath string, output string) []s
 		"--target-env-map", "prod=production",
 		"--skip-code",
 		"--skip-data",
+		"--yes",
 		"--output", output,
 	}
 }

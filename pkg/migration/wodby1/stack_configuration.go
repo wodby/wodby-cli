@@ -446,6 +446,9 @@ func sortPreparedStackServiceConfiguration(configuration *PreparedStackServiceCo
 		}
 		return optionalStringValue(left.EnvType) < optionalStringValue(right.EnvType)
 	})
+	sort.SliceStable(configuration.Integrations, func(i, j int) bool {
+		return configuration.Integrations[i].Name < configuration.Integrations[j].Name
+	})
 }
 
 func optionalStringValue(value *string) string {
@@ -457,7 +460,7 @@ func optionalStringValue(value *string) string {
 
 func stackConfigurationHasChanges(configuration PreparedStackConfiguration) bool {
 	for _, service := range configuration.Services {
-		if len(service.VersionOptions) != 0 || len(service.EnvVars) != 0 || len(service.Settings) != 0 || len(service.CronSchedules) != 0 {
+		if len(service.VersionOptions) != 0 || len(service.EnvVars) != 0 || len(service.Settings) != 0 || len(service.CronSchedules) != 0 || len(service.Integrations) != 0 {
 			return true
 		}
 	}

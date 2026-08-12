@@ -2713,7 +2713,13 @@ func TestSchemaAddedCommandSurfaceIsExposed(t *testing.T) {
 	}
 
 	assertChildren(t, newUserCommand(), "get", "update")
-	assertChildren(t, newOrgCommand(), "get", "update")
+	orgCommand := newOrgCommand()
+	assertChildren(t, orgCommand, "get", "update")
+	for _, child := range orgCommand.Commands() {
+		if child.Name() == "create" {
+			t.Fatal("organization creation must remain outside the CLI")
+		}
+	}
 	assertChildren(t, newProjectCommand(), "get-by-name", "create", "update", "delete")
 	projectCreate, _, err := newProjectCommand().Find([]string{"create"})
 	if err != nil {

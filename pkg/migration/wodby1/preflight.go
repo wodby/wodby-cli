@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/pkg/errors"
 )
@@ -53,20 +54,22 @@ func (p PreparedMigration) ForApp(sourceUUID string) (PreparedMigration, bool) {
 }
 
 type PreparedInstance struct {
-	Source            Instance
-	SkipCode          bool
-	Stack             TargetStack
-	StackServices     []TargetStackServiceInspection
-	Services          map[string]PreparedService
-	BuildSource       *PreparedBuildSource
-	Imports           map[string]PreparedImport
-	ImportByComponent map[string]PreparedImport
-	EffectiveState    map[string]bool
+	Source               Instance
+	SkipCode             bool
+	Stack                TargetStack
+	StackServices        []TargetStackServiceInspection
+	Services             map[string]PreparedService
+	BuildSource          *PreparedBuildSource
+	Imports              map[string]PreparedImport
+	ImportByComponent    map[string]PreparedImport
+	EffectiveState       map[string]bool
+	DisableCronSchedules bool
 }
 
 type PreparedService struct {
-	Source Service
-	Target TargetStackServiceInspection
+	Source        Service
+	Target        TargetStackServiceInspection
+	TargetVersion string
 }
 
 type PreparedBuildSource struct {
@@ -190,6 +193,7 @@ func (c *TargetClient) PreflightTarget(
 				plan.Target.ProjectID,
 				appPlan.Repository,
 				opts,
+				plan.Target.OrgCapabilities != nil && !plan.Target.OrgCapabilities.CronSchedules,
 			)
 			if err != nil {
 				return PreparedMigration{}, err
@@ -216,10 +220,69 @@ func (c *TargetClient) PreflightTarget(
 		prepared.App = prepared.Apps[0].App
 		prepared.Instances = prepared.Apps[0].Instances
 	}
+	findings = append(findings, targetServiceCapacityFindings(plan, prepared, opts)...)
 	if err := plan.AddReviewItems(findings...); err != nil {
 		return PreparedMigration{}, err
 	}
 	return prepared, nil
+}
+
+func targetServiceCapacityFindings(
+	plan *Plan,
+	prepared PreparedMigration,
+	opts TargetPreflightOptions,
+) []ReviewItem {
+	if plan == nil || plan.Target.Subscription == nil || plan.Target.Subscription.Plan == nil {
+		return []ReviewItem{{
+			Severity: SeverityBlocking,
+			Subject:  "target app-service capacity",
+			Message:  "target Wodby 2 API did not return subscription usage and allowance; capacity cannot be verified safely",
+		}}
+	}
+	// A resume can contain target services already included in live usage. The
+	// backend repeats its atomic limit check for every remaining app/instance,
+	// while recounting the entire saved plan here would double-count them.
+	if opts.AllowedTargetAppID > 0 || opts.AllowStateBackedAppRecovery ||
+		len(opts.AllowedTargetAppIDs) != 0 || len(opts.StateBackedAppRecovery) != 0 {
+		return nil
+	}
+	subscription := plan.Target.Subscription
+	if !strings.EqualFold(strings.TrimSpace(subscription.Status), "ACTIVE") &&
+		!strings.EqualFold(strings.TrimSpace(subscription.Status), "CANCELING") {
+		return []ReviewItem{{
+			Severity: SeverityBlocking,
+			Subject:  "target subscription",
+			Message:  fmt.Sprintf("target subscription status %q cannot accept new app services", subscription.Status),
+		}}
+	}
+	if !strings.EqualFold(strings.TrimSpace(subscription.Plan.Name), "developer") {
+		return nil
+	}
+	additional := 0
+	for _, app := range prepared.Apps {
+		for _, instance := range app.Instances {
+			for _, enabled := range instance.EffectiveState {
+				if enabled {
+					additional++
+				}
+			}
+		}
+	}
+	projected := subscription.Plan.Usage + float64(additional)
+	if projected <= subscription.Plan.UsageIncluded {
+		return nil
+	}
+	return []ReviewItem{{
+		Severity: SeverityBlocking,
+		Subject:  "target app-service capacity",
+		Message: fmt.Sprintf(
+			"migration needs %d enabled target app service(s), which would raise free-plan usage from %.0f to %.0f; the current allowance is %.0f. Disable or remap optional services, remove other usage, or upgrade the target plan",
+			additional,
+			subscription.Plan.Usage,
+			projected,
+			subscription.Plan.UsageIncluded,
+		),
+	}}
 }
 
 // preflightWodbyCIPipelines checks every distinct source ref used by an app,
@@ -379,6 +442,7 @@ func (c *TargetClient) preflightInstance(
 	targetProjectID int,
 	repositoryPlan *RepositoryPlan,
 	opts TargetPreflightOptions,
+	disableCronSchedules bool,
 ) (PreparedInstance, []ReviewItem, error) {
 	pinned := plan.Stack.TargetRevID != 0
 	stack, err := c.resolvePreflightStackRevision(
@@ -386,6 +450,22 @@ func (c *TargetClient) preflightInstance(
 	)
 	if err != nil {
 		return PreparedInstance{}, nil, errors.Wrapf(err, "resolve target stack for %s/%s", app.Name, source.Name)
+	}
+	stackManifest := stack.RevisionManifest
+	if !pinned {
+		stackRevision, err := c.GetStackRevision(ctx, stack.RevID)
+		if err != nil {
+			return PreparedInstance{}, nil, errors.Wrapf(err, "read target stack revision for %s/%s", app.Name, source.Name)
+		}
+		if stackRevision.StackID != stack.ID {
+			return PreparedInstance{}, nil, errors.Errorf(
+				"target stack revision ID %d belongs to stack ID %d, expected %d",
+				stackRevision.ID,
+				stackRevision.StackID,
+				stack.ID,
+			)
+		}
+		stackManifest = stackRevision.Manifest
 	}
 	inspections, err := c.InspectStackRevision(ctx, stack.RevID)
 	if err != nil {
@@ -488,6 +568,26 @@ func (c *TargetClient) preflightInstance(
 		targetOwners[servicePlan.TargetName] = sourceService.Name
 		servicePlan.TargetID = inspection.StackService.ID
 		servicePlan.TargetServiceRevID = inspection.StackService.ServiceRevID
+		if sourceService.Enabled {
+			versionFinding, hasVersionFinding, err := resolveServiceVersion(
+				servicePlan,
+				inspection,
+				stackManifest,
+				time.Now().UTC(),
+				pinned,
+			)
+			if err != nil {
+				return PreparedInstance{}, nil, errors.Wrapf(err, "resolve target version for service %q", servicePlan.TargetName)
+			}
+			if hasVersionFinding {
+				versionFinding.App = app.Name
+				versionFinding.Instance = source.Name
+				findings = append(findings, versionFinding)
+			}
+		} else {
+			servicePlan.TargetVersion = ""
+			servicePlan.VersionAction = ""
+		}
 		effective[inspection.StackService.Name] = sourceService.Enabled
 		if !sourceService.Enabled && inspection.StackService.Required {
 			findings = append(findings, ReviewItem{
@@ -499,18 +599,21 @@ func (c *TargetClient) preflightInstance(
 			})
 			continue
 		}
-		preparedServices[sourceService.Name] = PreparedService{Source: sourceService, Target: inspection}
+		preparedServices[sourceService.Name] = PreparedService{
+			Source: sourceService, Target: inspection, TargetVersion: servicePlan.TargetVersion,
+		}
 	}
 
 	prepared := PreparedInstance{
-		Source:            source,
-		SkipCode:          opts.SkipCode,
-		Stack:             stack,
-		StackServices:     inspections,
-		Services:          preparedServices,
-		Imports:           map[string]PreparedImport{},
-		ImportByComponent: map[string]PreparedImport{},
-		EffectiveState:    effective,
+		Source:               source,
+		SkipCode:             opts.SkipCode,
+		Stack:                stack,
+		StackServices:        inspections,
+		Services:             preparedServices,
+		Imports:              map[string]PreparedImport{},
+		ImportByComponent:    map[string]PreparedImport{},
+		EffectiveState:       effective,
+		DisableCronSchedules: disableCronSchedules,
 	}
 	for _, sourceService := range source.Services {
 		for _, variable := range sourceService.EnvVars {
@@ -679,6 +782,7 @@ func (c *TargetClient) resolvePreflightStackRevision(
 	}
 	stack.RevID = revision.ID
 	stack.LatestRevNumber = revision.Number
+	stack.RevisionManifest = revision.Manifest
 	return stack, nil
 }
 

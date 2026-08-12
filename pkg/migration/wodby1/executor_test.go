@@ -564,6 +564,216 @@ func TestPrepareInstanceDoesNotApplyPayloadFromDisabledSourceService(t *testing.
 	}
 }
 
+func TestEnsureServiceVersionIsResumable(t *testing.T) {
+	updates := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/app-services/10" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		body := decodeTargetExecutionObject(t, r)
+		if body["version"] != "8.4" || len(body) != 1 {
+			t.Fatalf("service version update body = %#v", body)
+		}
+		updates++
+		writeTargetExecutionJSON(t, w, TargetAppService{
+			ID: 10, Name: "php", AppInstanceID: 20, ServiceRevID: 101, Version: "8.4",
+		})
+	}))
+	defer server.Close()
+
+	state, statePath := newExecutorTestState(t)
+	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), statePath: statePath}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := executor.ensureServiceVersion(
+			context.Background(), state, "instance-1",
+			TargetAppService{ID: 10, Name: "php", Version: "8.3"}, "8.4",
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if updates != 1 {
+		t.Fatalf("service version updates = %d, want 1", updates)
+	}
+}
+
+func TestEnsureServiceCronsDisablesDrupalPHPDefaults(t *testing.T) {
+	defaultDisabled := false
+	updates := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-services/10/cron-schedules":
+			writeTargetExecutionJSON(t, w, []TargetAppServiceCronSchedule{
+				{
+					ID: 31, AppServiceID: 10, Name: "drush", Title: "drush cron",
+					Crontab: "0 0 * * *", Command: "drush cron", Disabled: defaultDisabled,
+				},
+				{
+					ID: 32, AppServiceID: 10, Name: "customer", Title: "Customer schedule",
+					Crontab: "@hourly", Command: "bin/customer",
+				},
+			})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/app-service-cron-schedules/31":
+			body := decodeTargetExecutionObject(t, r)
+			if body["disabled"] != true || len(body) != 1 {
+				t.Fatalf("default cron update body = %#v", body)
+			}
+			updates++
+			defaultDisabled = true
+			writeTargetExecutionJSON(t, w, TargetAppServiceCronSchedule{
+				ID: 31, AppServiceID: 10, Name: "drush", Title: "drush cron",
+				Crontab: "0 0 * * *", Command: "drush cron", Disabled: true,
+			})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	state, statePath := newExecutorTestState(t)
+	executor := &MigrationExecutor{
+		target:    mustTargetExecutionClient(t, server.URL),
+		statePath: statePath,
+	}
+	inspection := TargetStackServiceInspection{
+		ServiceRevision: TargetServiceRevision{
+			Name: "drupal11-php",
+			Manifest: &TargetServiceManifest{
+				Name: "drupal11-php",
+				CronSchedules: []TargetServiceCronSchedule{{
+					Name: "drush", Title: "drush cron",
+				}},
+			},
+		},
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := executor.ensureServiceCrons(
+			context.Background(),
+			state,
+			"instance-1",
+			TargetAppService{ID: 10, Name: "php"},
+			Service{Name: "php"},
+			inspection,
+			false,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if updates != 1 {
+		t.Fatalf("default cron updates = %d, want 1", updates)
+	}
+	operation := operationKey("cron_default_disable", "10", "drush")
+	if !operationSucceeded(state.Instances["instance-1"], operation) {
+		t.Fatalf("default cron disable operation was not recorded: %#v", state.Instances["instance-1"].Operations)
+	}
+}
+
+func TestEnsureServiceCronsCreatesMigratedScheduleDisabledWithoutFeature(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-services/10/cron-schedules":
+			writeTargetExecutionJSON(t, w, []TargetAppServiceCronSchedule{})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/app-services/10/cron-schedules":
+			body := decodeTargetExecutionObject(t, r)
+			if body["disabled"] != true {
+				t.Fatalf("disabled cron create body = %#v", body)
+			}
+			writeTargetExecutionJSON(t, w, TargetAppServiceCronSchedule{
+				ID: 41, AppServiceID: 10, Name: body["name"].(string), Title: "Source cron",
+				Crontab: "@daily", Command: "drush cron", Disabled: true,
+			})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	state, statePath := newExecutorTestState(t)
+	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), statePath: statePath}
+	err := executor.ensureServiceCrons(
+		context.Background(),
+		state,
+		"instance-1",
+		TargetAppService{ID: 10, Name: "php"},
+		Service{Name: "php", CronJobs: []CronJob{{
+			Title: "Source cron", Crontab: "@daily", Command: "drush cron", Enabled: true,
+		}}},
+		TargetStackServiceInspection{},
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDefaultPHPCronScheduleNamesOnlySelectsDrupalAndWordPress(t *testing.T) {
+	tests := []struct {
+		service string
+		want    bool
+	}{
+		{service: "drupal-php", want: true},
+		{service: "drupal10-php", want: true},
+		{service: "drupal11-php", want: true},
+		{service: "wordpress-php", want: true},
+		{service: "php", want: false},
+		{service: "drupal11-php-sshd", want: false},
+		{service: "laravel-php", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.service, func(t *testing.T) {
+			inspection := TargetStackServiceInspection{
+				ServiceRevision: TargetServiceRevision{
+					Name: test.service,
+					Manifest: &TargetServiceManifest{
+						Name: test.service,
+						CronSchedules: []TargetServiceCronSchedule{{
+							Name: "default",
+						}},
+					},
+				},
+			}
+			got := defaultPHPCronScheduleNames(inspection)["default"]
+			if got != test.want {
+				t.Fatalf("selected = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestVerifyServiceCronsRequiresDrupalPHPDefaultDisabled(t *testing.T) {
+	disabled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/app-services/10/cron-schedules" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		writeTargetExecutionJSON(t, w, []TargetAppServiceCronSchedule{{
+			ID: 31, AppServiceID: 10, Name: "drush", Title: "drush cron",
+			Crontab: "0 0 * * *", Command: "drush cron", Disabled: disabled,
+		}})
+	}))
+	defer server.Close()
+
+	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL)}
+	inspection := TargetStackServiceInspection{
+		ServiceRevision: TargetServiceRevision{
+			Manifest: &TargetServiceManifest{
+				Name:          "drupal11-php",
+				CronSchedules: []TargetServiceCronSchedule{{Name: "drush"}},
+			},
+		},
+	}
+	if err := executor.verifyServiceCrons(
+		context.Background(), "instance-1", 10, Service{Name: "php"}, inspection, false,
+	); err == nil || !strings.Contains(err.Error(), "is not disabled") {
+		t.Fatalf("enabled default cron verification error = %v", err)
+	}
+	disabled = true
+	if err := executor.verifyServiceCrons(
+		context.Background(), "instance-1", 10, Service{Name: "php"}, inspection, false,
+	); err != nil {
+		t.Fatalf("disabled default cron rejected: %v", err)
+	}
+}
+
 func TestTechnicalDeploymentSkipsPostDeployOnlyForBuiltService(t *testing.T) {
 	parentServiceID := 20
 	build := TargetAppBuild{

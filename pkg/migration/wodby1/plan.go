@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	MigrationPlanSchema = "wodby1-migration-plan/v5"
+	MigrationPlanSchema = "wodby1-migration-plan/v6"
 
 	SeverityBlocking     = "blocking"
 	SeverityConfirmation = "requires_confirmation"
@@ -35,6 +35,7 @@ type PlanOptions struct {
 	TargetStackID                 int
 	TargetStackMap                map[string]string
 	TargetServiceMap              map[string]string
+	TargetVersionMap              map[string]string
 	TargetImportMap               map[string]string
 	TargetCIIntegrationID         int
 	Repository                    RepositoryTargetPlan
@@ -89,6 +90,8 @@ type PlanTarget struct {
 	OrgOwnerOrAdminVerified bool                       `json:"orgOwnerOrAdminVerified"`
 	DiscoveryVerified       bool                       `json:"discoveryVerified"`
 	Capabilities            *TargetClusterCapabilities `json:"capabilities,omitempty"`
+	OrgCapabilities         *TargetOrgCapabilities     `json:"orgCapabilities,omitempty"`
+	Subscription            *TargetOrgSubscription     `json:"subscription,omitempty"`
 }
 
 type PlanSummary struct {
@@ -180,7 +183,11 @@ type ImportPlan struct {
 
 type ServicePlan struct {
 	SourceName         string `json:"sourceName"`
+	SourceVersion      string `json:"sourceVersion,omitempty"`
 	TargetName         string `json:"targetName,omitempty"`
+	TargetVersion      string `json:"targetVersion,omitempty"`
+	VersionAction      string `json:"versionAction,omitempty"`
+	VersionExplicit    bool   `json:"versionExplicit,omitempty"`
 	TargetID           int    `json:"targetId,omitempty"`
 	TargetServiceRevID int    `json:"targetServiceRevId,omitempty"`
 	Enabled            bool   `json:"enabled"`
@@ -307,6 +314,8 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 			(plan.Target.OrgRole == "owner" || plan.Target.OrgRole == "admin")
 		plan.Target.DiscoveryVerified = true
 		plan.Target.Capabilities = &capabilities
+		plan.Target.OrgCapabilities = opts.TargetScope.Org.Capabilities
+		plan.Target.Subscription = opts.TargetScope.Org.Subscription
 		if !plan.Target.OrgOwnerOrAdminVerified {
 			plan.addReview(SeverityBlocking, "", "", "target authorization", "target discovery did not verify an active Wodby 2 organization owner or administrator")
 		}
@@ -436,6 +445,7 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 		}
 		plan.Apps = append(plan.Apps, appPlan)
 	}
+	validateTargetOrgFeatures(&plan, opts.TargetScope)
 
 	sortReview(plan.Review)
 	plan.computeSummary()
@@ -465,6 +475,13 @@ func (p Plan) contentDigest() (string, error) {
 	// planned components and mappings.
 	p.Source.ExportDigest = ""
 	p.Source.BackupDigest = ""
+	if p.Target.Subscription != nil && p.Target.Subscription.Plan != nil {
+		subscription := *p.Target.Subscription
+		plan := *p.Target.Subscription.Plan
+		plan.Usage = 0
+		subscription.Plan = &plan
+		p.Target.Subscription = &subscription
+	}
 	data, err := json.Marshal(p)
 	if err != nil {
 		return "", err
@@ -497,6 +514,51 @@ func (p Plan) contentDigest() (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
+}
+
+func validateTargetOrgFeatures(plan *Plan, scope *TargetScopeDiscovery) {
+	if plan == nil || scope == nil {
+		return
+	}
+	hasCustomRoutes := false
+	hasCronSchedules := false
+	for _, app := range plan.Apps {
+		for _, instance := range app.Instances {
+			for _, route := range instance.Routes {
+				if route.Action == "create_backend" || route.Action == "create_redirect" {
+					hasCustomRoutes = true
+				}
+			}
+			for _, service := range instance.Services {
+				if service.CronJobs > 0 && service.Enabled && service.Action != "skip" {
+					hasCronSchedules = true
+				}
+			}
+		}
+	}
+	if !hasCustomRoutes && !hasCronSchedules {
+		return
+	}
+	capabilities := scope.Org.Capabilities
+	if capabilities == nil {
+		plan.addReview(
+			SeverityBlocking, "", "", "target subscription capabilities",
+			"target Wodby 2 API did not return organization capabilities; update the backend before migrating custom domains or cron schedules",
+		)
+		return
+	}
+	if hasCustomRoutes && !capabilities.CustomDomains {
+		plan.addReview(
+			SeverityBlocking, "", "", "custom domains",
+			"the target subscription does not allow custom domains; remove the custom routes from migration scope or upgrade the target plan",
+		)
+	}
+	if hasCronSchedules && !capabilities.CronSchedules {
+		plan.addReview(
+			SeverityConfirmation, "", "", "cron schedules",
+			"the target subscription does not allow cron execution; migrated schedules will be created disabled and can be enabled after upgrading the target plan",
+		)
+	}
 }
 
 func (p *Plan) removeNonBindingReviewItems() {
@@ -812,10 +874,15 @@ func forcedBackupWarning(backups []Backup) string {
 
 func buildServicePlan(plan *Plan, app App, instance Instance, service Service, opts PlanOptions) ServicePlan {
 	servicePlan := ServicePlan{
-		SourceName: service.Name,
-		TargetName: service.Name,
-		Enabled:    service.Enabled,
-		Action:     "migrate",
+		SourceName:    service.Name,
+		SourceVersion: strings.TrimSpace(service.Version),
+		TargetName:    service.Name,
+		Enabled:       service.Enabled,
+		Action:        "migrate",
+	}
+	if version, found := scopedMapping(opts.TargetVersionMap, app, instance.UUID, instance.Name, service.Name); found {
+		servicePlan.TargetVersion = strings.TrimSpace(version)
+		servicePlan.VersionExplicit = true
 	}
 	mapped, explicitlyMapped := scopedMapping(opts.TargetServiceMap, app, instance.UUID, instance.Name, service.Name)
 	confirmation := ""
@@ -823,6 +890,24 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 		servicePlan.TargetName = mapped
 		servicePlan.Action = "map"
 		confirmation = fmt.Sprintf("source service will use explicitly selected Wodby 2 service %q", mapped)
+	} else if customStackRequiresExplicitServiceMapping(instance.Stack) {
+		servicePlan.TargetName = ""
+		if !service.Enabled {
+			servicePlan.Action = "skip_disabled"
+			return servicePlan
+		}
+		servicePlan.Action = "requires_mapping"
+		plan.addReview(
+			SeverityBlocking,
+			app.Name,
+			instance.Name,
+			"service "+service.Name,
+			fmt.Sprintf(
+				"fully custom Wodby 1 stack service requires an explicit target; pass --target-service-map %s=%s (service images, ports, workloads, and volumes are not inferred)",
+				service.Name,
+				"TARGET_SERVICE",
+			),
+		)
 	} else {
 		switch service.Name {
 		case "apache":
@@ -925,6 +1010,15 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 		plan.addReview(SeverityConfirmation, app.Name, instance.Name, "service "+service.Name, fmt.Sprintf("%d application cron job(s) will be reconciled on the mapped target service", servicePlan.CronJobs))
 	}
 	return servicePlan
+}
+
+func customStackRequiresExplicitServiceMapping(stack Stack) bool {
+	if !stack.Custom {
+		return false
+	}
+	ancestor := strings.ToLower(strings.TrimSpace(stack.AncestorName))
+	return !strings.Contains(ancestor, "drupal") &&
+		!strings.Contains(ancestor, "wordpress")
 }
 
 func sourceEnvVarRequiresMigration(properties map[string]interface{}, envVar EnvVar) bool {

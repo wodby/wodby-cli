@@ -1364,6 +1364,15 @@ func (e *MigrationExecutor) prepareInstance(
 		if !ok {
 			return errors.New("mapped target service disappeared after preflight")
 		}
+		if err := e.ensureServiceVersion(
+			ctx,
+			state,
+			prepared.Source.UUID,
+			target,
+			mapping.TargetVersion,
+		); err != nil {
+			return err
+		}
 		if err := e.ensureServiceEnvironment(
 			ctx,
 			state,
@@ -1377,11 +1386,67 @@ func (e *MigrationExecutor) prepareInstance(
 		if err := e.ensureServiceSettings(ctx, state, prepared.Source.UUID, target, sourceService); err != nil {
 			return err
 		}
-		if err := e.ensureServiceCrons(ctx, state, prepared.Source.UUID, target, sourceService); err != nil {
+		if err := e.ensureServiceCrons(
+			ctx,
+			state,
+			prepared.Source.UUID,
+			target,
+			sourceService,
+			mapping.Target,
+			prepared.DisableCronSchedules,
+		); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (e *MigrationExecutor) ensureServiceVersion(
+	ctx context.Context,
+	state *MigrationState,
+	sourceID string,
+	service TargetAppService,
+	version string,
+) error {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return nil
+	}
+	operation := operationKey("service_version", strconv.Itoa(service.ID))
+	if service.Version == version {
+		e.reportProgress("Service %q (ID %d) already uses version %s.", service.Name, service.ID, version)
+		return e.recordObservedInstanceOperation(state, sourceID, operation, service.ID, 0)
+	}
+	run, err := e.beginInstanceMutation(state, sourceID, operation, false)
+	if err != nil || !run {
+		return err
+	}
+	e.reportProgress("Changing service %q (ID %d) version from %s to %s...", service.Name, service.ID, emptyVersionLabel(service.Version), version)
+	updated, err := e.target.UpdateAppService(ctx, service.ID, TargetAppServiceUpdateInput{Version: &version})
+	if err != nil {
+		return e.recordInstanceMutationError(state, sourceID, operation, "service version update", err)
+	}
+	if updated.Version != version {
+		return e.recordInstanceMutationError(
+			state,
+			sourceID,
+			operation,
+			"service version update",
+			errors.Errorf("target returned version %q, expected %q", updated.Version, version),
+		)
+	}
+	if err := e.completeInstanceMutation(state, sourceID, operation, service.ID, 0); err != nil {
+		return err
+	}
+	e.reportProgress("Service %q now uses version %s.", service.Name, version)
+	return nil
+}
+
+func emptyVersionLabel(version string) string {
+	if strings.TrimSpace(version) == "" {
+		return "<unspecified>"
+	}
+	return version
 }
 
 func indexAppServices(items []TargetAppService) (map[string]TargetAppService, error) {
@@ -1690,10 +1755,22 @@ func (e *MigrationExecutor) ensureServiceCrons(
 	sourceID string,
 	service TargetAppService,
 	source Service,
+	inspection TargetStackServiceInspection,
+	disableMigrated bool,
 ) error {
 	current, err := e.target.ListAppServiceCronSchedules(ctx, service.ID)
 	if err != nil {
 		return errors.Wrap(err, "list target service cron schedules")
+	}
+	if err := e.disableDefaultPHPCronSchedules(
+		ctx,
+		state,
+		sourceID,
+		service,
+		inspection,
+		current,
+	); err != nil {
+		return err
 	}
 	byName := map[string][]TargetAppServiceCronSchedule{}
 	for _, item := range current {
@@ -1716,9 +1793,10 @@ func (e *MigrationExecutor) ensureServiceCrons(
 		if title == "" {
 			title = "Migrated Wodby 1 cron"
 		}
+		desiredDisabled := disableMigrated
 		if len(matches) == 1 {
 			item := matches[0]
-			if item.Title == title && item.Crontab == cron.Crontab && item.Command == cron.Command && !item.Disabled {
+			if item.Title == title && item.Crontab == cron.Crontab && item.Command == cron.Command && item.Disabled == desiredDisabled {
 				if err := e.recordObservedInstanceOperation(state, sourceID, operation, item.ID, 0); err != nil {
 					return err
 				}
@@ -1730,9 +1808,8 @@ func (e *MigrationExecutor) ensureServiceCrons(
 				return err
 			}
 			e.reportProgress("Updating cron schedule %q on service %q...", title, service.Name)
-			disabled := false
 			if _, err := e.target.UpdateAppServiceCronSchedule(ctx, item.ID, TargetUpdateAppServiceCronScheduleInput{
-				Disabled: &disabled,
+				Disabled: &desiredDisabled,
 				Title:    &title,
 				Crontab:  &cron.Crontab,
 				Command:  &cron.Command,
@@ -1751,10 +1828,11 @@ func (e *MigrationExecutor) ensureServiceCrons(
 		}
 		e.reportProgress("Creating cron schedule %q on service %q...", title, service.Name)
 		created, err := e.target.CreateAppServiceCronSchedule(ctx, service.ID, TargetCreateAppServiceCronScheduleInput{
-			Name:    &name,
-			Title:   title,
-			Crontab: cron.Crontab,
-			Command: cron.Command,
+			Name:     &name,
+			Title:    title,
+			Crontab:  cron.Crontab,
+			Command:  cron.Command,
+			Disabled: &desiredDisabled,
 		})
 		if err != nil {
 			return e.recordInstanceMutationError(state, sourceID, operation, "cron schedule creation", err)
@@ -1765,6 +1843,98 @@ func (e *MigrationExecutor) ensureServiceCrons(
 		e.reportProgress("Cron schedule %q on service %q created (ID %d).", title, service.Name, created.ID)
 	}
 	return nil
+}
+
+func (e *MigrationExecutor) disableDefaultPHPCronSchedules(
+	ctx context.Context,
+	state *MigrationState,
+	sourceID string,
+	service TargetAppService,
+	inspection TargetStackServiceInspection,
+	current []TargetAppServiceCronSchedule,
+) error {
+	defaultNames := defaultPHPCronScheduleNames(inspection)
+	if len(defaultNames) == 0 {
+		return nil
+	}
+	byName := map[string][]TargetAppServiceCronSchedule{}
+	for _, item := range current {
+		if defaultNames[item.Name] {
+			byName[item.Name] = append(byName[item.Name], item)
+		}
+	}
+	names := make([]string, 0, len(defaultNames))
+	for name := range defaultNames {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		matches := byName[name]
+		if len(matches) > 1 {
+			return &TargetAmbiguousMatchError{
+				Resource: "default app service cron schedule",
+				Name:     name,
+				Count:    len(matches),
+			}
+		}
+		if len(matches) == 0 {
+			continue
+		}
+		item := matches[0]
+		operation := operationKey("cron_default_disable", strconv.Itoa(service.ID), item.Name)
+		if item.Disabled {
+			if err := e.recordObservedInstanceOperation(state, sourceID, operation, item.ID, 0); err != nil {
+				return err
+			}
+			e.reportProgress("Default cron schedule %q on service %q is already disabled.", item.Title, service.Name)
+			continue
+		}
+		run, err := e.beginInstanceMutation(state, sourceID, operation, false)
+		if err != nil || !run {
+			return err
+		}
+		e.reportProgress("Disabling default cron schedule %q on service %q...", item.Title, service.Name)
+		disabled := true
+		updated, err := e.target.UpdateAppServiceCronSchedule(
+			ctx,
+			item.ID,
+			TargetUpdateAppServiceCronScheduleInput{Disabled: &disabled},
+		)
+		if err != nil {
+			return e.recordInstanceMutationError(state, sourceID, operation, "default cron schedule update", err)
+		}
+		if !updated.Disabled || updated.AppServiceID != service.ID || updated.Name != item.Name {
+			return errors.Errorf("updated default cron schedule %q does not match the requested disabled state", item.Name)
+		}
+		if err := e.completeInstanceMutation(state, sourceID, operation, updated.ID, 0); err != nil {
+			return err
+		}
+		e.reportProgress("Default cron schedule %q on service %q disabled.", item.Title, service.Name)
+	}
+	return nil
+}
+
+func defaultPHPCronScheduleNames(inspection TargetStackServiceInspection) map[string]bool {
+	manifest := inspection.ServiceRevision.Manifest
+	if manifest == nil {
+		return nil
+	}
+	serviceName := strings.ToLower(strings.TrimSpace(manifest.Name))
+	if serviceName == "" {
+		serviceName = strings.ToLower(strings.TrimSpace(inspection.ServiceRevision.Name))
+	}
+	if !strings.HasSuffix(serviceName, "-php") ||
+		(!strings.HasPrefix(serviceName, "drupal") && !strings.HasPrefix(serviceName, "wordpress")) {
+		return nil
+	}
+	result := map[string]bool{}
+	for _, schedule := range manifest.CronSchedules {
+		name := strings.TrimSpace(schedule.Name)
+		if name != "" {
+			result[name] = true
+		}
+	}
+	return result
 }
 
 func operationSucceeded(resource *MigrationResourceState, operation string) bool {
@@ -4003,13 +4173,28 @@ func (e *MigrationExecutor) verifyInstance(
 		if !ok {
 			return errors.New("mapped target service is missing during verification")
 		}
+		if mapping.TargetVersion != "" && service.Version != mapping.TargetVersion {
+			return errors.Errorf(
+				"target service %q version is %q, expected %q",
+				service.Name,
+				service.Version,
+				mapping.TargetVersion,
+			)
+		}
 		if err := e.verifyServiceEnvironment(ctx, service.ID, source, prepared.Source.Properties); err != nil {
 			return err
 		}
 		if err := e.verifyServiceSettings(ctx, service.ID, source); err != nil {
 			return err
 		}
-		if err := e.verifyServiceCrons(ctx, prepared.Source.UUID, service.ID, source); err != nil {
+		if err := e.verifyServiceCrons(
+			ctx,
+			prepared.Source.UUID,
+			service.ID,
+			source,
+			mapping.Target,
+			prepared.DisableCronSchedules,
+		); err != nil {
 			return err
 		}
 	}
@@ -4115,6 +4300,8 @@ func (e *MigrationExecutor) verifyServiceCrons(
 	sourceID string,
 	serviceID int,
 	source Service,
+	inspection TargetStackServiceInspection,
+	disableMigrated bool,
 ) error {
 	items, err := e.target.ListAppServiceCronSchedules(ctx, serviceID)
 	if err != nil {
@@ -4124,13 +4311,22 @@ func (e *MigrationExecutor) verifyServiceCrons(
 	for _, item := range items {
 		byName[item.Name] = append(byName[item.Name], item)
 	}
+	for name := range defaultPHPCronScheduleNames(inspection) {
+		matches := byName[name]
+		if len(matches) > 1 {
+			return errors.Errorf("default target cron schedule %q matched %d entries", name, len(matches))
+		}
+		if len(matches) == 1 && !matches[0].Disabled {
+			return errors.Errorf("default target cron schedule %q is not disabled", name)
+		}
+	}
 	for index, cron := range source.CronJobs {
 		if !cron.Enabled || cron.Classification == "source_only_infrastructure" {
 			continue
 		}
 		name := "w1-" + shortDigest(sourceID, source.Name, strconv.Itoa(index), cron.Crontab, cron.Command)
 		matches := byName[name]
-		if len(matches) != 1 || matches[0].Disabled ||
+		if len(matches) != 1 || matches[0].Disabled != disableMigrated ||
 			matches[0].Crontab != cron.Crontab || matches[0].Command != cron.Command {
 			return errors.Errorf("target cron schedule %q no longer matches the source", name)
 		}

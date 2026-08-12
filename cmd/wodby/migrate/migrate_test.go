@@ -908,6 +908,34 @@ func TestMigrationProgressReporterFormatsProcessSteps(t *testing.T) {
 	}
 }
 
+func TestMigrationProgressReporterUsesSemanticColorsWhenForced(t *testing.T) {
+	previousNoColor, hadNoColor := os.LookupEnv("NO_COLOR")
+	if err := os.Unsetenv("NO_COLOR"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if hadNoColor {
+			_ = os.Setenv("NO_COLOR", previousNoColor)
+		} else {
+			_ = os.Unsetenv("NO_COLOR")
+		}
+	})
+	t.Setenv("CLICOLOR_FORCE", "1")
+	var output bytes.Buffer
+	cmd := newWodby1AppCommand()
+	cmd.SetOut(&output)
+	report := migrationProgressReporter(cmd)
+	report("Starting resumable migration apply.")
+	report("Step: create target resources.")
+	report("Target app created.")
+	report("Warning: --force bypass is enabled.")
+	text := output.String()
+	if !strings.Contains(text, cliColorCyan) || !strings.Contains(text, cliColorGreen) ||
+		!strings.Contains(text, cliColorOrange) || !strings.Contains(text, cliColorReset) {
+		t.Fatalf("forced progress colors are incomplete: %q", text)
+	}
+}
+
 func TestWodby1AppCommandRestartRejectsStateWithTargetMutationRisk(t *testing.T) {
 	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
 	defer fixture.Close()
@@ -1637,9 +1665,9 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 	case "/v1/apps":
 		writeMigrationJSON(w, []wodby1.TargetApp{})
 	case "/v1/orgs":
-		writeMigrationJSON(w, []wodby1.TargetOrg{{ID: 11, Name: "acme", Title: "Acme"}})
+		writeMigrationJSON(w, []wodby1.TargetOrg{migrationTargetOrgFixture()})
 	case "/v1/orgs/11":
-		writeMigrationJSON(w, wodby1.TargetOrg{ID: 11, Name: "acme", Title: "Acme"})
+		writeMigrationJSON(w, migrationTargetOrgFixture())
 	case "/v1/user":
 		writeMigrationJSON(w, wodby1.TargetCurrentUser{
 			ID: userID, Email: "customer@example.test", IsAdmin: f.platformAdmin,
@@ -1693,6 +1721,19 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 		writeMigrationJSON(w, []wodby1.TargetStackService{})
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+func migrationTargetOrgFixture() wodby1.TargetOrg {
+	return wodby1.TargetOrg{
+		ID: 11, Name: "acme", Title: "Acme",
+		Capabilities: &wodby1.TargetOrgCapabilities{CustomDomains: true, CronSchedules: true},
+		Subscription: &wodby1.TargetOrgSubscription{
+			Status: "ACTIVE",
+			Plan: &wodby1.TargetOrgSubscriptionPlan{
+				Name: "team", Title: "Team", Usage: 2, UsageIncluded: 10,
+			},
+		},
 	}
 }
 

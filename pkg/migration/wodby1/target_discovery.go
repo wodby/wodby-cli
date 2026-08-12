@@ -26,10 +26,38 @@ const (
 )
 
 type TargetOrg struct {
-	ID     int    `json:"id"`
-	Name   string `json:"name"`
-	Title  string `json:"title"`
-	Domain string `json:"domain,omitempty"`
+	ID           int                    `json:"id"`
+	Name         string                 `json:"name"`
+	Title        string                 `json:"title"`
+	Domain       string                 `json:"domain,omitempty"`
+	Capabilities *TargetOrgCapabilities `json:"capabilities,omitempty"`
+	Subscription *TargetOrgSubscription `json:"subscription,omitempty"`
+}
+
+type TargetOrgCapabilities struct {
+	CustomDomains    bool `json:"customDomains"`
+	AutoBackups      bool `json:"autoBackups"`
+	Users            bool `json:"users"`
+	Projects         bool `json:"projects"`
+	CronSchedules    bool `json:"cronSchedules"`
+	Autoscale        bool `json:"autoscale"`
+	AppInstancePause bool `json:"appInstancePause"`
+	WebShell         bool `json:"webShell"`
+	WodbyCloud       bool `json:"wodbyCloud"`
+}
+
+type TargetOrgSubscription struct {
+	Status string                     `json:"status"`
+	Plan   *TargetOrgSubscriptionPlan `json:"plan,omitempty"`
+}
+
+type TargetOrgSubscriptionPlan struct {
+	Name          string  `json:"name"`
+	Title         string  `json:"title"`
+	Usage         float64 `json:"usage"`
+	UsageIncluded float64 `json:"usageIncluded"`
+	SpendingLimit float64 `json:"spendingLimit"`
+	PricePerUnit  float64 `json:"pricePerUnit"`
 }
 
 type TargetProject struct {

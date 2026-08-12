@@ -40,7 +40,7 @@ func TestTargetClientResolvesAndInspectsStackRevision(t *testing.T) {
 			writeTargetExecutionJSON(t, w, TargetServiceRevision{
 				ID: 101, ServiceID: 201, Name: "drupal11-php",
 				Manifest: &TargetServiceManifest{
-					Raw:   `{"name":"drupal11-php","build":{"connect":true}}`,
+					Raw:   `{"name":"drupal11-php","build":{"connect":true},"cron":[{"name":"drush","title":"drush cron","schedule":"0 0 * * *","command":"drush cron"}]}`,
 					Build: &TargetServiceBuildCapability{},
 				},
 			})
@@ -79,7 +79,9 @@ func TestTargetClientResolvesAndInspectsStackRevision(t *testing.T) {
 		inspections[1].StackService.Name != "php" ||
 		inspections[1].ServiceRevision.Manifest == nil ||
 		inspections[1].ServiceRevision.Manifest.Build == nil ||
-		!inspections[1].ServiceRevision.Manifest.Build.Connect {
+		!inspections[1].ServiceRevision.Manifest.Build.Connect ||
+		len(inspections[1].ServiceRevision.Manifest.CronSchedules) != 1 ||
+		inspections[1].ServiceRevision.Manifest.CronSchedules[0].Name != "drush" {
 		t.Fatalf("inspections = %#v", inspections)
 	}
 

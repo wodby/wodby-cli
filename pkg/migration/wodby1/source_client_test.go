@@ -513,8 +513,9 @@ func TestDecodeExportV2DomainAndRedactionFields(t *testing.T) {
 				}],
 				"services":[{
 					"name":"php",
+					"version":"7.3",
 					"enabled":true,
-					"env_vars":[{"name":"EMPTY","enabled":true,"protected":true,"redacted":false}],
+					"env_vars":[{"name":"EMPTY","enabled":true,"protected":true,"redacted":false,"origin":"custom_stack"}],
 					"cron_jobs":[{
 						"title":"Cleanup",
 						"crontab":"@daily",
@@ -552,7 +553,8 @@ func TestDecodeExportV2DomainAndRedactionFields(t *testing.T) {
 		t.Fatalf("domain = %#v", domain)
 	}
 	envVar := instance.Services[0].EnvVars[0]
-	if envVar.Redacted == nil || *envVar.Redacted || envVar.IsRedacted() {
+	if instance.Services[0].Version != "7.3" || envVar.Origin != "custom_stack" ||
+		envVar.Redacted == nil || *envVar.Redacted || envVar.IsRedacted() {
 		t.Fatalf("env var = %#v", envVar)
 	}
 	cron := instance.Services[0].CronJobs[0]

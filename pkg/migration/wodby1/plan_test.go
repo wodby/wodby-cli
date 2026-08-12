@@ -228,6 +228,21 @@ func TestForceExistingBackupReviewDoesNotChangeExecutablePlanHash(t *testing.T) 
 	}
 }
 
+func TestContentDigestDoesNotMutateLiveSubscriptionUsage(t *testing.T) {
+	plan := Plan{Target: PlanTarget{Subscription: &TargetOrgSubscription{
+		Status: "ACTIVE",
+		Plan: &TargetOrgSubscriptionPlan{
+			Name: "developer", Usage: 8, UsageIncluded: 10,
+		},
+	}}}
+	if _, err := plan.contentDigest(); err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.Target.Subscription.Plan.Usage; got != 8 {
+		t.Fatalf("contentDigest mutated live subscription usage to %v", got)
+	}
+}
+
 func TestBuildPlanAppliesWodby2ServiceCompatibilityPolicy(t *testing.T) {
 	enabled := true
 	port := 80
@@ -327,6 +342,81 @@ func TestBuildPlanAppliesWodby2ServiceCompatibilityPolicy(t *testing.T) {
 	}
 	if route := explicitInstance.Routes[0]; route.Service != "apache" {
 		t.Fatalf("explicit apache route = %#v", route)
+	}
+}
+
+func TestBuildPlanRequiresExplicitServiceMappingsForFullyCustomStack(t *testing.T) {
+	export := Export{
+		Schema: ExportSchemaV2,
+		Source: &ExportSource{Kind: "instance", UUID: "inst-1"},
+		Apps: []AppExport{{
+			App: App{UUID: "app-1", Name: "custom-app", Status: "ok"},
+			Instances: []Instance{{
+				UUID: "inst-1", Name: "dev", Type: "dev", Status: "ok",
+				Stack: Stack{Name: "customer-stack", Custom: true},
+				Services: []Service{
+					{
+						Name: "runtime", Enabled: true,
+						EnvVars: []EnvVar{{Name: "CUSTOM_DEFAULT", Value: "value", Enabled: true, Origin: "custom_stack"}},
+					},
+					{Name: "worker", Enabled: false},
+				},
+			}},
+		}},
+	}
+	plan, err := BuildPlan(export, PlanOptions{SourceKind: "instance", SourceID: "inst-1", SkipCode: true, SkipData: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance := plan.Apps[0].Instances[0]
+	runtime := preflightFindServicePlan(t, &instance, "runtime")
+	if runtime.TargetName != "" || runtime.Action != "requires_mapping" || runtime.EnvVars != 1 {
+		t.Fatalf("fully custom service plan = %#v", runtime)
+	}
+	worker := preflightFindServicePlan(t, &instance, "worker")
+	if worker.TargetName != "" || worker.Action != "skip_disabled" {
+		t.Fatalf("disabled fully custom service plan = %#v", worker)
+	}
+	if !hasReviewMessage(plan.Review, SeverityBlocking, "--target-service-map runtime=TARGET_SERVICE") {
+		t.Fatalf("custom service mapping review = %#v", plan.Review)
+	}
+}
+
+func TestBuildPlanTreatsForkedManagedDrupalAndWordPressStacksAsManaged(t *testing.T) {
+	for _, ancestor := range []string{"drupal11", "wordpress"} {
+		t.Run(ancestor, func(t *testing.T) {
+			export := Export{
+				Schema: ExportSchemaV2,
+				Source: &ExportSource{Kind: "instance", UUID: "inst-1"},
+				Apps: []AppExport{{
+					App: App{UUID: "app-1", Name: "forked-app", Status: "ok"},
+					Instances: []Instance{{
+						UUID: "inst-1", Name: "dev", Type: "dev", Status: "ok",
+						Stack: Stack{Name: "customer-fork", Custom: true, AncestorName: ancestor},
+						Services: []Service{
+							{Name: "redis", Enabled: true},
+							{Name: "optional-extra", Enabled: true},
+						},
+					}},
+				}},
+			}
+			plan, err := BuildPlan(export, PlanOptions{SourceKind: "instance", SourceID: "inst-1", SkipCode: true, SkipData: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			instance := plan.Apps[0].Instances[0]
+			redis := preflightFindServicePlan(t, &instance, "redis")
+			if redis.TargetName != "valkey" || redis.Action != "substitute" {
+				t.Fatalf("forked managed redis plan = %#v", redis)
+			}
+			extra := preflightFindServicePlan(t, &instance, "optional-extra")
+			if extra.TargetName != "optional-extra" || extra.Action != "migrate" {
+				t.Fatalf("forked managed optional service plan = %#v", extra)
+			}
+			if hasReviewMessage(plan.Review, SeverityBlocking, "requires an explicit target") {
+				t.Fatalf("forked managed stack was treated as fully custom: %#v", plan.Review)
+			}
+		})
 	}
 }
 
@@ -852,8 +942,11 @@ func TestBuildPlanUsesVerifiedTargetDiscovery(t *testing.T) {
 	scope := TargetScopeDiscovery{
 		User:       TargetCurrentUser{ID: 1},
 		Membership: TargetOrgMembership{ID: 10, OrgID: 2, Role: "owner", Status: "ok"},
-		Org:        TargetOrg{ID: 2, Name: "acme"},
-		Project:    TargetProject{ID: 3, Name: "site", OrgID: 2},
+		Org: TargetOrg{
+			ID: 2, Name: "acme",
+			Capabilities: &TargetOrgCapabilities{CustomDomains: true, CronSchedules: true},
+		},
+		Project: TargetProject{ID: 3, Name: "site", OrgID: 2},
 		Cluster: TargetCluster{
 			ID:     4,
 			Name:   "prod",
@@ -912,8 +1005,11 @@ func TestBuildPlanSupportsOrganizationOwnedTarget(t *testing.T) {
 	scope := TargetScopeDiscovery{
 		User:       TargetCurrentUser{ID: 1},
 		Membership: TargetOrgMembership{ID: 10, OrgID: 2, Role: "admin", Status: "ok"},
-		Org:        TargetOrg{ID: 2, Name: "acme"},
-		Cluster:    TargetCluster{ID: 4, Name: "prod", Status: "OK", OrgID: 2},
+		Org: TargetOrg{
+			ID: 2, Name: "acme",
+			Capabilities: &TargetOrgCapabilities{CustomDomains: true, CronSchedules: true},
+		},
+		Cluster: TargetCluster{ID: 4, Name: "prod", Status: "OK", OrgID: 2},
 	}
 	plan, err := BuildPlan(export, PlanOptions{
 		SourceKind:    "app",
@@ -1017,9 +1113,12 @@ func TestBuildPlanMarksUnresolvedPayloadsForReview(t *testing.T) {
 	scope := TargetScopeDiscovery{
 		User:       TargetCurrentUser{ID: 1},
 		Membership: TargetOrgMembership{ID: 10, OrgID: 2, Role: "admin", Status: "ok"},
-		Org:        TargetOrg{ID: 2, Name: "acme"},
-		Project:    TargetProject{ID: 3, Name: "site", OrgID: 2},
-		Cluster:    TargetCluster{ID: 4, Name: "prod", Status: "OK", OrgID: 2},
+		Org: TargetOrg{
+			ID: 2, Name: "acme",
+			Capabilities: &TargetOrgCapabilities{CustomDomains: true, CronSchedules: true},
+		},
+		Project: TargetProject{ID: 3, Name: "site", OrgID: 2},
+		Cluster: TargetCluster{ID: 4, Name: "prod", Status: "OK", OrgID: 2},
 	}
 	plan, err := BuildPlan(export, PlanOptions{
 		SourceKind:    "app",

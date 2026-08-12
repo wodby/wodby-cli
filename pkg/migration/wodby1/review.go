@@ -1,6 +1,7 @@
 package wodby1
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"strconv"
@@ -9,7 +10,7 @@ import (
 )
 
 func PrintReview(w io.Writer, plan Plan) {
-	fmt.Fprintf(w, "Wodby 1 to Wodby 2 migration plan\n")
+	fmt.Fprintf(w, "%s\n", migrationColor(w, ansiBold+ansiCyan, "Wodby 1 to Wodby 2 migration plan"))
 	printReviewTable(w, "  ", []string{"Field", "Value"}, reviewOverviewRows(plan))
 	fmt.Fprintf(w, "\nSummary:\n")
 	printReviewTable(w, "  ", []string{"Item", "Count"}, [][]string{
@@ -57,13 +58,16 @@ func PrintReview(w io.Writer, plan Plan) {
 					rows = append(rows, []string{
 						service.SourceName,
 						target,
+						emptyDash(service.SourceVersion),
+						emptyDash(service.TargetVersion),
+						emptyDash(service.VersionAction),
 						state,
 						service.Action,
 						strconv.Itoa(service.EnvVars),
 						strconv.Itoa(service.CronJobs),
 					})
 				}
-				printReviewTable(w, "      ", []string{"Source", "Target", "State", "Action", "Env vars", "Cron jobs"}, rows)
+				printReviewTable(w, "      ", []string{"Source", "Target", "Source version", "Target version", "Version action", "State", "Action", "Env vars", "Cron jobs"}, rows)
 			}
 			if len(instance.Routes) != 0 {
 				fmt.Fprintf(w, "    Routes:\n")
@@ -132,9 +136,23 @@ func PrintReview(w io.Writer, plan Plan) {
 			rows = append(rows, []string{scope, item.Subject, item.Message})
 		}
 		if len(rows) != 0 {
-			fmt.Fprintf(w, "\n%s (%d):\n", section.title, len(rows))
-			printReviewTable(w, "  ", []string{"Scope", "Subject", "Details"}, rows)
+			color := reviewSeverityColor(section.severity)
+			fmt.Fprintf(w, "\n%s\n", migrationColor(w, ansiBold+color, fmt.Sprintf("%s (%d):", section.title, len(rows))))
+			printReviewTableColor(w, "  ", []string{"Scope", "Subject", "Details"}, rows, color)
 		}
+	}
+}
+
+func reviewSeverityColor(severity string) string {
+	switch severity {
+	case SeverityBlocking:
+		return ansiRed
+	case SeverityConfirmation, SeverityManual:
+		return ansiOrange
+	case SeveritySkipped:
+		return ansiGray
+	default:
+		return ansiCyan
 	}
 }
 
@@ -177,6 +195,19 @@ func reviewOverviewRows(plan Plan) [][]string {
 		targetCI = "Selected third-party CI integration"
 	}
 	rows = append(rows, []string{"Target CI", targetCI})
+	if plan.Target.Subscription != nil && plan.Target.Subscription.Plan != nil {
+		subscriptionPlan := plan.Target.Subscription.Plan
+		rows = append(rows, []string{
+			"Target plan",
+			firstNonEmpty(subscriptionPlan.Title, subscriptionPlan.Name),
+		})
+		if strings.EqualFold(strings.TrimSpace(subscriptionPlan.Name), "developer") {
+			rows = append(rows, []string{
+				"App-service usage",
+				fmt.Sprintf("%.0f of %.0f before migration", subscriptionPlan.Usage, subscriptionPlan.UsageIncluded),
+			})
+		}
+	}
 
 	for _, app := range plan.Apps {
 		appContext := ""
@@ -236,6 +267,18 @@ func printReviewTable(w io.Writer, indent string, headers []string, rows [][]str
 		writeReviewTableRow(tw, indent, row)
 	}
 	_ = tw.Flush()
+}
+
+func printReviewTableColor(w io.Writer, indent string, headers []string, rows [][]string, color string) {
+	if !migrationColorEnabled(w) {
+		printReviewTable(w, indent, headers, rows)
+		return
+	}
+	var buffer bytes.Buffer
+	printReviewTable(&buffer, indent, headers, rows)
+	for _, line := range strings.Split(strings.TrimSuffix(buffer.String(), "\n"), "\n") {
+		fmt.Fprintln(w, migrationColor(w, color, line))
+	}
 }
 
 func writeReviewTableRow(w io.Writer, indent string, cells []string) {

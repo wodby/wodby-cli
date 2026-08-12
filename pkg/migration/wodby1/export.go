@@ -294,6 +294,7 @@ type Domain struct {
 
 type Service struct {
 	Name            string                 `json:"name"`
+	Version         string                 `json:"version,omitempty"`
 	Enabled         bool                   `json:"enabled"`
 	Configuration   map[string]interface{} `json:"configuration,omitempty"`
 	EnvVars         []EnvVar               `json:"env_vars,omitempty"`

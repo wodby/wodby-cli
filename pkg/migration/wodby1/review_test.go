@@ -2,6 +2,7 @@ package wodby1
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 )
@@ -71,8 +72,8 @@ func TestPrintReviewUsesTablesAndSeparateReviewSections(t *testing.T) {
 		"Field",
 		"Value",
 		"Item                   Count",
-		"Source   Target   State    Action",
-		"mailhog  mailpit  enabled  substitute",
+		"Source   Target   Source version  Target version  Version action",
+		"mailhog  mailpit  -               -               -               enabled  substitute",
 		"Host          Action          Type  Service  Port  Flags",
 		"Blocking (1):",
 		"Requires confirmation (1):",
@@ -132,6 +133,32 @@ func TestPrintReviewUsesTablesAndSeparateReviewSections(t *testing.T) {
 			t.Fatalf("review section %q is out of order:\n%s", heading, text)
 		}
 		previous = index
+	}
+}
+
+func TestPrintReviewColorsSeveritiesWhenForced(t *testing.T) {
+	previousNoColor, hadNoColor := os.LookupEnv("NO_COLOR")
+	if err := os.Unsetenv("NO_COLOR"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if hadNoColor {
+			_ = os.Setenv("NO_COLOR", previousNoColor)
+		} else {
+			_ = os.Unsetenv("NO_COLOR")
+		}
+	})
+	t.Setenv("CLICOLOR_FORCE", "1")
+	plan := Plan{Review: []ReviewItem{
+		{Severity: SeverityBlocking, Subject: "blocked", Message: "fix it"},
+		{Severity: SeverityConfirmation, Subject: "warning", Message: "review it"},
+	}}
+	var output bytes.Buffer
+	PrintReview(&output, plan)
+	text := output.String()
+	if !strings.Contains(text, ansiRed) || !strings.Contains(text, ansiOrange) ||
+		!strings.Contains(text, ansiCyan) || !strings.Contains(text, ansiReset) {
+		t.Fatalf("forced color output is incomplete: %q", text)
 	}
 }
 

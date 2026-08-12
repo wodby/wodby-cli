@@ -134,6 +134,12 @@ func PinReviewedTargets(current *Plan, reviewed Plan) error {
 	if candidate.Source.Kind != reviewed.Source.Kind || candidate.Source.ID != reviewed.Source.ID {
 		return currentPlanDriftError("source changed")
 	}
+	// Subscription capabilities are execution choices once apply starts: for
+	// example, they decide whether migrated cron schedules are created disabled.
+	// Preserve the reviewed choice on resume while the backend still performs
+	// its live atomic entitlement and capacity checks for every mutation.
+	candidate.Target.OrgCapabilities = reviewed.Target.OrgCapabilities
+	candidate.Target.Subscription = reviewed.Target.Subscription
 	reviewedApps := make(map[string]AppPlan, len(reviewed.Apps))
 	for _, app := range reviewed.Apps {
 		if app.SourceUUID == "" || reviewedApps[app.SourceUUID].SourceUUID != "" {
@@ -259,6 +265,17 @@ func pinReviewedInstance(current *InstancePlan, reviewed InstancePlan) error {
 		if service.TargetName != reviewedService.TargetName {
 			return currentPlanDriftError("target service mapping changed")
 		}
+		if service.SourceVersion != reviewedService.SourceVersion {
+			return currentPlanDriftError("source service version changed")
+		}
+		if service.VersionExplicit != reviewedService.VersionExplicit {
+			return currentPlanDriftError("target service version override changed")
+		}
+		if service.Enabled && service.VersionExplicit && service.TargetVersion != reviewedService.TargetVersion {
+			return currentPlanDriftError("target service version override changed")
+		}
+		service.TargetVersion = reviewedService.TargetVersion
+		service.VersionAction = reviewedService.VersionAction
 		if reviewedService.TargetID == 0 && reviewedService.TargetServiceRevID == 0 {
 			continue
 		}

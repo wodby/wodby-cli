@@ -41,6 +41,7 @@ type options struct {
 	targetStackID    int
 	targetStackMap   []string
 	targetServiceMap []string
+	targetVersionMap []string
 	targetImportMap  []string
 
 	targetCIIntegrationID  int
@@ -240,6 +241,7 @@ func bindFlags(cmd *cobra.Command, opts *options) {
 	cmd.Flags().IntVar(&opts.targetStackID, "target-stack-id", 0, "Wodby 2 target stack ID (required unless every source stack has a scoped mapping)")
 	cmd.Flags().StringArrayVar(&opts.targetStackMap, "target-stack-map", nil, "Source-to-target stack ID mapping ([APP/][INSTANCE/]SOURCE=TARGET_STACK_ID)")
 	cmd.Flags().StringArrayVar(&opts.targetServiceMap, "target-service-map", nil, "Source-to-target service mapping ([APP/][INSTANCE/]SOURCE=TARGET)")
+	cmd.Flags().StringArrayVar(&opts.targetVersionMap, "target-version-map", nil, "Source-service version override ([APP/][INSTANCE/]SOURCE_SERVICE=TARGET_VERSION)")
 	cmd.Flags().StringArrayVar(&opts.targetImportMap, "target-import-map", nil, "Backup-to-import mapping ([APP/][INSTANCE/]COMPONENT=SERVICE:IMPORT)")
 
 	cmd.Flags().IntVar(&opts.targetCIIntegrationID, "target-ci-integration-id", 0, "Wodby 2 CI integration ID (defaults to 0 for built-in Wodby CI)")
@@ -289,6 +291,10 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 		return err
 	}
 	serviceMap, err := parseMapping(opts.targetServiceMap, "--target-service-map")
+	if err != nil {
+		return err
+	}
+	versionMap, err := parseMapping(opts.targetVersionMap, "--target-version-map")
 	if err != nil {
 		return err
 	}
@@ -496,6 +502,7 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 		TargetStackID:                 opts.targetStackID,
 		TargetStackMap:                stackMap,
 		TargetServiceMap:              serviceMap,
+		TargetVersionMap:              versionMap,
 		TargetImportMap:               importMap,
 		TargetCIIntegrationID:         opts.targetCIIntegrationID,
 		Repository: wodby1.RepositoryTargetPlan{
@@ -640,18 +647,18 @@ func migrationProgressReporter(cmd *cobra.Command) func(string) {
 		}
 		switch message {
 		case "Starting resumable migration apply.":
-			fmt.Fprintln(w, "\nMigration process")
+			fmt.Fprintln(w, "\n"+cliColor(w, cliColorBold+cliColorCyan, "Migration process"))
 			return
 		case "Starting migration verification.":
-			fmt.Fprintln(w, "\nVerification process")
+			fmt.Fprintln(w, "\n"+cliColor(w, cliColorBold+cliColorCyan, "Verification process"))
 			return
 		}
 		if title, ok := migrationProgressStepTitle(message); ok {
 			step++
-			fmt.Fprintf(w, "\nStep %d: %s\n", step, title)
+			fmt.Fprintf(w, "\n%s\n", cliColor(w, cliColorBold+cliColorCyan, fmt.Sprintf("Step %d: %s", step, title)))
 			return
 		}
-		fmt.Fprintf(w, "  %s\n", message)
+		fmt.Fprintf(w, "  %s\n", cliColor(w, progressMessageColor(message), message))
 	}
 }
 
@@ -684,6 +691,10 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 		return err
 	}
 	serviceMap, err := parseMapping(opts.targetServiceMap, "--target-service-map")
+	if err != nil {
+		return err
+	}
+	versionMap, err := parseMapping(opts.targetVersionMap, "--target-version-map")
 	if err != nil {
 		return err
 	}
@@ -830,6 +841,7 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 		TargetStackID:                 opts.targetStackID,
 		TargetStackMap:                stackMap,
 		TargetServiceMap:              serviceMap,
+		TargetVersionMap:              versionMap,
 		TargetImportMap:               importMap,
 		TargetCIIntegrationID:         opts.targetCIIntegrationID,
 		Repository: wodby1.RepositoryTargetPlan{
@@ -1543,19 +1555,19 @@ func printPreview(cmd *cobra.Command, plan wodby1.Plan) error {
 	if plan.Status == "blocked" || plan.Summary.Blocking != 0 {
 		fmt.Fprintf(
 			cmd.OutOrStdout(),
-			"Fix the %d blocking item(s) above, then rerun this preview.\n",
-			plan.Summary.Blocking,
+			"%s\n",
+			cliColor(cmd.OutOrStdout(), cliColorRed, fmt.Sprintf("Fix the %d blocking item(s) above, then rerun this preview.", plan.Summary.Blocking)),
 		)
-		fmt.Fprintln(cmd.OutOrStdout(), "The migration cannot start until the plan has no blockers.")
+		fmt.Fprintln(cmd.OutOrStdout(), cliColor(cmd.OutOrStdout(), cliColorRed, "The migration cannot start until the plan has no blockers."))
 		return nil
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "No blockers found.")
+	fmt.Fprintln(cmd.OutOrStdout(), cliColor(cmd.OutOrStdout(), cliColorGreen, "No blockers found."))
 	if plan.Summary.Confirmation != 0 {
-		fmt.Fprintf(
+		fmt.Fprintln(cmd.OutOrStdout(), cliColor(
 			cmd.OutOrStdout(),
-			"Review the %d confirmation item(s) above. When ready, rerun the same command with --apply.\n",
-			plan.Summary.Confirmation,
-		)
+			cliColorOrange,
+			fmt.Sprintf("Review the %d confirmation item(s) above. When ready, rerun the same command with --apply.", plan.Summary.Confirmation),
+		))
 	} else {
 		fmt.Fprintln(cmd.OutOrStdout(), "When ready, rerun the same command with --apply.")
 	}
@@ -1722,11 +1734,11 @@ func printBlockedApplyReview(cmd *cobra.Command, plan wodby1.Plan) error {
 		return nil
 	}
 	wodby1.PrintReview(cmd.OutOrStdout(), plan)
-	fmt.Fprintf(
+	fmt.Fprintln(cmd.OutOrStdout(), "\n"+cliColor(
 		cmd.OutOrStdout(),
-		"\nMigration not started. Resolve the %d blocking item(s) above and rerun the command.\n",
-		plan.Summary.Blocking,
-	)
+		cliColorRed,
+		fmt.Sprintf("Migration not started. Resolve the %d blocking item(s) above and rerun the command.", plan.Summary.Blocking),
+	))
 	return nil
 }
 
@@ -1771,7 +1783,7 @@ func printMigrationResult(
 		encoder.SetIndent("", "  ")
 		return errors.WithStack(encoder.Encode(output))
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Migration %s completed.\n", action)
+	fmt.Fprintln(cmd.OutOrStdout(), cliColor(cmd.OutOrStdout(), cliColorGreen, fmt.Sprintf("Migration %s completed.", action)))
 	fmt.Fprintf(cmd.OutOrStdout(), "Status: %s\n", publicMigrationStatus(action == "apply"))
 	printImportStatuses(cmd, plan, "completed")
 	if action == "apply" {
@@ -1805,7 +1817,7 @@ func printServerMigrationResult(
 		encoder.SetIndent("", "  ")
 		return errors.WithStack(encoder.Encode(output))
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Server migration %s completed for %d app(s).\n", action, len(apps))
+	fmt.Fprintln(cmd.OutOrStdout(), cliColor(cmd.OutOrStdout(), cliColorGreen, fmt.Sprintf("Server migration %s completed for %d app(s).", action, len(apps))))
 	for _, app := range apps {
 		fmt.Fprintf(
 			cmd.OutOrStdout(),

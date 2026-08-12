@@ -59,17 +59,19 @@ type TargetStack struct {
 	LatestRevNumber    int     `json:"latestRevNumber"`
 	OriginStackRevName *string `json:"originStackRevName,omitempty"`
 	OrgID              int     `json:"orgId"`
+	RevisionManifest   string  `json:"-"`
 }
 
 // TargetStackRevision is the immutable stack revision read back by ID before a
 // reviewed migration plan is allowed to mutate the target.
 type TargetStackRevision struct {
-	ID      int    `json:"id"`
-	Name    string `json:"name"`
-	Number  int    `json:"number"`
-	Draft   bool   `json:"draft"`
-	Version string `json:"version"`
-	StackID int    `json:"stackId"`
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Number   int    `json:"number"`
+	Draft    bool   `json:"draft"`
+	Version  string `json:"version"`
+	StackID  int    `json:"stackId"`
+	Manifest string `json:"manifest,omitempty"`
 }
 
 type TargetStacksResponse struct {
@@ -109,11 +111,27 @@ type TargetServiceImportCapability struct {
 	Extensions  []string `json:"extensions,omitempty"`
 }
 
+type TargetServiceCronSchedule struct {
+	Name     string `json:"name"`
+	Title    string `json:"title"`
+	Schedule string `json:"schedule"`
+	Command  string `json:"command"`
+}
+
+type TargetServiceOption struct {
+	Version string    `json:"version"`
+	Tag     string    `json:"tag,omitempty"`
+	EOL     time.Time `json:"eol,omitempty"`
+	Default bool      `json:"default,omitempty"`
+}
+
 type TargetServiceManifest struct {
-	Name    string                          `json:"name"`
-	Raw     string                          `json:"raw,omitempty"`
-	Build   *TargetServiceBuildCapability   `json:"build,omitempty"`
-	Imports []TargetServiceImportCapability `json:"imports,omitempty"`
+	Name          string                          `json:"name"`
+	Raw           string                          `json:"raw,omitempty"`
+	Build         *TargetServiceBuildCapability   `json:"build,omitempty"`
+	Imports       []TargetServiceImportCapability `json:"imports,omitempty"`
+	CronSchedules []TargetServiceCronSchedule     `json:"cron,omitempty"`
+	Options       []TargetServiceOption           `json:"options,omitempty"`
 }
 
 type TargetServiceRevision struct {
@@ -320,6 +338,7 @@ type TargetCreateAppServiceCronScheduleInput struct {
 	Crontab  string  `json:"crontab"`
 	Command  string  `json:"command"`
 	Workload *string `json:"workload,omitempty"`
+	Disabled *bool   `json:"disabled,omitempty"`
 }
 
 type TargetUpdateAppServiceCronScheduleInput struct {
@@ -1858,6 +1877,9 @@ func validateTargetAppServiceUpdateInput(input TargetAppServiceUpdateInput) erro
 	}
 	if input.Replicas != nil && *input.Replicas < 0 {
 		return errors.New("target app service replicas must not be negative")
+	}
+	if input.Version != nil && strings.TrimSpace(*input.Version) == "" {
+		return errors.New("target app service version must not be empty")
 	}
 	if input.BuildSource == nil {
 		return nil

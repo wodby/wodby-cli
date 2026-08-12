@@ -144,6 +144,7 @@ func TestPreflightTargetResolvesOfficialStackServicesAndRehashesPlan(t *testing.
 		"/v1/apps",
 		"/v1/integrations/44/options/remote-git-repos",
 		"/v1/stacks/7",
+		"/v1/stack-revisions/71",
 		"/v1/stack-revisions/71/services",
 		"/v1/service-revisions/103",
 		"/v1/service-revisions/102",
@@ -532,7 +533,10 @@ func TestPreflightTargetHonorsExplicitCustomStackAndServiceMappings(t *testing.T
 		UUID: "custom-stack-uuid", Name: "customer-stack", Version: "private-8",
 		Custom: true, AncestorUUID: "drupal11-uuid", AncestorName: "drupal11",
 	}
-	source.Services = []Service{{Name: "legacy-web", Enabled: true}}
+	source.Services = []Service{{
+		Name: "legacy-web", Version: "7.3", Enabled: true,
+		EnvVars: []EnvVar{{Name: "FORK_ONLY_DEFAULT", Value: "yes", Enabled: true, Origin: "custom_stack"}},
+	}, {Name: "optional-extra", Enabled: true}}
 
 	options := preflightOwnerPlanOptions()
 	options.TargetStackMap = map[string]string{
@@ -563,6 +567,7 @@ func TestPreflightTargetHonorsExplicitCustomStackAndServiceMappings(t *testing.T
 		stackServices: map[int][]TargetStackService{
 			171: {
 				{ID: 21, Name: "php", Required: true, ServiceRevID: 201},
+				{ID: 22, Name: "optional-extra", ServiceRevID: 202},
 			},
 		},
 		revisions: map[int]TargetServiceRevision{
@@ -570,7 +575,12 @@ func TestPreflightTargetHonorsExplicitCustomStackAndServiceMappings(t *testing.T
 				ID: 201, ServiceID: 301, Name: "php",
 				Manifest: &TargetServiceManifest{
 					Name: "php", Build: &TargetServiceBuildCapability{Connect: true},
+					Options: []TargetServiceOption{{Version: "8.3", Default: true}, {Version: "8.4"}},
 				},
+			},
+			202: {
+				ID: 202, ServiceID: 302, Name: "optional-extra",
+				Manifest: &TargetServiceManifest{Name: "optional-extra"},
 			},
 		},
 	}
@@ -592,9 +602,18 @@ func TestPreflightTargetHonorsExplicitCustomStackAndServiceMappings(t *testing.T
 		t.Fatalf("custom stack IDs = %#v", instancePlan.Stack)
 	}
 	assertPreflightServicePlan(t, instancePlan, "legacy-web", "php", 21, 201)
+	servicePlan := preflightFindServicePlan(t, instancePlan, "legacy-web")
+	if servicePlan.SourceVersion != "7.3" || servicePlan.TargetVersion != "8.4" ||
+		servicePlan.VersionAction != versionActionUpgrade || servicePlan.EnvVars != 1 {
+		t.Fatalf("forked managed service migration plan = %#v", servicePlan)
+	}
 	mapped, found := prepared.Instances[0].Services["legacy-web"]
 	if !found || mapped.Target.StackService.Name != "php" {
 		t.Fatalf("prepared mapped service = %#v, found=%t", mapped, found)
+	}
+	extra, found := prepared.Instances[0].Services["optional-extra"]
+	if !found || extra.Target.StackService.Name != "optional-extra" {
+		t.Fatalf("prepared fork-only service = %#v, found=%t", extra, found)
 	}
 }
 
@@ -1311,8 +1330,19 @@ func newPreflightTargetAPI(t *testing.T, catalog preflightTargetCatalog) *prefli
 			}
 			revision, found := catalog.stackRevisions[revisionID]
 			if !found {
-				http.NotFound(w, request)
-				return
+				for _, stack := range catalog.stacks {
+					if stack.RevID == revisionID {
+						revision = TargetStackRevision{
+							ID: revisionID, Name: stack.Name, Number: stack.LatestRevNumber, StackID: stack.ID,
+						}
+						found = true
+						break
+					}
+				}
+				if !found {
+					http.NotFound(w, request)
+					return
+				}
 			}
 			preflightWriteJSON(w, revision)
 		case strings.HasPrefix(request.URL.Path, "/v1/service-revisions/"):
@@ -1539,7 +1569,16 @@ func preflightOwnerPlanOptions() PlanOptions {
 			Membership: TargetOrgMembership{
 				ID: 88, UserID: &userID, OrgID: 8, Role: "owner", Status: "ok",
 			},
-			Org:     TargetOrg{ID: 8, Name: "acme", Title: "Acme"},
+			Org: TargetOrg{
+				ID: 8, Name: "acme", Title: "Acme",
+				Capabilities: &TargetOrgCapabilities{CustomDomains: true, CronSchedules: true},
+				Subscription: &TargetOrgSubscription{
+					Status: "ACTIVE",
+					Plan: &TargetOrgSubscriptionPlan{
+						Name: "team", Title: "Team", Usage: 4, UsageIncluded: 10,
+					},
+				},
+			},
 			Project: TargetProject{ID: 9, Name: "customer", Title: "Customer", OrgID: 8},
 			Cluster: TargetCluster{
 				ID: 10, Name: "production", Title: "Production", Status: "OK", OrgID: 8,

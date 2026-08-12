@@ -1,6 +1,7 @@
 package run
 
 import (
+	"os"
 	"path"
 	"strings"
 
@@ -22,6 +23,8 @@ type options struct {
 	user       string
 	entrypoint string
 	path       string
+	cache      []string
+	noCache    bool
 }
 
 var opts options
@@ -80,10 +83,11 @@ var Cmd = &cobra.Command{
 		}
 
 		dockerClient := docker.NewClient()
-		workingDir, err := dockerClient.GetImageWorkingDir(image)
+		imageConfig, err := dockerClient.GetImageConfig(image)
 		if err != nil {
 			return errors.WithStack(err)
 		}
+		workingDir := imageConfig.WorkingDir
 
 		if config.DataContainer != "" {
 			runConfig.VolumesFrom = []string{config.DataContainer}
@@ -99,6 +103,38 @@ var Cmd = &cobra.Command{
 			return errors.WithStack(err)
 		}
 		runConfig.ClearEntrypoint = shouldClearImageEntrypoint(opts.entrypoint, runConfig.User)
+
+		explicitEnv, err := explicitEnvironmentNames(opts.env, opts.envFile)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+		if opts.user == "" && config.DataContainer == "" && runConfig.User != "" {
+			runConfig.Env = withMappedUserHome(runConfig.Env, explicitEnv)
+		}
+
+		cacheNames, err := resolveCacheProfileNames(
+			opts.cache,
+			opts.noCache,
+			opts.user == "",
+			image,
+			imageConfig.Labels,
+		)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+		if len(cacheNames) > 0 {
+			cacheRoot := os.Getenv("WODBY_CI_CACHE_DIR")
+			hostHome := ""
+			if cacheRoot == "" {
+				hostHome, err = os.UserHomeDir()
+				if err != nil {
+					return errors.WithStack(err)
+				}
+			}
+			if err := addCacheProfiles(&runConfig, cacheNames, explicitEnv, hostHome, cacheRoot); err != nil {
+				return errors.WithStack(err)
+			}
+		}
 
 		if opts.path != "" {
 			runConfig.WorkDir = fmt.Sprintf("%s/%s", workingDir, opts.path)
@@ -122,6 +158,8 @@ func init() {
 	Cmd.Flags().StringVar(&opts.envFile, "env-file", "", "Env file")
 	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "User (defaults to current uid:gid for bind-mounted contexts, except 1000:1000)")
 	Cmd.Flags().StringVarP(&opts.path, "path", "p", "", "Working dir (relative path)")
+	Cmd.Flags().StringSliceVar(&opts.cache, "cache", []string{}, "Cache profiles to enable instead of auto-detection (npm, composer, uv)")
+	Cmd.Flags().BoolVar(&opts.noCache, "no-cache", false, "Disable automatic cache mounts")
 }
 
 func resolveRunUser(explicitUser string, config *types.Config) (string, error) {

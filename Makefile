@@ -47,6 +47,7 @@ docs-update:
 
 test:
 	@bin/wodby version | grep $(VERSION)
+	go test ./...
 
 shell:
 	docker run --rm --name $(NAME) $(PARAMS) -ti $(REPO):$(TAG) /bin/bash

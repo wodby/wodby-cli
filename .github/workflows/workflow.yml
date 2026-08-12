@@ -39,6 +39,35 @@ jobs:
     - name: test
       if: ${{ matrix.os == 'linux' && matrix.arch == 'amd64' }}
       run: make test VERSION="${VERSION}"
+    - name: test ci run user and cache integration
+      if: ${{ matrix.os == 'linux' && matrix.arch == 'amd64' }}
+      run: |
+        set -euo pipefail
+
+        test_home="${RUNNER_TEMP}/wodby-home"
+        context="${RUNNER_TEMP}/wodby-context"
+        config="${RUNNER_TEMP}/.wodby-ci.json"
+        mkdir -p "${test_home}" "${context}"
+
+        jq -n --arg context "${context}" '{
+          context: $context,
+          appBuild: {config: {services: []}}
+        }' > "${config}"
+
+        HOME="${test_home}" bin/wodby \
+          --ci-config-path "${config}" \
+          ci run \
+          --image wodby/node:24 \
+          --env "EXPECTED_UID=$(id -u)" \
+          -- sh -eu -c '
+            test "$(id -u)" = "${EXPECTED_UID}"
+            test "${HOME}" = /tmp
+            test "$(npm config get cache)" = /tmp/wodby-cache/npm
+            printf cache-ok > /tmp/wodby-cache/npm/wodby-cache-test
+          '
+
+        test -f "${test_home}/.npm/wodby-cache-test"
+        test "$(stat -c %u "${test_home}/.npm/wodby-cache-test")" = "$(id -u)"
     - name: package
       run: make package
     - name: Upload production artifacts

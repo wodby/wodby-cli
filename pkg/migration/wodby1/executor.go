@@ -184,6 +184,10 @@ func (e *MigrationExecutor) Prepare(
 	if err != nil {
 		return MigrationPhaseResult{}, err
 	}
+	prepared, err = e.ensureTargetStackConfiguration(ctx, state, plan, prepared)
+	if err != nil {
+		return MigrationPhaseResult{}, err
+	}
 	e.reportProgress("Step: create or resume the target app and app instances.")
 
 	app, instances, err := e.ensureAppAndInstances(ctx, state, plan, prepared)
@@ -280,9 +284,6 @@ func (e *MigrationExecutor) ensureGeneratedTargetStack(
 		if err != nil {
 			return PreparedMigration{}, errors.Wrap(err, "read generated target stack from migration state")
 		}
-		if generated.RevID != operation.TaskID {
-			return PreparedMigration{}, errors.Errorf("generated target stack revision changed from saved ID %d to %d", operation.TaskID, generated.RevID)
-		}
 		if err := validateGeneratedStack(generated, blueprint, plan.Target.OrgID); err != nil {
 			return PreparedMigration{}, err
 		}
@@ -373,6 +374,7 @@ func (e *MigrationExecutor) ensureGeneratedTargetStack(
 func generatedStackBlueprint(plan Plan, prepared PreparedMigration) (TargetStack, bool, error) {
 	var blueprint TargetStack
 	found := false
+	sawExisting := false
 	for _, instance := range prepared.Instances {
 		instancePlan := planInstance(plan, instance.Source.UUID)
 		if instancePlan == nil {
@@ -382,7 +384,11 @@ func generatedStackBlueprint(plan Plan, prepared PreparedMigration) (TargetStack
 			if found {
 				return TargetStack{}, false, errors.New("app migration mixes generated and existing target stacks")
 			}
+			sawExisting = true
 			continue
+		}
+		if sawExisting {
+			return TargetStack{}, false, errors.New("app migration mixes generated and existing target stacks")
 		}
 		if !found {
 			blueprint = instance.Stack
@@ -414,6 +420,14 @@ func (e *MigrationExecutor) bindGeneratedStack(
 	prepared PreparedMigration,
 	generated TargetStack,
 ) (PreparedMigration, error) {
+	revision, err := e.target.GetStackRevision(ctx, generated.RevID)
+	if err != nil {
+		return PreparedMigration{}, errors.Wrap(err, "read configured target stack revision")
+	}
+	if revision.StackID != generated.ID {
+		return PreparedMigration{}, errors.New("configured target stack revision belongs to a different stack")
+	}
+	generated.RevisionManifest = revision.Manifest
 	inspections, err := e.target.InspectStackRevision(ctx, generated.RevID)
 	if err != nil {
 		return PreparedMigration{}, errors.Wrap(err, "inspect generated target stack")
@@ -469,7 +483,7 @@ func (e *MigrationExecutor) bindGeneratedStack(
 			instance.ImportByComponent[key] = item
 		}
 	}
-	prepared.Apps = []PreparedAppMigration{{App: prepared.App, Instances: prepared.Instances}}
+	prepared.Apps = []PreparedAppMigration{{App: prepared.App, Instances: prepared.Instances, StackConfiguration: prepared.StackConfiguration}}
 	return prepared, nil
 }
 
@@ -826,6 +840,20 @@ func (e *MigrationExecutor) Verify(
 	}
 	if err := e.startPhase(state, MigrationPhaseVerify); err != nil {
 		return MigrationPhaseResult{}, err
+	}
+	prepared, err = e.bindAppliedTargetStack(ctx, state, plan, prepared)
+	if err != nil {
+		return MigrationPhaseResult{}, err
+	}
+	if stackConfigurationHasChanges(prepared.StackConfiguration) {
+		matches, err := e.targetStackConfigurationMatches(ctx, prepared.Instances[0].Stack.RevID, prepared.StackConfiguration)
+		if err != nil {
+			return MigrationPhaseResult{}, errors.Wrap(err, "verify target stack configuration")
+		}
+		if !matches {
+			return MigrationPhaseResult{}, errors.New("target stack configuration no longer matches the applied migration")
+		}
+		e.reportProgress("Verified target stack %q configuration (revision ID %d).", prepared.Instances[0].Stack.Name, prepared.Instances[0].Stack.RevID)
 	}
 	app, found, err := e.target.FindAppExact(ctx, plan.Target.OrgID, prepared.App.App.Name)
 	if err != nil {
@@ -1611,54 +1639,6 @@ func (e *MigrationExecutor) prepareInstance(
 			prepared.Source.UUID,
 			service,
 			*prepared.BuildSource,
-		); err != nil {
-			return err
-		}
-	}
-	serviceTargets := serviceTargetNamesFromPrepared(prepared)
-	for _, sourceService := range prepared.Source.Services {
-		if !sourceService.Enabled {
-			continue
-		}
-		mapping, ok := prepared.Services[sourceService.Name]
-		if !ok {
-			continue
-		}
-		target, ok := byName[mapping.Target.StackService.Name]
-		if !ok {
-			return errors.New("mapped target service disappeared after preflight")
-		}
-		if err := e.ensureServiceVersion(
-			ctx,
-			state,
-			prepared.Source.UUID,
-			target,
-			mapping.TargetVersion,
-		); err != nil {
-			return err
-		}
-		if err := e.ensureServiceEnvironment(
-			ctx,
-			state,
-			prepared.Source.UUID,
-			target,
-			sourceService,
-			prepared.Source.Properties,
-			serviceTargets,
-		); err != nil {
-			return err
-		}
-		if err := e.ensureServiceSettings(ctx, state, prepared.Source.UUID, target, sourceService); err != nil {
-			return err
-		}
-		if err := e.ensureServiceCrons(
-			ctx,
-			state,
-			prepared.Source.UUID,
-			target,
-			sourceService,
-			mapping.Target,
-			prepared.DisableCronSchedules,
 		); err != nil {
 			return err
 		}
@@ -4451,7 +4431,6 @@ func (e *MigrationExecutor) verifyInstance(
 			return errors.New("target build source is not recorded as successfully reconciled")
 		}
 	}
-	serviceTargets := serviceTargetNamesFromPrepared(prepared)
 	for _, source := range prepared.Source.Services {
 		if !source.Enabled {
 			continue
@@ -4471,22 +4450,6 @@ func (e *MigrationExecutor) verifyInstance(
 				service.Version,
 				mapping.TargetVersion,
 			)
-		}
-		if err := e.verifyServiceEnvironment(ctx, service.ID, source, prepared.Source.Properties, serviceTargets); err != nil {
-			return err
-		}
-		if err := e.verifyServiceSettings(ctx, service.ID, source); err != nil {
-			return err
-		}
-		if err := e.verifyServiceCrons(
-			ctx,
-			prepared.Source.UUID,
-			service.ID,
-			source,
-			mapping.Target,
-			prepared.DisableCronSchedules,
-		); err != nil {
-			return err
 		}
 	}
 	if err := e.verifyRoutes(ctx, prepared, instance.ID, plan); err != nil {

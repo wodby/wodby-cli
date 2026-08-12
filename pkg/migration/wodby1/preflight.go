@@ -30,25 +30,27 @@ type TargetPreflightOptions struct {
 // from the approved plan on every phase instead of being persisted in the
 // state file. Mutation phases pin and read back the reviewed immutable IDs.
 type PreparedMigration struct {
-	App       AppExport
-	Instances []PreparedInstance
-	Apps      []PreparedAppMigration
+	App                AppExport
+	Instances          []PreparedInstance
+	Apps               []PreparedAppMigration
+	StackConfiguration PreparedStackConfiguration
 }
 
 type PreparedAppMigration struct {
-	App       AppExport
-	Instances []PreparedInstance
+	App                AppExport
+	Instances          []PreparedInstance
+	StackConfiguration PreparedStackConfiguration
 }
 
 // ForApp returns the single-app target mapping consumed by MigrationExecutor.
 func (p PreparedMigration) ForApp(sourceUUID string) (PreparedMigration, bool) {
 	for _, app := range p.Apps {
 		if app.App.App.UUID == sourceUUID {
-			return PreparedMigration{App: app.App, Instances: app.Instances, Apps: []PreparedAppMigration{app}}, true
+			return PreparedMigration{App: app.App, Instances: app.Instances, Apps: []PreparedAppMigration{app}, StackConfiguration: app.StackConfiguration}, true
 		}
 	}
 	if p.App.App.UUID == sourceUUID {
-		return PreparedMigration{App: p.App, Instances: p.Instances}, true
+		return PreparedMigration{App: p.App, Instances: p.Instances, StackConfiguration: p.StackConfiguration}, true
 	}
 	return PreparedMigration{}, false
 }
@@ -65,6 +67,38 @@ type PreparedInstance struct {
 	EffectiveState       map[string]bool
 	DisableCronSchedules bool
 	DisableCustomRoutes  bool
+	TargetEnvType        string
+}
+
+// PreparedStackConfiguration is the application-wide configuration applied to
+// the target stack before any app instance is created. Service state and build
+// refs remain instance-level because Wodby 2 models them on app services.
+type PreparedStackConfiguration struct {
+	Services map[string]PreparedStackServiceConfiguration
+}
+
+type PreparedStackServiceConfiguration struct {
+	VersionOptions []TargetStackServiceOptionInput
+	EnvVars        []PreparedStackEnvVar
+	Settings       map[string]string
+	CronSchedules  []PreparedStackCronSchedule
+}
+
+type PreparedStackEnvVar struct {
+	Name    string
+	Value   string
+	Secret  bool
+	EnvType *string
+}
+
+type PreparedStackCronSchedule struct {
+	Name     string
+	Title    string
+	Crontab  string
+	Command  string
+	Workload *string
+	Disabled bool
+	EnvType  *string
 }
 
 type PreparedService struct {
@@ -216,11 +250,26 @@ func (c *TargetClient) PreflightTarget(
 			}
 			findings = append(findings, pipelineFindings...)
 		}
+		stackConfiguration, stackFindings, err := prepareStackConfiguration(preparedApp)
+		if err != nil {
+			return PreparedMigration{}, err
+		}
+		preparedApp.StackConfiguration = stackConfiguration
+		findings = append(findings, stackFindings...)
+		if appUsesExplicitTargetStack(appPlan) && stackConfigurationHasChanges(stackConfiguration) {
+			findings = append(findings, ReviewItem{
+				Severity: SeverityConfirmation,
+				App:      appExport.App.Name,
+				Subject:  "existing target stack configuration",
+				Message:  "the explicitly selected target stack will receive a new published revision containing migrated versions, variables, settings, and schedules; existing app instances are not upgraded automatically",
+			})
+		}
 		prepared.Apps = append(prepared.Apps, preparedApp)
 	}
 	if len(prepared.Apps) == 1 {
 		prepared.App = prepared.Apps[0].App
 		prepared.Instances = prepared.Apps[0].Instances
+		prepared.StackConfiguration = prepared.Apps[0].StackConfiguration
 	}
 	findings = append(findings, targetServiceCapacityFindings(plan, prepared, opts)...)
 	if err := plan.AddReviewItems(findings...); err != nil {
@@ -470,6 +519,7 @@ func (c *TargetClient) preflightInstance(
 		}
 		stackManifest = stackRevision.Manifest
 	}
+	stack.RevisionManifest = stackManifest
 	inspections, err := c.InspectStackRevision(ctx, stack.RevID)
 	if err != nil {
 		return PreparedInstance{}, nil, errors.Wrapf(err, "inspect target stack for %s/%s", app.Name, source.Name)
@@ -623,6 +673,7 @@ func (c *TargetClient) preflightInstance(
 		EffectiveState:       effective,
 		DisableCronSchedules: disableCronSchedules,
 		DisableCustomRoutes:  disableCustomRoutes,
+		TargetEnvType:        strings.ToUpper(strings.TrimSpace(plan.TargetEnvType)),
 	}
 	for _, sourceService := range source.Services {
 		for _, variable := range sourceService.EnvVars {

@@ -50,6 +50,8 @@ func TestEnsureGeneratedTargetStackDuplicatesOnceAndResumes(t *testing.T) {
 				ID: 17, Name: "acme/drupal11", Status: "OK", RevID: 171, OrgID: 1,
 				OriginStackRevID: &originRevisionID, CreatedAt: time.Now().UTC(),
 			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/stack-revisions/171":
+			writeTargetExecutionJSON(t, w, TargetStackRevision{ID: 171, StackID: 17, Number: 2})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/stack-revisions/171/services":
 			writeTargetExecutionJSON(t, w, []TargetStackService{{ID: 111, Name: "php", ServiceRevID: 101}})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/service-revisions/101":
@@ -1192,6 +1194,14 @@ func TestMigrationExecutorRunsMinimalCustomerLifecycle(t *testing.T) {
 	deployments := map[int]TargetAppDeployment{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/stacks/5":
+			writeTargetExecutionJSON(t, w, TargetStack{ID: 5, Name: "drupal", Status: "OK", RevID: 12, OrgID: 1})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/stack-revisions/12":
+			writeTargetExecutionJSON(t, w, TargetStackRevision{ID: 12, StackID: 5, Number: 1})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/stack-revisions/12/services":
+			writeTargetExecutionJSON(t, w, []TargetStackService{{ID: 11, Name: "nginx", ServiceRevID: 101}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/service-revisions/101":
+			writeTargetExecutionJSON(t, w, TargetServiceRevision{ID: 101, ServiceID: 201, Name: "nginx"})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/apps":
 			if appCreated {
 				writeTargetExecutionJSON(t, w, []TargetApp{app})

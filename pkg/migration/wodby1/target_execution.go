@@ -56,6 +56,7 @@ type TargetStack struct {
 	Status             string    `json:"status"`
 	Public             bool      `json:"public"`
 	RevID              int       `json:"revId"`
+	DraftRevID         *int      `json:"draftRevId,omitempty"`
 	LatestRevNumber    int       `json:"latestRevNumber"`
 	OriginStackRevName *string   `json:"originStackRevName,omitempty"`
 	OriginStackRevID   *int      `json:"originStackRevId,omitempty"`
@@ -151,22 +152,218 @@ func (c *TargetClient) DuplicateStack(ctx context.Context, stackID int, input Ta
 	return item, nil
 }
 
+func (c *TargetClient) PublishStackDraft(ctx context.Context, stackID int) (TargetStack, error) {
+	if err := targetRequirePositiveID("stack", stackID); err != nil {
+		return TargetStack{}, err
+	}
+	var item TargetStack
+	if err := c.client.Post(ctx, "/stacks/"+strconv.Itoa(stackID)+"/actions/publish-draft", nil, nil, &item); err != nil {
+		return TargetStack{}, errors.Wrap(err, "publish target Wodby 2 stack draft")
+	}
+	if item.ID != stackID {
+		return TargetStack{}, targetUnexpectedID("stack", item.ID, stackID)
+	}
+	if err := validateTargetStack(item); err != nil {
+		return TargetStack{}, err
+	}
+	if item.DraftRevID != nil {
+		return TargetStack{}, errors.New("published target stack still reports an unpublished draft")
+	}
+	return item, nil
+}
+
+func (c *TargetClient) SetStackServiceOptions(ctx context.Context, stackServiceID int, options []TargetStackServiceOptionInput) error {
+	if err := targetRequirePositiveID("stack service", stackServiceID); err != nil {
+		return err
+	}
+	if len(options) == 0 {
+		return errors.New("target stack service options are required")
+	}
+	seen := map[string]bool{}
+	defaults := 0
+	for _, option := range options {
+		version := strings.TrimSpace(option.Version)
+		if version == "" || seen[version] {
+			return errors.New("target stack service option versions must be non-empty and unique")
+		}
+		seen[version] = true
+		if option.Default {
+			defaults++
+			if option.Disabled {
+				return errors.New("target stack service default option cannot be disabled")
+			}
+		}
+	}
+	if defaults != 1 {
+		return errors.New("target stack service options require exactly one default")
+	}
+	var result TargetOperationResult
+	body := struct {
+		Options []TargetStackServiceOptionInput `json:"options"`
+	}{Options: options}
+	if err := c.client.Put(ctx, "/stack-services/"+strconv.Itoa(stackServiceID)+"/options", nil, body, &result); err != nil {
+		return errors.Wrap(err, "set target Wodby 2 stack service options")
+	}
+	if !result.Success {
+		return errors.New("target Wodby 2 stack service options update was not successful")
+	}
+	return nil
+}
+
+func (c *TargetClient) SetStackServiceSetting(ctx context.Context, stackServiceID int, name, value string) error {
+	if err := targetRequirePositiveID("stack service", stackServiceID); err != nil {
+		return err
+	}
+	name, err := targetSafePathName("stack service setting", name)
+	if err != nil {
+		return err
+	}
+	var result TargetOperationResult
+	body := struct {
+		Value *string `json:"value,omitempty"`
+	}{Value: &value}
+	if err := c.client.Put(ctx, "/stack-services/"+strconv.Itoa(stackServiceID)+"/settings/"+name, nil, body, &result); err != nil {
+		return errors.Wrap(err, "set target Wodby 2 stack service setting")
+	}
+	if !result.Success {
+		return errors.New("target Wodby 2 stack service setting update was not successful")
+	}
+	return nil
+}
+
+func (c *TargetClient) ListStackServiceEnvVars(ctx context.Context, stackServiceID int) ([]TargetStackServiceEnvVar, error) {
+	if err := targetRequirePositiveID("stack service", stackServiceID); err != nil {
+		return nil, err
+	}
+	items := []TargetStackServiceEnvVar{}
+	if err := c.client.Get(ctx, "/stack-services/"+strconv.Itoa(stackServiceID)+"/env-vars", nil, &items); err != nil {
+		return nil, errors.Wrap(err, "list target Wodby 2 stack service environment variables")
+	}
+	for _, item := range items {
+		if err := validateTargetStackServiceEnvVar(item, 0); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
+}
+
+func (c *TargetClient) CreateStackServiceEnvVar(ctx context.Context, stackServiceID int, input TargetCreateStackServiceEnvVarInput) (TargetStackServiceEnvVar, error) {
+	if err := targetRequirePositiveID("stack service", stackServiceID); err != nil {
+		return TargetStackServiceEnvVar{}, err
+	}
+	if strings.TrimSpace(input.Name) == "" {
+		return TargetStackServiceEnvVar{}, errors.New("target stack environment variable name is required")
+	}
+	var item TargetStackServiceEnvVar
+	if err := c.client.Post(ctx, "/stack-services/"+strconv.Itoa(stackServiceID)+"/env-vars", nil, input, &item); err != nil {
+		return TargetStackServiceEnvVar{}, errors.Wrap(err, "create target Wodby 2 stack service environment variable")
+	}
+	if err := validateTargetStackServiceEnvVar(item, 0); err != nil {
+		return TargetStackServiceEnvVar{}, err
+	}
+	if item.Name != input.Name || !sameOptionalString(item.EnvType, input.EnvType) {
+		return TargetStackServiceEnvVar{}, errors.New("created target stack environment variable identity does not match the request")
+	}
+	return item, nil
+}
+
+func (c *TargetClient) UpdateStackServiceEnvVar(ctx context.Context, envVarID int, input TargetUpdateStackServiceEnvVarInput) (TargetStackServiceEnvVar, error) {
+	if err := targetRequirePositiveID("stack service environment variable", envVarID); err != nil {
+		return TargetStackServiceEnvVar{}, err
+	}
+	var item TargetStackServiceEnvVar
+	if err := c.client.Put(ctx, "/stack-service-env-vars/"+strconv.Itoa(envVarID), nil, input, &item); err != nil {
+		return TargetStackServiceEnvVar{}, errors.Wrap(err, "update target Wodby 2 stack service environment variable")
+	}
+	if err := validateTargetStackServiceEnvVar(item, 0); err != nil {
+		return TargetStackServiceEnvVar{}, err
+	}
+	return item, nil
+}
+
+func (c *TargetClient) ListStackServiceCronSchedules(ctx context.Context, stackServiceID int) ([]TargetStackServiceCronSchedule, error) {
+	if err := targetRequirePositiveID("stack service", stackServiceID); err != nil {
+		return nil, err
+	}
+	items := []TargetStackServiceCronSchedule{}
+	if err := c.client.Get(ctx, "/stack-services/"+strconv.Itoa(stackServiceID)+"/cron-schedules", nil, &items); err != nil {
+		return nil, errors.Wrap(err, "list target Wodby 2 stack service cron schedules")
+	}
+	for _, item := range items {
+		if err := validateTargetStackServiceCronSchedule(item, 0); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
+}
+
+func (c *TargetClient) CreateStackServiceCronSchedule(ctx context.Context, stackServiceID int, input TargetCreateStackServiceCronScheduleInput) (TargetStackServiceCronSchedule, error) {
+	if err := targetRequirePositiveID("stack service", stackServiceID); err != nil {
+		return TargetStackServiceCronSchedule{}, err
+	}
+	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Title) == "" || strings.TrimSpace(input.Crontab) == "" || strings.TrimSpace(input.Command) == "" {
+		return TargetStackServiceCronSchedule{}, errors.New("target stack cron name, title, crontab, and command are required")
+	}
+	var item TargetStackServiceCronSchedule
+	if err := c.client.Post(ctx, "/stack-services/"+strconv.Itoa(stackServiceID)+"/cron-schedules", nil, input, &item); err != nil {
+		return TargetStackServiceCronSchedule{}, errors.Wrap(err, "create target Wodby 2 stack service cron schedule")
+	}
+	if err := validateTargetStackServiceCronSchedule(item, 0); err != nil {
+		return TargetStackServiceCronSchedule{}, err
+	}
+	if item.Name != input.Name || !sameOptionalString(item.EnvType, input.EnvType) {
+		return TargetStackServiceCronSchedule{}, errors.New("created target stack cron schedule identity does not match the request")
+	}
+	return item, nil
+}
+
+func (c *TargetClient) UpdateStackServiceCronSchedule(ctx context.Context, scheduleID int, input TargetUpdateStackServiceCronScheduleInput) (TargetStackServiceCronSchedule, error) {
+	if err := targetRequirePositiveID("stack service cron schedule", scheduleID); err != nil {
+		return TargetStackServiceCronSchedule{}, err
+	}
+	var item TargetStackServiceCronSchedule
+	if err := c.client.Put(ctx, "/stack-service-cron-schedules/"+strconv.Itoa(scheduleID), nil, input, &item); err != nil {
+		return TargetStackServiceCronSchedule{}, errors.Wrap(err, "update target Wodby 2 stack service cron schedule")
+	}
+	if err := validateTargetStackServiceCronSchedule(item, 0); err != nil {
+		return TargetStackServiceCronSchedule{}, err
+	}
+	return item, nil
+}
+
 // TargetStackService describes one service in an immutable stack revision.
 // ID is the stack-service ID accepted by NewAppServiceInput.
 type TargetStackService struct {
-	ID                       int     `json:"id"`
-	Name                     string  `json:"name"`
-	Title                    string  `json:"title"`
-	Type                     string  `json:"type"`
-	Main                     bool    `json:"main"`
-	Disabled                 bool    `json:"disabled"`
-	Required                 bool    `json:"required"`
-	Replicas                 int     `json:"replicas"`
-	ServiceRevID             int     `json:"serviceRevId"`
-	ServiceRevName           string  `json:"serviceRevName"`
-	ServiceRevVersion        string  `json:"serviceRevVersion"`
-	BuildSourceIntegrationID *int    `json:"buildSourceIntegrationId,omitempty"`
-	BuildSourceRemoteRepoID  *string `json:"buildSourceRemoteRepoId,omitempty"`
+	ID                       int                         `json:"id"`
+	Name                     string                      `json:"name"`
+	Title                    string                      `json:"title"`
+	Type                     string                      `json:"type"`
+	Main                     bool                        `json:"main"`
+	Disabled                 bool                        `json:"disabled"`
+	Required                 bool                        `json:"required"`
+	Replicas                 int                         `json:"replicas"`
+	ServiceRevID             int                         `json:"serviceRevId"`
+	ServiceRevName           string                      `json:"serviceRevName"`
+	ServiceRevVersion        string                      `json:"serviceRevVersion"`
+	BuildSourceIntegrationID *int                        `json:"buildSourceIntegrationId,omitempty"`
+	BuildSourceRemoteRepoID  *string                     `json:"buildSourceRemoteRepoId,omitempty"`
+	Options                  []TargetStackServiceOption  `json:"options,omitempty"`
+	Settings                 []TargetStackServiceSetting `json:"settings,omitempty"`
+}
+
+type TargetStackServiceOption struct {
+	ID             int    `json:"id"`
+	StackServiceID int    `json:"stackServiceId"`
+	Version        string `json:"version"`
+	Default        bool   `json:"default"`
+	Disabled       bool   `json:"disabled"`
+}
+
+type TargetStackServiceSetting struct {
+	ID             int    `json:"id"`
+	StackServiceID int    `json:"stackServiceId"`
+	Name           string `json:"name"`
+	Value          string `json:"value"`
 }
 
 type TargetServiceBuildCapability struct {
@@ -190,10 +387,75 @@ type TargetServiceCronSchedule struct {
 }
 
 type TargetServiceOption struct {
-	Version string    `json:"version"`
-	Tag     string    `json:"tag,omitempty"`
-	EOL     time.Time `json:"eol,omitempty"`
-	Default bool      `json:"default,omitempty"`
+	Version  string    `json:"version"`
+	Tag      string    `json:"tag,omitempty"`
+	EOL      time.Time `json:"eol,omitempty"`
+	Default  bool      `json:"default,omitempty"`
+	Disabled bool      `json:"disabled,omitempty"`
+}
+
+type TargetStackServiceOptionInput struct {
+	Version  string `json:"version"`
+	Default  bool   `json:"default"`
+	Disabled bool   `json:"disabled"`
+}
+
+type TargetStackServiceEnvVar struct {
+	ID             int     `json:"id"`
+	StackServiceID int     `json:"stackServiceId"`
+	Workload       string  `json:"workload"`
+	Container      string  `json:"container"`
+	Name           string  `json:"name"`
+	Value          *string `json:"value,omitempty"`
+	ValueSecretID  *int    `json:"valueSecretId,omitempty"`
+	EnvType        *string `json:"envType,omitempty"`
+}
+
+type TargetCreateStackServiceEnvVarInput struct {
+	Workload  *string `json:"workload,omitempty"`
+	Container *string `json:"container,omitempty"`
+	Name      string  `json:"name"`
+	Value     string  `json:"value"`
+	Secret    bool    `json:"secret"`
+	EnvType   *string `json:"envType,omitempty"`
+}
+
+type TargetUpdateStackServiceEnvVarInput struct {
+	Value  string `json:"value"`
+	Secret bool   `json:"secret"`
+}
+
+type TargetStackServiceCronSchedule struct {
+	ID             int       `json:"id"`
+	StackServiceID int       `json:"stackServiceId"`
+	Name           string    `json:"name"`
+	Title          string    `json:"title"`
+	Crontab        string    `json:"crontab"`
+	Command        string    `json:"command"`
+	Workload       *string   `json:"workload,omitempty"`
+	Disabled       bool      `json:"disabled"`
+	EnvType        *string   `json:"envType,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+type TargetCreateStackServiceCronScheduleInput struct {
+	Name     string  `json:"name"`
+	Title    string  `json:"title"`
+	Crontab  string  `json:"crontab"`
+	Command  string  `json:"command"`
+	Workload *string `json:"workload,omitempty"`
+	Disabled *bool   `json:"disabled,omitempty"`
+	EnvType  *string `json:"envType,omitempty"`
+}
+
+type TargetUpdateStackServiceCronScheduleInput struct {
+	Disabled *bool   `json:"disabled,omitempty"`
+	Title    *string `json:"title,omitempty"`
+	Crontab  *string `json:"crontab,omitempty"`
+	Command  *string `json:"command,omitempty"`
+	Workload *string `json:"workload,omitempty"`
+	EnvType  *string `json:"envType,omitempty"`
 }
 
 type TargetServiceManifest struct {
@@ -1869,7 +2131,65 @@ func validateTargetStackService(item TargetStackService) error {
 	if strings.TrimSpace(item.Name) == "" {
 		return errors.Errorf("target Wodby 2 stack service ID %d returned an empty name", item.ID)
 	}
-	return targetValidateOptionalPositiveID("build source integration", item.BuildSourceIntegrationID)
+	if err := targetValidateOptionalPositiveID("build source integration", item.BuildSourceIntegrationID); err != nil {
+		return err
+	}
+	for _, option := range item.Options {
+		if err := targetRequirePositiveID("stack service option", option.ID); err != nil {
+			return err
+		}
+		if option.StackServiceID != item.ID || strings.TrimSpace(option.Version) == "" {
+			return errors.New("target stack service returned an invalid option")
+		}
+	}
+	for _, setting := range item.Settings {
+		if err := targetRequirePositiveID("stack service setting", setting.ID); err != nil {
+			return err
+		}
+		if setting.StackServiceID != item.ID || strings.TrimSpace(setting.Name) == "" {
+			return errors.New("target stack service returned an invalid setting")
+		}
+	}
+	return nil
+}
+
+func validateTargetStackServiceEnvVar(item TargetStackServiceEnvVar, stackServiceID int) error {
+	if err := targetRequirePositiveID("stack service environment variable", item.ID); err != nil {
+		return err
+	}
+	if err := targetRequirePositiveID("stack service", item.StackServiceID); err != nil {
+		return err
+	}
+	if stackServiceID > 0 && item.StackServiceID != stackServiceID {
+		return errors.Errorf("target stack environment variable belongs to stack service ID %d, expected %d", item.StackServiceID, stackServiceID)
+	}
+	if strings.TrimSpace(item.Name) == "" {
+		return errors.New("target stack environment variable returned an empty name")
+	}
+	return targetValidateOptionalPositiveID("stack environment variable secret", item.ValueSecretID)
+}
+
+func validateTargetStackServiceCronSchedule(item TargetStackServiceCronSchedule, stackServiceID int) error {
+	if err := targetRequirePositiveID("stack service cron schedule", item.ID); err != nil {
+		return err
+	}
+	if err := targetRequirePositiveID("stack service", item.StackServiceID); err != nil {
+		return err
+	}
+	if stackServiceID > 0 && item.StackServiceID != stackServiceID {
+		return errors.Errorf("target stack cron schedule belongs to stack service ID %d, expected %d", item.StackServiceID, stackServiceID)
+	}
+	if strings.TrimSpace(item.Name) == "" {
+		return errors.New("target stack cron schedule returned an empty name")
+	}
+	return nil
+}
+
+func sameOptionalString(left, right *string) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return strings.EqualFold(strings.TrimSpace(*left), strings.TrimSpace(*right))
 }
 
 func validateTargetCreateAppInput(input TargetCreateAppInput) error {

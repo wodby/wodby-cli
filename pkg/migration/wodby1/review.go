@@ -234,10 +234,20 @@ func reviewOverviewRows(plan Plan) [][]string {
 					context + emptyDash(instance.SourceType) + " -> " + emptyDash(instance.TargetEnv),
 				},
 				[]string{
+					"Source stack",
+					context + emptyDash(instance.Stack.Name),
+				},
+				[]string{
 					"Target stack",
 					context + firstNonEmpty(instance.Stack.Target, instance.Stack.Name),
 				},
 			)
+			if strings.TrimSpace(instance.Stack.Type) != "" {
+				rows = append(rows, []string{
+					"Application type",
+					context + instance.Stack.Type,
+				})
+			}
 		}
 	}
 	return rows

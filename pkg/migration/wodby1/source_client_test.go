@@ -498,7 +498,7 @@ func TestDecodeExportV2DomainAndRedactionFields(t *testing.T) {
 				"type":"prod",
 				"status":"active",
 				"updated":1710000000,
-				"stack":{"uuid":"stack-1","name":"custom","custom":true,"ancestor_uuid":"base-1","ancestor_name":"drupal"},
+				"stack":{"uuid":"stack-1","name":"custom","type":"drupal9","custom":true,"ancestor_uuid":"base-1","ancestor_name":"drupal"},
 				"basic_auth":{"enabled":true,"password_redacted":false},
 				"domains":[{
 					"uuid":"domain-1",
@@ -541,7 +541,7 @@ func TestDecodeExportV2DomainAndRedactionFields(t *testing.T) {
 	if instance.Status != "active" || instance.Updated != 1710000000 {
 		t.Fatalf("instance = %#v", instance)
 	}
-	if instance.Stack.AncestorUUID != "base-1" || instance.Stack.AncestorName != "drupal" {
+	if instance.Stack.Type != "drupal9" || instance.Stack.AncestorUUID != "base-1" || instance.Stack.AncestorName != "drupal" {
 		t.Fatalf("stack = %#v", instance.Stack)
 	}
 	if instance.BasicAuth == nil || instance.BasicAuth.PasswordRedacted == nil || *instance.BasicAuth.PasswordRedacted {

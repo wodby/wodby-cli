@@ -355,7 +355,7 @@ func (c *TargetClient) preflightWodbyCIPipelines(
 }
 
 func wodbyCIPipelineGuidance(app App, instance Instance) string {
-	candidates := []string{app.Type, instance.Stack.Name, instance.Stack.AncestorName}
+	candidates := []string{app.Type, instance.Stack.Type, instance.Stack.Name, instance.Stack.AncestorName}
 	for _, candidate := range candidates {
 		normalized := strings.ToLower(strings.TrimSpace(candidate))
 		switch {

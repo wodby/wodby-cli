@@ -259,6 +259,7 @@ func TestBuildPlanAppliesWodby2ServiceCompatibilityPolicy(t *testing.T) {
 					{Name: "athenapdf", Enabled: true},
 					{Name: "crond", Enabled: true},
 					{Name: "mailhog", Enabled: true},
+					{Name: "memcache", Enabled: true},
 					{Name: "nginx", Enabled: true},
 					{Name: "pma", Enabled: true},
 					{Name: "redis", Enabled: true},
@@ -292,6 +293,9 @@ func TestBuildPlanAppliesWodby2ServiceCompatibilityPolicy(t *testing.T) {
 	if service := preflightFindServicePlan(t, instance, "mailhog"); service.TargetName != "mailpit" || service.Action != "substitute" {
 		t.Fatalf("mailhog service = %#v", service)
 	}
+	if service := preflightFindServicePlan(t, instance, "memcache"); service.TargetName != "memcached" || service.Action != "substitute" {
+		t.Fatalf("memcache service = %#v", service)
+	}
 	if service := preflightFindServicePlan(t, instance, "pma"); service.TargetName != "phpmyadmin" || service.Action != "substitute" {
 		t.Fatalf("pma service = %#v", service)
 	}
@@ -317,6 +321,7 @@ func TestBuildPlanAppliesWodby2ServiceCompatibilityPolicy(t *testing.T) {
 		!hasReviewMessage(plan.Review, SeverityConfirmation, "athenapdf will be substituted with gotenberg") ||
 		!hasReviewMessage(plan.Review, SeveritySkipped, "application cron jobs are migrated as Wodby 2 service cron schedules") ||
 		!hasReviewMessage(plan.Review, SeverityConfirmation, "mailhog will be substituted with mailpit") ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "memcache will be substituted with memcached") ||
 		!hasReviewMessage(plan.Review, SeverityConfirmation, "managed phpmyadmin service") ||
 		!hasReviewMessage(plan.Review, SeverityConfirmation, "redis will be substituted with valkey") ||
 		!hasReviewMessage(plan.Review, SeverityConfirmation, "PHP SSH derivative service") ||
@@ -383,8 +388,16 @@ func TestBuildPlanRequiresExplicitServiceMappingsForFullyCustomStack(t *testing.
 }
 
 func TestBuildPlanTreatsForkedManagedDrupalAndWordPressStacksAsManaged(t *testing.T) {
-	for _, ancestor := range []string{"drupal11", "wordpress"} {
-		t.Run(ancestor, func(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		stack    Stack
+		blocking bool
+	}{
+		{name: "metadata drupal 10", stack: Stack{Name: "customer-fork", Type: "drupal10", Custom: true}},
+		{name: "metadata drupal 9", stack: Stack{Name: "customer-fork", Type: "drupal9", Custom: true}, blocking: true},
+		{name: "legacy ancestor wordpress", stack: Stack{Name: "customer-fork", Custom: true, AncestorName: "wordpress"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			export := Export{
 				Schema: ExportSchemaV2,
 				Source: &ExportSource{Kind: "instance", UUID: "inst-1"},
@@ -392,10 +405,17 @@ func TestBuildPlanTreatsForkedManagedDrupalAndWordPressStacksAsManaged(t *testin
 					App: App{UUID: "app-1", Name: "forked-app", Status: "ok"},
 					Instances: []Instance{{
 						UUID: "inst-1", Name: "dev", Type: "dev", Status: "ok",
-						Stack: Stack{Name: "customer-fork", Custom: true, AncestorName: ancestor},
+						Stack: test.stack,
 						Services: []Service{
+							{Name: "mailhog", Enabled: true},
 							{Name: "redis", Enabled: true},
-							{Name: "optional-extra", Enabled: true},
+							{
+								Name: "optional-extra", Enabled: true,
+								EnvVars: []EnvVar{
+									{Name: "SMTP_HOST", Value: "mailhog.source-instance", Enabled: true, Origin: "custom_stack"},
+									{Name: "SMTP_PORT", Value: "25", Enabled: true, Origin: "custom_stack"},
+								},
+							},
 						},
 					}},
 				}},
@@ -416,7 +436,29 @@ func TestBuildPlanTreatsForkedManagedDrupalAndWordPressStacksAsManaged(t *testin
 			if hasReviewMessage(plan.Review, SeverityBlocking, "requires an explicit target") {
 				t.Fatalf("forked managed stack was treated as fully custom: %#v", plan.Review)
 			}
+			if !hasReviewMessage(plan.Review, SeverityConfirmation, "SMTP endpoint will be rewritten from mailhog:25 to mailpit:1025") {
+				t.Fatalf("SMTP endpoint rewrite missing: %#v", plan.Review)
+			}
+			if got := hasReviewMessage(plan.Review, SeverityBlocking, "does not support Drupal 9"); got != test.blocking {
+				t.Fatalf("Drupal 9 compatibility blocker = %t, want %t: %#v", got, test.blocking, plan.Review)
+			}
+			if instance.Stack.Type != test.stack.Type {
+				t.Fatalf("planned stack type = %q, want %q", instance.Stack.Type, test.stack.Type)
+			}
 		})
+	}
+}
+
+func TestSourceStackMetadataTypeIsAuthoritativeOverAncestor(t *testing.T) {
+	if got := sourceStackFamily(Stack{
+		Name: "customer-stack", Type: "custom-application", Custom: true, AncestorName: "drupal11",
+	}); got != "" {
+		t.Fatalf("unknown metadata type classified as %q through its ancestor", got)
+	}
+	if got := sourceStackFamily(Stack{
+		Name: "customer-stack", Type: "drupal9", Custom: true, AncestorName: "drupal11",
+	}); got != "drupal9" {
+		t.Fatalf("Drupal 9 metadata classified as %q", got)
 	}
 }
 

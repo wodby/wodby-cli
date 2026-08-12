@@ -1352,6 +1352,7 @@ func (e *MigrationExecutor) prepareInstance(
 			return err
 		}
 	}
+	serviceTargets := serviceTargetNamesFromPrepared(prepared)
 	for _, sourceService := range prepared.Source.Services {
 		if !sourceService.Enabled {
 			continue
@@ -1380,6 +1381,7 @@ func (e *MigrationExecutor) prepareInstance(
 			target,
 			sourceService,
 			prepared.Source.Properties,
+			serviceTargets,
 		); err != nil {
 			return err
 		}
@@ -1547,6 +1549,7 @@ func (e *MigrationExecutor) ensureServiceEnvironment(
 	service TargetAppService,
 	source Service,
 	properties map[string]interface{},
+	serviceTargets map[string]string,
 ) error {
 	current, err := e.target.ListAppServiceEnvVars(ctx, service.ID)
 	if err != nil {
@@ -1572,6 +1575,7 @@ func (e *MigrationExecutor) ensureServiceEnvironment(
 		if strings.TrimSpace(variable.Name) == "" {
 			return errors.New("source custom environment variable name is empty")
 		}
+		desiredValue := migratedEnvironmentValue(source, variable, serviceTargets)
 		matches := byName[variable.Name]
 		if len(matches) > 1 {
 			return &TargetAmbiguousMatchError{
@@ -1588,7 +1592,7 @@ func (e *MigrationExecutor) ensureServiceEnvironment(
 			if variable.Secret || variable.Protected {
 				matchesDesired = matchesDesired && item.ValueSecretID != nil
 			} else {
-				matchesDesired = matchesDesired && item.ValueSecretID == nil && item.Value == variable.Value
+				matchesDesired = matchesDesired && item.ValueSecretID == nil && item.Value == desiredValue
 			}
 			succeeded := operationSucceeded(state.Instances[sourceID], operation)
 			if succeeded {
@@ -1613,7 +1617,7 @@ func (e *MigrationExecutor) ensureServiceEnvironment(
 				return err
 			}
 			e.reportProgress("Updating environment variable %q on service %q...", variable.Name, service.Name)
-			value := variable.Value
+			value := desiredValue
 			if _, err := e.target.UpdateAppServiceEnvVar(ctx, item.ID, TargetUpdateAppServiceEnvVarInput{
 				Value:   &value,
 				Secret:  variable.Secret || variable.Protected,
@@ -1642,7 +1646,7 @@ func (e *MigrationExecutor) ensureServiceEnvironment(
 		e.reportProgress("Creating environment variable %q on service %q...", variable.Name, service.Name)
 		created, err := e.target.CreateAppServiceEnvVar(ctx, service.ID, TargetCreateAppServiceEnvVarInput{
 			Name:    variable.Name,
-			Value:   variable.Value,
+			Value:   desiredValue,
 			Secret:  variable.Secret || variable.Protected,
 			Runtime: &runtime,
 			Build:   &build,
@@ -4184,6 +4188,7 @@ func (e *MigrationExecutor) verifyInstance(
 			return errors.New("target build source is not recorded as successfully reconciled")
 		}
 	}
+	serviceTargets := serviceTargetNamesFromPrepared(prepared)
 	for _, source := range prepared.Source.Services {
 		if !source.Enabled {
 			continue
@@ -4204,7 +4209,7 @@ func (e *MigrationExecutor) verifyInstance(
 				mapping.TargetVersion,
 			)
 		}
-		if err := e.verifyServiceEnvironment(ctx, service.ID, source, prepared.Source.Properties); err != nil {
+		if err := e.verifyServiceEnvironment(ctx, service.ID, source, prepared.Source.Properties, serviceTargets); err != nil {
 			return err
 		}
 		if err := e.verifyServiceSettings(ctx, service.ID, source); err != nil {
@@ -4257,6 +4262,7 @@ func (e *MigrationExecutor) verifyServiceEnvironment(
 	serviceID int,
 	source Service,
 	properties map[string]interface{},
+	serviceTargets map[string]string,
 ) error {
 	items, err := e.target.ListAppServiceEnvVars(ctx, serviceID)
 	if err != nil {
@@ -4278,11 +4284,12 @@ func (e *MigrationExecutor) verifyServiceEnvironment(
 			return errors.Errorf("target environment variable %q matched %d entries", variable.Name, len(matches))
 		}
 		item := matches[0]
+		desiredValue := migratedEnvironmentValue(source, variable, serviceTargets)
 		if variable.Secret || variable.Protected {
 			if item.ValueSecretID == nil {
 				return errors.Errorf("target environment variable %q is not stored as a secret", variable.Name)
 			}
-		} else if item.ValueSecretID != nil || item.Value != variable.Value {
+		} else if item.ValueSecretID != nil || item.Value != desiredValue {
 			return errors.Errorf("target environment variable %q no longer matches the source", variable.Name)
 		}
 	}

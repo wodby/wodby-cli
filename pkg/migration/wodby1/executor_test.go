@@ -442,6 +442,7 @@ func TestEnsureServiceEnvironmentOverridesCompiledDefaultsAndWritesProtectedValu
 			Origin: "custom", Protected: true,
 		}}},
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -498,6 +499,7 @@ func TestEnsureServiceEnvironmentCreatesGlobalOverrideForInheritedAndScopedEntri
 			Name: "APP_SECRET", Value: "source-secret", Enabled: true,
 			Origin: "custom", Protected: true,
 		}}},
+		nil,
 		nil,
 	)
 	if err != nil {

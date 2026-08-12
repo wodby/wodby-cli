@@ -255,6 +255,7 @@ type Server struct {
 type Stack struct {
 	UUID         string `json:"uuid"`
 	Name         string `json:"name"`
+	Type         string `json:"type,omitempty"`
 	Version      string `json:"version,omitempty"`
 	Revision     int    `json:"revision,omitempty"`
 	Custom       bool   `json:"custom"`

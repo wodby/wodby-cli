@@ -157,6 +157,7 @@ type InstancePlan struct {
 type StackPlan struct {
 	UUID            string `json:"uuid,omitempty"`
 	Name            string `json:"name"`
+	Type            string `json:"type,omitempty"`
 	Version         string `json:"version,omitempty"`
 	Custom          bool   `json:"custom"`
 	AncestorUUID    string `json:"ancestorUuid,omitempty"`
@@ -670,6 +671,7 @@ func buildInstancePlan(plan *Plan, app App, instance Instance, opts PlanOptions,
 		Stack: StackPlan{
 			UUID:            instance.Stack.UUID,
 			Name:            instance.Stack.Name,
+			Type:            instance.Stack.Type,
 			Version:         instance.Stack.Version,
 			Custom:          instance.Stack.Custom,
 			AncestorUUID:    instance.Stack.AncestorUUID,
@@ -677,6 +679,15 @@ func buildInstancePlan(plan *Plan, app App, instance Instance, opts PlanOptions,
 			TargetID:        opts.TargetStackID,
 			ExplicitMapping: opts.TargetStackID > 0,
 		},
+	}
+	if sourceStackFamily(instance.Stack) == "drupal9" {
+		plan.addReview(
+			SeverityBlocking,
+			app.Name,
+			instance.Name,
+			"source stack compatibility",
+			"Wodby 2 does not support Drupal 9; upgrade the Wodby 1 app to Drupal 10 or 11 and confirm it works before migrating",
+		)
 	}
 	mappedStack, hasExplicitStack := scopedMapping(
 		opts.TargetStackMap,
@@ -775,6 +786,12 @@ func buildInstancePlan(plan *Plan, app App, instance Instance, opts PlanOptions,
 		instancePlan.Services = append(instancePlan.Services, servicePlan)
 		instancePlan.EnvVars += servicePlan.EnvVars
 		instancePlan.CronJobs += servicePlan.CronJobs
+	}
+	serviceTargets := serviceTargetNamesFromPlans(instancePlan.Services)
+	for _, service := range services {
+		if message, ok := smtpEndpointMigrationReview(service, instance.Properties, serviceTargets); ok {
+			plan.addReview(SeverityConfirmation, app.Name, instance.Name, "service "+service.Name+" environment", message)
+		}
 	}
 
 	domains := append([]Domain(nil), instance.Domains...)
@@ -925,6 +942,10 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 			servicePlan.TargetName = "mailpit"
 			servicePlan.Action = "substitute"
 			confirmation = "mailhog will be substituted with mailpit"
+		case "memcache":
+			servicePlan.TargetName = "memcached"
+			servicePlan.Action = "substitute"
+			confirmation = "memcache will be substituted with memcached"
 		case "pma":
 			servicePlan.TargetName = "phpmyadmin"
 			servicePlan.Action = "substitute"
@@ -1016,9 +1037,42 @@ func customStackRequiresExplicitServiceMapping(stack Stack) bool {
 	if !stack.Custom {
 		return false
 	}
-	ancestor := strings.ToLower(strings.TrimSpace(stack.AncestorName))
-	return !strings.Contains(ancestor, "drupal") &&
-		!strings.Contains(ancestor, "wordpress")
+	return sourceStackFamily(stack) == ""
+}
+
+// sourceStackFamily identifies the managed application family independently
+// of a customer fork's display name. New Wodby 1 exports provide metadata.type;
+// ancestor and canonical names remain fallbacks for older exports.
+func sourceStackFamily(stack Stack) string {
+	if strings.TrimSpace(stack.Type) != "" {
+		// Metadata is authoritative when present. An unknown type must use
+		// explicit custom mappings rather than falling through to an ancestor.
+		return canonicalStackFamily(stack.Type)
+	}
+	if family := canonicalStackFamily(stack.AncestorName); family != "" {
+		return family
+	}
+	if !stack.Custom {
+		return canonicalStackFamily(stack.Name)
+	}
+	// Older exports did not include stack.type. Accept only a canonical managed
+	// name here so an arbitrary customer display name cannot unlock managed rules.
+	return canonicalStackFamily(stack.Name)
+}
+
+func canonicalStackFamily(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	compact := strings.NewReplacer("-", "", "_", "", " ", "").Replace(normalized)
+	switch compact {
+	case "drupal9":
+		return "drupal9"
+	case "drupal", "drupal7", "drupal8", "drupal10", "drupal11":
+		return "drupal"
+	case "wordpress":
+		return "wordpress"
+	default:
+		return ""
+	}
 }
 
 func sourceEnvVarRequiresMigration(properties map[string]interface{}, envVar EnvVar) bool {

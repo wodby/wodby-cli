@@ -64,6 +64,7 @@ type PreparedInstance struct {
 	ImportByComponent    map[string]PreparedImport
 	EffectiveState       map[string]bool
 	DisableCronSchedules bool
+	DisableCustomRoutes  bool
 }
 
 type PreparedService struct {
@@ -194,6 +195,7 @@ func (c *TargetClient) PreflightTarget(
 				appPlan.Repository,
 				opts,
 				plan.Target.OrgCapabilities != nil && !plan.Target.OrgCapabilities.CronSchedules,
+				plan.Target.OrgCapabilities != nil && !plan.Target.OrgCapabilities.CustomDomains,
 			)
 			if err != nil {
 				return PreparedMigration{}, err
@@ -443,6 +445,7 @@ func (c *TargetClient) preflightInstance(
 	repositoryPlan *RepositoryPlan,
 	opts TargetPreflightOptions,
 	disableCronSchedules bool,
+	disableCustomRoutes bool,
 ) (PreparedInstance, []ReviewItem, error) {
 	pinned := plan.Stack.TargetRevID != 0
 	stack, err := c.resolvePreflightStackRevision(
@@ -614,6 +617,7 @@ func (c *TargetClient) preflightInstance(
 		ImportByComponent:    map[string]PreparedImport{},
 		EffectiveState:       effective,
 		DisableCronSchedules: disableCronSchedules,
+		DisableCustomRoutes:  disableCustomRoutes,
 	}
 	for _, sourceService := range source.Services {
 		for _, variable := range sourceService.EnvVars {

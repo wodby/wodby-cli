@@ -990,6 +990,25 @@ func TestBuildPlanUsesVerifiedTargetDiscovery(t *testing.T) {
 	}
 }
 
+func TestTargetWithoutCustomDomainsStagesRoutesDisabled(t *testing.T) {
+	plan := Plan{Apps: []AppPlan{{Instances: []InstancePlan{{
+		Routes: []RoutePlan{{Host: "example.com", Action: "create_backend"}},
+	}}}}}
+	scope := TargetScopeDiscovery{Org: TargetOrg{
+		Capabilities: &TargetOrgCapabilities{CustomDomains: false, CronSchedules: true},
+	}}
+
+	validateTargetOrgFeatures(&plan, &scope)
+	if len(plan.Review) != 1 {
+		t.Fatalf("review = %#v", plan.Review)
+	}
+	item := plan.Review[0]
+	if item.Severity != SeverityConfirmation || item.Subject != "custom domains" ||
+		!strings.Contains(item.Message, "created disabled") {
+		t.Fatalf("review item = %#v", item)
+	}
+}
+
 func TestBuildPlanSupportsOrganizationOwnedTarget(t *testing.T) {
 	export := Export{
 		Schema: ExportSchemaV2,

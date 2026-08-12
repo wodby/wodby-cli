@@ -402,6 +402,7 @@ type TargetAppRoute struct {
 
 type TargetCreateAppRouteInput struct {
 	AppServiceID       int     `json:"appServiceId"`
+	Disabled           *bool   `json:"disabled,omitempty"`
 	Main               bool    `json:"main"`
 	Primary            bool    `json:"primary"`
 	Port               int     `json:"port"`
@@ -1354,6 +1355,10 @@ func (c *TargetClient) CreateAppRoute(ctx context.Context, input TargetCreateApp
 	if item.AppServiceID != input.AppServiceID || item.PortID != input.Port || item.Host != input.Host {
 		return TargetAppRoute{}, errors.Errorf("created target app route does not match requested service/port/host")
 	}
+	expectedDisabled := input.Disabled != nil && *input.Disabled
+	if item.Disabled != expectedDisabled {
+		return TargetAppRoute{}, errors.Errorf("created target app route does not match requested disabled state")
+	}
 	return item, nil
 }
 
@@ -1990,6 +1995,9 @@ func validateTargetCreateRouteInput(input TargetCreateAppRouteInput) error {
 	}
 	if strings.TrimSpace(input.Host) == "" {
 		return errors.New("target app route host is required")
+	}
+	if input.Disabled != nil && *input.Disabled && (input.Main || input.Primary) {
+		return errors.New("a disabled target app route cannot be main or primary")
 	}
 	return validateTargetRouteEnums(input.PathType, input.Action)
 }

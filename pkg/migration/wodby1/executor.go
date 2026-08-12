@@ -2962,7 +2962,16 @@ func (e *MigrationExecutor) ensureCustomRoutes(
 		if err != nil {
 			return err
 		}
-		route, err := e.ensureRoute(ctx, state, prepared.Source.UUID, instance.ID, service, port, routePlan)
+		route, err := e.ensureRoute(
+			ctx,
+			state,
+			prepared.Source.UUID,
+			instance.ID,
+			service,
+			port,
+			routePlan,
+			prepared.DisableCustomRoutes,
+		)
 		if err != nil {
 			return err
 		}
@@ -3028,6 +3037,7 @@ func (e *MigrationExecutor) ensureRoute(
 	service TargetAppService,
 	port TargetAppPort,
 	plan RoutePlan,
+	disabled bool,
 ) (TargetAppRoute, error) {
 	operation := operationKey(
 		"route",
@@ -3040,7 +3050,7 @@ func (e *MigrationExecutor) ensureRoute(
 	if err != nil {
 		return TargetAppRoute{}, errors.Wrap(err, "list target routes")
 	}
-	matches := matchingRoutes(routes, service.ID, port.ID, plan)
+	matches := matchingRoutes(routes, service.ID, port.ID, plan, disabled)
 	if len(matches) > 1 {
 		return TargetAppRoute{}, &TargetAmbiguousMatchError{Resource: "app route", Name: plan.Host, Count: len(matches)}
 	}
@@ -3091,13 +3101,16 @@ func (e *MigrationExecutor) ensureRoute(
 	action := TargetRouteActionBackend
 	input := TargetCreateAppRouteInput{
 		AppServiceID: service.ID,
-		Main:         plan.Primary,
-		Primary:      plan.Primary,
+		Main:         plan.Primary && !disabled,
+		Primary:      plan.Primary && !disabled,
 		Port:         port.ID,
 		Host:         plan.Host,
 		Path:         &path,
 		PathType:     &pathType,
 		Action:       &action,
+	}
+	if disabled {
+		input.Disabled = &disabled
 	}
 	if plan.SSL {
 		enabled := true
@@ -3123,7 +3136,11 @@ func (e *MigrationExecutor) ensureRoute(
 	if err != nil || !run {
 		return TargetAppRoute{}, err
 	}
-	e.reportProgress("Creating custom route %q for service %q...", plan.Host, service.Name)
+	if disabled {
+		e.reportProgress("Creating custom route %q disabled because the target subscription does not include custom domains...", plan.Host)
+	} else {
+		e.reportProgress("Creating custom route %q for service %q...", plan.Host, service.Name)
+	}
 	created, err := e.target.CreateAppRoute(ctx, input)
 	if err != nil {
 		return TargetAppRoute{}, e.recordInstanceMutationError(state, sourceID, operation, "custom route creation", err)
@@ -3131,7 +3148,11 @@ func (e *MigrationExecutor) ensureRoute(
 	if err := e.completeInstanceMutation(state, sourceID, operation, created.ID, 0); err != nil {
 		return TargetAppRoute{}, err
 	}
-	e.reportProgress("Custom route %q created (ID %d).", plan.Host, created.ID)
+	if disabled {
+		e.reportProgress("Custom route %q created disabled (ID %d); upgrade the target plan and enable it before DNS cutover.", plan.Host, created.ID)
+	} else {
+		e.reportProgress("Custom route %q created (ID %d).", plan.Host, created.ID)
+	}
 	return created, nil
 }
 
@@ -3139,6 +3160,7 @@ func matchingRoutes(
 	items []TargetAppRoute,
 	serviceID, portID int,
 	plan RoutePlan,
+	disabled bool,
 ) []TargetAppRoute {
 	expectedAction := TargetRouteActionBackend
 	if plan.Action == "create_redirect" {
@@ -3150,9 +3172,10 @@ func matchingRoutes(
 		if path == "" {
 			path = "/"
 		}
+		expectedPrimary := plan.Primary && !disabled
 		if item.Host == plan.Host && item.AppServiceID == serviceID &&
 			item.PortID == portID && path == "/" && item.Action == expectedAction &&
-			item.Main == plan.Primary && item.Primary == plan.Primary {
+			item.Disabled == disabled && item.Main == expectedPrimary && item.Primary == expectedPrimary {
 			if plan.Action == "create_redirect" {
 				scheme, host, redirectPath, err := routeRedirectTarget(plan)
 				if err != nil ||
@@ -4376,8 +4399,18 @@ func (e *MigrationExecutor) verifyRoutes(
 		if err != nil {
 			return err
 		}
-		matches := matchingRoutes(routes, service.ID, port.ID, expected)
+		// Verification checks the final cutover state. A route that was staged
+		// disabled on a free plan must have been enabled (and its source
+		// main/primary flags restored) after the organization upgraded.
+		matches := matchingRoutes(routes, service.ID, port.ID, expected, false)
 		if len(matches) != 1 || matches[0].Disabled || !strings.EqualFold(matches[0].Status, "OK") {
+			stagedMatches := matchingRoutes(routes, service.ID, port.ID, expected, true)
+			if len(stagedMatches) == 1 && prepared.DisableCustomRoutes {
+				return errors.Errorf(
+					"target custom route %q is staged disabled because the target subscription did not include custom domains; upgrade the target plan and enable the route before verification",
+					expected.Host,
+				)
+			}
 			return errors.Errorf("target custom route %q is not uniquely active", expected.Host)
 		}
 		route := matches[0]

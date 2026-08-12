@@ -577,6 +577,53 @@ func TestTargetClientMutatesServiceConfigurationRoutesAuthAndImports(t *testing.
 	}
 }
 
+func TestTargetClientCreatesDisabledAppRoute(t *testing.T) {
+	disabled := true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/app-routes" {
+			http.NotFound(w, r)
+			return
+		}
+		body := decodeTargetExecutionObject(t, r)
+		assertTargetExecutionBool(t, body, "disabled", true)
+		assertTargetExecutionBool(t, body, "main", false)
+		assertTargetExecutionBool(t, body, "primary", false)
+		writeTargetExecutionJSON(t, w, TargetAppRoute{
+			ID: 33, Host: "www.example.com", Disabled: true,
+			AppInstanceID: 20, AppServiceID: 30, PortID: 34,
+		})
+	}))
+	defer server.Close()
+
+	client := mustTargetExecutionClient(t, server.URL)
+	route, err := client.CreateAppRoute(context.Background(), TargetCreateAppRouteInput{
+		AppServiceID: 30,
+		Disabled:     &disabled,
+		Port:         34,
+		Host:         "www.example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !route.Disabled {
+		t.Fatalf("route = %#v", route)
+	}
+}
+
+func TestTargetClientRejectsDisabledMainAppRoute(t *testing.T) {
+	disabled := true
+	err := validateTargetCreateRouteInput(TargetCreateAppRouteInput{
+		AppServiceID: 30,
+		Disabled:     &disabled,
+		Main:         true,
+		Port:         34,
+		Host:         "www.example.com",
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot be main") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestTargetClientListsInstanceConfigurationResources(t *testing.T) {
 	serviceID := 30
 	routeID := 33

@@ -549,8 +549,8 @@ func validateTargetOrgFeatures(plan *Plan, scope *TargetScopeDiscovery) {
 	}
 	if hasCustomRoutes && !capabilities.CustomDomains {
 		plan.addReview(
-			SeverityBlocking, "", "", "custom domains",
-			"the target subscription does not allow custom domains; remove the custom routes from migration scope or upgrade the target plan",
+			SeverityConfirmation, "", "", "custom domains",
+			"the target subscription does not allow active custom domains; migrated domains will be created disabled and can be enabled after upgrading the target plan",
 		)
 	}
 	if hasCronSchedules && !capabilities.CronSchedules {

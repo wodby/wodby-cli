@@ -1402,6 +1402,23 @@ func TestPlanHasCustomRoutes(t *testing.T) {
 	}
 }
 
+func TestMatchingRoutesAccountsForDisabledStaging(t *testing.T) {
+	plan := RoutePlan{Host: "example.com", Action: "create_backend", Primary: true}
+	routes := []TargetAppRoute{
+		{ID: 1, Host: "example.com", Path: "/", Action: TargetRouteActionBackend, AppServiceID: 10, PortID: 20, Main: true, Primary: true},
+		{ID: 2, Host: "example.com", Path: "/", Action: TargetRouteActionBackend, AppServiceID: 10, PortID: 20, Disabled: true},
+	}
+
+	active := matchingRoutes(routes, 10, 20, plan, false)
+	if len(active) != 1 || active[0].ID != 1 {
+		t.Fatalf("active matches = %#v", active)
+	}
+	disabled := matchingRoutes(routes, 10, 20, plan, true)
+	if len(disabled) != 1 || disabled[0].ID != 2 {
+		t.Fatalf("disabled matches = %#v", disabled)
+	}
+}
+
 func newExecutorTestState(t *testing.T) (*MigrationState, string) {
 	t.Helper()
 	identity := MigrationStateIdentity{

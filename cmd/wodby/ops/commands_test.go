@@ -134,7 +134,7 @@ func TestDefaultTableColumnsUseReadableRelations(t *testing.T) {
 
 func TestDefaultTaskColumnsUseCompactListShape(t *testing.T) {
 	got := strings.Join(taskColumns, ",")
-	want := "id,name,title,status,progress,projects,author,startedAt,duration"
+	want := "id,name,title,executionScope,status,progress,projects,author,startedAt,duration"
 	if got != want {
 		t.Fatalf("taskColumns = %q, want %q", got, want)
 	}
@@ -2715,18 +2715,31 @@ func TestSchemaAddedCommandSurfaceIsExposed(t *testing.T) {
 	assertChildren(t, newUserCommand(), "get", "update")
 	assertChildren(t, newOrgCommand(), "get", "update")
 	assertChildren(t, newProjectCommand(), "get-by-name", "create", "update", "delete")
+	projectCreate, _, err := newProjectCommand().Find([]string{"create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projectCreate.Flags().Lookup("reveal-runtime-secrets") != nil {
+		t.Fatal("runtime-secret reveal policy must remain outside the CLI")
+	}
 	assertChildren(t, newDatabaseCommand(), "get-by-name", "options")
 	clusterCommand := newClusterCommand()
-	assertChildren(t, clusterCommand, "get-by-name", "settings", "upgrade-infra", "upgrade-infra-apps", "delete")
+	assertChildren(t, clusterCommand, "get-by-name", "settings", "upgrade-infra", "upgrade-infra-apps", "infra-app-upgrade-changelog", "delete")
 	for _, child := range clusterCommand.Commands() {
 		if child.Name() == "metrics" {
 			t.Fatal("cluster metrics must remain outside the CLI")
 		}
 	}
-	assertChildren(t, newIntegrationCommand(), "get-by-name", "options")
+	integrationCommand := newIntegrationCommand()
+	assertChildren(t, integrationCommand, "get-by-name", "configure", "test-permissions", "validate-app-access-hostname", "options")
+	for _, child := range integrationCommand.Commands() {
+		if strings.Contains(child.Name(), "share") {
+			t.Fatalf("OAuth organization sharing must remain outside the CLI: unexpected subcommand %q", child.Name())
+		}
+	}
 	assertChildren(t, newProviderCommand(), "get-by-name", "revision")
 	assertChildren(t, newHelmCommand(), "inspect", "scaffold-service", "scaffold-stack")
-	assertChildren(t, newStackCommand(), "get-by-name", "import", "validate-manifest", "create-from-manifest", "settings", "revision", "publish-draft", "update-from-git", "duplicate", "sync-origin")
+	assertChildren(t, newStackCommand(), "get-by-name", "import", "validate-manifest", "create-from-manifest", "settings", "revision", "publish-draft", "update-from-git", "update-service-revisions", "service-update-changelog", "origin-sync-changelog", "duplicate", "sync-origin")
 	assertChildren(t, newServiceCommand(), "get-by-name", "import", "validate-manifest", "create-from-manifest", "settings", "revision", "options")
 }
 
@@ -3420,6 +3433,7 @@ func TestAppCreateUsesPublicAPIShape(t *testing.T) {
 		"--instance-name", "prod",
 		"--instance-title", "Production",
 		"--domain", "example.com",
+		"--defer-initial-deployment",
 	})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
@@ -3454,6 +3468,9 @@ func TestAppCreateUsesPublicAPIShape(t *testing.T) {
 	}
 	if body["domain"] != "example.com" {
 		t.Fatalf("domain = %#v, want example.com", body["domain"])
+	}
+	if body["deferInitialDeployment"] != true {
+		t.Fatalf("deferInitialDeployment = %#v, want true", body["deferInitialDeployment"])
 	}
 	if _, ok := body["stackId"]; ok {
 		t.Fatalf("body should not include stackId: %#v", body)
@@ -3540,6 +3557,7 @@ func TestAppInstanceCreateUsesPublicAPIShape(t *testing.T) {
 		"--region", "us",
 		"--zone", "us-a",
 		"--cluster-app",
+		"--defer-initial-deployment",
 	})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
@@ -3568,6 +3586,9 @@ func TestAppInstanceCreateUsesPublicAPIShape(t *testing.T) {
 	}
 	if body["domain"] != "example.com" {
 		t.Fatalf("domain = %#v, want example.com", body["domain"])
+	}
+	if body["deferInitialDeployment"] != true {
+		t.Fatalf("deferInitialDeployment = %#v, want true", body["deferInitialDeployment"])
 	}
 	for _, key := range []string{"stackId", "name", "title", "mainDomain", "region", "zone", "clusterApp"} {
 		if _, ok := body[key]; ok {
@@ -4773,6 +4794,27 @@ func TestAppServiceChildOperationsUseRESTEndpoints(t *testing.T) {
 				"storageClassSelectable":     true,
 			}},
 			wantOutput: []string{"data", "rook-ceph", "current"},
+		},
+		{
+			name:       "volume add",
+			args:       []string{"volume", "add", "21", "--name", "data", "--size", "20", "--storage-class", "rook-ceph"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/app-services/21/volumes",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["name"] != "data" || body["size"] != float64(20) || body["storageClassName"] != "rook-ceph" {
+					t.Fatalf("volume body = %#v", body)
+				}
+			},
+			response:   map[string]interface{}{"success": true},
+			wantOutput: []string{"success", "true"},
+		},
+		{
+			name:       "volume storage classes",
+			args:       []string{"volume", "storage-classes", "21"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/v1/app-services/21/options/volume-storage-classes",
+			response:   []map[string]interface{}{{"volumeId": 71, "configuredStorageClassName": "rook-ceph", "effectiveStorageClassNames": []string{"rook-ceph"}, "status": "CURRENT"}},
+			wantOutput: []string{"rook-ceph", "CURRENT"},
 		},
 		{
 			name:       "cron create",
@@ -6152,6 +6194,35 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 			response: map[string]interface{}{"success": true, "taskId": 55},
 		},
 		{
+			name:       "instance upgrade stack changelog",
+			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			args:       []string{"upgrade-stack-changelog", "21"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/v1/app-instance-stack-upgrade-changelogs/21",
+			response:   map[string]interface{}{"previousStackVersion": "1.0.0", "stackVersion": "1.1.0", "serviceChanges": []interface{}{}},
+		},
+		{
+			name:       "instance access get",
+			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			args:       []string{"access", "get", "21"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/v1/app-instance-accesses/21",
+			response:   map[string]interface{}{"id": 77, "mode": "PROTECTED", "scope": "ENTIRE_APP", "status": "READY"},
+		},
+		{
+			name:       "instance access create",
+			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			args:       []string{"access", "create", "21", "--data", `{"integrationId":9,"mode":"PROTECTED","scope":"ENTIRE_APP","endpoints":[]}`},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/app-instance-accesses/21",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["integrationId"] != float64(9) || body["mode"] != "PROTECTED" {
+					t.Fatalf("access body = %#v", body)
+				}
+			},
+			response: map[string]interface{}{"access": map[string]interface{}{"id": 77}, "taskId": 58},
+		},
+		{
 			name:       "stack update from git",
 			cmd:        newStackCommand,
 			args:       []string{"update-from-git", "7", "--git-ref", "main", "--git-ref-type", "branch"},
@@ -6165,6 +6236,23 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 			response: map[string]interface{}{"success": true},
 		},
 		{
+			name:       "stack update service revisions",
+			cmd:        newStackCommand,
+			args:       []string{"update-service-revisions", "7"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/stacks/7/actions/update-service-revisions",
+			response:   map[string]interface{}{"success": true, "taskId": 56},
+		},
+		{
+			name:       "stack service update changelog",
+			cmd:        newStackCommand,
+			args:       []string{"service-update-changelog", "7", "--stack-service", "19"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/v1/stack-service-update-changelogs/7",
+			wantQuery:  "stackServiceId=19",
+			response:   []interface{}{},
+		},
+		{
 			name:       "integration option branches",
 			cmd:        newIntegrationCommand,
 			args:       []string{"options", "remote-git-repo-branches", "9", "--remote-git-repo", "repo-1"},
@@ -6172,6 +6260,36 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 			wantPath:   "/v1/integrations/9/options/remote-git-repo-branches",
 			wantQuery:  "remoteGitRepoId=repo-1",
 			response:   []interface{}{"main"},
+		},
+		{
+			name:       "integration remote Git file option",
+			cmd:        newIntegrationCommand,
+			args:       []string{"options", "remote-git-repo-file", "9", "--remote-git-repo", "repo-1", "--path", "wodby.yml", "--ref", "main"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/v1/integrations/9/options/remote-git-repo-file",
+			wantQuery:  "path=wodby.yml&ref=main&remoteGitRepoId=repo-1",
+			response:   map[string]interface{}{"exists": true},
+		},
+		{
+			name:       "integration test permissions",
+			cmd:        newIntegrationCommand,
+			args:       []string{"test-permissions", "9"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/integrations/9/actions/test-permissions",
+			response:   map[string]interface{}{"success": true, "taskId": 57},
+		},
+		{
+			name:       "integration configure",
+			cmd:        newIntegrationCommand,
+			args:       []string{"configure", "9", "--name", "aws", "--title", "AWS", "--kind", "kubernetes"},
+			wantMethod: http.MethodPut,
+			wantPath:   "/v1/integrations/configuration/9",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["name"] != "aws" || body["title"] != "AWS" || fmt.Sprint(body["kinds"]) != "[kubernetes]" {
+					t.Fatalf("configure body = %#v", body)
+				}
+			},
+			response: map[string]interface{}{"integration": map[string]interface{}{"id": 9}, "warnings": []interface{}{}},
 		},
 	}
 

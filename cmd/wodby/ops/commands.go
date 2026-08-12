@@ -15,77 +15,83 @@ import (
 )
 
 var (
-	userColumns                     = []string{"id", "email", "name", "twofa", "defaultOrg", "defaultProjects", "createdAt", "updatedAt"}
-	orgColumns                      = []string{"id", "name", "title", "domain", "defaultTimeZone", "ciIntegrationId", "registryIntegrationId"}
-	memberColumns                   = []string{"id", "member", "email", "role", "status", "joinedAt"}
-	projectColumns                  = []string{"id", "name", "title"}
-	envColumns                      = []string{"id", "name", "title", "type"}
-	databaseColumns                 = []string{"id", "name", "title", "status", "kind", "type", "version", "env", "integration", "service", "region", "zone"}
-	databaseDbColumns               = []string{"id", "name", "status", "charset", "collation", "database", "createdAt"}
-	databaseCharsetColumns          = []string{"name", "title", "default", "defaultCollation"}
-	databaseUserColumns             = []string{"id", "username", "hostname", "status", "database", "dbs", "createdAt"}
-	clusterColumns                  = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "version", "singleNode"}
-	clusterGetColumns               = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "singleNode", "storageClasses", "storageClassesObservedAt"}
-	infraAppColumns                 = []string{"id", "name", "title", "status", "stack"}
-	integrationColumns              = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
-	providerColumns                 = []string{"id", "name", "title", "status", "providerVersion"}
-	providerRevisionColumns         = []string{"id", "name", "title", "number", "version", "provider", "createdAt"}
-	stackColumns                    = []string{"id", "name", "title", "status", "revision", "currentVersion", "outdated", "autoUpdates", "createdAt", "updatedAt"}
-	stackGetColumns                 = []string{"id", "name", "title", "status", "public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "outdated", "autoUpdates", "createdAt", "updatedAt", "services"}
-	stackRevisionColumns            = []string{"id", "name", "title", "number", "draft", "version", "stack", "createdAt"}
-	stackServiceColumns             = []string{"id", "name", "title", "type", "serviceRev", "serviceRevPinned", "replicas", "required", "disabled", "main", "updatedAt"}
-	stackServiceEnvColumns          = []string{"id", "name", "value", "secret", "envType", "workload", "container", "createdAt"}
-	stackServiceValueColumns        = []string{"id", "name", "value", "secret", "envType", "createdAt"}
-	stackServiceTokenColumns        = []string{"id", "name", "value", "regex", "secret", "envType", "createdAt"}
-	stackServiceAnnotationColumns   = []string{"id", "name", "value", "envType", "createdAt"}
-	stackServiceIntegrationColumns  = []string{"id", "name", "integration"}
-	stackServiceLinkColumns         = []string{"id", "name", "linkedStackService"}
-	stackServiceVolumeColumns       = []string{"id", "name", "size"}
-	stackServiceSettingColumns      = []string{"id", "name", "value"}
-	stackServiceConfigColumns       = []string{"id", "name", "disabled", "config"}
-	stackServiceOptionColumns       = []string{"id", "version", "default", "disabled"}
-	stackServiceCronScheduleColumns = []string{"id", "name", "title", "crontab", "command", "workload", "envType", "disabled", "updatedAt"}
-	catalogServiceColumns           = []string{"id", "name", "title", "type", "status", "autoUpdates", "public", "external", "revId", "latestRevNumber"}
-	serviceRevisionColumns          = []string{"id", "name", "title", "type", "external", "number", "version", "service", "createdAt"}
-	appColumns                      = []string{"id", "name", "title", "status", "stack", "instances"}
-	appGetColumns                   = []string{"id", "name", "title", "status", "stack", "clusterApp", "instances", "createdAt", "updatedAt"}
-	appStatusColumns                = []string{"id", "title", "status", "instances", "serviceStatus", "routeStatus", "latestBuild", "latestDeployment", "needs"}
-	instanceColumns                 = []string{"id", "name", "title", "status", "outdated", "autoUpdates", "app", "stack", "env", "cluster", "domain"}
-	instanceListColumns             = append(append([]string{}, instanceColumns...), "lastDeployedAt")
-	instanceGetColumns              = append(append([]string{}, instanceColumns...), "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
-	instanceCICDSettingsColumns     = []string{"appInstanceId", "ciIntegrationId", "registryIntegrationId", "registryRepository"}
-	instanceStatusColumns           = []string{"id", "title", "status", "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
-	serviceColumns                  = []string{"id", "name", "title", "type", "status", "version", "replicas", "scalability", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady"}
-	appServiceEnvColumns            = []string{"id", "name", "value", "secret", "runtime", "build", "envType", "workload", "container", "source", "createdAt"}
-	appServiceValueColumns          = []string{"id", "name", "value", "secret", "source", "createdAt"}
-	appServiceTokenColumns          = []string{"id", "name", "value", "secret", "envType", "createdAt"}
-	appServiceAnnotationColumns     = []string{"id", "name", "value", "envType", "source", "createdAt"}
-	appServiceIntegrationColumns    = []string{"id", "name", "integration", "createdAt", "updatedAt"}
-	appServiceSettingColumns        = []string{"id", "name", "value", "var", "runtime", "build", "fromSettingId"}
-	appServiceConfigColumns         = []string{"id", "name", "title", "disabled", "config"}
-	appServiceLinkColumns           = []string{"id", "name", "linkedService"}
-	appServiceContainerColumns      = []string{"id", "workload", "name", "requestCPU", "requestMem", "limitCPU", "limitMem"}
-	appServiceVolumeColumns         = []string{"id", "name", "path", "size", "shared", "readOnly", "configuredStorageClassName", "effectiveStorageClassNames", "storageClassStatus", "storageClassSelectable", "fromVolumeId", "storageAppServiceId"}
-	appServiceCronScheduleColumns   = []string{"id", "name", "title", "crontab", "command", "workload", "envType", "disabled", "updatedAt"}
-	appServiceCronJobColumns        = []string{"id", "title", "status", "service", "scheduleId", "task", "createdAt"}
-	logStreamColumns                = []string{"id"}
-	routeListColumns                = []string{"id", "service", "route", "action", "cert", "primary", "private", "status", "updatedAt"}
-	routeColumns                    = []string{"id", "route", "host", "path", "pathType", "action", "status", "service", "port", "cert", "certExpiresAt", "main", "primary", "private", "disabled", "redirectScheme", "redirectHost", "redirectPath", "redirectStatusCode", "lastSyncedAt", "createdAt", "updatedAt"}
-	appPortListColumns              = []string{"id", "service", "name", "number", "publicPort", "private", "protocol", "updatedAt"}
-	appPortColumns                  = []string{"id", "name", "number", "publicPort", "protocol", "private", "service", "instance", "createdAt", "updatedAt"}
-	certColumns                     = []string{"id", "host", "status", "issuer", "certType", "expiresAt", "route", "instance", "createdAt"}
-	buildListColumns                = []string{"id", "number", "service", "services", "imageCount", "gitRefType", "gitRef", "startedAt", "duration", "status"}
-	buildColumns                    = []string{"id", "number", "status", "instance", "service", "services", "images", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "createdAt", "startedAt", "endedAt", "duration"}
-	deploymentListColumns           = []string{"id", "number", "services", "builds", "startedAt", "duration", "status", "postDeploymentStatus", "rollbackStatus"}
-	deploymentColumns               = []string{"id", "number", "status", "postDeploymentStatus", "rollbackStatus", "instance", "services", "images", "task", "postDeploymentTask", "skipRollback", "createdAt", "startedAt", "endedAt", "duration"}
-	backupColumns                   = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "task", "createdAt"}
-	importListColumns               = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "startedAt", "duration"}
-	importColumns                   = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "backup", "createdAt", "updatedAt", "startedAt", "endedAt", "duration"}
-	taskColumns                     = []string{"id", "name", "title", "status", "progress", "projects", "author", "startedAt", "duration"}
-	taskGetColumns                  = []string{"id", "name", "title", "status", "progress", "projects", "author", "app", "instance", "service", "database", "databaseDb", "originTask", "repeatedTask", "spawnedTasks", "createdAt", "startedAt", "endedAt", "duration"}
-	taskJobColumns                  = []string{"id", "name", "status", "logStatus", "system", "startedAt", "duration", "steps"}
-	taskStepColumns                 = []string{"id", "name", "status", "logStatus", "system", "startedAt", "duration", "job"}
-	operationColumns                = []string{"success", "task"}
+	userColumns                      = []string{"id", "email", "name", "twofa", "defaultOrg", "defaultProjects", "createdAt", "updatedAt"}
+	orgColumns                       = []string{"id", "name", "title", "domain", "defaultTimeZone", "ciIntegrationId", "registryIntegrationId"}
+	memberColumns                    = []string{"id", "member", "email", "role", "status", "joinedAt"}
+	projectColumns                   = []string{"id", "name", "title"}
+	envColumns                       = []string{"id", "name", "title", "type"}
+	databaseColumns                  = []string{"id", "name", "title", "status", "kind", "type", "version", "env", "integration", "service", "region", "zone"}
+	databaseDbColumns                = []string{"id", "name", "status", "charset", "collation", "database", "createdAt"}
+	databaseCharsetColumns           = []string{"name", "title", "default", "defaultCollation"}
+	databaseUserColumns              = []string{"id", "username", "hostname", "status", "database", "dbs", "createdAt"}
+	clusterColumns                   = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "version", "singleNode"}
+	clusterGetColumns                = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "singleNode", "storageClasses", "storageClassesObservedAt"}
+	infraAppColumns                  = []string{"id", "name", "title", "status", "stack"}
+	integrationColumns               = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
+	providerColumns                  = []string{"id", "name", "title", "status", "providerVersion"}
+	providerRevisionColumns          = []string{"id", "name", "title", "number", "version", "provider", "permissionAudit", "createdAt"}
+	stackColumns                     = []string{"id", "name", "title", "status", "revision", "currentVersion", "outdated", "autoUpdates", "createdAt", "updatedAt"}
+	stackGetColumns                  = []string{"id", "name", "title", "status", "public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "outdated", "autoUpdates", "createdAt", "updatedAt", "services"}
+	stackRevisionColumns             = []string{"id", "name", "title", "number", "draft", "version", "stack", "linkIssues", "createdAt"}
+	stackServiceColumns              = []string{"id", "name", "title", "type", "serviceRev", "serviceRevPinned", "replicas", "required", "disabled", "main", "updatedAt"}
+	stackServiceEnvColumns           = []string{"id", "name", "value", "secret", "envType", "workload", "container", "createdAt"}
+	stackServiceValueColumns         = []string{"id", "name", "value", "secret", "envType", "createdAt"}
+	stackServiceTokenColumns         = []string{"id", "name", "value", "regex", "secret", "envType", "createdAt"}
+	stackServiceAnnotationColumns    = []string{"id", "name", "value", "envType", "createdAt"}
+	stackServiceIntegrationColumns   = []string{"id", "name", "integration"}
+	stackServiceLinkColumns          = []string{"id", "name", "linkedStackService"}
+	stackServiceVolumeColumns        = []string{"id", "name", "size"}
+	stackServiceSettingColumns       = []string{"id", "name", "value"}
+	stackServiceConfigColumns        = []string{"id", "name", "disabled", "config"}
+	stackServiceOptionColumns        = []string{"id", "version", "default", "disabled"}
+	stackServiceCronScheduleColumns  = []string{"id", "name", "title", "crontab", "command", "workload", "envType", "disabled", "updatedAt"}
+	catalogServiceColumns            = []string{"id", "name", "title", "type", "status", "autoUpdates", "public", "external", "revId", "latestRevNumber"}
+	serviceRevisionColumns           = []string{"id", "name", "title", "type", "external", "number", "version", "service", "createdAt"}
+	appColumns                       = []string{"id", "name", "title", "status", "stack", "instances"}
+	appGetColumns                    = []string{"id", "name", "title", "status", "stack", "clusterApp", "instances", "createdAt", "updatedAt"}
+	appStatusColumns                 = []string{"id", "title", "status", "instances", "serviceStatus", "routeStatus", "latestBuild", "latestDeployment", "needs"}
+	instanceColumns                  = []string{"id", "name", "title", "status", "outdated", "autoUpdates", "app", "stack", "env", "cluster", "domain", "routingMode", "routingPending", "configurationReady", "configurationIssues"}
+	instanceListColumns              = append(append([]string{}, instanceColumns...), "lastDeployedAt")
+	instanceGetColumns               = append(append([]string{}, instanceColumns...), "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
+	instanceCICDSettingsColumns      = []string{"appInstanceId", "ciIntegrationId", "registryIntegrationId", "registryRepository"}
+	instanceStatusColumns            = []string{"id", "title", "status", "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
+	serviceColumns                   = []string{"id", "name", "title", "type", "status", "version", "replicas", "scalability", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady", "configurationIssues", "buildSourceBoilerplate"}
+	appServiceEnvColumns             = []string{"id", "name", "value", "secret", "runtime", "build", "envType", "workload", "container", "source", "createdAt"}
+	appServiceValueColumns           = []string{"id", "name", "value", "secret", "source", "createdAt"}
+	appServiceTokenColumns           = []string{"id", "name", "value", "secret", "envType", "createdAt"}
+	appServiceAnnotationColumns      = []string{"id", "name", "value", "envType", "source", "createdAt"}
+	appServiceIntegrationColumns     = []string{"id", "name", "integration", "createdAt", "updatedAt"}
+	appServiceSettingColumns         = []string{"id", "name", "value", "var", "runtime", "build", "fromSettingId"}
+	appServiceConfigColumns          = []string{"id", "name", "title", "disabled", "config"}
+	appServiceLinkColumns            = []string{"id", "name", "linkedService"}
+	appServiceContainerColumns       = []string{"id", "workload", "name", "requestCPU", "requestMem", "limitCPU", "limitMem"}
+	appServiceVolumeColumns          = []string{"id", "name", "path", "size", "shared", "readOnly", "configuredStorageClassName", "effectiveStorageClassNames", "storageClassStatus", "storageClassSelectable", "fromVolumeId", "storageAppServiceId"}
+	appServiceCronScheduleColumns    = []string{"id", "name", "title", "crontab", "command", "workload", "envType", "disabled", "updatedAt"}
+	appServiceCronJobColumns         = []string{"id", "title", "status", "service", "scheduleId", "task", "createdAt"}
+	logStreamColumns                 = []string{"id"}
+	routeListColumns                 = []string{"id", "service", "route", "action", "cert", "primary", "private", "status", "updatedAt"}
+	routeColumns                     = []string{"id", "route", "host", "path", "pathType", "action", "status", "service", "port", "cert", "certExpiresAt", "main", "primary", "private", "disabled", "redirectScheme", "redirectHost", "redirectPath", "redirectStatusCode", "lastSyncedAt", "createdAt", "updatedAt"}
+	appPortListColumns               = []string{"id", "service", "name", "number", "publicPort", "private", "protocol", "updatedAt"}
+	appPortColumns                   = []string{"id", "name", "number", "publicPort", "protocol", "private", "service", "instance", "createdAt", "updatedAt"}
+	certColumns                      = []string{"id", "host", "status", "issuer", "certType", "expiresAt", "route", "instance", "createdAt"}
+	buildListColumns                 = []string{"id", "number", "service", "services", "imageCount", "gitRefType", "gitRef", "startedAt", "duration", "status"}
+	buildColumns                     = []string{"id", "number", "status", "instance", "service", "services", "images", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "createdAt", "startedAt", "endedAt", "duration"}
+	deploymentListColumns            = []string{"id", "number", "services", "builds", "startedAt", "duration", "status", "postDeploymentStatus", "rollbackStatus"}
+	deploymentColumns                = []string{"id", "number", "status", "postDeploymentStatus", "rollbackStatus", "instance", "services", "images", "task", "postDeploymentTask", "skipRollback", "createdAt", "startedAt", "endedAt", "duration"}
+	backupColumns                    = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "task", "createdAt"}
+	importListColumns                = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "startedAt", "duration"}
+	importColumns                    = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "backup", "createdAt", "updatedAt", "startedAt", "endedAt", "duration"}
+	taskColumns                      = []string{"id", "name", "title", "executionScope", "status", "progress", "projects", "author", "startedAt", "duration"}
+	taskGetColumns                   = []string{"id", "name", "title", "executionScope", "status", "progress", "projects", "author", "app", "instance", "service", "database", "databaseDb", "originTask", "repeatedTask", "spawnedTasks", "createdAt", "startedAt", "endedAt", "duration"}
+	appAccessColumns                 = []string{"id", "mode", "scope", "status", "integrationId", "effectiveUrl", "publicRoutesSuppressed", "lastError", "endpoints", "resources", "createdAt", "updatedAt"}
+	appAccessCleanupColumns          = []string{"id", "appAccessId", "appInstanceId", "integrationId", "provider", "status", "attempts", "lastError", "createdAt", "updatedAt"}
+	changelogColumns                 = []string{"name", "title", "kind", "previousVersion", "version", "previousRevNumber", "revNumber", "entries"}
+	appInstanceStackChangelogColumns = []string{"previousStackVersion", "stackVersion", "previousStackRevNumber", "stackRevNumber", "serviceChanges"}
+	clusterInfraAppChangelogColumns  = []string{"appInstanceId", "appName", "appTitle", "previousStackVersion", "stackVersion", "serviceChanges"}
+	stackOriginChangelogColumns      = []string{"previousVersion", "version", "entries"}
+	taskJobColumns                   = []string{"id", "name", "status", "logStatus", "system", "startedAt", "duration", "steps"}
+	taskStepColumns                  = []string{"id", "name", "status", "logStatus", "system", "startedAt", "duration", "job"}
+	operationColumns                 = []string{"success", "task"}
 )
 
 func Commands() []*cobra.Command {
@@ -1077,8 +1083,33 @@ func newClusterCommand() *cobra.Command {
 		newClusterSettingsCommand(out),
 		newClusterActionCommand("upgrade-infra ID", "Upgrade cluster infrastructure", "/clusters/%s/actions/upgrade-infra", out),
 		newClusterActionCommand("upgrade-infra-apps ID", "Upgrade cluster infrastructure apps", "/clusters/%s/actions/upgrade-infra-apps", out),
+		newClusterInfraAppUpgradeChangelogCommand(out),
 		newClusterDeleteCommand(out),
 	)
+	return cmd
+}
+
+func newClusterInfraAppUpgradeChangelogCommand(out outputOptions) *cobra.Command {
+	var appInstanceID string
+	cmd := &cobra.Command{
+		Use:   "infra-app-upgrade-changelog ID",
+		Short: "Preview cluster infrastructure app upgrades",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query := url.Values{}
+			addQuery(query, "appInstanceId", appInstanceID)
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), escapedPath("/cluster-infra-app-upgrade-changelogs/%s", args[0]), query, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, clusterInfraAppChangelogColumns)
+		},
+	}
+	cmd.Flags().StringVar(&appInstanceID, "app-instance", "", "Limit the preview to one infrastructure app instance ID")
 	return cmd
 }
 
@@ -1546,6 +1577,9 @@ func newIntegrationCommand() *cobra.Command {
 		newGetByNameCommand("get-by-name NAME", "Get integration by name", "/integrations/by-name/%s", integrationColumns, out, true, false),
 		newIntegrationCreateCommand(out),
 		newIntegrationUpdateCommand(out),
+		newIntegrationConfigureCommand(out),
+		newClusterActionCommand("test-permissions ID", "Test integration permissions", "/integrations/%s/actions/test-permissions", out),
+		newRawBodyPostCommand("validate-app-access-hostname ID", "Validate an app-access hostname", "/integrations/%s/actions/validate-app-access-hostname", []string{"valid"}, out),
 		newIntegrationOptionsCommand(out),
 		newDeleteCommand("delete ID", "Delete integration", "/integrations/", integrationColumns, out),
 	)
@@ -1682,6 +1716,56 @@ func newIntegrationUpdateCommand(out outputOptions) *cobra.Command {
 	return cmd
 }
 
+func newIntegrationConfigureCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	var name, title, scope string
+	var kinds, fields []string
+	cmd := &cobra.Command{
+		Use:   "configure ID",
+		Short: "Configure integration and reconcile provider resources",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				if err := requireFlag(name, "--name"); err != nil {
+					return err
+				}
+				if err := requireFlag(title, "--title"); err != nil {
+					return err
+				}
+				if len(kinds) == 0 {
+					return errors.New("--kind is required")
+				}
+				values := map[string]interface{}{"name": name, "title": title, "kinds": kinds}
+				addOptionalString(values, "scope", scope)
+				if err := addOptionalNameValueInputs(values, "fieldsInput", fields, "--field"); err != nil {
+					return err
+				}
+				requestBody = values
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Put(cmd.Context(), "/integrations/configuration/"+url.PathEscape(args[0]), nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, []string{"integration", "taskId", "warnings"})
+		},
+	}
+	addBodyFlags(cmd, &body)
+	cmd.Flags().StringVar(&name, "name", "", "Integration machine name")
+	cmd.Flags().StringVar(&title, "title", "", "Integration title")
+	cmd.Flags().StringArrayVar(&kinds, "kind", nil, "Integration kind; repeatable")
+	cmd.Flags().StringArrayVar(&fields, "field", nil, "Provider field as NAME=VALUE; repeatable")
+	cmd.Flags().StringVar(&scope, "scope", "", "Integration scope")
+	return cmd
+}
+
 func newIntegrationOptionsCommand(out outputOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "options",
@@ -1692,6 +1776,7 @@ func newIntegrationOptionsCommand(out outputOptions) *cobra.Command {
 		newIntegrationOptionCommand("storage-buckets INTEGRATION_ID", "List storage buckets", "/integrations/%s/options/storage-buckets", out, nil, nil),
 		newIntegrationOptionCommand("storage-classes INTEGRATION_ID", "List storage classes", "/integrations/%s/options/storage-classes", out, nil, nil),
 		newIntegrationOptionCommand("remote-git-repos INTEGRATION_ID", "List remote Git repositories", "/integrations/%s/options/remote-git-repos", out, nil, nil),
+		newIntegrationOptionCommand("remote-git-repo-file INTEGRATION_ID", "Check a file in a remote Git repository", "/integrations/%s/options/remote-git-repo-file", out, []queryFlag{{name: "remote-git-repo", queryName: "remoteGitRepoId", usage: "Remote Git repository ID", required: true}, {name: "path", queryName: "path", usage: "Repository file path", required: true}, {name: "ref", queryName: "ref", usage: "Exact Git ref", required: true}}, []string{"exists"}),
 		newIntegrationOptionCommand("remote-git-repo-branches INTEGRATION_ID", "List remote Git repository branches", "/integrations/%s/options/remote-git-repo-branches", out, []queryFlag{{name: "remote-git-repo", queryName: "remoteGitRepoId", usage: "Remote Git repository ID", required: true}}, nil),
 		newIntegrationOptionCommand("remote-git-repo-tags INTEGRATION_ID", "List remote Git repository tags", "/integrations/%s/options/remote-git-repo-tags", out, []queryFlag{{name: "remote-git-repo", queryName: "remoteGitRepoId", usage: "Remote Git repository ID", required: true}}, nil),
 		newIntegrationOptionCommand("kube-regions INTEGRATION_ID", "List Kubernetes regions", "/integrations/%s/options/kube-regions", out, nil, nil),
@@ -1699,6 +1784,7 @@ func newIntegrationOptionsCommand(out outputOptions) *cobra.Command {
 		newIntegrationOptionCommand("kube-versions INTEGRATION_ID", "List Kubernetes versions", "/integrations/%s/options/kube-versions", out, []queryFlag{{name: "location", queryName: "location", usage: "Provider location"}}, nil),
 		newIntegrationOptionCommand("kube-machine-types INTEGRATION_ID", "List Kubernetes machine types", "/integrations/%s/options/kube-machine-types", out, []queryFlag{{name: "location", queryName: "location", usage: "Provider location"}}, nil),
 		newIntegrationOptionCommand("kube-settings INTEGRATION_ID", "Get Kubernetes settings", "/integrations/%s/options/kube-settings", out, nil, nil),
+		newIntegrationOptionCommand("app-access INTEGRATION_ID", "Show app-access provider options", "/integrations/%s/options/app-access", out, nil, []string{"provider", "modes", "scopes", "endpointHostMode", "fields", "configurations"}),
 	)
 	return cmd
 }
@@ -1935,10 +2021,37 @@ func newStackCommand() *cobra.Command {
 		newStackRevisionCommand(out),
 		newStackPublishDraftCommand(out),
 		newStackUpdateFromGitCommand(out),
+		newClusterActionCommand("update-service-revisions ID", "Update stack service revisions", "/stacks/%s/actions/update-service-revisions", out),
+		newStackServiceUpdateChangelogCommand(out),
+		newGetCommand("origin-sync-changelog ID", "Preview stack origin synchronization", "/stack-origin-sync-changelogs/", stackOriginChangelogColumns, out),
 		newStackDuplicateCommand(out),
 		newStackSyncOriginCommand(out),
 		newStackServiceCommand(out),
 	)
+	return cmd
+}
+
+func newStackServiceUpdateChangelogCommand(out outputOptions) *cobra.Command {
+	var stackServiceID string
+	cmd := &cobra.Command{
+		Use:   "service-update-changelog ID",
+		Short: "Preview stack service revision updates",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query := url.Values{}
+			addQuery(query, "stackServiceId", stackServiceID)
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), escapedPath("/stack-service-update-changelogs/%s", args[0]), query, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, changelogColumns)
+		},
+	}
+	cmd.Flags().StringVar(&stackServiceID, "stack-service", "", "Limit the preview to one stack service ID")
 	return cmd
 }
 
@@ -3701,6 +3814,7 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
 	wait := waitOptions{}
 	var orgID, projectID, env, clusterID, stack, stackRevID, name, title, instanceName, instanceTitle, domain, ciIntegrationID, registryIntegrationID string
+	var deferInitialDeployment bool
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create app",
@@ -3770,6 +3884,7 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 				if err := addOptionalInt(values, "registryIntegrationId", registryIntegrationID, "--registry-integration"); err != nil {
 					return err
 				}
+				values["deferInitialDeployment"] = deferInitialDeployment
 				requestBody = values
 			}
 			var result interface{}
@@ -3806,6 +3921,7 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&domain, "domain", "", "Initial app instance domain")
 	cmd.Flags().StringVar(&ciIntegrationID, "ci-integration", "", "CI integration ID")
 	cmd.Flags().StringVar(&registryIntegrationID, "registry-integration", "", "Registry integration ID")
+	cmd.Flags().BoolVar(&deferInitialDeployment, "defer-initial-deployment", false, "Create the app without starting its initial deployment")
 	cmd.Flags().Bool("cluster-app", false, "Deprecated: use --cluster when creating the initial cluster app instance")
 	return cmd
 }
@@ -3898,6 +4014,8 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 		newAppInstanceSettingsCommand(out),
 		newAppInstanceCICDSettingsCommand(out),
 		newAppInstanceUpgradeStackCommand(out),
+		newGetCommand("upgrade-stack-changelog ID", "Preview app instance stack upgrade", "/app-instance-stack-upgrade-changelogs/", appInstanceStackChangelogColumns, out),
+		newAppAccessCommand(out),
 	)
 	cmd.AddCommand(newAppServiceCommand("service", []string{"services"}, "Manage app services", instanceFilterArg))
 	cmd.AddCommand(newAppRouteCommand("route", []string{"routes"}, "Manage app instance routes", instanceFilterArg))
@@ -3907,10 +4025,56 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 	return cmd
 }
 
+func newAppAccessCommand(out outputOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "access",
+		Short: "Manage app instance access",
+	}
+	cmd.AddCommand(
+		newGetCommand("get APP_INSTANCE_ID", "Get app instance access", "/app-instance-accesses/", appAccessColumns, out),
+		newRawBodyPostCommand("create APP_INSTANCE_ID", "Create app instance access", "/app-instance-accesses/%s", []string{"access", "taskId"}, out),
+		newRawBodyPostCommand("preflight", "Preflight app instance access", "/app-accesses/actions/preflight", []string{"valid"}, out),
+		newRawBodyPutCommand("update ACCESS_ID", "Update app access", "/app-accesses/%s", []string{"access", "taskId"}, out),
+		newServiceChildDeleteCommand("Delete app access", "/app-accesses/%s", out),
+		newAppAccessCleanupsCommand(out),
+		newClusterActionCommand("retry-cleanup CLEANUP_ID", "Retry app-access cleanup", "/app-access-cleanups/%s/actions/retry", out),
+	)
+	return cmd
+}
+
+func newAppAccessCleanupsCommand(out outputOptions) *cobra.Command {
+	var appInstanceID, integrationID string
+	cmd := &cobra.Command{
+		Use:   "cleanups",
+		Short: "List app-access cleanups",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if (appInstanceID == "") == (integrationID == "") {
+				return errors.New("exactly one of --app-instance or --integration is required")
+			}
+			query := url.Values{}
+			addQuery(query, "appInstanceId", appInstanceID)
+			addQuery(query, "integrationId", integrationID)
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), "/app-access-cleanups", query, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, appAccessCleanupColumns)
+		},
+	}
+	cmd.Flags().StringVar(&appInstanceID, "app-instance", "", "App instance ID")
+	cmd.Flags().StringVar(&integrationID, "integration", "", "Integration ID")
+	return cmd
+}
+
 func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
 	wait := waitOptions{}
 	var orgID, app, env, clusterID, stack, stackRevID, name, title, instanceName, instanceTitle, domain, region, zone, ciIntegrationID, registryIntegrationID string
+	var deferInitialDeployment bool
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create app instance",
@@ -3983,6 +4147,7 @@ func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 				if err := addOptionalInt(values, "registryIntegrationId", registryIntegrationID, "--registry-integration"); err != nil {
 					return err
 				}
+				values["deferInitialDeployment"] = deferInitialDeployment
 				requestBody = values
 			}
 			var result interface{}
@@ -4021,6 +4186,7 @@ func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&zone, "zone", "", "Deprecated")
 	cmd.Flags().StringVar(&ciIntegrationID, "ci-integration", "", "CI integration ID")
 	cmd.Flags().StringVar(&registryIntegrationID, "registry-integration", "", "Registry integration ID")
+	cmd.Flags().BoolVar(&deferInitialDeployment, "defer-initial-deployment", false, "Create the app instance without starting its initial deployment")
 	cmd.Flags().Bool("cluster-app", false, "Deprecated: cluster app status is inferred from --cluster")
 	_, _, _ = region, zone, title
 	return cmd
@@ -5172,9 +5338,17 @@ func newAppServiceVolumeCommand(out outputOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "volume",
 		Aliases: []string{"volumes"},
-		Short:   "List app service volumes",
+		Short:   "Manage app service volumes",
 	}
-	cmd.AddCommand(newServiceChildListCommand("list SERVICE_ID", "List app service volumes", "/app-services/%s/volumes", appServiceVolumeColumns, out))
+	cmd.AddCommand(
+		newServiceChildListCommand("list SERVICE_ID", "List app service volumes", "/app-services/%s/volumes", appServiceVolumeColumns, out),
+		newServiceChildCreateCommand("add SERVICE_ID", "Add an optional app service volume", "/app-services/%s/volumes", operationColumns, out, []jsonFlagSpec{
+			stringJSONFlag("name", "name", "Volume name", true),
+			intJSONFlag("size", "size", "Volume size in GiB", false),
+			stringJSONFlag("storage-class", "storageClassName", "Kubernetes storage class", false),
+		}),
+		newServiceChildListCommand("storage-classes SERVICE_ID", "List app service volume storage-class state", "/app-services/%s/options/volume-storage-classes", []string{"volumeId", "configuredStorageClassName", "effectiveStorageClassNames", "status"}, out),
+	)
 	return cmd
 }
 

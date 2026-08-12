@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	MigrationPlanSchema = "wodby1-migration-plan/v6"
+	MigrationPlanSchema = "wodby1-migration-plan/v7"
 
 	SeverityBlocking     = "blocking"
 	SeverityConfirmation = "requires_confirmation"

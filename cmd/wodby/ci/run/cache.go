@@ -31,6 +31,11 @@ var cacheProfiles = map[string]cacheProfile{
 		hostPath:      []string{".composer", "cache"},
 		containerPath: "/tmp/wodby-cache/composer",
 	},
+	"bundler": {
+		envName:       "BUNDLE_USER_CACHE",
+		hostPath:      []string{".bundle", "cache"},
+		containerPath: "/tmp/wodby-cache/bundler",
+	},
 	"uv": {
 		envName:       "UV_CACHE_DIR",
 		hostPath:      []string{".cache", "uv"},
@@ -143,7 +148,7 @@ func validateCacheProfileNames(names []string) ([]string, error) {
 
 	for _, name := range names {
 		if _, ok := cacheProfiles[name]; !ok {
-			return nil, errors.Errorf("unknown cache profile %q (supported: npm, composer, uv)", name)
+			return nil, errors.Errorf("unknown cache profile %q (supported: npm, composer, bundler, uv)", name)
 		}
 	}
 
@@ -162,6 +167,8 @@ func knownImageCacheProfiles(image string) []string {
 		return []string{"npm"}
 	case "docker.io/library/composer", "docker.io/wodby/php":
 		return []string{"composer"}
+	case "docker.io/library/ruby", "docker.io/wodby/ruby":
+		return []string{"bundler"}
 	case "docker.io/wodby/python":
 		return []string{"uv"}
 	default:

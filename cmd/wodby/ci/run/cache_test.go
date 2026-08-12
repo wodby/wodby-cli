@@ -11,7 +11,7 @@ import (
 
 func TestExplicitEnvironmentNames(t *testing.T) {
 	envFile := filepath.Join(t.TempDir(), "run.env")
-	if err := os.WriteFile(envFile, []byte("# comment\nHOME=/custom-home\nUV_CACHE_DIR=/custom-uv\n"), 0600); err != nil {
+	if err := os.WriteFile(envFile, []byte("# comment\nHOME=/custom-home\nBUNDLE_USER_CACHE=/custom-bundler\nUV_CACHE_DIR=/custom-uv\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -20,7 +20,7 @@ func TestExplicitEnvironmentNames(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, name := range []string{"CI", "HOME", "NPM_CONFIG_CACHE", "UV_CACHE_DIR"} {
+	for _, name := range []string{"CI", "HOME", "NPM_CONFIG_CACHE", "BUNDLE_USER_CACHE", "UV_CACHE_DIR"} {
 		if _, ok := got[name]; !ok {
 			t.Errorf("explicitEnvironmentNames() missing %q", name)
 		}
@@ -60,8 +60,8 @@ func TestResolveCacheProfileNames(t *testing.T) {
 			name:        "uses image label",
 			autoAllowed: true,
 			image:       "registry.example.com/app:latest",
-			labels:      map[string]string{cacheLabel: "npm, composer"},
-			want:        []string{"npm", "composer"},
+			labels:      map[string]string{cacheLabel: "npm, composer, bundler"},
+			want:        []string{"npm", "composer", "bundler"},
 		},
 		{
 			name:        "empty image label disables fallback",
@@ -86,6 +86,18 @@ func TestResolveCacheProfileNames(t *testing.T) {
 			autoAllowed: true,
 			image:       "composer:2",
 			want:        []string{"composer"},
+		},
+		{
+			name:        "recognizes older wodby ruby image",
+			autoAllowed: true,
+			image:       "wodby/ruby:4",
+			want:        []string{"bundler"},
+		},
+		{
+			name:        "recognizes official ruby image",
+			autoAllowed: true,
+			image:       "ruby:4-alpine",
+			want:        []string{"bundler"},
 		},
 		{
 			name:        "explicit profiles override detection",
@@ -162,13 +174,14 @@ func TestAddCacheProfiles(t *testing.T) {
 	hostHome := t.TempDir()
 	config := docker.RunConfig{}
 
-	if err := addCacheProfiles(&config, []string{"npm", "composer", "uv"}, map[string]struct{}{}, hostHome, ""); err != nil {
+	if err := addCacheProfiles(&config, []string{"npm", "composer", "bundler", "uv"}, map[string]struct{}{}, hostHome, ""); err != nil {
 		t.Fatal(err)
 	}
 
 	wantEnv := []string{
 		"NPM_CONFIG_CACHE=/tmp/wodby-cache/npm",
 		"COMPOSER_CACHE_DIR=/tmp/wodby-cache/composer",
+		"BUNDLE_USER_CACHE=/tmp/wodby-cache/bundler",
 		"UV_CACHE_DIR=/tmp/wodby-cache/uv",
 	}
 	if !reflect.DeepEqual(config.Env, wantEnv) {
@@ -178,6 +191,7 @@ func TestAddCacheProfiles(t *testing.T) {
 	wantVolumes := []string{
 		filepath.Join(hostHome, ".npm") + ":/tmp/wodby-cache/npm",
 		filepath.Join(hostHome, ".composer", "cache") + ":/tmp/wodby-cache/composer",
+		filepath.Join(hostHome, ".bundle", "cache") + ":/tmp/wodby-cache/bundler",
 		filepath.Join(hostHome, ".cache", "uv") + ":/tmp/wodby-cache/uv",
 	}
 	if !reflect.DeepEqual(config.Volumes, wantVolumes) {
@@ -187,6 +201,7 @@ func TestAddCacheProfiles(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join(hostHome, ".npm"),
 		filepath.Join(hostHome, ".composer", "cache"),
+		filepath.Join(hostHome, ".bundle", "cache"),
 		filepath.Join(hostHome, ".cache", "uv"),
 	} {
 		if info, err := os.Stat(path); err != nil || !info.IsDir() {
@@ -201,9 +216,12 @@ func TestAddCacheProfilesPreservesExplicitConfiguration(t *testing.T) {
 		Volumes: []string{"custom-cache:/tmp/wodby-cache/composer"},
 		Env:     []string{"CI=true"},
 	}
-	explicitEnv := map[string]struct{}{"NPM_CONFIG_CACHE": {}}
+	explicitEnv := map[string]struct{}{
+		"NPM_CONFIG_CACHE":  {},
+		"BUNDLE_USER_CACHE": {},
+	}
 
-	if err := addCacheProfiles(&config, []string{"npm", "composer"}, explicitEnv, hostHome, ""); err != nil {
+	if err := addCacheProfiles(&config, []string{"npm", "composer", "bundler"}, explicitEnv, hostHome, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -217,6 +235,9 @@ func TestAddCacheProfilesPreservesExplicitConfiguration(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(hostHome, ".npm")); !os.IsNotExist(err) {
 		t.Fatalf("explicit npm cache unexpectedly created a host directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(hostHome, ".bundle", "cache")); !os.IsNotExist(err) {
+		t.Fatalf("explicit Bundler cache unexpectedly created a host directory: %v", err)
 	}
 }
 

@@ -482,16 +482,21 @@ func (c *TargetClient) preflightInstance(
 	plan.Stack.TargetID = stack.ID
 	plan.Stack.TargetRevID = stack.RevID
 	plan.Stack.TargetVersion = stackVersionLabel(stack)
+	stackMessage := fmt.Sprintf("target stack %s (%s) will be used", stack.Name, plan.Stack.TargetVersion)
+	if plan.Stack.CreateTarget {
+		stackMessage = fmt.Sprintf(
+			"a new target stack will be created for app %q from public catalog stack %s (%s) and reused by all of the app's instances",
+			app.Name,
+			stack.Name,
+			plan.Stack.TargetVersion,
+		)
+	}
 	findings := []ReviewItem{{
 		Severity: SeverityConfirmation,
 		App:      app.Name,
 		Instance: source.Name,
 		Subject:  "target stack revision",
-		Message: fmt.Sprintf(
-			"target stack %s (%s) will be used",
-			stack.Name,
-			plan.Stack.TargetVersion,
-		),
+		Message:  stackMessage,
 	}}
 
 	sourceByName := make(map[string]Service, len(source.Services))
@@ -722,6 +727,39 @@ func (c *TargetClient) resolvePreflightStackRevision(
 	_ int,
 	plan StackPlan,
 ) (TargetStack, error) {
+	if plan.CreateTarget {
+		if strings.TrimSpace(plan.CatalogName) == "" {
+			return TargetStack{}, errors.New("generated target stack is missing its catalog name")
+		}
+		if plan.TargetID <= 0 {
+			return c.ResolvePublicStackExact(ctx, plan.CatalogName)
+		}
+		stack, err := c.GetStack(ctx, plan.TargetID)
+		if err != nil {
+			return TargetStack{}, err
+		}
+		if !stack.Public || stack.Name != plan.CatalogName {
+			return TargetStack{}, errors.Errorf(
+				"reviewed catalog stack ID %d is %q (public=%t), expected public stack %q",
+				stack.ID,
+				stack.Name,
+				stack.Public,
+				plan.CatalogName,
+			)
+		}
+		if plan.TargetRevID > 0 && stack.RevID != plan.TargetRevID {
+			revision, err := c.GetStackRevision(ctx, plan.TargetRevID)
+			if err != nil {
+				return TargetStack{}, err
+			}
+			if revision.StackID != stack.ID {
+				return TargetStack{}, errors.Errorf("reviewed catalog revision ID %d does not belong to catalog stack ID %d", revision.ID, stack.ID)
+			}
+			stack.RevID = revision.ID
+			stack.LatestRevNumber = revision.Number
+		}
+		return stack, nil
+	}
 	if plan.TargetID <= 0 {
 		return TargetStack{}, errors.New("explicit target stack ID is required")
 	}

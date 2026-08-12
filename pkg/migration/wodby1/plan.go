@@ -166,6 +166,8 @@ type StackPlan struct {
 	AncestorUUID    string `json:"ancestorUuid,omitempty"`
 	AncestorName    string `json:"ancestorName,omitempty"`
 	Target          string `json:"target"`
+	CreateTarget    bool   `json:"createTarget,omitempty"`
+	CatalogName     string `json:"catalogName,omitempty"`
 	ExplicitMapping bool   `json:"explicitMapping,omitempty"`
 	TargetID        int    `json:"targetId,omitempty"`
 	TargetRevID     int    `json:"targetRevId,omitempty"`
@@ -454,6 +456,7 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 			instancePlan := buildInstancePlan(&plan, appExport.App, instance, opts, export.Schema == ExportSchemaV2)
 			appPlan.Instances = append(appPlan.Instances, instancePlan)
 		}
+		validateAppStackStrategy(&plan, &appPlan)
 		plan.Apps = append(plan.Apps, appPlan)
 	}
 	validateTargetOrgFeatures(&plan, opts.TargetScope)
@@ -465,6 +468,32 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 		return Plan{}, fmt.Errorf("compute migration plan digest: %w", err)
 	}
 	return plan, nil
+}
+
+func validateAppStackStrategy(plan *Plan, app *AppPlan) {
+	if plan == nil || app == nil || len(app.Instances) < 2 {
+		return
+	}
+	strategy := stackStrategyKey(app.Instances[0].Stack)
+	for _, instance := range app.Instances[1:] {
+		if stackStrategyKey(instance.Stack) == strategy {
+			continue
+		}
+		plan.addReview(
+			SeverityBlocking,
+			app.Name,
+			instance.Name,
+			"target stack strategy",
+			"app instances resolve to different target stacks; one stack must be reused by every instance in an app, so provide one compatible --target-stack-id or consistent scoped mappings",
+		)
+	}
+}
+
+func stackStrategyKey(stack StackPlan) string {
+	if stack.CreateTarget {
+		return "catalog:" + stack.CatalogName
+	}
+	return fmt.Sprintf("existing:%d", stack.TargetID)
 }
 
 func (p Plan) contentDigest() (string, error) {
@@ -708,6 +737,10 @@ func buildInstancePlan(plan *Plan, app App, instance Instance, opts PlanOptions,
 			instancePlan.Stack.ExplicitMapping = true
 		}
 	}
+	if instancePlan.Stack.TargetID <= 0 {
+		instancePlan.Stack.CatalogName = targetCatalogStackName(instance.Stack)
+		instancePlan.Stack.CreateTarget = instancePlan.Stack.CatalogName != ""
+	}
 	if ok && opts.TargetScope != nil {
 		resolved, found := opts.TargetEnvs[targetEnv]
 		if !found {
@@ -751,8 +784,8 @@ func buildInstancePlan(plan *Plan, app App, instance Instance, opts PlanOptions,
 		}
 	}
 
-	if opts.TargetScope != nil && instancePlan.Stack.TargetID <= 0 {
-		plan.addReview(SeverityBlocking, app.Name, instance.Name, "target stack", "an explicit target stack ID is required; pass --target-stack-id or a scoped --target-stack-map entry")
+	if opts.TargetScope != nil && instancePlan.Stack.TargetID <= 0 && !instancePlan.Stack.CreateTarget {
+		plan.addReview(SeverityBlocking, app.Name, instance.Name, "target stack", "this custom stack requires --target-stack-id or a scoped --target-stack-map entry; managed Drupal and WordPress stacks use a new catalog stack by default")
 	}
 
 	status := strings.ToLower(strings.TrimSpace(instance.Status))
@@ -1074,6 +1107,17 @@ func canonicalStackFamily(value string) string {
 		return "drupal9"
 	case "drupal", "drupal10", "drupal11":
 		return "drupal"
+	case "wordpress":
+		return "wordpress"
+	default:
+		return ""
+	}
+}
+
+func targetCatalogStackName(stack Stack) string {
+	switch sourceStackFamily(stack) {
+	case "drupal", "drupal7", "drupal8", "drupal9":
+		return "drupal11"
 	case "wordpress":
 		return "wordpress"
 	default:

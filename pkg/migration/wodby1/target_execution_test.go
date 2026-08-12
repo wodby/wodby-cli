@@ -96,6 +96,47 @@ func TestTargetClientResolvesAndInspectsStackRevision(t *testing.T) {
 	}
 }
 
+func TestTargetClientResolvesAndDuplicatesExactPublicCatalogRevision(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/catalog/stacks":
+			writeTargetExecutionJSON(t, w, []TargetStack{
+				{ID: 7, Name: "drupal11", Status: "OK", Public: true, RevID: 71, OrgID: 1},
+				{ID: 8, Name: "wordpress", Status: "OK", Public: true, RevID: 81, OrgID: 1},
+			})
+		case "/v1/stacks/7/actions/duplicate":
+			var input TargetDuplicateStackInput
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatal(err)
+			}
+			if input.OrgID != 8 || input.ProjectID == nil || *input.ProjectID != 9 || input.SourceRevID != 71 {
+				t.Fatalf("duplicate input = %#v", input)
+			}
+			origin := 71
+			writeTargetExecutionJSON(t, w, TargetStack{
+				ID: 17, Name: "acme/drupal11", Status: "OK", RevID: 171, OrgID: 8,
+				OriginStackRevID: &origin,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := mustTargetExecutionClient(t, server.URL)
+	stack, err := client.ResolvePublicStackExact(context.Background(), "drupal11")
+	if err != nil || stack.ID != 7 || stack.RevID != 71 {
+		t.Fatalf("public stack = %#v, err = %v", stack, err)
+	}
+	projectID := 9
+	copy, err := client.DuplicateStack(context.Background(), stack.ID, TargetDuplicateStackInput{
+		OrgID: 8, ProjectID: &projectID, SourceRevID: stack.RevID,
+	})
+	if err != nil || copy.ID != 17 || copy.RevID != 171 {
+		t.Fatalf("copy = %#v, err = %v", copy, err)
+	}
+}
+
 func TestTargetClientRejectsInvalidRawServiceManifest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/service-revisions/101" {

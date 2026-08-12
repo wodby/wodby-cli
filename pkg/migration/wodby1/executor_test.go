@@ -34,6 +34,85 @@ func TestCreatedWithinOperationUsesTimestampBoundary(t *testing.T) {
 	}
 }
 
+func TestEnsureGeneratedTargetStackDuplicatesOnceAndResumes(t *testing.T) {
+	originRevisionID := 71
+	duplicateRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/stacks/7/actions/duplicate":
+			duplicateRequests++
+			writeTargetExecutionJSON(t, w, TargetStack{
+				ID: 17, Name: "acme/drupal11", Status: "OK", RevID: 171, OrgID: 1,
+				OriginStackRevID: &originRevisionID, CreatedAt: time.Now().UTC(),
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/stacks/17":
+			writeTargetExecutionJSON(t, w, TargetStack{
+				ID: 17, Name: "acme/drupal11", Status: "OK", RevID: 171, OrgID: 1,
+				OriginStackRevID: &originRevisionID, CreatedAt: time.Now().UTC(),
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/stack-revisions/171/services":
+			writeTargetExecutionJSON(t, w, []TargetStackService{{ID: 111, Name: "php", ServiceRevID: 101}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/service-revisions/101":
+			writeTargetExecutionJSON(t, w, TargetServiceRevision{ID: 101, ServiceID: 201, Name: "php"})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	state, statePath := newExecutorTestState(t)
+	client := mustTargetExecutionClient(t, server.URL)
+	executor := &MigrationExecutor{target: client, statePath: statePath}
+	plan := Plan{
+		Source: PlanSource{Kind: "app", ID: "app-1"},
+		Target: PlanTarget{OrgID: 1, ProjectID: 2},
+		Apps: []AppPlan{{
+			SourceUUID: "app-1", Name: "demo",
+			Instances: []InstancePlan{{
+				SourceUUID: "instance-1",
+				Stack: StackPlan{
+					CreateTarget: true, CatalogName: "drupal11", Target: "drupal11", TargetID: 7, TargetRevID: 71,
+				},
+			}},
+		}},
+	}
+	inspection := TargetStackServiceInspection{
+		StackService:    TargetStackService{ID: 11, Name: "php", ServiceRevID: 101},
+		ServiceRevision: TargetServiceRevision{ID: 101, ServiceID: 201, Name: "php"},
+	}
+	prepared := PreparedMigration{
+		App: AppExport{App: App{UUID: "app-1", Name: "demo"}},
+		Instances: []PreparedInstance{{
+			Source: Instance{UUID: "instance-1", Name: "prod"},
+			Stack: TargetStack{
+				ID: 7, Name: "drupal11", Status: "OK", Public: true, RevID: 71, OrgID: 9,
+			},
+			StackServices:     []TargetStackServiceInspection{inspection},
+			Services:          map[string]PreparedService{},
+			Imports:           map[string]PreparedImport{},
+			ImportByComponent: map[string]PreparedImport{},
+		}},
+	}
+
+	bound, err := executor.ensureGeneratedTargetStack(context.Background(), state, plan, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound.Instances[0].Stack.ID != 17 || bound.Instances[0].StackServices[0].StackService.ID != 111 {
+		t.Fatalf("bound generated stack = %#v", bound.Instances[0])
+	}
+	operation := state.App.Operations[generatedStackOperation]
+	if operation.Status != MigrationOperationSucceeded || operation.TargetID != 17 || operation.TaskID != 171 {
+		t.Fatalf("saved stack operation = %#v", operation)
+	}
+	if _, err := executor.ensureGeneratedTargetStack(context.Background(), state, plan, prepared); err != nil {
+		t.Fatal(err)
+	}
+	if duplicateRequests != 1 {
+		t.Fatalf("duplicate requests = %d, want 1", duplicateRequests)
+	}
+}
+
 func TestLoadStateUsesInstanceSourceIdentity(t *testing.T) {
 	export, prepared := refreshDataImportFixture()
 	export.Source = &ExportSource{Kind: "instance", UUID: "instance-1"}

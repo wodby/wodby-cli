@@ -180,6 +180,10 @@ func (e *MigrationExecutor) Prepare(
 	if err := e.startPhase(state, MigrationPhasePrepare); err != nil {
 		return MigrationPhaseResult{}, err
 	}
+	prepared, err = e.ensureGeneratedTargetStack(ctx, state, plan, prepared)
+	if err != nil {
+		return MigrationPhaseResult{}, err
+	}
 	e.reportProgress("Step: create or resume the target app and app instances.")
 
 	app, instances, err := e.ensureAppAndInstances(ctx, state, plan, prepared)
@@ -250,6 +254,265 @@ func (e *MigrationExecutor) Prepare(
 	}
 	e.reportProgress("Target app %q (ID %d) is prepared.", app.Name, app.ID)
 	return MigrationPhaseResult{Phase: MigrationPhasePrepare, State: state}, nil
+}
+
+const generatedStackOperation = "stack_create"
+
+func (e *MigrationExecutor) ensureGeneratedTargetStack(
+	ctx context.Context,
+	state *MigrationState,
+	plan Plan,
+	prepared PreparedMigration,
+) (PreparedMigration, error) {
+	blueprint, create, err := generatedStackBlueprint(plan, prepared)
+	if err != nil || !create {
+		return prepared, err
+	}
+	retryOperation := "app:" + state.Source.ID + ":" + generatedStackOperation
+	operation, exists := state.App.Operations[generatedStackOperation]
+	var generated TargetStack
+
+	if exists && operation.Status == MigrationOperationSucceeded {
+		if operation.TargetID <= 0 || operation.TaskID <= 0 {
+			return PreparedMigration{}, errors.New("saved generated stack identity is incomplete")
+		}
+		generated, err = e.target.GetStack(ctx, operation.TargetID)
+		if err != nil {
+			return PreparedMigration{}, errors.Wrap(err, "read generated target stack from migration state")
+		}
+		if generated.RevID != operation.TaskID {
+			return PreparedMigration{}, errors.Errorf("generated target stack revision changed from saved ID %d to %d", operation.TaskID, generated.RevID)
+		}
+		if err := validateGeneratedStack(generated, blueprint, plan.Target.OrgID); err != nil {
+			return PreparedMigration{}, err
+		}
+		e.reportProgress("Resuming generated target stack %q (ID %d, revision ID %d) from migration state.", generated.Name, generated.ID, generated.RevID)
+		return e.bindGeneratedStack(ctx, prepared, generated)
+	}
+
+	if exists && (operation.Status == MigrationOperationIntent || operation.Status == MigrationOperationAmbiguous) {
+		matches, findErr := e.target.FindGeneratedStacksByOrigin(
+			ctx,
+			plan.Target.OrgID,
+			plan.Target.ProjectID,
+			blueprint.Name,
+			blueprint.RevID,
+		)
+		if findErr != nil {
+			return PreparedMigration{}, errors.Wrap(findErr, "recover generated target stack")
+		}
+		recovered := make([]TargetStack, 0, 1)
+		for _, candidate := range matches {
+			if createdWithinOperation(candidate.CreatedAt, operation) {
+				recovered = append(recovered, candidate)
+			}
+		}
+		switch len(recovered) {
+		case 1:
+			generated = recovered[0]
+			if err := promoteAppOperationForRecovery(state, generatedStackOperation); err != nil {
+				return PreparedMigration{}, err
+			}
+			if err := state.MarkAppOperationSuccessWithIDs(generatedStackOperation, generated.ID, generated.RevID); err != nil {
+				return PreparedMigration{}, err
+			}
+			if err := SaveMigrationState(e.statePath, state); err != nil {
+				return PreparedMigration{}, err
+			}
+			e.reportProgress("Recovered generated target stack %q (ID %d, revision ID %d).", generated.Name, generated.ID, generated.RevID)
+			return e.bindGeneratedStack(ctx, prepared, generated)
+		case 0:
+			if !e.ambiguousRetryAuthorized(retryOperation) {
+				return PreparedMigration{}, ambiguousRetryRequiredError("generated target stack result is ambiguous and no timestamp-bounded match was found", retryOperation)
+			}
+		default:
+			return PreparedMigration{}, errors.Errorf("generated target stack result is ambiguous: %d matching stacks were created in the operation window; inspect the target before resuming", len(recovered))
+		}
+	}
+	if exists && operation.Status == MigrationOperationAccepted {
+		return PreparedMigration{}, errors.New("generated target stack operation was accepted without a recoverable result")
+	}
+
+	if err := state.MarkAppOperationIntent(generatedStackOperation); err != nil {
+		return PreparedMigration{}, err
+	}
+	if err := SaveMigrationState(e.statePath, state); err != nil {
+		return PreparedMigration{}, err
+	}
+	var projectID *int
+	if plan.Target.ProjectID > 0 {
+		projectID = &plan.Target.ProjectID
+	}
+	e.reportProgress(
+		"Step: create a dedicated target stack for app %q from public catalog stack %q (revision ID %d).",
+		prepared.App.App.Name,
+		blueprint.Name,
+		blueprint.RevID,
+	)
+	generated, err = e.target.DuplicateStack(ctx, blueprint.ID, TargetDuplicateStackInput{
+		OrgID: plan.Target.OrgID, ProjectID: projectID, SourceRevID: blueprint.RevID,
+	})
+	if err != nil {
+		return PreparedMigration{}, e.recordAppMutationError(state, generatedStackOperation, "catalog stack duplication", retryOperation, err)
+	}
+	if err := validateGeneratedStack(generated, blueprint, plan.Target.OrgID); err != nil {
+		_ = state.MarkAppOperationAmbiguousWithIDs(generatedStackOperation, generated.ID, generated.RevID)
+		_ = SaveMigrationState(e.statePath, state)
+		return PreparedMigration{}, err
+	}
+	if err := state.MarkAppOperationSuccessWithIDs(generatedStackOperation, generated.ID, generated.RevID); err != nil {
+		return PreparedMigration{}, err
+	}
+	if err := SaveMigrationState(e.statePath, state); err != nil {
+		return PreparedMigration{}, err
+	}
+	e.reportProgress("Generated target stack %q created (ID %d, revision ID %d); every app instance will use it.", generated.Name, generated.ID, generated.RevID)
+	return e.bindGeneratedStack(ctx, prepared, generated)
+}
+
+func generatedStackBlueprint(plan Plan, prepared PreparedMigration) (TargetStack, bool, error) {
+	var blueprint TargetStack
+	found := false
+	for _, instance := range prepared.Instances {
+		instancePlan := planInstance(plan, instance.Source.UUID)
+		if instancePlan == nil {
+			return TargetStack{}, false, errors.New("migration plan is missing a source instance")
+		}
+		if !instancePlan.Stack.CreateTarget {
+			if found {
+				return TargetStack{}, false, errors.New("app migration mixes generated and existing target stacks")
+			}
+			continue
+		}
+		if !found {
+			blueprint = instance.Stack
+			found = true
+			continue
+		}
+		if instance.Stack.ID != blueprint.ID || instance.Stack.RevID != blueprint.RevID {
+			return TargetStack{}, false, errors.New("app instances do not share one reviewed catalog stack revision")
+		}
+	}
+	if found && (blueprint.ID <= 0 || blueprint.RevID <= 0 || !blueprint.Public) {
+		return TargetStack{}, false, errors.New("reviewed catalog stack blueprint is invalid")
+	}
+	return blueprint, found, nil
+}
+
+func validateGeneratedStack(generated, blueprint TargetStack, targetOrgID int) error {
+	if generated.ID <= 0 || generated.RevID <= 0 || generated.OrgID != targetOrgID || generated.Public {
+		return errors.New("generated target stack has invalid identity or ownership")
+	}
+	if generated.OriginStackRevID == nil || *generated.OriginStackRevID != blueprint.RevID {
+		return errors.Errorf("generated target stack origin does not match reviewed catalog revision ID %d", blueprint.RevID)
+	}
+	return nil
+}
+
+func (e *MigrationExecutor) bindGeneratedStack(
+	ctx context.Context,
+	prepared PreparedMigration,
+	generated TargetStack,
+) (PreparedMigration, error) {
+	inspections, err := e.target.InspectStackRevision(ctx, generated.RevID)
+	if err != nil {
+		return PreparedMigration{}, errors.Wrap(err, "inspect generated target stack")
+	}
+	byName, err := indexStackInspections(inspections)
+	if err != nil {
+		return PreparedMigration{}, err
+	}
+	prepared.Instances = append([]PreparedInstance(nil), prepared.Instances...)
+	for index := range prepared.Instances {
+		instance := &prepared.Instances[index]
+		instance.StackServices = append([]TargetStackServiceInspection(nil), instance.StackServices...)
+		instance.Services = clonePreparedServices(instance.Services)
+		instance.Imports = clonePreparedImports(instance.Imports)
+		instance.ImportByComponent = clonePreparedImports(instance.ImportByComponent)
+		blueprintByName, err := indexStackInspections(instance.StackServices)
+		if err != nil {
+			return PreparedMigration{}, err
+		}
+		for name, target := range byName {
+			blueprintService, ok := blueprintByName[name]
+			if !ok || blueprintService.StackService.ServiceRevID != target.StackService.ServiceRevID {
+				return PreparedMigration{}, errors.Errorf("generated target stack service %q does not match the reviewed catalog revision", name)
+			}
+		}
+		if len(byName) != len(blueprintByName) {
+			return PreparedMigration{}, errors.New("generated target stack service set does not match the reviewed catalog revision")
+		}
+		instance.Stack = generated
+		instance.StackServices = inspections
+		for sourceName, mapping := range instance.Services {
+			target, ok := byName[mapping.Target.StackService.Name]
+			if !ok {
+				return PreparedMigration{}, errors.Errorf("generated target stack is missing mapped service %q", mapping.Target.StackService.Name)
+			}
+			mapping.Target = target
+			instance.Services[sourceName] = mapping
+		}
+		for key, item := range instance.Imports {
+			target, ok := byName[item.StackService.StackService.Name]
+			if !ok {
+				return PreparedMigration{}, errors.Errorf("generated target stack is missing import service %q", item.ServiceName)
+			}
+			item.StackService = target
+			instance.Imports[key] = item
+		}
+		for key, item := range instance.ImportByComponent {
+			target, ok := byName[item.StackService.StackService.Name]
+			if !ok {
+				return PreparedMigration{}, errors.Errorf("generated target stack is missing import service %q", item.ServiceName)
+			}
+			item.StackService = target
+			instance.ImportByComponent[key] = item
+		}
+	}
+	prepared.Apps = []PreparedAppMigration{{App: prepared.App, Instances: prepared.Instances}}
+	return prepared, nil
+}
+
+func clonePreparedServices(source map[string]PreparedService) map[string]PreparedService {
+	result := make(map[string]PreparedService, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
+}
+
+func clonePreparedImports(source map[string]PreparedImport) map[string]PreparedImport {
+	result := make(map[string]PreparedImport, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
+}
+
+func (e *MigrationExecutor) recordAppMutationError(
+	state *MigrationState,
+	operation string,
+	label string,
+	retryOperation string,
+	mutationErr error,
+) error {
+	var apiErr *rest.APIError
+	if errors.As(mutationErr, &apiErr) && targetRejectionIsDefinitive(apiErr.StatusCode) {
+		if err := state.MarkAppOperationFailure(operation, "api_rejected"); err != nil {
+			return err
+		}
+		if err := SaveMigrationState(e.statePath, state); err != nil {
+			return err
+		}
+		return targetRejectionError(label, apiErr)
+	}
+	if err := state.MarkAppOperationAmbiguous(operation); err != nil {
+		return err
+	}
+	if err := SaveMigrationState(e.statePath, state); err != nil {
+		return err
+	}
+	return ambiguousRetryRequiredError(fmt.Sprintf("result of %s is ambiguous", label), retryOperation)
 }
 
 func planHasCustomRoutes(plan *InstancePlan) bool {

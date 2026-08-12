@@ -52,7 +52,7 @@ func TestWodby1InstanceCommandExamplesIdentifyCredentialsAndWorkflow(t *testing.
 	for _, required := range []string{
 		"WODBY1_SOURCE_TOKEN",
 		"WODBY_API_KEY",
-		"wodby migrate wodby1 instance INSTANCE_UUID --target-stack-id STACK_ID",
+		"wodby migrate wodby1 instance INSTANCE_UUID --target-cluster CLUSTER",
 		"--apply",
 		"--verify",
 	} {
@@ -1345,10 +1345,6 @@ func TestWodby1AppCommandRejectsInvalidLocalInputBeforeNetwork(t *testing.T) {
 				"--target-service-map", "php=nginx",
 			},
 			want: "conflicting mappings",
-		},
-		{
-			name: "missing target stack ID",
-			want: "--target-stack-id or --target-stack-map is required",
 		},
 		{
 			name: "target stack mapping must use ID",

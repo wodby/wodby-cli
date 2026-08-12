@@ -156,6 +156,40 @@ func TestPreflightTargetResolvesOfficialStackServicesAndRehashesPlan(t *testing.
 	}
 }
 
+func TestPreflightTargetSelectsPublicCatalogStackForManagedAppByDefault(t *testing.T) {
+	export := preflightFixtureExport(false)
+	options := preflightOwnerPlanOptions()
+	options.TargetStackID = 0
+	options.SkipCode = true
+	options.SkipData = true
+	plan := preflightBuildPlan(t, export, options)
+	if !plan.Apps[0].Instances[0].Stack.CreateTarget || plan.Apps[0].Instances[0].Stack.CatalogName != "drupal11" {
+		t.Fatalf("default stack plan = %#v", plan.Apps[0].Instances[0].Stack)
+	}
+
+	catalog := preflightOfficialCatalog()
+	public := catalog.stacks["drupal11"]
+	public.ID = 5
+	public.Name = "drupal11"
+	public.Public = true
+	public.OrgID = 1
+	public.OriginStackRevName = nil
+	catalog.publicStacks = []TargetStack{public}
+	catalog.stackRevisions[71] = TargetStackRevision{ID: 71, Name: "drupal11", Number: 4, Version: "11", StackID: 5}
+	api := newPreflightTargetAPI(t, catalog)
+	_, err := api.client.PreflightTarget(context.Background(), export, &plan, TargetPreflightOptions{SkipCode: true, SkipData: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stack := plan.Apps[0].Instances[0].Stack
+	if stack.TargetID != 5 || stack.TargetRevID != 71 || stack.Target != "drupal11" || !stack.CreateTarget {
+		t.Fatalf("preflighted catalog stack = %#v", stack)
+	}
+	if !hasReviewMessage(plan.Review, SeverityConfirmation, "new target stack will be created") {
+		t.Fatalf("catalog creation review = %#v", plan.Review)
+	}
+}
+
 func TestPreflightTargetBlocksRepositoryNameMissingFromIntegration(t *testing.T) {
 	export := preflightFixtureExport(true)
 	export.Apps[0].Instances[0].Services = []Service{{Name: "php", Enabled: true}}
@@ -1193,6 +1227,7 @@ func TestNormalizeGitRefType(t *testing.T) {
 
 type preflightTargetCatalog struct {
 	apps               []TargetApp
+	publicStacks       []TargetStack
 	remoteGitRepos     map[int][]TargetRemoteGitRepo
 	remoteGitRepoFiles map[string]bool
 	stacks             map[string]TargetStack
@@ -1220,6 +1255,8 @@ func newPreflightTargetAPI(t *testing.T, catalog preflightTargetCatalog) *prefli
 			return
 		}
 		switch {
+		case request.URL.Path == "/v1/catalog/stacks":
+			preflightWriteJSON(w, catalog.publicStacks)
 		case request.URL.Path == "/v1/apps":
 			preflightWriteJSON(w, catalog.apps)
 		case strings.HasPrefix(request.URL.Path, "/v1/integrations/") &&

@@ -50,16 +50,24 @@ func (e *TargetAmbiguousMatchError) Error() string {
 // TargetStack is the subset of the Wodby 2 stack response needed to resolve
 // the immutable revision used for a migrated instance.
 type TargetStack struct {
-	ID                 int     `json:"id"`
-	Name               string  `json:"name"`
-	Title              string  `json:"title"`
-	Status             string  `json:"status"`
-	Public             bool    `json:"public"`
-	RevID              int     `json:"revId"`
-	LatestRevNumber    int     `json:"latestRevNumber"`
-	OriginStackRevName *string `json:"originStackRevName,omitempty"`
-	OrgID              int     `json:"orgId"`
-	RevisionManifest   string  `json:"-"`
+	ID                 int       `json:"id"`
+	Name               string    `json:"name"`
+	Title              string    `json:"title"`
+	Status             string    `json:"status"`
+	Public             bool      `json:"public"`
+	RevID              int       `json:"revId"`
+	LatestRevNumber    int       `json:"latestRevNumber"`
+	OriginStackRevName *string   `json:"originStackRevName,omitempty"`
+	OriginStackRevID   *int      `json:"originStackRevId,omitempty"`
+	OrgID              int       `json:"orgId"`
+	RevisionManifest   string    `json:"-"`
+	CreatedAt          time.Time `json:"createdAt"`
+}
+
+type TargetDuplicateStackInput struct {
+	OrgID       int  `json:"orgId"`
+	ProjectID   *int `json:"projectId,omitempty"`
+	SourceRevID int  `json:"sourceRevId"`
 }
 
 // TargetStackRevision is the immutable stack revision read back by ID before a
@@ -78,6 +86,69 @@ type TargetStacksResponse struct {
 	Items      []TargetStack `json:"items"`
 	TotalCount int           `json:"totalCount"`
 	NextPage   *int          `json:"nextPage,omitempty"`
+}
+
+// ResolvePublicStackExact selects an immutable catalog blueprint by its exact
+// public machine name. Public catalog ownership is intentionally independent
+// of the customer's target organization.
+func (c *TargetClient) ResolvePublicStackExact(ctx context.Context, name string) (TargetStack, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return TargetStack{}, errors.New("public catalog stack name is required")
+	}
+	items := []TargetStack{}
+	if err := c.client.Get(ctx, "/catalog/stacks", nil, &items); err != nil {
+		return TargetStack{}, errors.Wrap(err, "list public Wodby 2 catalog stacks")
+	}
+	matches := make([]TargetStack, 0, 1)
+	for _, item := range items {
+		if err := validateTargetStack(item); err != nil {
+			return TargetStack{}, err
+		}
+		if !item.Public {
+			return TargetStack{}, errors.Errorf("catalog endpoint returned non-public stack %q", item.Name)
+		}
+		if item.Name == name {
+			matches = append(matches, item)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return TargetStack{}, errors.Errorf("public Wodby 2 catalog stack %q was not found", name)
+	case 1:
+		return matches[0], nil
+	default:
+		return TargetStack{}, &TargetAmbiguousMatchError{Resource: "public catalog stack", Name: name, Count: len(matches)}
+	}
+}
+
+func (c *TargetClient) DuplicateStack(ctx context.Context, stackID int, input TargetDuplicateStackInput) (TargetStack, error) {
+	if err := targetRequirePositiveID("catalog stack", stackID); err != nil {
+		return TargetStack{}, err
+	}
+	if err := targetRequirePositiveID("organization", input.OrgID); err != nil {
+		return TargetStack{}, err
+	}
+	if err := targetRequirePositiveID("source stack revision", input.SourceRevID); err != nil {
+		return TargetStack{}, err
+	}
+	if err := targetValidateOptionalPositiveID("project", input.ProjectID); err != nil {
+		return TargetStack{}, err
+	}
+	var item TargetStack
+	if err := c.client.Post(ctx, "/stacks/"+strconv.Itoa(stackID)+"/actions/duplicate", nil, input, &item); err != nil {
+		return TargetStack{}, errors.Wrap(err, "duplicate public Wodby 2 catalog stack")
+	}
+	if err := validateTargetStack(item); err != nil {
+		return TargetStack{}, err
+	}
+	if item.OrgID != input.OrgID || item.Public {
+		return TargetStack{}, errors.New("duplicated target stack ownership does not match the migration target")
+	}
+	if item.OriginStackRevID == nil || *item.OriginStackRevID != input.SourceRevID {
+		return TargetStack{}, errors.Errorf("duplicated target stack does not identify catalog revision ID %d as its origin", input.SourceRevID)
+	}
+	return item, nil
 }
 
 // TargetStackService describes one service in an immutable stack revision.
@@ -704,6 +775,34 @@ func (c *TargetClient) listStackRevisionCandidates(
 		page = *response.NextPage
 	}
 	return stacks, nil
+}
+
+func (c *TargetClient) FindGeneratedStacksByOrigin(
+	ctx context.Context,
+	orgID int,
+	projectID int,
+	catalogName string,
+	originRevisionID int,
+) ([]TargetStack, error) {
+	if err := targetRequirePositiveID("catalog stack revision", originRevisionID); err != nil {
+		return nil, err
+	}
+	items, err := c.listStackRevisionCandidates(ctx, orgID, projectID, strings.TrimSpace(catalogName))
+	if err != nil {
+		return nil, err
+	}
+	matches := make([]TargetStack, 0, 1)
+	for _, item := range items {
+		if err := validateTargetStack(item); err != nil {
+			return nil, err
+		}
+		if item.OrgID != orgID || item.Public || item.OriginStackRevID == nil || *item.OriginStackRevID != originRevisionID {
+			continue
+		}
+		matches = append(matches, item)
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].ID < matches[j].ID })
+	return matches, nil
 }
 
 func validateTargetStackMatches(matches []TargetStack, orgID int) error {

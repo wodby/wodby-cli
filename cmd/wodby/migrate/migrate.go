@@ -139,9 +139,9 @@ no target mutation occurred.`,
 		Example: `  export WODBY1_SOURCE_TOKEN=...
   export WODBY_API_KEY=...
 
-  wodby migrate wodby1 instance INSTANCE_UUID --target-stack-id STACK_ID [target and mapping options]
-  wodby migrate wodby1 instance INSTANCE_UUID --target-stack-id STACK_ID [same options] --apply
-  wodby migrate wodby1 instance INSTANCE_UUID --target-stack-id STACK_ID [same options] --verify`,
+  wodby migrate wodby1 instance INSTANCE_UUID --target-cluster CLUSTER [target and mapping options]
+  wodby migrate wodby1 instance INSTANCE_UUID --target-cluster CLUSTER [same options] --apply
+  wodby migrate wodby1 instance INSTANCE_UUID --target-cluster CLUSTER [same options] --verify`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWodby1Instance(cmd, args[0], opts)
@@ -172,9 +172,9 @@ migrated apps before changing DNS, then use --verify. When per-app state exists,
 		Example: `  export WODBY1_SOURCE_TOKEN=...
   export WODBY_API_KEY=...
 
-  wodby migrate wodby1 server SERVER_UUID --target-stack-map SOURCE_STACK=STACK_ID --skip-code [target and mapping options]
-  wodby migrate wodby1 server SERVER_UUID --target-stack-map SOURCE_STACK=STACK_ID --skip-code [same options] --apply
-  wodby migrate wodby1 server SERVER_UUID --target-stack-map SOURCE_STACK=STACK_ID --skip-code [same options] --verify`,
+  wodby migrate wodby1 server SERVER_UUID --target-cluster CLUSTER --skip-code [target and mapping options]
+  wodby migrate wodby1 server SERVER_UUID --target-cluster CLUSTER --skip-code [same options] --apply
+  wodby migrate wodby1 server SERVER_UUID --target-cluster CLUSTER --skip-code [same options] --verify`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWodby1Server(cmd, args[0], opts)
@@ -221,9 +221,9 @@ state exists, --apply preserves the saved plan and continues completed work;
 		Example: `  export WODBY1_SOURCE_TOKEN=...
   export WODBY_API_KEY=...
 
-  wodby migrate wodby1 app APP_UUID --target-stack-id STACK_ID [target and mapping options]
-  wodby migrate wodby1 app APP_UUID --target-stack-id STACK_ID [same options] --apply
-  wodby migrate wodby1 app APP_UUID --target-stack-id STACK_ID [same options] --verify`,
+  wodby migrate wodby1 app APP_UUID --target-cluster CLUSTER [target and mapping options]
+  wodby migrate wodby1 app APP_UUID --target-cluster CLUSTER [same options] --apply
+  wodby migrate wodby1 app APP_UUID --target-cluster CLUSTER [same options] --verify`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWodby1App(cmd, args[0], opts)
@@ -259,7 +259,7 @@ func bindFlags(cmd *cobra.Command, opts *options) {
 	cmd.Flags().StringVar(&opts.targetProject, "target-project", "", "Wodby 2 project ID or exact name (defaults to a project-owned cluster's owner; otherwise organization-owned)")
 	cmd.Flags().StringVar(&opts.targetCluster, "target-cluster", "", "Wodby 2 cluster ID or exact name")
 	cmd.Flags().StringArrayVar(&opts.targetEnvMap, "target-env-map", nil, "Source-to-target environment mapping (SOURCE=TARGET)")
-	cmd.Flags().IntVar(&opts.targetStackID, "target-stack-id", 0, "Wodby 2 target stack ID (required unless every source stack has a scoped mapping)")
+	cmd.Flags().IntVar(&opts.targetStackID, "target-stack-id", 0, "Existing Wodby 2 stack ID override (managed Drupal/WordPress apps get a new catalog stack by default)")
 	cmd.Flags().StringArrayVar(&opts.targetStackMap, "target-stack-map", nil, "Source-to-target stack ID mapping ([APP/][INSTANCE/]SOURCE=TARGET_STACK_ID)")
 	cmd.Flags().StringArrayVar(&opts.targetServiceMap, "target-service-map", nil, "Source-to-target service mapping ([APP/][INSTANCE/]SOURCE=TARGET)")
 	cmd.Flags().StringArrayVar(&opts.targetVersionMap, "target-version-map", nil, "Source-service version override ([APP/][INSTANCE/]SOURCE_SERVICE=TARGET_VERSION)")
@@ -328,9 +328,6 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 	importMap, err := parseMapping(opts.targetImportMap, "--target-import-map")
 	if err != nil {
 		return err
-	}
-	if opts.targetStackID == 0 && len(stackMap) == 0 {
-		return errors.New("--target-stack-id or --target-stack-map is required; target stacks are never inferred from Wodby 1 stack names")
 	}
 	sourceClient, err := wodby1.NewSourceClient(opts.sourceBaseURL, opts.sourceToken)
 	if err != nil {
@@ -551,9 +548,6 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 	if err != nil {
 		return err
 	}
-	if err := requireExplicitTargetStackIDs(plan); err != nil {
-		return err
-	}
 	if reviewedPlan != nil {
 		if err := wodby1.PinReviewedTargets(&plan, *reviewedPlan); err != nil {
 			return err
@@ -739,9 +733,6 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 	if err != nil {
 		return err
 	}
-	if opts.targetStackID == 0 && len(stackMap) == 0 {
-		return errors.New("--target-stack-id or --target-stack-map is required; target stacks are never inferred from Wodby 1 stack names")
-	}
 	repositoryMap, err := parseRepositoryMapping(opts.targetRepositoryMap)
 	if err != nil {
 		return err
@@ -899,9 +890,6 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 		Selection:              &selection,
 	})
 	if err != nil {
-		return err
-	}
-	if err := requireExplicitTargetStackIDs(plan); err != nil {
 		return err
 	}
 	if reviewedPlan != nil {
@@ -1183,23 +1171,6 @@ func parseTargetStackMapping(values []string) (map[string]string, error) {
 		result[source] = strconv.Itoa(id)
 	}
 	return result, nil
-}
-
-func requireExplicitTargetStackIDs(plan wodby1.Plan) error {
-	for _, app := range plan.Apps {
-		for _, instance := range app.Instances {
-			if instance.Stack.TargetID > 0 {
-				continue
-			}
-			return errors.Errorf(
-				"target stack ID is required for %s/%s (source stack %q); pass --target-stack-id ID or a scoped --target-stack-map entry",
-				firstNonBlank(app.Name, app.SourceUUID),
-				firstNonBlank(instance.Name, instance.SourceUUID),
-				instance.Stack.Name,
-			)
-		}
-	}
-	return nil
 }
 
 func parseRepositoryMapping(values []string) (map[string]wodby1.RepositoryTargetPlan, error) {

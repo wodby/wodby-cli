@@ -228,6 +228,13 @@ func pinReviewedInstance(current *InstancePlan, reviewed InstancePlan) error {
 		reviewed.Stack.TargetVersion == "" {
 		return invalidPlanError("reviewed target stack is missing immutable identity")
 	}
+	if current.Stack.CreateTarget != reviewed.Stack.CreateTarget ||
+		current.Stack.CatalogName != reviewed.Stack.CatalogName {
+		return currentPlanDriftError("target stack creation strategy changed")
+	}
+	if reviewed.Stack.CreateTarget && reviewed.Stack.Target != reviewed.Stack.CatalogName {
+		return invalidPlanError("reviewed generated stack does not match its catalog blueprint")
+	}
 	if current.Stack.ExplicitMapping && current.Stack.TargetID != reviewed.Stack.TargetID {
 		return currentPlanDriftError("target stack ID changed")
 	}

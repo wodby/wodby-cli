@@ -45,6 +45,49 @@ func TestWithMappedUserHome(t *testing.T) {
 	})
 }
 
+func TestResolveHostCacheStorage(t *testing.T) {
+	t.Run("uses conventional home paths for native runs", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("WODBY_CI_CACHE_DIR", "")
+
+		gotHome, gotRoot, err := resolveHostCacheStorage(t.TempDir(), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotHome != home || gotRoot != "" {
+			t.Fatalf("resolveHostCacheStorage() = %q, %q, want %q, empty root", gotHome, gotRoot, home)
+		}
+	})
+
+	t.Run("uses project staging root for data containers", func(t *testing.T) {
+		context := t.TempDir()
+		t.Setenv("WODBY_CI_CACHE_DIR", "")
+
+		gotHome, gotRoot, err := resolveHostCacheStorage(context, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantRoot := filepath.Join(context, ".wodby-ci-cache")
+		if gotHome != "" || gotRoot != wantRoot {
+			t.Fatalf("resolveHostCacheStorage() = %q, %q, want empty home, %q", gotHome, gotRoot, wantRoot)
+		}
+	})
+
+	t.Run("explicit root overrides native home paths", func(t *testing.T) {
+		root := t.TempDir()
+		t.Setenv("WODBY_CI_CACHE_DIR", root)
+
+		gotHome, gotRoot, err := resolveHostCacheStorage(t.TempDir(), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotHome != "" || gotRoot != root {
+			t.Fatalf("resolveHostCacheStorage() = %q, %q, want empty home, %q", gotHome, gotRoot, root)
+		}
+	})
+}
+
 func TestResolveRunCacheProfileNames(t *testing.T) {
 	t.Run("disables automatic caches for explicit user", func(t *testing.T) {
 		got, err := resolveRunCacheProfileNames(nil, false, "explicit", "wodby/node:24", nil)
@@ -217,10 +260,10 @@ func TestResolveCacheProfileNames(t *testing.T) {
 }
 
 func TestAddCacheProfiles(t *testing.T) {
-	cacheRoot := t.TempDir()
+	hostHome := t.TempDir()
 	config := docker.RunConfig{}
 
-	active, err := addCacheProfiles(&config, []string{"npm", "composer", "bundler", "uv"}, map[string]struct{}{}, cacheRoot, false, "1001:1001")
+	active, err := addCacheProfiles(&config, []string{"npm", "composer", "bundler", "uv"}, map[string]struct{}{}, hostHome, "", false, "1001:1001")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,20 +282,20 @@ func TestAddCacheProfiles(t *testing.T) {
 	}
 
 	wantVolumes := []string{
-		filepath.Join(cacheRoot, "npm") + ":/tmp/wodby-cache/npm",
-		filepath.Join(cacheRoot, "composer") + ":/tmp/wodby-cache/composer",
-		filepath.Join(cacheRoot, "bundler") + ":/tmp/wodby-cache/bundler",
-		filepath.Join(cacheRoot, "uv") + ":/tmp/wodby-cache/uv",
+		filepath.Join(hostHome, ".npm") + ":/tmp/wodby-cache/npm",
+		filepath.Join(hostHome, ".composer", "cache") + ":/tmp/wodby-cache/composer",
+		filepath.Join(hostHome, ".bundle", "cache") + ":/tmp/wodby-cache/bundler",
+		filepath.Join(hostHome, ".cache", "uv") + ":/tmp/wodby-cache/uv",
 	}
 	if !reflect.DeepEqual(config.Volumes, wantVolumes) {
 		t.Fatalf("cache volumes = %#v, want %#v", config.Volumes, wantVolumes)
 	}
 
 	for _, path := range []string{
-		filepath.Join(cacheRoot, "npm"),
-		filepath.Join(cacheRoot, "composer"),
-		filepath.Join(cacheRoot, "bundler"),
-		filepath.Join(cacheRoot, "uv"),
+		filepath.Join(hostHome, ".npm"),
+		filepath.Join(hostHome, ".composer", "cache"),
+		filepath.Join(hostHome, ".bundle", "cache"),
+		filepath.Join(hostHome, ".cache", "uv"),
 	} {
 		if info, err := os.Stat(path); err != nil || !info.IsDir() {
 			t.Errorf("cache path %q was not created as a directory", path)
@@ -260,8 +303,25 @@ func TestAddCacheProfiles(t *testing.T) {
 	}
 }
 
-func TestAddCacheProfilesPreservesExplicitConfiguration(t *testing.T) {
+func TestAddCacheProfilesUsesExplicitRoot(t *testing.T) {
 	cacheRoot := t.TempDir()
+	config := docker.RunConfig{}
+
+	active, err := addCacheProfiles(&config, []string{"npm"}, map[string]struct{}{}, "", cacheRoot, false, "1001:1001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"npm"}; !reflect.DeepEqual(active, want) {
+		t.Fatalf("active caches = %#v, want %#v", active, want)
+	}
+	wantVolumes := []string{filepath.Join(cacheRoot, "npm") + ":/tmp/wodby-cache/npm"}
+	if !reflect.DeepEqual(config.Volumes, wantVolumes) {
+		t.Fatalf("cache volumes = %#v, want %#v", config.Volumes, wantVolumes)
+	}
+}
+
+func TestAddCacheProfilesPreservesExplicitConfiguration(t *testing.T) {
+	hostHome := t.TempDir()
 	config := docker.RunConfig{
 		Volumes: []string{"custom-cache:/tmp/wodby-cache/composer"},
 		Env:     []string{"CI=true"},
@@ -271,7 +331,7 @@ func TestAddCacheProfilesPreservesExplicitConfiguration(t *testing.T) {
 		"BUNDLE_USER_CACHE": {},
 	}
 
-	active, err := addCacheProfiles(&config, []string{"npm", "composer", "bundler"}, explicitEnv, cacheRoot, false, "1001:1001")
+	active, err := addCacheProfiles(&config, []string{"npm", "composer", "bundler"}, explicitEnv, hostHome, "", false, "1001:1001")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,10 +347,10 @@ func TestAddCacheProfilesPreservesExplicitConfiguration(t *testing.T) {
 	if !reflect.DeepEqual(config.Volumes, wantVolumes) {
 		t.Fatalf("cache volumes = %#v, want %#v", config.Volumes, wantVolumes)
 	}
-	if _, err := os.Stat(filepath.Join(cacheRoot, "npm")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(hostHome, ".npm")); !os.IsNotExist(err) {
 		t.Fatalf("explicit npm cache unexpectedly created a host directory: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(cacheRoot, "bundler")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(hostHome, ".bundle", "cache")); !os.IsNotExist(err) {
 		t.Fatalf("explicit Bundler cache unexpectedly created a host directory: %v", err)
 	}
 }
@@ -299,7 +359,7 @@ func TestAddCacheProfilesUsesDataContainerVolume(t *testing.T) {
 	cacheRoot := filepath.Join(t.TempDir(), "unused")
 	config := docker.RunConfig{}
 
-	active, err := addCacheProfiles(&config, []string{"npm"}, map[string]struct{}{}, cacheRoot, true, "")
+	active, err := addCacheProfiles(&config, []string{"npm"}, map[string]struct{}{}, "", cacheRoot, true, "")
 	if err != nil {
 		t.Fatal(err)
 	}

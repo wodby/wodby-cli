@@ -2023,14 +2023,14 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 		writeMigrationJSON(w, []wodby1.TargetStackService{{
 			ID: 81, Name: "php", Title: "PHP", Type: "php", Main: true,
 			ServiceRevID: 91, ServiceRevName: "php", ServiceRevVersion: "8.3",
-			Settings: []wodby1.TargetStackServiceSetting{
-				{ID: 101, StackServiceID: 81, Name: "docroot", Value: "web"},
-				{ID: 102, StackServiceID: 81, Name: "sitedir", Value: "default"},
-			},
 		}})
 	case "/v1/service-revisions/91":
 		writeMigrationJSON(w, wodby1.TargetServiceRevision{
 			ID: 91, ServiceID: 92, Name: "php", Type: "php", Version: "8.3",
+			Manifest: &wodby1.TargetServiceManifest{Settings: []wodby1.TargetServiceSettingCapability{
+				{Name: "docroot", Default: "web"},
+				{Name: "sitedir", Default: "default"},
+			}},
 		})
 	case "/v1/stack-services/81/env-vars":
 		writeMigrationJSON(w, []wodby1.TargetStackServiceEnvVar{})

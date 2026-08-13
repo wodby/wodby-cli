@@ -1391,14 +1391,6 @@ func newPreflightTargetAPI(t *testing.T, catalog preflightTargetCatalog) *prefli
 				http.NotFound(w, request)
 				return
 			}
-			for index := range services {
-				if services[index].Name == "php" && len(services[index].Settings) == 0 {
-					services[index].Settings = []TargetStackServiceSetting{
-						{ID: services[index].ID*10 + 1, StackServiceID: services[index].ID, Name: "docroot", Value: "web"},
-						{ID: services[index].ID*10 + 2, StackServiceID: services[index].ID, Name: "sitedir", Value: "default"},
-					}
-				}
-			}
 			preflightWriteJSON(w, services)
 		case strings.HasPrefix(request.URL.Path, "/v1/stack-revisions/"):
 			value := strings.TrimPrefix(request.URL.Path, "/v1/stack-revisions/")
@@ -1435,6 +1427,9 @@ func newPreflightTargetAPI(t *testing.T, catalog preflightTargetCatalog) *prefli
 			if !found {
 				http.NotFound(w, request)
 				return
+			}
+			if revision.Manifest != nil && len(revision.Manifest.Settings) == 0 && strings.Contains(revision.Name, "php") {
+				revision.Manifest.Settings = drupalPHPSettingManifest().Settings
 			}
 			preflightWriteJSON(w, revision)
 		default:

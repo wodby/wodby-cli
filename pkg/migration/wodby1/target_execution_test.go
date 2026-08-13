@@ -40,8 +40,9 @@ func TestTargetClientResolvesAndInspectsStackRevision(t *testing.T) {
 			writeTargetExecutionJSON(t, w, TargetServiceRevision{
 				ID: 101, ServiceID: 201, Name: "drupal11-php",
 				Manifest: &TargetServiceManifest{
-					Raw:   `{"name":"drupal11-php","build":{"connect":true},"cron":[{"name":"drush","title":"drush cron","schedule":"0 0 * * *","command":"drush cron"}]}`,
-					Build: &TargetServiceBuildCapability{},
+					Raw:      `{"name":"drupal11-php","build":{"connect":true},"settings":[{"name":"docroot","default":"web"},{"name":"sitedir","default":"default"}],"cron":[{"name":"drush","title":"drush cron","schedule":"0 0 * * *","command":"drush cron"}]}`,
+					Build:    &TargetServiceBuildCapability{},
+					Settings: []TargetServiceSettingCapability{{}},
 				},
 			})
 		case "/v1/service-revisions/102":
@@ -81,7 +82,11 @@ func TestTargetClientResolvesAndInspectsStackRevision(t *testing.T) {
 		inspections[1].ServiceRevision.Manifest.Build == nil ||
 		!inspections[1].ServiceRevision.Manifest.Build.Connect ||
 		len(inspections[1].ServiceRevision.Manifest.CronSchedules) != 1 ||
-		inspections[1].ServiceRevision.Manifest.CronSchedules[0].Name != "drush" {
+		inspections[1].ServiceRevision.Manifest.CronSchedules[0].Name != "drush" ||
+		len(inspections[1].ServiceRevision.Manifest.Settings) != 2 ||
+		inspections[1].ServiceRevision.Manifest.Settings[0].Name != "docroot" ||
+		inspections[1].ServiceRevision.Manifest.Settings[0].Default != "web" ||
+		inspections[1].ServiceRevision.Manifest.Settings[1].Name != "sitedir" {
 		t.Fatalf("inspections = %#v", inspections)
 	}
 

@@ -265,16 +265,26 @@ func prepareDrupalAppSettings(app PreparedAppMigration, configuration *PreparedS
 		if !found || !instance.EffectiveState["php"] {
 			return []ReviewItem{stackConfigBlocker(app.App.App.Name, instance.Source.Name, "Drupal app settings", "the enabled target Drupal PHP service named \"php\" was not found")}
 		}
-		available := map[string]TargetStackServiceSetting{}
+		available := map[string]TargetServiceSettingCapability{}
+		if php.ServiceRevision.Manifest != nil {
+			for _, setting := range php.ServiceRevision.Manifest.Settings {
+				available[setting.Name] = setting
+			}
+		}
+		overrides := map[string]TargetStackServiceSetting{}
 		for _, setting := range php.StackService.Settings {
-			available[setting.Name] = setting
+			overrides[setting.Name] = setting
 		}
 		for _, name := range []string{"docroot", "sitedir"} {
 			setting, found := available[name]
 			if !found {
 				return []ReviewItem{stackConfigBlocker(app.App.App.Name, instance.Source.Name, "Drupal app settings", fmt.Sprintf("target PHP service does not expose required setting %q", name))}
 			}
-			if setting.Value != desiredSettings[name] {
+			currentValue := setting.Default
+			if override, found := overrides[name]; found {
+				currentValue = override.Value
+			}
+			if currentValue != desiredSettings[name] {
 				settingNeedsUpdate[name] = true
 			}
 		}

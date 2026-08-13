@@ -85,10 +85,6 @@ func TestPrepareStackConfigurationMapsDrupalAppSettingsToPHP(t *testing.T) {
 	instance.Source.Stack = Stack{Name: "drupal11"}
 	instance.EffectiveState = map[string]bool{"php": true}
 	php := instance.Services["php"]
-	php.Target.StackService.Settings = []TargetStackServiceSetting{
-		{ID: 101, StackServiceID: 10, Name: "docroot", Value: "web"},
-		{ID: 102, StackServiceID: 10, Name: "sitedir", Value: "default"},
-	}
 	instance.Services["php"] = php
 	instance.StackServices = []TargetStackServiceInspection{php.Target}
 	app := stackConfigurationTestApp(instance)
@@ -119,11 +115,7 @@ func TestPrepareStackConfigurationDoesNotRewriteMatchingDrupalAppSettings(t *tes
 	instance.EffectiveState = map[string]bool{"php": true}
 	php := TargetStackServiceInspection{StackService: TargetStackService{
 		ID: 10, Name: "php", ServiceRevID: 11,
-		Settings: []TargetStackServiceSetting{
-			{ID: 101, StackServiceID: 10, Name: "docroot", Value: "web"},
-			{ID: 102, StackServiceID: 10, Name: "sitedir", Value: "default"},
-		},
-	}}
+	}, ServiceRevision: TargetServiceRevision{ID: 11, Manifest: drupalPHPSettingManifest()}}
 	instance.StackServices = []TargetStackServiceInspection{php}
 	app := stackConfigurationTestApp(instance)
 	app.App.App.Docroot = stringPointer("web")
@@ -144,6 +136,38 @@ func TestPrepareStackConfigurationDoesNotRewriteMatchingDrupalAppSettings(t *tes
 	}
 }
 
+func TestPrepareStackConfigurationUsesExistingStackSettingOverrideAsEffectiveValue(t *testing.T) {
+	instance := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
+	instance.Source.Stack = Stack{Name: "drupal11"}
+	instance.Source.Services = nil
+	instance.Services = nil
+	instance.EffectiveState = map[string]bool{"php": true}
+	php := TargetStackServiceInspection{
+		StackService: TargetStackService{
+			ID: 10, Name: "php", ServiceRevID: 11,
+			Settings: []TargetStackServiceSetting{{
+				ID: 101, StackServiceID: 10, Name: "docroot", Value: "custom/web",
+			}},
+		},
+		ServiceRevision: TargetServiceRevision{ID: 11, Manifest: drupalPHPSettingManifest()},
+	}
+	instance.StackServices = []TargetStackServiceInspection{php}
+	app := stackConfigurationTestApp(instance)
+	app.App.App.Docroot = stringPointer("custom/web")
+	app.App.App.SiteName = stringPointer("default")
+
+	configuration, findings, err := prepareStackConfiguration(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasBlockingFindings(findings) {
+		t.Fatalf("unexpected findings: %#v", findings)
+	}
+	if stackConfigurationHasChanges(configuration) {
+		t.Fatalf("matching stack override prepared an unnecessary stack change: %#v", configuration)
+	}
+}
+
 func TestPrepareStackConfigurationAddsPrivateGotenbergEndpoint(t *testing.T) {
 	instance := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
 	instance.Source.Stack = Stack{Name: "drupal11"}
@@ -157,10 +181,6 @@ func TestPrepareStackConfigurationAddsPrivateGotenbergEndpoint(t *testing.T) {
 		Target: gotenberg,
 	}
 	php := instance.Services["php"]
-	php.Target.StackService.Settings = []TargetStackServiceSetting{
-		{ID: 101, StackServiceID: 10, Name: "docroot", Value: "web"},
-		{ID: 102, StackServiceID: 10, Name: "sitedir", Value: "default"},
-	}
 	instance.Services["php"] = php
 	instance.StackServices = []TargetStackServiceInspection{php.Target, gotenberg}
 	instance.EffectiveState = map[string]bool{"php": true, "gotenberg": true}
@@ -196,6 +216,27 @@ func TestPrepareStackConfigurationBlocksMissingDrupalAppSettingsExport(t *testin
 	}
 }
 
+func TestPrepareStackConfigurationBlocksMissingTargetDrupalSettingCapability(t *testing.T) {
+	instance := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
+	instance.Source.Stack = Stack{Name: "drupal11"}
+	instance.EffectiveState = map[string]bool{"php": true}
+	php := instance.Services["php"]
+	php.Target.ServiceRevision.Manifest.Settings = php.Target.ServiceRevision.Manifest.Settings[:1]
+	instance.Services["php"] = php
+	instance.StackServices = []TargetStackServiceInspection{php.Target}
+	app := stackConfigurationTestApp(instance)
+	app.App.App.Docroot = stringPointer("web")
+	app.App.App.SiteName = stringPointer("default")
+
+	_, findings, err := prepareStackConfiguration(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasReviewMessage(findings, SeverityBlocking, `does not expose required setting "sitedir"`) {
+		t.Fatalf("missing target setting blocker = %#v", findings)
+	}
+}
+
 func stackConfigurationTestApp(instances ...PreparedInstance) PreparedAppMigration {
 	exported := make([]Instance, 0, len(instances))
 	for _, instance := range instances {
@@ -208,15 +249,14 @@ func stackConfigurationTestApp(instances ...PreparedInstance) PreparedAppMigrati
 }
 
 func stackConfigurationTestInstance(id, envType, mode, shared string) PreparedInstance {
-	manifest := &TargetServiceManifest{
-		Options: []TargetServiceOption{
-			{Version: "8.2", Default: true},
-			{Version: "8.3"},
-		},
-		CronSchedules: []TargetServiceCronSchedule{{
-			Name: "drupal-cron", Title: "Drupal cron", Schedule: "*/5 * * * *", Command: "drush cron",
-		}},
+	manifest := drupalPHPSettingManifest()
+	manifest.Options = []TargetServiceOption{
+		{Version: "8.2", Default: true},
+		{Version: "8.3"},
 	}
+	manifest.CronSchedules = []TargetServiceCronSchedule{{
+		Name: "drupal-cron", Title: "Drupal cron", Schedule: "*/5 * * * *", Command: "drush cron",
+	}}
 	inspection := TargetStackServiceInspection{
 		StackService:    TargetStackService{ID: 10, Name: "php", ServiceRevID: 11},
 		ServiceRevision: TargetServiceRevision{ID: 11, Manifest: manifest},
@@ -235,6 +275,15 @@ func stackConfigurationTestInstance(id, envType, mode, shared string) PreparedIn
 			"php": {Source: source, Target: inspection, TargetVersion: "8.3"},
 		},
 		TargetEnvType: envType,
+	}
+}
+
+func drupalPHPSettingManifest() *TargetServiceManifest {
+	return &TargetServiceManifest{
+		Settings: []TargetServiceSettingCapability{
+			{Name: "docroot", Default: "web"},
+			{Name: "sitedir", Default: "default"},
+		},
 	}
 }
 

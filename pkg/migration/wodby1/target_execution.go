@@ -511,6 +511,11 @@ type TargetServiceOption struct {
 	Disabled bool      `json:"disabled,omitempty"`
 }
 
+type TargetServiceSettingCapability struct {
+	Name    string `json:"name"`
+	Default string `json:"default,omitempty"`
+}
+
 type TargetStackServiceOptionInput struct {
 	Version  string `json:"version"`
 	Default  bool   `json:"default"`
@@ -584,6 +589,7 @@ type TargetServiceManifest struct {
 	Integrations  []TargetServiceIntegrationCapability `json:"integrations,omitempty"`
 	CronSchedules []TargetServiceCronSchedule          `json:"cron,omitempty"`
 	Options       []TargetServiceOption                `json:"options,omitempty"`
+	Settings      []TargetServiceSettingCapability     `json:"settings,omitempty"`
 	Links         []TargetServiceLinkCapability        `json:"links,omitempty"`
 }
 
@@ -1356,6 +1362,17 @@ func (c *TargetClient) GetServiceRevision(ctx context.Context, serviceRevID int)
 			if strings.TrimSpace(capability.Name) == "" {
 				return TargetServiceRevision{}, errors.Errorf("target Wodby 2 service revision ID %d returned a link capability without a name", serviceRevID)
 			}
+		}
+		settingNames := map[string]struct{}{}
+		for _, capability := range item.Manifest.Settings {
+			name := strings.TrimSpace(capability.Name)
+			if name == "" {
+				return TargetServiceRevision{}, errors.Errorf("target Wodby 2 service revision ID %d returned a setting capability without a name", serviceRevID)
+			}
+			if _, found := settingNames[name]; found {
+				return TargetServiceRevision{}, errors.Errorf("target Wodby 2 service revision ID %d returned duplicate setting capability %q", serviceRevID, name)
+			}
+			settingNames[name] = struct{}{}
 		}
 	}
 	return item, nil

@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"github.com/wodby/wodby-cli/pkg/cicache"
 	"github.com/wodby/wodby-cli/pkg/utils"
 
 	"github.com/wodby/wodby-cli/pkg/config"
@@ -44,7 +45,8 @@ var opts options
 
 const Dockerignore = `.git
 .gitignore
-.dockerignore`
+.dockerignore
+.wodby-ci-cache`
 
 const DockerfileTpl = `ARG WODBY_BASE_IMAGE
 FROM ${WODBY_BASE_IMAGE}
@@ -303,19 +305,51 @@ func dataContainerWorkingDirContents(workingDir string) string {
 
 func ensureDefaultDockerignore(context string) (func(), error) {
 	dockerignorePath := filepath.Join(context, ".dockerignore")
-	if _, err := os.Stat(dockerignorePath); err == nil {
-		return func() {}, nil
-	} else if !os.IsNotExist(err) {
+	original, err := os.ReadFile(dockerignorePath)
+	existed := err == nil
+	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
 
-	if err := os.WriteFile(dockerignorePath, []byte(Dockerignore), 0600); err != nil {
+	content := string(original)
+	mode := os.FileMode(0600)
+	if existed {
+		info, err := os.Stat(dockerignorePath)
+		if err != nil {
+			return nil, err
+		}
+		mode = info.Mode().Perm()
+	} else {
+		content = Dockerignore
+	}
+
+	if !dockerignoreContains(content, cicache.DirectoryName) {
+		content = strings.TrimRight(content, "\n") + "\n" + cicache.DirectoryName + "\n"
+	}
+	if existed && content == string(original) {
+		return func() {}, nil
+	}
+
+	if err := os.WriteFile(dockerignorePath, []byte(content), mode); err != nil {
 		return nil, err
 	}
 
 	return func() {
-		_ = os.Remove(dockerignorePath)
+		if existed {
+			_ = os.WriteFile(dockerignorePath, original, mode)
+		} else {
+			_ = os.Remove(dockerignorePath)
+		}
 	}, nil
+}
+
+func dockerignoreContains(content, entry string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.TrimSpace(line) == entry {
+			return true
+		}
+	}
+	return false
 }
 
 func orderedServices(services map[string]types.Service, defaultService string) []types.Service {

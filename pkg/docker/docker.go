@@ -2,6 +2,7 @@ package docker
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -26,6 +27,12 @@ type RunConfig struct {
 	WorkDir         string
 	Entrypoint      string
 	ClearEntrypoint bool
+}
+
+type ImageConfig struct {
+	User       string            `json:"User"`
+	WorkingDir string            `json:"WorkingDir"`
+	Labels     map[string]string `json:"Labels"`
 }
 
 // Login authorizes in the registry.
@@ -113,49 +120,50 @@ func (c *Client) Tag(image string, tag string) error {
 }
 
 func (c *Client) GetImageDefaultUser(image string) (string, error) {
-	defaultUser := ""
-
-	err := c.Pull(image)
-
+	config, err := c.GetImageConfig(image)
 	if err != nil {
-		return defaultUser, err
+		return "", err
 	}
 
-	out, err := exec.Command("docker", "image", "inspect", image, "-f", "{{.Config.User}}").CombinedOutput()
-	if err != nil {
-		return defaultUser, errors.Wrap(err, string(out))
-	}
-
-	defaultUser = strings.TrimSuffix(string(out), "\n")
-
-	if defaultUser == "" {
-		defaultUser = "root"
-	}
-
-	return defaultUser, nil
+	return config.User, nil
 }
 
 func (c *Client) GetImageWorkingDir(image string) (string, error) {
-	workingDir := ""
-
-	err := c.Pull(image)
-
+	config, err := c.GetImageConfig(image)
 	if err != nil {
-		return workingDir, err
+		return "", err
 	}
 
-	out, err := exec.Command("docker", "image", "inspect", image, "-f", "{{.Config.WorkingDir}}").CombinedOutput()
+	return config.WorkingDir, nil
+}
+
+func (c *Client) GetImageConfig(image string) (ImageConfig, error) {
+	config := ImageConfig{}
+
+	if err := c.Pull(image); err != nil {
+		return config, err
+	}
+
+	out, err := exec.Command("docker", "image", "inspect", image, "-f", "{{json .Config}}").CombinedOutput()
 	if err != nil {
-		return workingDir, errors.Wrap(err, string(out))
+		return config, errors.Wrap(err, string(out))
 	}
 
-	workingDir = strings.TrimSuffix(string(out), "\n")
-
-	if workingDir == "" {
-		workingDir = "/"
+	if err := json.Unmarshal(bytes.TrimSpace(out), &config); err != nil {
+		return config, errors.Wrap(err, "failed to decode image configuration")
 	}
 
-	return workingDir, nil
+	if config.User == "" {
+		config.User = "root"
+	}
+	if config.WorkingDir == "" {
+		config.WorkingDir = "/"
+	}
+	if config.Labels == nil {
+		config.Labels = map[string]string{}
+	}
+
+	return config, nil
 }
 
 // ChownSpec preserves explicit user:group image ownership and supplies the

@@ -105,9 +105,16 @@ func TestEnsureDefaultDockerignore(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		contents, err := os.ReadFile(dockerignorePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !dockerignoreContains(string(contents), ".wodby-ci-cache") {
+			t.Fatalf("temporary .dockerignore = %q, want cache exclusion", contents)
+		}
 		cleanup()
 
-		contents, err := os.ReadFile(dockerignorePath)
+		contents, err = os.ReadFile(dockerignorePath)
 		if err != nil {
 			t.Fatal(err)
 		}

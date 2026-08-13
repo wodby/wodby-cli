@@ -43,6 +43,60 @@ jobs:
     - name: test
       if: ${{ matrix.os == 'linux' && matrix.arch == 'amd64' }}
       run: make test VERSION="${VERSION}"
+    - name: test ci run user and cache integration
+      if: ${{ matrix.os == 'linux' && matrix.arch == 'amd64' }}
+      run: |
+        set -euo pipefail
+
+        WODBY_DOCKER_INTEGRATION=1 go test ./pkg/cicache -run TestDataContainerCacheIntegration
+
+        test_home="${RUNNER_TEMP}/wodby-home"
+        context="${RUNNER_TEMP}/wodby-context"
+        config="${RUNNER_TEMP}/.wodby-ci.json"
+        mkdir -p "${test_home}" "${context}"
+
+        jq -n --arg context "${context}" '{context: $context}' > "${config}"
+
+        # shellcheck disable=SC2016 # Variables expand inside the container.
+        HOME="${test_home}" bin/wodby \
+          --ci-config-path "${config}" \
+          ci run \
+          --image wodby/node:24 \
+          --env "EXPECTED_UID=$(id -u)" \
+          -- sh -eu -c '
+            test "$(id -u)" = "${EXPECTED_UID}"
+            test "${HOME}" = /tmp
+            test "$(npm config get cache)" = /tmp/wodby-cache/npm
+            printf cache-ok > /tmp/wodby-cache/npm/wodby-cache-test
+          '
+
+        test -f "${context}/.wodby-ci-cache/npm/wodby-cache-test"
+        test "$(stat -c %u "${context}/.wodby-ci-cache/npm/wodby-cache-test")" = "$(id -u)"
+
+        data_container="wodby-ci-cache-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        trap 'docker rm -fv "${data_container}" >/dev/null 2>&1 || true' EXIT
+        docker create \
+          --name "${data_container}" \
+          --volume=/workspace \
+          --volume=/tmp/wodby-cache \
+          alpine /bin/true
+
+        jq -n \
+          --arg context "${context}" \
+          --arg data "${data_container}" \
+          '{Context: $context, DataContainer: $data, WorkingDir: "/workspace"}' > "${config}"
+
+        HOME="${test_home}" bin/wodby \
+          --ci-config-path "${config}" \
+          ci run \
+          --image wodby/node:24 \
+          -- sh -eu -c '
+            test "$(id -un)" = node
+            test "$(npm config get cache)" = /tmp/wodby-cache/npm
+            printf dind-cache-ok > /tmp/wodby-cache/npm/wodby-dind-cache-test
+          '
+
+        test -f "${context}/.wodby-ci-cache/npm/wodby-dind-cache-test"
     - name: package
       run: make package
     - name: Upload production artifacts

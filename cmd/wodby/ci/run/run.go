@@ -8,6 +8,8 @@ import (
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"github.com/wodby/wodby-cli/pkg/cicache"
+	"github.com/wodby/wodby-cli/pkg/ciuser"
 	"github.com/wodby/wodby-cli/pkg/config"
 	"github.com/wodby/wodby-cli/pkg/docker"
 )
@@ -21,10 +23,13 @@ type options struct {
 	user       string
 	entrypoint string
 	path       string
+	cache      []string
+	noCache    bool
 }
 
 var opts options
 var v = viper.New()
+var resolveBindUser = ciuser.ResolveBindUser
 
 var Cmd = &cobra.Command{
 	Use:   "run",
@@ -90,38 +95,97 @@ var Cmd = &cobra.Command{
 				Volumes:    opts.volumes,
 				Env:        opts.env,
 				EnvFile:    opts.envFile,
-				User:       opts.user,
 				Entrypoint: opts.entrypoint,
 			}
-			runConfig.ClearEntrypoint = shouldClearImageEntrypoint(opts.entrypoint, opts.user)
 
 			dockerClient := docker.NewClient()
-
-			workingDir, err := dockerClient.GetImageWorkingDir(image)
-
+			imageConfig, err := dockerClient.GetImageConfig(image)
 			if err != nil {
 				return err
 			}
+			workingDir := imageConfig.WorkingDir
 
 			if config.DataContainer != "" {
 				runConfig.VolumesFrom = []string{config.DataContainer}
+				if config.WorkingDir != "" {
+					workingDir = config.WorkingDir
+				}
 			} else {
 				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, workingDir))
+			}
+
+			runConfig.User, err = resolveRunUser(opts.user, config)
+			if err != nil {
+				return err
+			}
+			runConfig.ClearEntrypoint = shouldClearImageEntrypoint(opts.entrypoint, runConfig.User)
+
+			explicitEnv, err := explicitEnvironmentNames(opts.env, opts.envFile)
+			if err != nil {
+				return err
+			}
+			if opts.user == "" && config.DataContainer == "" && runConfig.User != "" {
+				runConfig.Env = withMappedUserHome(runConfig.Env, explicitEnv)
+			}
+
+			cacheNames, err := resolveRunCacheProfileNames(opts.cache, opts.noCache, opts.user, image, imageConfig.Labels)
+			if err != nil {
+				return err
+			}
+			if len(cacheNames) > 0 {
+				cacheRoot, err := cicache.HostRoot(config.Context)
+				if err != nil {
+					return err
+				}
+				cacheNames, err = addCacheProfiles(
+					&runConfig,
+					cacheNames,
+					explicitEnv,
+					cacheRoot,
+					config.DataContainer != "",
+					runConfig.User,
+				)
+				if err != nil {
+					return err
+				}
 			}
 
 			if opts.path != "" {
 				runConfig.WorkDir = fmt.Sprintf("%s/%s", workingDir, opts.path)
 			}
 
-			err = dockerClient.Run(args, runConfig)
+			if config.DataContainer != "" && len(cacheNames) > 0 {
+				if err := cicache.PrepareDataContainerProfiles(config.DataContainer, cacheNames); err != nil {
+					return err
+				}
+			}
 
-			if err != nil {
-				return err
+			runErr := dockerClient.Run(args, runConfig)
+			if config.DataContainer != "" && len(cacheNames) > 0 {
+				exportErr := cicache.ExportDataContainerProfiles(config.DataContainer, config.Context, cacheNames)
+				if runErr == nil && exportErr != nil {
+					return exportErr
+				}
+			}
+			if runErr != nil {
+				return runErr
 			}
 		}
 
 		return nil
 	},
+}
+
+func resolveRunUser(explicitUser string, config *config.Config) (string, error) {
+	if explicitUser != "" {
+		return explicitUser, nil
+	}
+
+	if config.DataContainer != "" {
+		return "", nil
+	}
+
+	return resolveBindUser(config.Context)
 }
 
 func shouldClearImageEntrypoint(explicitEntrypoint string, user string) bool {
@@ -151,7 +215,9 @@ func init() {
 	Cmd.Flags().StringVarP(&opts.image, "image", "i", "", "Image")
 	Cmd.Flags().StringSliceVarP(&opts.volumes, "volume", "v", []string{}, "Volumes")
 	Cmd.Flags().StringSliceVarP(&opts.env, "env", "e", []string{}, "Environment variables")
-	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "User")
+	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "User (defaults to the workspace uid:gid for bind-mounted contexts)")
 	Cmd.Flags().StringVar(&opts.envFile, "env-file", "", "Env file")
 	Cmd.Flags().StringVarP(&opts.path, "path", "p", "", "Working dir (relative path)")
+	Cmd.Flags().StringSliceVar(&opts.cache, "cache", []string{}, "Cache profiles to enable instead of auto-detection (npm, composer, bundler, uv)")
+	Cmd.Flags().BoolVar(&opts.noCache, "no-cache", false, "Disable automatic cache mounts")
 }

@@ -17,6 +17,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/wodby/wodby-cli/pkg/api"
+	"github.com/wodby/wodby-cli/pkg/cicache"
+	"github.com/wodby/wodby-cli/pkg/ciuser"
 	"github.com/wodby/wodby-cli/pkg/config"
 	"github.com/wodby/wodby-cli/pkg/docker"
 	"github.com/wodby/wodby-cli/pkg/types"
@@ -168,7 +170,15 @@ var Cmd = &cobra.Command{
 				return errors.Wrap(err, string(output))
 			}
 
-			output, err = exec.Command("docker", "create", fmt.Sprintf("--volume=%s", config.WorkingDir), fmt.Sprintf("--name=%s", config.DataContainer), "alpine", "/bin/true").CombinedOutput()
+			output, err = exec.Command(
+				"docker",
+				"create",
+				fmt.Sprintf("--volume=%s", config.WorkingDir),
+				fmt.Sprintf("--volume=%s", cicache.ContainerRoot),
+				fmt.Sprintf("--name=%s", config.DataContainer),
+				"alpine",
+				"/bin/true",
+			).CombinedOutput()
 			if err != nil {
 				return errors.Wrap(err, string(output))
 			}
@@ -176,6 +186,9 @@ var Cmd = &cobra.Command{
 			output, err = exec.Command("docker", "cp", fmt.Sprintf("%s/.", config.Context), fmt.Sprintf("%s:%s", config.DataContainer, config.WorkingDir)).CombinedOutput()
 			if err != nil {
 				return errors.Wrap(err, string(output))
+			}
+			if err := cicache.ImportDataContainer(config.DataContainer, config.WorkingDir, config.Context); err != nil {
+				return errors.WithStack(err)
 			}
 
 			fmt.Println("DONE")
@@ -191,13 +204,9 @@ var Cmd = &cobra.Command{
 			return err
 		}
 
-		// We will fix permissions either when it was instructed or when a it's a managed stack and a known CI environment.
-		if opts.fixPermissions || (!config.BuildConfig.Custom && metadata.Provider != "Unknown") {
-			if opts.fixPermissions {
-				fmt.Println("Instructed to fix codebase permissions...")
-			} else {
-				fmt.Println(fmt.Sprintf("Managed stack detected in a known CI environment %s –  automatically fixing codebase permissions...", metadata.Provider))
-			}
+		shouldFixPermissions, permissionFixReason := permissionFixDecision(opts.fixPermissions, config.DataContainer != "")
+		if shouldFixPermissions {
+			fmt.Printf("Fixing codebase permissions: %s...\n", permissionFixReason)
 
 			defaultUser, err := dockerClient.GetImageDefaultUser(defaultService.Image)
 
@@ -207,8 +216,10 @@ var Cmd = &cobra.Command{
 
 			if defaultUser != "root" {
 				runConfig := docker.RunConfig{
-					Image: defaultService.Image,
-					User:  "root",
+					Image:           defaultService.Image,
+					User:            "root",
+					WorkDir:         config.WorkingDir,
+					ClearEntrypoint: true,
 				}
 
 				if config.DataContainer != "" {
@@ -228,6 +239,8 @@ var Cmd = &cobra.Command{
 			} else {
 				fmt.Println("Default user of the default service is root, skipping permissions fix")
 			}
+		} else {
+			fmt.Printf("Skipping codebase permissions fix: %s\n", permissionFixReason)
 		}
 
 		// Initializing managed stack services.
@@ -242,10 +255,15 @@ var Cmd = &cobra.Command{
 			fmt.Printf("Initializing service %s...", service.Name)
 
 			runConfig := docker.RunConfig{
-				Image: service.Image,
+				Image:   service.Image,
+				WorkDir: workingDir,
 			}
 
+			hasExplicitHome := false
 			for envName, envVal := range config.BuildConfig.Init.Environment {
+				if envName == "HOME" {
+					hasExplicitHome = true
+				}
 				runConfig.Env = append(runConfig.Env, fmt.Sprintf("%s=%s", envName, envVal))
 			}
 
@@ -253,6 +271,18 @@ var Cmd = &cobra.Command{
 				runConfig.VolumesFrom = []string{config.DataContainer}
 			} else {
 				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, workingDir))
+			}
+			if shouldMapInitUser(opts.fixPermissions, config.DataContainer != "") {
+				runConfig.User, err = ciuser.ResolveBindUser(config.Context)
+				if err != nil {
+					return err
+				}
+				if runConfig.User != "" {
+					runConfig.ClearEntrypoint = true
+					if !hasExplicitHome {
+						runConfig.Env = append(runConfig.Env, "HOME=/tmp")
+					}
+				}
 			}
 
 			err = dockerClient.Run(strings.Split(config.BuildConfig.Init.Command, " "), runConfig)
@@ -271,8 +301,23 @@ var Cmd = &cobra.Command{
 func init() {
 	Cmd.Flags().StringVarP(&opts.context, "context", "c", "", "Build context (default: current directory)")
 	Cmd.Flags().BoolVar(&opts.dind, "dind", false, "Use data container for sharing files between commands")
-	Cmd.Flags().BoolVar(&opts.fixPermissions, "fix-permissions", false, "Fix codebase permissions. Performed automatically for known CI environments. WARNING: make sure you run wodby ci init from the project directory")
+	Cmd.Flags().BoolVar(&opts.fixPermissions, "fix-permissions", false, "Fix codebase permissions explicitly. WARNING: this can change ownership of files in the project directory")
 	Cmd.Flags().StringVarP(&opts.buildNumber, "build-num", "n", "", "Custom build number (used if can't identify automatically)")
 	Cmd.Flags().StringVar(&opts.url, "url", "", "Custom build url (used if can't acquire automatically)")
 	Cmd.Flags().StringVarP(&opts.provider, "provider", "p", "", "Override detected build provider name")
+}
+
+func permissionFixDecision(explicit, hasDataContainer bool) (bool, string) {
+	if explicit {
+		return true, "requested explicitly with --fix-permissions"
+	}
+	if hasDataContainer {
+		return true, "preparing the Docker-in-Docker data volume"
+	}
+
+	return false, "--fix-permissions was not set"
+}
+
+func shouldMapInitUser(explicitPermissionFix, hasDataContainer bool) bool {
+	return !explicitPermissionFix && !hasDataContainer
 }

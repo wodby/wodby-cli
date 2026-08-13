@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -52,6 +53,40 @@ func TestMigrationResourceNameIsStableAndBounded(t *testing.T) {
 	}
 	if first == migrationResourceName("smtp", "A Very Long Customer Application Name That Exceeds The Limit", "other-app-uuid") {
 		t.Fatal("different source identities produced the same migration resource name")
+	}
+}
+
+func TestExternalCIConfigurationWarningUsesDetectedProviderAndStack(t *testing.T) {
+	app := PreparedAppMigration{
+		App: AppExport{App: App{UUID: "app-1", Name: "demo", Type: "drupal11"}},
+		Instances: []PreparedInstance{{Source: Instance{
+			UUID: "prod-1", Name: "prod",
+			Properties: map[string]interface{}{"deployment_type": "ci", "ci_provider": "circleci"},
+			Stack:      Stack{Name: "drupal11"},
+		}}},
+	}
+	findings := externalCIConfigurationFindings(app)
+	if len(findings) != 1 || findings[0].Severity != SeverityServiceWarning ||
+		!strings.Contains(findings[0].Message, "identifies CircleCI") ||
+		!strings.Contains(findings[0].Message, "Wodby CLI 2.x") ||
+		!strings.Contains(findings[0].Message, "https://github.com/wodby/wodby-ci/blob/2.0/drupal/circleci/config.yml") {
+		t.Fatalf("findings = %#v", findings)
+	}
+}
+
+func TestExternalCIConfigurationWarningFallsBackToStackExamples(t *testing.T) {
+	app := PreparedAppMigration{
+		App: AppExport{App: App{UUID: "app-1", Name: "demo", Type: "wordpress"}},
+		Instances: []PreparedInstance{{Source: Instance{
+			UUID: "prod-1", Name: "prod",
+			Properties: map[string]interface{}{"deployment_type": "ci"},
+		}}},
+	}
+	findings := externalCIConfigurationFindings(app)
+	if len(findings) != 1 ||
+		!strings.Contains(findings[0].Message, "does not identify a supported CI provider") ||
+		!strings.Contains(findings[0].Message, "https://github.com/wodby/wodby-ci/tree/2.0/wordpress") {
+		t.Fatalf("findings = %#v", findings)
 	}
 }
 

@@ -1224,18 +1224,34 @@ func TestTargetRouteCertificateMustBeLetsEncryptAndReady(t *testing.T) {
 		ID: 1, Host: "app.example.com",
 		Cert: &TargetCert{ID: 2, Issuer: "letsencrypt", Status: "CREATING"},
 	}
-	ready, err := targetRouteCertificateReady(route, true)
+	ready, err := targetRouteCertificateReady(route, true, false, 0)
 	if err != nil || ready {
 		t.Fatalf("creating certificate = %v, %v; want pending", ready, err)
 	}
 	route.Cert.Status = "OK"
-	ready, err = targetRouteCertificateReady(route, true)
+	ready, err = targetRouteCertificateReady(route, true, false, 0)
 	if err != nil || !ready {
 		t.Fatalf("ready certificate = %v, %v", ready, err)
 	}
 	route.Cert.Issuer = "custom"
-	if _, err := targetRouteCertificateReady(route, true); err == nil {
+	if _, err := targetRouteCertificateReady(route, true, false, 0); err == nil {
 		t.Fatal("custom certificate issuer should not satisfy planned Let's Encrypt route")
+	}
+	route.Cert = &TargetCert{ID: 7, Issuer: "custom", Status: "OK", DNSNames: []string{"*.example.com"}}
+	ready, err = targetRouteCertificateReady(route, true, true, 7)
+	if err != nil || !ready {
+		t.Fatalf("mapped custom certificate = %v, %v", ready, err)
+	}
+	if _, err := targetRouteCertificateReady(route, true, true, 8); err == nil {
+		t.Fatal("a different custom certificate should not satisfy the reviewed route")
+	}
+	route.Cert.DNSNames = []string{"other.example.com"}
+	if _, err := targetRouteCertificateReady(route, true, true, 7); err == nil {
+		t.Fatal("a custom certificate that does not cover the route should not satisfy verification")
+	}
+	ready, err = targetRouteCertificateReady(route, false, true, 0)
+	if err != nil || !ready {
+		t.Fatalf("unresolved custom certificate during apply = %v, %v", ready, err)
 	}
 	instanceID, serviceID := 8, 9
 	fullRoute := TargetAppRoute{
@@ -1781,8 +1797,8 @@ func TestEnsureStackServiceLinksAppliesSharedSelection(t *testing.T) {
 func TestMatchingRoutesAccountsForDisabledStaging(t *testing.T) {
 	plan := RoutePlan{Host: "example.com", Action: "create_backend", Primary: true}
 	routes := []TargetAppRoute{
-		{ID: 1, Host: "example.com", Path: "/", Action: TargetRouteActionBackend, AppServiceID: 10, PortID: 20, Main: true, Primary: true},
-		{ID: 2, Host: "example.com", Path: "/", Action: TargetRouteActionBackend, AppServiceID: 10, PortID: 20, Disabled: true},
+		{ID: 1, Host: "example.com", Path: "/", Action: TargetRouteActionServe, AppServiceID: 10, PortID: 20, Main: true, Primary: true},
+		{ID: 2, Host: "example.com", Path: "/", Action: TargetRouteActionServe, AppServiceID: 10, PortID: 20, Disabled: true},
 	}
 
 	active := matchingRoutes(routes, 10, 20, plan, false)

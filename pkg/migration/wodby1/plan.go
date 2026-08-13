@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	MigrationPlanSchema = "wodby1-migration-plan/v13"
+	MigrationPlanSchema = "wodby1-migration-plan/v14"
 
 	SeverityBlocking       = "blocking"
 	SeverityMigration      = "migration"
@@ -229,31 +229,33 @@ type CronSchedulePlan struct {
 }
 
 type RoutePlan struct {
-	SourceUUID      string             `json:"sourceUuid,omitempty"`
-	Host            string             `json:"host"`
-	Type            string             `json:"type,omitempty"`
-	Status          string             `json:"status,omitempty"`
-	Enabled         bool               `json:"enabled"`
-	Action          string             `json:"action"`
-	Primary         bool               `json:"primary"`
-	Indexed         *bool              `json:"indexed,omitempty"`
-	SSL             bool               `json:"ssl"`
-	SSLRequired     *bool              `json:"sslRequired,omitempty"`
-	SSLCustom       bool               `json:"sslCustom"`
-	HSTS            bool               `json:"hsts"`
-	HSTSSubdomains  bool               `json:"hstsSubdomains"`
-	Protected       bool               `json:"protected"`
-	Service         string             `json:"service,omitempty"`
-	ServiceProtocol string             `json:"serviceProtocol,omitempty"`
-	PortNumber      *int               `json:"portNumber,omitempty"`
-	NeedsPortID     bool               `json:"needsPortId"`
-	BasicAuth       bool               `json:"basicAuth"`
-	Settings        []RouteSettingPlan `json:"settings,omitempty"`
-	Redirect        bool               `json:"redirect"`
-	RedirectToWWW   bool               `json:"redirectToWww"`
-	RedirectNonWWW  bool               `json:"redirectNonWww"`
-	RedirectTarget  string             `json:"redirectTarget,omitempty"`
-	ReviewRequired  bool               `json:"reviewRequired"`
+	SourceUUID         string             `json:"sourceUuid,omitempty"`
+	Host               string             `json:"host"`
+	Type               string             `json:"type,omitempty"`
+	Status             string             `json:"status,omitempty"`
+	Enabled            bool               `json:"enabled"`
+	Action             string             `json:"action"`
+	Primary            bool               `json:"primary"`
+	Indexed            *bool              `json:"indexed,omitempty"`
+	SSL                bool               `json:"ssl"`
+	SSLRequired        *bool              `json:"sslRequired,omitempty"`
+	SSLCustom          bool               `json:"sslCustom"`
+	TargetCertID       int                `json:"targetCertId,omitempty"`
+	TargetCertDNSNames []string           `json:"targetCertDnsNames,omitempty"`
+	HSTS               bool               `json:"hsts"`
+	HSTSSubdomains     bool               `json:"hstsSubdomains"`
+	Protected          bool               `json:"protected"`
+	Service            string             `json:"service,omitempty"`
+	ServiceProtocol    string             `json:"serviceProtocol,omitempty"`
+	PortNumber         *int               `json:"portNumber,omitempty"`
+	NeedsPortID        bool               `json:"needsPortId"`
+	BasicAuth          bool               `json:"basicAuth"`
+	Settings           []RouteSettingPlan `json:"settings,omitempty"`
+	Redirect           bool               `json:"redirect"`
+	RedirectToWWW      bool               `json:"redirectToWww"`
+	RedirectNonWWW     bool               `json:"redirectNonWww"`
+	RedirectTarget     string             `json:"redirectTarget,omitempty"`
+	ReviewRequired     bool               `json:"reviewRequired"`
 }
 
 type RouteSettingPlan struct {
@@ -1431,7 +1433,7 @@ func buildRoutePlan(plan *Plan, app App, instance Instance, domain Domain, basic
 		Action:          "unvalidated",
 		Primary:         domain.Primary,
 		Indexed:         domain.Indexed,
-		SSL:             domain.SSL,
+		SSL:             domain.SSL || domain.SSLCustom,
 		SSLRequired:     domain.SSLRequired,
 		SSLCustom:       domain.SSLCustom,
 		HSTS:            domain.HSTS,
@@ -1502,10 +1504,6 @@ func buildRoutePlan(plan *Plan, app App, instance Instance, domain Domain, basic
 		plan.addReview(SeverityBlocking, app.Name, instance.Name, "route "+domain.Name, "source route port number must be positive")
 	}
 
-	if domain.SSLCustom {
-		routePlan.ReviewRequired = true
-		plan.addReview(SeverityBlocking, app.Name, instance.Name, "route "+domain.Name, "custom TLS material requires an explicit secure migration path")
-	}
 	if protocol := strings.ToLower(strings.TrimSpace(domain.ServiceProtocol)); protocol != "" && protocol != "http" {
 		routePlan.ReviewRequired = true
 		plan.addReview(SeverityBlocking, app.Name, instance.Name, "route "+domain.Name, fmt.Sprintf("source route protocol %q is not supported by Wodby 2 app routes", domain.ServiceProtocol))

@@ -22,10 +22,11 @@ const (
 	TargetGitRefTag    = "TAG"
 	TargetGitRefCommit = "COMMIT"
 
-	TargetRouteActionBackend  = "BACKEND"
+	TargetRouteActionServe    = "SERVE"
 	TargetRouteActionRedirect = "REDIRECT"
 	TargetRoutePathPrefix     = "PREFIX"
 	TargetRoutePathExact      = "EXACT"
+	TargetRouteTLSModeCustom  = "CUSTOM"
 
 	TargetRouteSettingHTTPSRedirect   = "HTTPS_REDIRECT"
 	TargetRouteSettingNoIndex         = "NO_INDEX"
@@ -936,7 +937,11 @@ type TargetAppPort struct {
 
 type TargetCert struct {
 	ID            int        `json:"id"`
+	Custom        bool       `json:"custom"`
 	Issuer        string     `json:"issuer"`
+	Domain        string     `json:"domain"`
+	DNSNames      []string   `json:"dnsNames"`
+	Fingerprint   *string    `json:"fingerprint,omitempty"`
 	KeyType       string     `json:"keyType"`
 	KeyLength     int        `json:"keyLength"`
 	Status        string     `json:"status"`
@@ -975,33 +980,40 @@ type TargetAppRoute struct {
 }
 
 type TargetCreateAppRouteInput struct {
-	AppServiceID       int     `json:"appServiceId"`
-	Disabled           *bool   `json:"disabled,omitempty"`
-	Main               bool    `json:"main"`
-	Primary            bool    `json:"primary"`
-	Port               int     `json:"port"`
-	Host               string  `json:"host"`
-	Path               *string `json:"path,omitempty"`
-	PathType           *string `json:"pathType,omitempty"`
-	Action             *string `json:"action,omitempty"`
-	RedirectScheme     *string `json:"redirectScheme,omitempty"`
-	RedirectHost       *string `json:"redirectHost,omitempty"`
-	RedirectPath       *string `json:"redirectPath,omitempty"`
-	RedirectStatusCode *int    `json:"redirectStatusCode,omitempty"`
-	LetsEncrypt        *bool   `json:"letsencrypt,omitempty"`
+	AppServiceID       int                     `json:"appServiceId"`
+	Disabled           *bool                   `json:"disabled,omitempty"`
+	Main               bool                    `json:"main"`
+	Primary            bool                    `json:"primary"`
+	Port               int                     `json:"port"`
+	Host               string                  `json:"host"`
+	Path               *string                 `json:"path,omitempty"`
+	PathType           *string                 `json:"pathType,omitempty"`
+	Action             *string                 `json:"action,omitempty"`
+	RedirectScheme     *string                 `json:"redirectScheme,omitempty"`
+	RedirectHost       *string                 `json:"redirectHost,omitempty"`
+	RedirectPath       *string                 `json:"redirectPath,omitempty"`
+	RedirectStatusCode *int                    `json:"redirectStatusCode,omitempty"`
+	LetsEncrypt        *bool                   `json:"letsencrypt,omitempty"`
+	TLS                *TargetAppRouteTLSInput `json:"tls,omitempty"`
+}
+
+type TargetAppRouteTLSInput struct {
+	Mode   string `json:"mode"`
+	CertID *int   `json:"certId,omitempty"`
 }
 
 type TargetUpdateAppRouteInput struct {
-	Disabled           *bool   `json:"disabled,omitempty"`
-	Main               *bool   `json:"main,omitempty"`
-	Primary            *bool   `json:"primary,omitempty"`
-	Path               *string `json:"path,omitempty"`
-	PathType           *string `json:"pathType,omitempty"`
-	Action             *string `json:"action,omitempty"`
-	RedirectScheme     *string `json:"redirectScheme,omitempty"`
-	RedirectHost       *string `json:"redirectHost,omitempty"`
-	RedirectPath       *string `json:"redirectPath,omitempty"`
-	RedirectStatusCode *int    `json:"redirectStatusCode,omitempty"`
+	Disabled           *bool                   `json:"disabled,omitempty"`
+	Main               *bool                   `json:"main,omitempty"`
+	Primary            *bool                   `json:"primary,omitempty"`
+	Path               *string                 `json:"path,omitempty"`
+	PathType           *string                 `json:"pathType,omitempty"`
+	Action             *string                 `json:"action,omitempty"`
+	RedirectScheme     *string                 `json:"redirectScheme,omitempty"`
+	RedirectHost       *string                 `json:"redirectHost,omitempty"`
+	RedirectPath       *string                 `json:"redirectPath,omitempty"`
+	RedirectStatusCode *int                    `json:"redirectStatusCode,omitempty"`
+	TLS                *TargetAppRouteTLSInput `json:"tls,omitempty"`
 }
 
 type TargetAppRouteSetting struct {
@@ -2033,6 +2045,38 @@ func (c *TargetClient) ListAppPorts(ctx context.Context, appInstanceID int) ([]T
 	return items, nil
 }
 
+// ListMatchingCustomCerts returns active custom certificates that the Wodby 2
+// API has already validated for the exact route hostname (including a matching
+// wildcard SAN). Certificate and private-key material never leaves Wodby 2.
+func (c *TargetClient) ListMatchingCustomCerts(ctx context.Context, orgID int, host string) ([]TargetCert, error) {
+	query, err := targetRequiredQueryID("orgId", "organization", orgID)
+	if err != nil {
+		return nil, err
+	}
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" {
+		return nil, errors.New("target certificate hostname is required")
+	}
+	query.Set("host", host)
+	items := []TargetCert{}
+	if err := c.client.Get(ctx, "/certs", query, &items); err != nil {
+		return nil, errors.Wrap(err, "list matching target Wodby 2 custom certificates")
+	}
+	for _, item := range items {
+		if err := validateTargetCert(item, 0, 0); err != nil {
+			return nil, err
+		}
+		if !item.Custom || !strings.EqualFold(strings.TrimSpace(item.Issuer), "custom") ||
+			!strings.EqualFold(strings.TrimSpace(item.Status), "OK") {
+			return nil, errors.Errorf("target certificate ID %d returned by the custom certificate hostname filter is not active custom TLS", item.ID)
+		}
+		if len(item.DNSNames) == 0 {
+			return nil, errors.Errorf("target custom certificate ID %d returned no DNS names", item.ID)
+		}
+	}
+	return items, nil
+}
+
 func (c *TargetClient) ListAppRoutes(ctx context.Context, appInstanceID int) ([]TargetAppRoute, error) {
 	query, err := targetRequiredQueryID("appInstanceId", "app instance", appInstanceID)
 	if err != nil {
@@ -2067,6 +2111,11 @@ func (c *TargetClient) CreateAppRoute(ctx context.Context, input TargetCreateApp
 	expectedDisabled := input.Disabled != nil && *input.Disabled
 	if item.Disabled != expectedDisabled {
 		return TargetAppRoute{}, errors.Errorf("created target app route does not match requested disabled state")
+	}
+	if input.TLS != nil && input.TLS.Mode == TargetRouteTLSModeCustom {
+		if item.Cert == nil || input.TLS.CertID == nil || item.Cert.ID != *input.TLS.CertID {
+			return TargetAppRoute{}, errors.New("created target app route does not use the requested custom certificate")
+		}
 	}
 	return item, nil
 }
@@ -2884,23 +2933,45 @@ func validateTargetCreateRouteInput(input TargetCreateAppRouteInput) error {
 	if input.Disabled != nil && *input.Disabled && (input.Main || input.Primary) {
 		return errors.New("a disabled target app route cannot be main or primary")
 	}
+	if input.LetsEncrypt != nil && input.TLS != nil {
+		return errors.New("target app route cannot use legacy Let's Encrypt and explicit TLS selection together")
+	}
+	if err := validateTargetRouteTLS(input.TLS); err != nil {
+		return err
+	}
 	return validateTargetRouteEnums(input.PathType, input.Action)
 }
 
 func validateTargetUpdateRouteInput(input TargetUpdateAppRouteInput) error {
 	if input.Disabled == nil && input.Main == nil && input.Primary == nil && input.Path == nil &&
 		input.PathType == nil && input.Action == nil && input.RedirectScheme == nil &&
-		input.RedirectHost == nil && input.RedirectPath == nil && input.RedirectStatusCode == nil {
+		input.RedirectHost == nil && input.RedirectPath == nil && input.RedirectStatusCode == nil && input.TLS == nil {
 		return errors.New("target app route update must include at least one field")
 	}
+	if err := validateTargetRouteTLS(input.TLS); err != nil {
+		return err
+	}
 	return validateTargetRouteEnums(input.PathType, input.Action)
+}
+
+func validateTargetRouteTLS(input *TargetAppRouteTLSInput) error {
+	if input == nil {
+		return nil
+	}
+	if input.Mode != TargetRouteTLSModeCustom {
+		return errors.Errorf("unsupported target app route TLS mode %q", input.Mode)
+	}
+	if input.CertID == nil {
+		return errors.New("custom target app route TLS requires a certificate ID")
+	}
+	return targetRequirePositiveID("custom certificate", *input.CertID)
 }
 
 func validateTargetRouteEnums(pathType, action *string) error {
 	if pathType != nil && *pathType != TargetRoutePathPrefix && *pathType != TargetRoutePathExact {
 		return errors.Errorf("unsupported target app route path type %q", *pathType)
 	}
-	if action != nil && *action != TargetRouteActionBackend && *action != TargetRouteActionRedirect {
+	if action != nil && *action != TargetRouteActionServe && *action != TargetRouteActionRedirect {
 		return errors.Errorf("unsupported target app route action %q", *action)
 	}
 	return nil
@@ -2944,7 +3015,7 @@ func validateTargetCert(item TargetCert, appInstanceID, appServiceID int) error 
 	if err := targetValidateOptionalPositiveID("certificate app service", item.AppServiceID); err != nil {
 		return err
 	}
-	if item.AppInstanceID != nil && *item.AppInstanceID != appInstanceID {
+	if appInstanceID > 0 && item.AppInstanceID != nil && *item.AppInstanceID != appInstanceID {
 		return errors.Errorf(
 			"target certificate ID %d belongs to app instance ID %d, expected %d",
 			item.ID,
@@ -2952,7 +3023,7 @@ func validateTargetCert(item TargetCert, appInstanceID, appServiceID int) error 
 			appInstanceID,
 		)
 	}
-	if item.AppServiceID != nil && *item.AppServiceID != appServiceID {
+	if appServiceID > 0 && item.AppServiceID != nil && *item.AppServiceID != appServiceID {
 		return errors.Errorf(
 			"target certificate ID %d belongs to app service ID %d, expected %d",
 			item.ID,

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 const maxMigrationPlanBytes = 4 << 20
@@ -357,6 +358,33 @@ func pinReviewedInstance(current *InstancePlan, reviewed InstancePlan) error {
 		service.TargetServiceRevID = reviewedService.TargetServiceRevID
 	}
 
+	reviewedRoutes := make(map[string]RoutePlan, len(reviewed.Routes))
+	for _, route := range reviewed.Routes {
+		key := reviewedRouteKey(route)
+		if _, exists := reviewedRoutes[key]; exists {
+			return invalidPlanError("reviewed plan contains duplicate source routes")
+		}
+		reviewedRoutes[key] = route
+	}
+	if len(current.Routes) != len(reviewedRoutes) {
+		return currentPlanDriftError("source route set changed")
+	}
+	for index := range current.Routes {
+		route := &current.Routes[index]
+		reviewedRoute, found := reviewedRoutes[reviewedRouteKey(*route)]
+		if !found || route.Host != reviewedRoute.Host || route.Action != reviewedRoute.Action || route.SSLCustom != reviewedRoute.SSLCustom {
+			return currentPlanDriftError("source route set changed")
+		}
+		if !reviewedRoute.SSLCustom && reviewedRoute.TargetCertID != 0 {
+			return invalidPlanError("reviewed non-custom route contains a custom certificate pin")
+		}
+		if reviewedRoute.TargetCertID < 0 {
+			return invalidPlanError("reviewed route contains an invalid custom certificate ID")
+		}
+		route.TargetCertID = reviewedRoute.TargetCertID
+		route.TargetCertDNSNames = append([]string(nil), reviewedRoute.TargetCertDNSNames...)
+	}
+
 	reviewedImports := make(map[string]ImportPlan, len(reviewed.Imports))
 	for _, item := range reviewed.Imports {
 		key := normalizedImportComponent(item.Component)
@@ -398,6 +426,13 @@ func pinReviewedInstance(current *InstancePlan, reviewed InstancePlan) error {
 		item.TargetServiceRevID = reviewedImport.TargetServiceRevID
 	}
 	return nil
+}
+
+func reviewedRouteKey(route RoutePlan) string {
+	if id := strings.TrimSpace(route.SourceUUID); id != "" {
+		return "id:" + id
+	}
+	return "host:" + strings.ToLower(strings.TrimSuffix(strings.TrimSpace(route.Host), ".")) + "\x00" + route.Action
 }
 
 func cloneMigrationPlan(plan Plan) (Plan, error) {

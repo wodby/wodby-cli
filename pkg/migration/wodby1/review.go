@@ -992,7 +992,15 @@ func verifiedLabel(verified bool) string {
 func routeFlags(route RoutePlan) string {
 	var flags []string
 	if route.SSL {
-		flags = append(flags, "TLS")
+		if route.SSLCustom {
+			certificate := "manual custom TLS"
+			if route.TargetCertID > 0 {
+				certificate = fmt.Sprintf("custom TLS cert=%d hostnames=%s", route.TargetCertID, strings.Join(route.TargetCertDNSNames, ","))
+			}
+			flags = append(flags, certificate)
+		} else {
+			flags = append(flags, "TLS")
+		}
 	}
 	if route.Primary {
 		flags = append(flags, "primary")

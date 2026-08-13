@@ -1207,10 +1207,6 @@ func TestRedirectActionsRemainUnvalidatedWhenRouteChecksFail(t *testing.T) {
 			UUID: "domain-1", Name: "example.com", Type: "user", Status: "updating",
 			Service: "nginx", PortNumber: &port, RedirectToWWW: true,
 		},
-		"custom TLS": {
-			UUID: "domain-1", Name: "example.com", Type: "user", Status: "ok",
-			Service: "nginx", PortNumber: &port, RedirectToWWW: true, SSLCustom: true,
-		},
 		"unsupported protocol": {
 			UUID: "domain-1", Name: "example.com", Type: "user", Status: "ok",
 			Service: "nginx", PortNumber: &port, RedirectToWWW: true, ServiceProtocol: "tcp",
@@ -1233,6 +1229,26 @@ func TestRedirectActionsRemainUnvalidatedWhenRouteChecksFail(t *testing.T) {
 				t.Fatalf("route = %#v, review = %#v", route, plan.Review)
 			}
 		})
+	}
+}
+
+func TestBuildRoutePlanKeepsCustomTLSRouteMigratable(t *testing.T) {
+	port := 80
+	plan := Plan{}
+	route := buildRoutePlan(
+		&plan,
+		App{Name: "demo"},
+		Instance{Name: "prod"},
+		Domain{
+			UUID: "domain-1", Name: "example.com", Type: "user", Status: "ok",
+			Service: "nginx", PortNumber: &port, SSLCustom: true,
+		},
+		false,
+		PlanOptions{TargetScope: &TargetScopeDiscovery{}},
+		true,
+	)
+	if route.Action != "create_backend" || route.ReviewRequired || !route.SSL || !route.SSLCustom {
+		t.Fatalf("route = %#v, review = %#v", route, plan.Review)
 	}
 }
 

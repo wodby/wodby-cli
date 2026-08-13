@@ -193,6 +193,58 @@ func TestTargetClientChecksRemoteGitRepoFileAtExactRef(t *testing.T) {
 	}
 }
 
+func TestTargetClientFindsAndAttachesMatchingCustomCertificate(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/certs":
+			if r.Method != http.MethodGet || r.URL.Query().Get("orgId") != "8" ||
+				r.URL.Query().Get("host") != "app.example.com" {
+				t.Fatalf("certificate request = %s %q", r.Method, r.URL.RawQuery)
+			}
+			writeTargetExecutionJSON(t, w, []TargetCert{{
+				ID: 17, Custom: true, Issuer: "custom",
+				Domain: "*.example.com", DNSNames: []string{"*.example.com"}, Status: "OK",
+			}})
+		case "/v1/app-routes":
+			if r.Method != http.MethodPost {
+				t.Fatalf("route method = %s", r.Method)
+			}
+			var input TargetCreateAppRouteInput
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatal(err)
+			}
+			if input.TLS == nil || input.TLS.Mode != TargetRouteTLSModeCustom ||
+				input.TLS.CertID == nil || *input.TLS.CertID != 17 ||
+				(input.LetsEncrypt != nil && *input.LetsEncrypt) {
+				t.Fatalf("route TLS input = %#v", input)
+			}
+			writeTargetExecutionJSON(t, w, TargetAppRoute{
+				ID: 19, Host: input.Host, AppInstanceID: 20, AppServiceID: input.AppServiceID, PortID: input.Port,
+				Cert: &TargetCert{ID: 17, Custom: true, Issuer: "custom", Status: "OK"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := mustTargetExecutionClient(t, server.URL)
+	certificates, err := client.ListMatchingCustomCerts(context.Background(), 8, "App.Example.com.")
+	if err != nil || len(certificates) != 1 || certificates[0].ID != 17 {
+		t.Fatalf("certificates = %#v, err = %v", certificates, err)
+	}
+	certID := certificates[0].ID
+	route, err := client.CreateAppRoute(context.Background(), TargetCreateAppRouteInput{
+		AppServiceID: 11,
+		Port:         80,
+		Host:         "app.example.com",
+		TLS:          &TargetAppRouteTLSInput{Mode: TargetRouteTLSModeCustom, CertID: &certID},
+	})
+	if err != nil || route.Cert == nil || route.Cert.ID != 17 {
+		t.Fatalf("route = %#v, err = %v", route, err)
+	}
+}
+
 func TestTargetClientRejectsIncompleteRemoteGitRepoFileLookup(t *testing.T) {
 	client := &TargetClient{}
 	tests := []struct {
@@ -463,7 +515,7 @@ func TestTargetClientMutatesServiceConfigurationRoutesAuthAndImports(t *testing.
 			body := decodeTargetExecutionObject(t, r)
 			assertTargetExecutionNumber(t, body, "appServiceId", 30)
 			assertTargetExecutionNumber(t, body, "port", 98765)
-			if body["host"] != "www.example.com" || body["action"] != TargetRouteActionBackend {
+			if body["host"] != "www.example.com" || body["action"] != TargetRouteActionServe {
 				t.Fatalf("route body = %#v", body)
 			}
 			assertTargetExecutionAbsent(t, body, "authLogin", "authPassword", "authId", "options")
@@ -575,7 +627,7 @@ func TestTargetClientMutatesServiceConfigurationRoutesAuthAndImports(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	action := TargetRouteActionBackend
+	action := TargetRouteActionServe
 	route, err := client.CreateAppRoute(context.Background(), TargetCreateAppRouteInput{
 		AppServiceID: 30, Port: 98765, Host: "www.example.com",
 		Action: &action,

@@ -111,13 +111,14 @@ func (c *TargetClient) prepareCIIntegration(ctx context.Context, app *PreparedAp
 	if app == nil {
 		return nil, nil, fmt.Errorf("prepared app is required")
 	}
+	configurationFindings := externalCIConfigurationFindings(*app)
 	if target.CIIntegrationID > 0 {
 		for index := range app.Instances {
 			app.Instances[index].CIIntegrationID = target.CIIntegrationID
 			app.Instances[index].UsesWodbyCI = false
 			app.Instances[index].ExternalCIOnly = true
 		}
-		return nil, nil, nil
+		return nil, configurationFindings, nil
 	}
 	usesCustomCI := false
 	for index := range app.Instances {
@@ -135,23 +136,91 @@ func (c *TargetClient) prepareCIIntegration(ctx context.Context, app *PreparedAp
 		}
 	}
 	if !usesCustomCI {
-		return nil, nil, nil
+		return nil, configurationFindings, nil
 	}
 	provider, err := c.GetProviderByName(ctx, "custom-ci")
 	if err != nil {
 		return nil, nil, err
 	}
+	findings := append(configurationFindings, ReviewItem{
+		Severity: SeverityMigration, App: app.App.App.Name, Subject: "CI integration",
+		Message: "instances without a usable linked Git repository, or already using external deployment, will use a create-or-reuse Custom CI integration; linked Git deployments continue to use built-in Wodby CI unless --target-ci-integration-id overrides the app",
+	}, ReviewItem{
+		Severity: SeverityManual, App: app.App.App.Name, Subject: "Custom CI bootstrap build",
+		Message: "after the migration creates and configures the target app, run its third-party CI pipeline once, then rerun the same --apply command; the migration will adopt the completed build and continue deployment and data import",
+	})
 	return &PreparedIntegration{
-			Key: "ci", ProviderName: provider.Name, ProviderID: provider.ID, ProviderRevID: provider.RevID,
-			Name:  migrationResourceName("ci", app.App.App.Name, app.App.App.UUID),
-			Title: "CI for " + firstNonEmpty(app.App.App.Title, app.App.App.Name), Kind: "ci",
-		}, []ReviewItem{{
-			Severity: SeverityMigration, App: app.App.App.Name, Subject: "CI integration",
-			Message: "instances without a usable linked Git repository, or already using external deployment, will use a create-or-reuse Custom CI integration; linked Git deployments continue to use built-in Wodby CI unless --target-ci-integration-id overrides the app",
-		}, {
-			Severity: SeverityManual, App: app.App.App.Name, Subject: "Custom CI bootstrap build",
-			Message: "after the migration creates and configures the target app, run its third-party CI pipeline once, then rerun the same --apply command; the migration will adopt the completed build and continue deployment and data import",
-		}}, nil
+		Key: "ci", ProviderName: provider.Name, ProviderID: provider.ID, ProviderRevID: provider.RevID,
+		Name:  migrationResourceName("ci", app.App.App.Name, app.App.App.UUID),
+		Title: "CI for " + firstNonEmpty(app.App.App.Title, app.App.App.Name), Kind: "ci",
+	}, findings, nil
+}
+
+func externalCIConfigurationFindings(app PreparedAppMigration) []ReviewItem {
+	findings := []ReviewItem{}
+	for _, instance := range app.Instances {
+		if !strings.EqualFold(strings.TrimSpace(stringProperty(instance.Source.Properties, "deployment_type")), "ci") {
+			continue
+		}
+		reportedProvider := strings.TrimSpace(stringProperty(instance.Source.Properties, "ci_provider"))
+		provider, providerLabel, providerPath := normalizedWodby1CIProvider(reportedProvider)
+		stack := wodbyCIExampleStack(app.App.App, instance.Source)
+		link := "https://github.com/wodby/wodby-ci/tree/2.0"
+		if stack != "" {
+			link += "/" + stack
+		}
+		if stack != "" && providerPath != "" {
+			link = "https://github.com/wodby/wodby-ci/blob/2.0/" + stack + "/" + providerPath
+		}
+
+		message := "Wodby 1 uses third-party CI, but its current deployed build does not identify a supported CI provider"
+		if provider != "" {
+			message = fmt.Sprintf("Wodby 1's current deployed build identifies %s", providerLabel)
+		} else if reportedProvider != "" {
+			message = fmt.Sprintf("Wodby 1's current deployed build reports CI provider %q, but no provider-specific Wodby 2 example is available", reportedProvider)
+		}
+		message += "; Wodby CLI usage for third-party CI changed in Wodby 2. Update the pipeline to use Wodby CLI 2.x with WODBY_API_KEY and WODBY_APP_SERVICE_ID. Start from " + link
+		findings = append(findings, ReviewItem{
+			Severity: SeverityServiceWarning,
+			App:      app.App.App.Name,
+			Instance: instance.Source.Name,
+			Subject:  "third-party CI configuration",
+			Message:  message,
+		})
+	}
+	return findings
+}
+
+func normalizedWodby1CIProvider(value string) (provider, label, examplePath string) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "circle", "circleci":
+		return "circleci", "CircleCI", "circleci/config.yml"
+	case "gitlab", "gitlab-ci":
+		return "gitlab", "GitLab CI", "gitlab-ci/.gitlab-ci.yml"
+	case "github", "github-actions":
+		return "github", "GitHub Actions", "github-actions/wodby.yml"
+	case "travis", "travisci", "travis-ci":
+		return "travisci", "Travis CI", ""
+	case "bitbucket", "bitbucket-pipelines":
+		return "bitbucket-pipelines", "Bitbucket Pipelines", ""
+	case "jenkins":
+		return "jenkins", "Jenkins", ""
+	default:
+		return "", "", ""
+	}
+}
+
+func wodbyCIExampleStack(app App, instance Instance) string {
+	candidates := []string{app.Type, instance.Stack.Type, instance.Stack.Name, instance.Stack.AncestorName}
+	for _, candidate := range candidates {
+		normalized := strings.ToLower(strings.TrimSpace(candidate))
+		for _, stack := range []string{"wordpress", "drupal", "laravel", "matomo", "django", "rails", "nextjs", "python", "static", "node", "php", "go"} {
+			if strings.Contains(normalized, stack) {
+				return stack
+			}
+		}
+	}
+	return ""
 }
 
 func (c *TargetClient) prepareSMTPIntegration(ctx context.Context, app PreparedAppMigration) (*PreparedIntegration, []ReviewItem, error) {

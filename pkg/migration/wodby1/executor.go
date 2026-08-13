@@ -3811,7 +3811,7 @@ func (e *MigrationExecutor) ensureRoute(
 	}
 
 	path, pathType := "/", TargetRoutePathPrefix
-	action := TargetRouteActionBackend
+	action := TargetRouteActionServe
 	input := TargetCreateAppRouteInput{
 		AppServiceID: service.ID,
 		Main:         plan.Primary && !disabled,
@@ -3825,7 +3825,10 @@ func (e *MigrationExecutor) ensureRoute(
 	if disabled {
 		input.Disabled = &disabled
 	}
-	if plan.SSL {
+	if plan.SSL && plan.SSLCustom && plan.TargetCertID > 0 {
+		certID := plan.TargetCertID
+		input.TLS = &TargetAppRouteTLSInput{Mode: TargetRouteTLSModeCustom, CertID: &certID}
+	} else if plan.SSL && !plan.SSLCustom {
 		enabled := true
 		input.LetsEncrypt = &enabled
 	}
@@ -3875,7 +3878,7 @@ func matchingRoutes(
 	plan RoutePlan,
 	disabled bool,
 ) []TargetAppRoute {
-	expectedAction := TargetRouteActionBackend
+	expectedAction := TargetRouteActionServe
 	if plan.Action == "create_redirect" {
 		expectedAction = TargetRouteActionRedirect
 	}
@@ -4759,16 +4762,18 @@ func (e *MigrationExecutor) waitCustomRoutes(
 		return errors.New("migration plan is missing target routes")
 	}
 	type expectedRoute struct {
-		action string
-		ssl    bool
+		action       string
+		ssl          bool
+		sslCustom    bool
+		targetCertID int
 	}
 	expected := map[string]expectedRoute{}
 	for _, item := range plan.Routes {
 		switch item.Action {
 		case "create_backend":
-			expected[item.Host] = expectedRoute{action: TargetRouteActionBackend, ssl: item.SSL}
+			expected[item.Host] = expectedRoute{action: TargetRouteActionServe, ssl: item.SSL, sslCustom: item.SSLCustom, targetCertID: item.TargetCertID}
 		case "create_redirect":
-			expected[item.Host] = expectedRoute{action: TargetRouteActionRedirect, ssl: item.SSL}
+			expected[item.Host] = expectedRoute{action: TargetRouteActionRedirect, ssl: item.SSL, sslCustom: item.SSLCustom, targetCertID: item.TargetCertID}
 		}
 	}
 	if len(expected) == 0 {
@@ -4799,7 +4804,8 @@ func (e *MigrationExecutor) waitCustomRoutes(
 			default:
 				return false, nil
 			}
-			certificateReady, err := targetRouteCertificateReady(route, wanted.ssl)
+			certificateRequired := wanted.ssl && (!wanted.sslCustom || wanted.targetCertID > 0)
+			certificateReady, err := targetRouteCertificateReady(route, certificateRequired, wanted.sslCustom, wanted.targetCertID)
 			if err != nil {
 				return false, err
 			}
@@ -4811,18 +4817,38 @@ func (e *MigrationExecutor) waitCustomRoutes(
 	})
 }
 
-func targetRouteCertificateReady(route TargetAppRoute, required bool) (bool, error) {
+func targetRouteCertificateReady(route TargetAppRoute, required, custom bool, targetCertID int) (bool, error) {
 	if !required {
 		return true, nil
 	}
 	if route.Cert == nil {
 		return false, nil
 	}
-	if !strings.EqualFold(strings.TrimSpace(route.Cert.Issuer), "letsencrypt") {
+	wantedIssuer := "letsencrypt"
+	if custom {
+		wantedIssuer = "custom"
+	}
+	if !strings.EqualFold(strings.TrimSpace(route.Cert.Issuer), wantedIssuer) {
 		return false, errors.Errorf(
-			"target custom route %q certificate issuer is %q, expected letsencrypt",
+			"target custom route %q certificate issuer is %q, expected %s",
 			route.Host,
 			route.Cert.Issuer,
+			wantedIssuer,
+		)
+	}
+	if custom && targetCertID > 0 && route.Cert.ID != targetCertID {
+		return false, errors.Errorf(
+			"target custom route %q uses custom certificate ID %d, expected reviewed certificate ID %d",
+			route.Host,
+			route.Cert.ID,
+			targetCertID,
+		)
+	}
+	if custom && !targetCertificateCoversHost(*route.Cert, route.Host) {
+		return false, errors.Errorf(
+			"target custom route %q uses custom certificate ID %d, but its DNS names do not cover the route hostname",
+			route.Host,
+			route.Cert.ID,
 		)
 	}
 	switch strings.ToUpper(strings.TrimSpace(route.Cert.Status)) {
@@ -4843,6 +4869,27 @@ func targetRouteCertificateReady(route TargetAppRoute, required bool) (bool, err
 			route.Cert.Status,
 		)
 	}
+}
+
+func targetCertificateCoversHost(certificate TargetCert, host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" {
+		return false
+	}
+	for _, name := range normalizedCertificateDNSNames(certificate) {
+		if name == host {
+			return true
+		}
+		if !strings.HasPrefix(name, "*.") {
+			continue
+		}
+		suffix := strings.TrimPrefix(name, "*.")
+		prefix := strings.TrimSuffix(host, "."+suffix)
+		if prefix != host && prefix != "" && !strings.Contains(prefix, ".") {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *MigrationExecutor) verifyInstance(
@@ -5196,7 +5243,7 @@ func (e *MigrationExecutor) verifyRoutes(
 			return errors.Errorf("target custom route %q is not uniquely active", expected.Host)
 		}
 		route := matches[0]
-		certificateReady, err := targetRouteCertificateReady(route, expected.SSL)
+		certificateReady, err := targetRouteCertificateReady(route, expected.SSL, expected.SSLCustom, expected.TargetCertID)
 		if err != nil {
 			return err
 		}

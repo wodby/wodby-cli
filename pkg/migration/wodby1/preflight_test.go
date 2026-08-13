@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -351,6 +352,51 @@ func TestPreflightTargetDoesNotRequireWodbyCIPipelineForThirdPartyCI(t *testing.
 		if strings.HasSuffix(path, "/options/remote-git-repo-file") {
 			t.Fatalf("third-party CI performed Wodby CI pipeline lookup: %#v", api.requestPaths())
 		}
+	}
+}
+
+func TestPreflightMapsOneMatchingCustomCertificateAndWarnsWhenMissing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/v1/certs" || request.URL.Query().Get("orgId") != "8" {
+			http.NotFound(w, request)
+			return
+		}
+		switch request.URL.Query().Get("host") {
+		case "app.example.com":
+			preflightWriteJSON(w, []TargetCert{{
+				ID: 71, Custom: true, Issuer: "custom", Status: "OK",
+				Domain: "*.example.com", DNSNames: []string{"APP.EXAMPLE.COM.", "*.example.com"},
+			}})
+		case "missing.example.net":
+			preflightWriteJSON(w, []TargetCert{})
+		default:
+			http.Error(w, "unexpected host", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	client := mustTargetExecutionClient(t, server.URL)
+	app := App{Name: "demo"}
+	instance := Instance{Name: "prod"}
+	plan := InstancePlan{Routes: []RoutePlan{
+		{Host: "app.example.com", Action: "create_backend", SSLCustom: true},
+		{Host: "missing.example.net", Action: "create_backend", SSLCustom: true},
+	}}
+	findings, err := client.resolveCustomRouteCertificates(context.Background(), app, instance, &plan, 8, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Routes[0].TargetCertID != 71 || !reflect.DeepEqual(
+		plan.Routes[0].TargetCertDNSNames,
+		[]string{"*.example.com", "app.example.com"},
+	) {
+		t.Fatalf("mapped route = %#v", plan.Routes[0])
+	}
+	if plan.Routes[1].TargetCertID != 0 || len(plan.Routes[1].TargetCertDNSNames) != 0 {
+		t.Fatalf("unmapped route = %#v", plan.Routes[1])
+	}
+	if !hasReviewMessage(findings, SeverityMigration, "certificate hostnames: *.example.com, app.example.com") ||
+		!hasReviewMessage(findings, SeverityServiceWarning, "the route will be created without TLS") {
+		t.Fatalf("findings = %#v", findings)
 	}
 }
 

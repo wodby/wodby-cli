@@ -979,7 +979,123 @@ func (c *TargetClient) preflightInstance(
 			}
 		}
 	}
+	certificateFindings, err := c.resolveCustomRouteCertificates(ctx, app, source, plan, targetOrgID, pinned)
+	if err != nil {
+		return PreparedInstance{}, nil, err
+	}
+	findings = append(findings, certificateFindings...)
 	return prepared, findings, nil
+}
+
+func (c *TargetClient) resolveCustomRouteCertificates(
+	ctx context.Context,
+	app App,
+	instance Instance,
+	plan *InstancePlan,
+	targetOrgID int,
+	pinned bool,
+) ([]ReviewItem, error) {
+	if plan == nil {
+		return nil, errors.New("instance migration plan is required")
+	}
+	findings := []ReviewItem{}
+	for index := range plan.Routes {
+		route := &plan.Routes[index]
+		if !route.SSLCustom || (route.Action != "create_backend" && route.Action != "create_redirect") {
+			continue
+		}
+		certificates, err := c.ListMatchingCustomCerts(ctx, targetOrgID, route.Host)
+		if err != nil {
+			return nil, errors.Wrapf(err, "resolve custom certificate for route %q", route.Host)
+		}
+		if pinned {
+			if route.TargetCertID > 0 {
+				matched := false
+				for _, certificate := range certificates {
+					if certificate.ID == route.TargetCertID {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					return nil, errors.Errorf(
+						"reviewed Wodby 2 custom certificate ID %d no longer actively covers route %q; restore or replace the certificate, then start a new migration plan before target changes",
+						route.TargetCertID,
+						route.Host,
+					)
+				}
+				findings = append(findings, customCertificateMigrationReview(app, instance, *route))
+				continue
+			}
+			findings = append(findings, customCertificateManualReview(app, instance, route.Host, len(certificates)))
+			continue
+		}
+
+		switch len(certificates) {
+		case 1:
+			route.TargetCertID = certificates[0].ID
+			route.TargetCertDNSNames = normalizedCertificateDNSNames(certificates[0])
+			findings = append(findings, customCertificateMigrationReview(app, instance, *route))
+		default:
+			route.TargetCertID = 0
+			route.TargetCertDNSNames = nil
+			findings = append(findings, customCertificateManualReview(app, instance, route.Host, len(certificates)))
+		}
+	}
+	return findings, nil
+}
+
+func customCertificateMigrationReview(app App, instance Instance, route RoutePlan) ReviewItem {
+	hostnames := strings.Join(route.TargetCertDNSNames, ", ")
+	if hostnames == "" {
+		hostnames = "hostname metadata unavailable"
+	}
+	return ReviewItem{
+		Severity: SeverityMigration,
+		App:      app.Name,
+		Instance: instance.Name,
+		Subject:  "route " + route.Host + " custom TLS",
+		Message: fmt.Sprintf(
+			"existing Wodby 2 custom certificate ID %d matches this hostname and will be attached (certificate hostnames: %s)",
+			route.TargetCertID,
+			hostnames,
+		),
+	}
+}
+
+func normalizedCertificateDNSNames(certificate TargetCert) []string {
+	names := append([]string(nil), certificate.DNSNames...)
+	if domain := strings.TrimSpace(certificate.Domain); domain != "" {
+		names = append(names, domain)
+	}
+	seen := map[string]bool{}
+	normalized := names[:0]
+	for _, name := range names {
+		name = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		normalized = append(normalized, name)
+	}
+	sort.Strings(normalized)
+	return normalized
+}
+
+func customCertificateManualReview(app App, instance Instance, host string, matches int) ReviewItem {
+	reason := "no active Wodby 2 custom certificate covers this hostname"
+	if matches == 1 {
+		reason = "an active matching Wodby 2 custom certificate exists now, but it was not selected by the saved migration plan"
+	} else if matches > 1 {
+		reason = fmt.Sprintf("%d active Wodby 2 custom certificates cover this hostname, so none can be selected safely", matches)
+	}
+	return ReviewItem{
+		Severity: SeverityServiceWarning,
+		App:      app.Name,
+		Instance: instance.Name,
+		Subject:  "route " + host + " custom TLS",
+		Message:  reason + "; the route will be created without TLS. Add a custom certificate in Wodby 2 and attach it to this route before DNS cutover",
+	}
 }
 
 func (c *TargetClient) resolvePreflightStackRevision(

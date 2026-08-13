@@ -133,7 +133,7 @@ var Cmd = &cobra.Command{
 				return err
 			}
 			if len(cacheNames) > 0 {
-				cacheRoot, err := cicache.HostRoot(config.Context)
+				hostHome, cacheRoot, err := resolveHostCacheStorage(config.Context, config.DataContainer != "")
 				if err != nil {
 					return err
 				}
@@ -141,6 +141,7 @@ var Cmd = &cobra.Command{
 					&runConfig,
 					cacheNames,
 					explicitEnv,
+					hostHome,
 					cacheRoot,
 					config.DataContainer != "",
 					runConfig.User,

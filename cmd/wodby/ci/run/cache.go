@@ -10,6 +10,7 @@ import (
 
 	"github.com/distribution/reference"
 	"github.com/pkg/errors"
+	"github.com/wodby/wodby-cli/pkg/cicache"
 	"github.com/wodby/wodby-cli/pkg/ciuser"
 	"github.com/wodby/wodby-cli/pkg/docker"
 )
@@ -18,14 +19,28 @@ const cacheLabel = "com.wodby.ci.cache"
 
 type cacheProfile struct {
 	envName       string
+	hostPath      []string
 	containerPath string
 }
 
 var cacheProfiles = map[string]cacheProfile{
-	"npm":      {envName: "NPM_CONFIG_CACHE", containerPath: "/tmp/wodby-cache/npm"},
-	"composer": {envName: "COMPOSER_CACHE_DIR", containerPath: "/tmp/wodby-cache/composer"},
-	"bundler":  {envName: "BUNDLE_USER_CACHE", containerPath: "/tmp/wodby-cache/bundler"},
-	"uv":       {envName: "UV_CACHE_DIR", containerPath: "/tmp/wodby-cache/uv"},
+	"npm":      {envName: "NPM_CONFIG_CACHE", hostPath: []string{".npm"}, containerPath: "/tmp/wodby-cache/npm"},
+	"composer": {envName: "COMPOSER_CACHE_DIR", hostPath: []string{".composer", "cache"}, containerPath: "/tmp/wodby-cache/composer"},
+	"bundler":  {envName: "BUNDLE_USER_CACHE", hostPath: []string{".bundle", "cache"}, containerPath: "/tmp/wodby-cache/bundler"},
+	"uv":       {envName: "UV_CACHE_DIR", hostPath: []string{".cache", "uv"}, containerPath: "/tmp/wodby-cache/uv"},
+}
+
+// resolveHostCacheStorage keeps native runs on conventional user cache paths.
+// Data-container runs need a project-local staging root that the CI provider
+// can persist and the CLI can import into the Docker-managed cache volume.
+func resolveHostCacheStorage(context string, dataContainer bool) (string, string, error) {
+	if dataContainer || os.Getenv("WODBY_CI_CACHE_DIR") != "" {
+		root, err := cicache.HostRoot(context)
+		return "", root, err
+	}
+
+	home, err := os.UserHomeDir()
+	return home, "", err
 }
 
 func explicitEnvironmentNames(env []string, envFile string) (map[string]struct{}, error) {
@@ -171,7 +186,7 @@ func knownImageCacheProfiles(image string) []string {
 	}
 }
 
-func addCacheProfiles(config *docker.RunConfig, names []string, explicitEnv map[string]struct{}, cacheRoot string, dataContainer bool, user string) ([]string, error) {
+func addCacheProfiles(config *docker.RunConfig, names []string, explicitEnv map[string]struct{}, hostHome, cacheRoot string, dataContainer bool, user string) ([]string, error) {
 	active := make([]string, 0, len(names))
 	for _, name := range names {
 		profile := cacheProfiles[name]
@@ -185,7 +200,10 @@ func addCacheProfiles(config *docker.RunConfig, names []string, explicitEnv map[
 		}
 
 		if !dataContainer {
-			hostPath := filepath.Join(cacheRoot, name)
+			hostPath := filepath.Join(append([]string{hostHome}, profile.hostPath...)...)
+			if cacheRoot != "" {
+				hostPath = filepath.Join(cacheRoot, name)
+			}
 			if err := os.MkdirAll(hostPath, 0755); err != nil {
 				return nil, errors.Wrapf(err, "failed to create %s cache directory", name)
 			}

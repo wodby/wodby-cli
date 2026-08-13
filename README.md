@@ -15,11 +15,11 @@ The CLI major version must match the Wodby platform major version:
 
 | Wodby platform | CLI releases | Source branch | Status |
 | --- | --- | --- | --- |
-| Wodby 1 | [1.x](https://github.com/wodby/wodby-cli/releases/tag/1.0.2) | [`master`](https://github.com/wodby/wodby-cli/tree/master) | Maintenance |
+| Wodby 1 | [1.x](https://github.com/wodby/wodby-cli/releases/tag/1.0.3) | [`master`](https://github.com/wodby/wodby-cli/tree/master) | Maintenance |
 | Wodby 2 | [2.x](https://github.com/wodby/wodby-cli/releases/latest) | [`2.0`](https://github.com/wodby/wodby-cli/tree/2.0) | Active development |
 
 GitHub's **Latest** release tracks Wodby 2. Wodby 1 users should install an
-explicit 1.x release, currently [1.0.2](https://github.com/wodby/wodby-cli/releases/tag/1.0.2),
+explicit 1.x release, currently [1.0.3](https://github.com/wodby/wodby-cli/releases/tag/1.0.3),
 instead of using the `/releases/latest` URL.
 
 ## Install
@@ -39,13 +39,13 @@ case "$(uname -m)" in
   *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
 esac
 
-WODBY_CLI_VERSION=1.0.2
+WODBY_CLI_VERSION=1.0.3
 curl -fsSL "https://github.com/wodby/wodby-cli/releases/download/${WODBY_CLI_VERSION}/wodby-${WODBY_CLI_OS}-${WODBY_CLI_ARCH}.tar.gz" \
   | sudo tar xz -C /usr/local/bin
 ```
 
 Windows users can download the matching archive from the
-[1.0.2 release](https://github.com/wodby/wodby-cli/releases/tag/1.0.2).
+[1.0.3 release](https://github.com/wodby/wodby-cli/releases/tag/1.0.3).
 
 ## Usage
 

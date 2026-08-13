@@ -70,8 +70,8 @@ jobs:
             printf cache-ok > /tmp/wodby-cache/npm/wodby-cache-test
           '
 
-        test -f "${context}/.wodby-ci-cache/npm/wodby-cache-test"
-        test "$(stat -c %u "${context}/.wodby-ci-cache/npm/wodby-cache-test")" = "$(id -u)"
+        test -f "${test_home}/.npm/wodby-cache-test"
+        test "$(stat -c %u "${test_home}/.npm/wodby-cache-test")" = "$(id -u)"
 
         data_container="wodby-ci-cache-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
         trap 'docker rm -fv "${data_container}" >/dev/null 2>&1 || true' EXIT

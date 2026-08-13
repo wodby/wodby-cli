@@ -15,9 +15,9 @@ const (
 	ContainerRoot = "/tmp/wodby-cache"
 )
 
-// HostRoot returns a cache path that is visible anywhere the CI context is
-// already bind-mountable. An explicit root remains available for CI-specific
-// shared-path configurations.
+// HostRoot returns the persistent staging root used by data-container builds.
+// An explicit root remains available for CI-specific shared-path layouts and
+// also opts native runs into the unified root/profile layout.
 func HostRoot(context string) (string, error) {
 	root := os.Getenv("WODBY_CI_CACHE_DIR")
 	if root == "" {

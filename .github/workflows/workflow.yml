@@ -195,6 +195,7 @@ jobs:
 
         gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
           --verify-tag \
+          --target "${GITHUB_SHA}" \
           --title "${GITHUB_REF_NAME}" \
           --notes-from-tag \
           --latest=false

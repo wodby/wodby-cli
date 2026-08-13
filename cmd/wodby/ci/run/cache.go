@@ -163,9 +163,15 @@ func knownImageCacheProfiles(image string) []string {
 
 	repository := fmt.Sprintf("%s/%s", reference.Domain(named), reference.Path(named))
 	switch repository {
-	case "docker.io/library/node", "docker.io/wodby/node":
+	case "docker.io/library/node", "docker.io/wodby/node", "docker.io/wodby/drupal-node":
 		return []string{"npm"}
-	case "docker.io/library/composer", "docker.io/wodby/php":
+	case "docker.io/library/composer",
+		"docker.io/wodby/php",
+		"docker.io/wodby/drupal-php",
+		"docker.io/wodby/wordpress-php",
+		"docker.io/wodby/php-apache",
+		"docker.io/wodby/php-nginx",
+		"docker.io/wodby/wordpress-composer":
 		return []string{"composer"}
 	case "docker.io/library/ruby", "docker.io/wodby/ruby":
 		return []string{"bundler"}

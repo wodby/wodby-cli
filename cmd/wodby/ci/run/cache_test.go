@@ -122,6 +122,18 @@ func TestResolveCacheProfileNames(t *testing.T) {
 			want:        []string{"composer"},
 		},
 		{
+			name:        "recognizes Wodby 1 Drupal PHP image",
+			autoAllowed: true,
+			image:       "wodby/drupal-php:8.3-4.82.4",
+			want:        []string{"composer"},
+		},
+		{
+			name:        "recognizes Wodby 1 Drupal Node image",
+			autoAllowed: true,
+			image:       "wodby/drupal-node:1.0.0",
+			want:        []string{"npm"},
+		},
+		{
 			name:        "recognizes older wodby ruby image",
 			autoAllowed: true,
 			image:       "wodby/ruby:4",

@@ -196,7 +196,8 @@ jobs:
         gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
           --verify-tag \
           --title "${GITHUB_REF_NAME}" \
-          --generate-notes
+          --notes-from-tag \
+          --latest=false
 
   build-release-image:
     runs-on: ubuntu-latest

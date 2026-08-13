@@ -50,24 +50,9 @@ func prepareDataSync(
 			return nil, errors.Errorf("source instance %q disappeared before data synchronization", target.Source.UUID)
 		}
 		currentByComponent := map[string][]Backup{}
-		backupUUID := ""
-		var backupCreated int64
-		var backupUpdated int64
 		for _, backup := range current.Backups {
-			component := strings.ToLower(strings.TrimSpace(backup.Component))
+			component := normalizeBackupComponent(backup.Component)
 			currentByComponent[component] = append(currentByComponent[component], backup)
-			if backupUUID == "" {
-				backupUUID = backup.BackupUUID
-				backupCreated = backup.BackupCreated
-				backupUpdated = backup.BackupUpdated
-			} else if backup.BackupUUID != backupUUID ||
-				backup.BackupCreated != backupCreated ||
-				backup.BackupUpdated != backupUpdated {
-				return nil, errors.Errorf(
-					"source instance %q export combines files from different backup snapshots",
-					current.Name,
-				)
-			}
 		}
 		if len(target.ImportByComponent) == 0 {
 			return nil, errors.Errorf("source instance %q has no approved data component mapping", current.Name)

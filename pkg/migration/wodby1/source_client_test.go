@@ -92,8 +92,8 @@ func TestSourceClientExportsInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	export, err := client.ExportInstanceWithBackups(context.Background(), "instance-1", map[string]string{
-		"instance-1": "backup-1",
+	export, err := client.ExportInstanceWithBackups(context.Background(), "instance-1", SourceBackupSelection{
+		"instance-1": {allBackupComponents: "backup-1"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -107,6 +107,33 @@ func TestSourceClientExportsInstance(t *testing.T) {
 	}
 	if export.Source == nil || export.Source.Kind != "instance" || export.Source.UUID != "instance-1" {
 		t.Fatalf("source = %#v", export.Source)
+	}
+}
+
+func TestSourceClientExportsComponentBackupSelections(t *testing.T) {
+	var database, files string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		database = r.URL.Query().Get("source_backup[instance-1][db]")
+		files = r.URL.Query().Get("source_backup[instance-1][files]")
+		_ = json.NewEncoder(w).Encode(Export{
+			Schema: ExportSchemaV2, Source: &ExportSource{Kind: "instance", UUID: "instance-1"},
+			SecretsIncluded: true,
+			Apps:            []AppExport{{App: App{UUID: "app-1", Name: "demo"}, Instances: []Instance{sourceClientTestInstance()}}},
+		})
+	}))
+	defer server.Close()
+	client, err := NewSourceClient(server.URL, testSourceToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.ExportInstanceWithBackups(context.Background(), "instance-1", SourceBackupSelection{
+		"instance-1": {"db": "backup-db", "files": "backup-files"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if database != "backup-db" || files != "backup-files" {
+		t.Fatalf("component selectors: db=%q files=%q", database, files)
 	}
 }
 
@@ -239,6 +266,29 @@ func TestDecodeExportPreservesServiceConfigurationObjects(t *testing.T) {
 	memory, ok := resources["memory"].(json.Number)
 	if !ok || memory.String() != "9007199254740993" {
 		t.Fatalf("memory = %#v", resources["memory"])
+	}
+}
+
+func TestDecodeExportReadsNormalizedServiceCapacity(t *testing.T) {
+	export, err := DecodeExport([]byte(`{
+		"schema":"wodby1-migration/v2",
+		"source":{"kind":"instance","uuid":"instance-1"},
+		"apps":[{"app":{"uuid":"app-1","name":"demo"},"instances":[{
+			"uuid":"instance-1",
+			"name":"prod",
+			"type":"prod",
+			"stack":{"name":"drupal10"},
+			"services":[{"name":"php","replicas":2,"resources":{"requestCPU":250,"requestMem":256,"limitCPU":500,"limitMem":512}}]
+		}]}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := export.Apps[0].Instances[0].Services[0]
+	if service.Replicas == nil || *service.Replicas != 2 || service.Resources == nil ||
+		*service.Resources.RequestCPU != 250 || *service.Resources.RequestMem != 256 ||
+		*service.Resources.LimitCPU != 500 || *service.Resources.LimitMem != 512 {
+		t.Fatalf("service capacity = %#v", service)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -12,6 +13,7 @@ import (
 )
 
 func PrintReview(w io.Writer, plan Plan, prepared ...PreparedMigration) {
+	review := reviewItemsWithPromotedCommonScope(plan.Review, plan.Apps)
 	fmt.Fprintf(w, "%s\n", migrationColor(w, ansiBold+ansiCyan, "Wodby 1 to Wodby 2 migration plan"))
 	printReviewTable(w, "  ", []string{"Field", "Value"}, reviewOverviewRows(plan))
 	fmt.Fprintf(w, "\nSummary:\n")
@@ -30,63 +32,72 @@ func PrintReview(w io.Writer, plan Plan, prepared ...PreparedMigration) {
 		{"Intentionally skipped", strconv.Itoa(plan.Summary.Intentionally)},
 	})
 
-	fmt.Fprintf(w, "\n%s\n", migrationColor(w, ansiBold+ansiGreen, "Migrations:"))
+	if reviewScopeHasItems(review, "", "") {
+		fmt.Fprintf(w, "\n%s\n", migrationColor(w, ansiBold+ansiCyan, "Migration-wide"))
+		printScopedReviewSections(w, "  ", review, "", "")
+	}
+
 	for appIndex, app := range plan.Apps {
 		fmt.Fprintf(
 			w,
 			"\n%s\n",
-			migrationColor(w, ansiBold+ansiGreen, fmt.Sprintf("App %d/%d: %s → %s", appIndex+1, len(plan.Apps), firstNonEmpty(app.Title, app.Name), app.Name)),
+			migrationColor(w, ansiBold+ansiCyan, fmt.Sprintf("App %d/%d: %s → %s", appIndex+1, len(plan.Apps), firstNonEmpty(app.Title, app.Name), app.Name)),
 		)
-		if app.Repository != nil {
-			fmt.Fprintln(w, "  Repository:")
-			ci := "Wodby CI (default)"
-			if plan.Target.CIIntegrationID > 0 {
-				ci = fmt.Sprintf("third-party CI (ID %d)", plan.Target.CIIntegrationID)
-			}
-			gitIntegration := "-"
-			if app.Repository.GitIntegrationID > 0 {
-				gitIntegration = fmt.Sprintf("ID %d", app.Repository.GitIntegrationID)
-			}
-			repositoryCheck := "not validated"
-			if strings.TrimSpace(app.Repository.RemoteGitRepoID) != "" {
-				repositoryCheck = "exact match found"
-			}
-			printReviewTable(w, "    ", []string{"Action", "CI", "Git integration", "Target repository", "Repository check", "Build service"}, [][]string{{
-				app.Repository.Action,
-				ci,
-				gitIntegration,
-				emptyDash(app.Repository.RepositoryName),
-				repositoryCheck,
-				emptyDash(app.Repository.TargetService),
-			}})
+
+		preparedApp, hasPreparedApp := preparedMigrationForReview(prepared, app.SourceUUID)
+		settingItems := []ReviewItem{}
+		if hasPreparedApp {
+			settingItems = preparedStackSettingReviewItems(preparedApp.StackConfiguration)
 		}
-		if len(app.Integrations) != 0 {
-			fmt.Fprintln(w, "  Integrations:")
-			rows := make([][]string, 0, len(app.Integrations))
-			for _, integration := range app.Integrations {
-				provider := integration.ProviderName
-				if integration.ProviderID > 0 {
-					provider = fmt.Sprintf("%s (ID %d, revision %d)", provider, integration.ProviderID, integration.ProviderRevID)
-				}
-				rows = append(rows, []string{
-					integration.Kind, provider, emptyDash(integration.Service), integration.Action,
-					emptyDash(strings.Join(integration.Variables, ", ")),
-				})
-			}
-			printReviewTable(w, "    ", []string{"Kind", "Provider", "Service", "Action", "Variables"}, rows)
+		stackRows, sharedStack := sharedAppStackRows(app)
+		serviceRows := appServiceOverviewRows(app)
+		stackEnvRows := preparedStackEnvVarReviewRows(preparedApp.StackConfiguration)
+		stackCapacityRows := preparedStackCapacityReviewRows(preparedApp.StackConfiguration)
+		sharedCronRows, sharedCrons := sharedAppCronRows(app)
+		appMigrationItems := reviewItemsForScope(review, SeverityMigration, app.Name, "")
+		if len(settingItems) != 0 {
+			appMigrationItems = reviewItemsWithoutSubject(appMigrationItems, "Drupal app settings")
+			appMigrationItems = append(appMigrationItems, settingItems...)
 		}
-		if preparedApp, found := preparedMigrationForReview(prepared, app.SourceUUID); found {
-			rows := preparedStackSettingRows(preparedApp.StackConfiguration)
-			if len(rows) != 0 {
-				fmt.Fprintln(w, "  Converted stack settings (shared by all instances):")
-				printReviewTable(w, "    ", []string{"Source", "Target service", "Target setting", "Value", "Action"}, rows)
+		if len(stackEnvRows) != 0 {
+			appMigrationItems = reviewItemsWithoutMessageFragment(appMigrationItems, "custom environment variable(s) will be reconciled")
+		}
+		if len(serviceRows) != 0 {
+			appMigrationItems = append(appMigrationItems, ReviewItem{Subject: "Services", Message: appServiceMigrationSummary(app, len(serviceRows))})
+		}
+		if len(appMigrationItems) != 0 || app.Repository != nil || len(app.Integrations) != 0 || preparedHasCodeStrategy(preparedApp) || sharedStack || sharedCrons || len(stackEnvRows) != 0 || len(stackCapacityRows) != 0 {
+			printColoredSectionHeading(w, "  ", "Migrations", ansiGreen)
+			printReviewItemDetails(w, "    ", appMigrationItems, ansiGreen)
+			if sharedStack {
+				fmt.Fprintln(w, "    Target stack (shared by all instances):")
+				printReviewTableColor(w, "      ", []string{"Action", "Wodby 1 stack", "Wodby 2 stack", "Revision"}, stackRows, ansiGreen)
 			}
+			printRepositoryMigration(w, "    ", plan, app.Repository, preparedApp)
+			printIntegrationMigrations(w, "    ", app.Integrations)
+			if len(stackEnvRows) != 0 {
+				fmt.Fprintln(w, "    Stack service environment variables:")
+				printReviewTableColor(w, "      ", []string{"Service", "Variable", "Value", "Applies to"}, stackEnvRows, ansiGreen)
+			}
+			if len(stackCapacityRows) != 0 {
+				fmt.Fprintln(w, "    Stack service capacity (shared by all instances):")
+				printReviewTableColor(w, "      ", []string{"Service", "Replicas", "Resources", "Target container"}, stackCapacityRows, ansiGreen)
+			}
+			if sharedCrons {
+				fmt.Fprintln(w, "    Cron jobs → cron schedules (shared by all instances):")
+				printReviewTableColor(w, "      ", []string{"Source service", "Target service", "Title", "Schedule", "Command", "Target state"}, sharedCronRows, ansiGreen)
+			}
+		}
+		printScopedNonMigrationSections(w, "  ", review, app.Name, "")
+
+		if len(serviceRows) != 0 {
+			fmt.Fprintln(w, "  Service mapping overview:")
+			printServiceOverview(w, "    ", serviceRows)
 		}
 		for instanceIndex, instance := range app.Instances {
 			fmt.Fprintf(
 				w,
 				"\n  %s\n",
-				migrationColor(w, ansiBold, fmt.Sprintf(
+				migrationColor(w, ansiBold+ansiCyan, fmt.Sprintf(
 					"Instance %d/%d: %s → %s (%s → %s)",
 					instanceIndex+1,
 					len(app.Instances),
@@ -96,157 +107,144 @@ func PrintReview(w io.Writer, plan Plan, prepared ...PreparedMigration) {
 					emptyDash(instance.TargetEnv),
 				)),
 			)
-			stackAction := "use mapped stack"
-			stackSource := emptyDash(instance.Stack.Name)
-			stackTarget := firstNonEmpty(instance.Stack.Target, instance.Stack.Name)
-			if instance.Stack.CreateTarget {
-				stackAction = "create and configure"
-				stackTarget = "new from catalog " + firstNonEmpty(instance.Stack.CatalogName, instance.Stack.Target)
-			} else if instance.Stack.ExplicitMapping {
-				stackAction = "use and configure existing"
+			instanceMigrationItems := reviewItemsForScope(review, SeverityMigration, app.Name, instance.Name)
+			preparedInstance, _ := preparedInstanceForReview(preparedApp, instance.SourceUUID)
+			capacityRows := preparedInstanceCapacityReviewRows(preparedInstance)
+			versionRows := preparedInstanceVersionReviewRows(preparedInstance)
+			envRows := preparedInstanceEnvVarReviewRows(preparedInstance)
+			if len(stackEnvRows) != 0 {
+				instanceMigrationItems = reviewItemsWithoutMessageFragment(instanceMigrationItems, "custom environment variable(s) will be reconciled")
 			}
-			fmt.Fprintln(w, "    Stack:")
-			printReviewTable(w, "      ", []string{"Action", "Wodby 1 stack", "Wodby 2 stack", "Revision"}, [][]string{{
-				stackAction,
-				stackSource,
-				stackTarget,
-				emptyDash(instance.Stack.TargetVersion),
-			}})
-			if instance.BasicAuth.Enabled {
-				status := "enabled"
-				if instance.BasicAuth.SecretRedacted {
-					status = "enabled, password redacted"
-				}
-				protectedRoutes := 0
-				for _, route := range instance.Routes {
-					if route.BasicAuth {
-						protectedRoutes++
-					}
-				}
-				fmt.Fprintf(
-					w,
-					"    Basic auth: %s; create Wodby 2 route auths for %d protected domain(s), login %q; password transferred only in memory\n",
-					status,
-					protectedRoutes,
-					instance.BasicAuth.Login,
-				)
+			cronRows := reviewCronRows(instance)
+			if sharedCrons {
+				cronRows = nil
 			}
-			if len(instance.Services) != 0 {
-				fmt.Fprintf(w, "    Services:\n")
-				rows := make([][]string, 0, len(instance.Services))
-				for _, service := range instance.Services {
-					target := service.TargetName
-					if target == "" {
-						target = "-"
-					}
-					state := "disabled"
-					if service.Enabled {
-						state = "enabled"
-					}
-					stackChange := "reuse"
-					if service.AddToStack {
-						stackChange = "add service"
-					}
-					rows = append(rows, []string{
-						service.SourceName,
-						target,
-						emptyDash(service.SourceVersion),
-						emptyDash(service.TargetVersion),
-						emptyDash(service.VersionAction),
-						state,
-						service.Action,
-						stackChange,
-						strconv.Itoa(service.EnvVars),
-						strconv.Itoa(service.CronJobs),
-						strconv.Itoa(service.Settings),
-					})
+			routeRows := reviewRouteRows(plan, instance)
+			importRows := reviewImportRows(instance)
+			if len(instanceMigrationItems) != 0 || !sharedStack || instance.BasicAuth.Enabled || len(cronRows) != 0 || len(routeRows) != 0 || len(importRows) != 0 || len(capacityRows) != 0 || len(versionRows) != 0 || len(envRows) != 0 {
+				printColoredSectionHeading(w, "    ", "Migrations", ansiGreen)
+				printReviewItemDetails(w, "      ", instanceMigrationItems, ansiGreen)
+				if !sharedStack {
+					fmt.Fprintln(w, "      Target stack:")
+					printReviewTableColor(w, "        ", []string{"Action", "Wodby 1 stack", "Wodby 2 stack", "Revision"}, [][]string{reviewStackRow(instance.Stack)}, ansiGreen)
 				}
-				printReviewTable(w, "      ", []string{"Source", "Target", "Source version", "Target version", "Version action", "State", "Action", "Stack change", "Env vars", "Cron jobs", "Source settings"}, rows)
-			}
-			cronRows := [][]string{}
-			for _, service := range instance.Services {
-				for _, schedule := range service.CronSchedules {
-					cronRows = append(cronRows, []string{
-						service.SourceName,
-						emptyDash(service.TargetName),
-						schedule.Title,
-						schedule.Schedule,
-						schedule.Command,
-						schedule.TargetState,
-					})
+				printBasicAuthMigration(w, "      ", instance)
+				if len(cronRows) != 0 {
+					fmt.Fprintln(w, "      Cron jobs → cron schedules:")
+					printReviewTableColor(w, "        ", []string{"Source service", "Target service", "Title", "Schedule", "Command", "Target state"}, cronRows, ansiGreen)
+				}
+				if len(capacityRows) != 0 {
+					fmt.Fprintln(w, "      App-service capacity overrides:")
+					printReviewTableColor(w, "        ", []string{"Source service", "Target service", "Replicas", "Resources", "Target container"}, capacityRows, ansiGreen)
+				}
+				if len(versionRows) != 0 {
+					fmt.Fprintln(w, "      App-service version overrides:")
+					printReviewTableColor(w, "        ", []string{"Source service", "Target service", "Version"}, versionRows, ansiGreen)
+				}
+				if len(envRows) != 0 {
+					fmt.Fprintln(w, "      App-service environment variable overrides:")
+					printReviewTableColor(w, "        ", []string{"Source service", "Target service", "Variable", "Value"}, envRows, ansiGreen)
+				}
+				if len(routeRows) != 0 {
+					fmt.Fprintln(w, "      Custom domains:")
+					printReviewTableColor(w, "        ", []string{"Domain", "Action", "Target", "Target state", "Options"}, routeRows, ansiGreen)
+				}
+				if len(importRows) != 0 {
+					fmt.Fprintln(w, "      Data imports:")
+					printReviewTableColor(w, "        ", []string{"Component", "Action", "Target", "Backup", "Backup created", "Size"}, importRows, ansiGreen)
 				}
 			}
-			if len(cronRows) != 0 {
-				fmt.Fprintln(w, "    Cron job → cron schedule migration:")
-				printReviewTable(w, "      ", []string{"Source service", "Target service", "Title", "Schedule", "Command", "Target state"}, cronRows)
-			}
-			if len(instance.Routes) != 0 {
-				rows := make([][]string, 0, len(instance.Routes))
-				for _, route := range instance.Routes {
-					if strings.EqualFold(strings.TrimSpace(route.Type), "technical") {
-						continue
-					}
-					flags := routeFlags(route)
-					flags = emptyDash(flags)
-					rows = append(rows, []string{
-						route.Host,
-						reviewRouteAction(route),
-						reviewRouteTarget(route),
-						reviewRouteTargetState(plan, route),
-						flags,
-					})
-				}
-				if len(rows) != 0 {
-					fmt.Fprintf(w, "    Custom domains:\n")
-					printReviewTable(w, "      ", []string{"Domain", "Action", "Target", "Target state", "Options"}, rows)
-				}
-			}
-			if len(instance.Imports) != 0 {
-				fmt.Fprintf(w, "    Data imports:\n")
-				rows := make([][]string, 0, len(instance.Imports))
-				for _, item := range instance.Imports {
-					target := "-"
-					if item.TargetService != "" || item.TargetImport != "" {
-						target = emptyDash(item.TargetService) + ":" + emptyDash(item.TargetImport)
-					}
-					rows = append(rows, []string{
-						item.Component,
-						item.Action,
-						target,
-						emptyDash(firstNonEmpty(item.BackupUUID, item.SourceUUID)),
-						reviewBackupCreated(item.BackupCreated),
-						reviewByteSize(item.Size),
-					})
-				}
-				printReviewTable(w, "      ", []string{"Component", "Action", "Target", "Backup", "Backup created", "Size"}, rows)
-			}
+			printScopedNonMigrationSections(w, "    ", review, app.Name, instance.Name)
 		}
 	}
+}
 
-	migrationRows := reviewRows(plan.Review, SeverityMigration)
-	if len(migrationRows) != 0 {
-		fmt.Fprintf(w, "\n%s\n", migrationColor(w, ansiBold+ansiGreen, fmt.Sprintf("Additional migration details (%d):", len(migrationRows))))
-		printReviewTableColor(w, "  ", []string{"Scope", "Subject", "Details"}, migrationRows, ansiGreen)
-	}
-
-	sections := []struct {
-		severity string
-		title    string
-	}{
-		{SeverityConfirmation, "Warnings"},
-		{SeverityServiceWarning, "Enabled services not migrated"},
-		{SeverityBlocking, "Blocking"},
-		{SeverityManual, "Manual follow-up"},
-		{SeveritySkipped, "Intentionally skipped"},
-	}
-	for _, section := range sections {
-		rows := reviewRows(plan.Review, section.severity)
-		if len(rows) != 0 {
-			color := reviewSeverityColor(section.severity)
-			fmt.Fprintf(w, "\n%s\n", migrationColor(w, ansiBold+color, fmt.Sprintf("%s (%d):", section.title, len(rows))))
-			printReviewTableColor(w, "  ", []string{"Scope", "Subject", "Details"}, rows, color)
+func preparedInstanceForReview(prepared PreparedMigration, sourceUUID string) (PreparedInstance, bool) {
+	for _, instance := range prepared.Instances {
+		if instance.Source.UUID == sourceUUID {
+			return instance, true
 		}
 	}
+	return PreparedInstance{}, false
+}
+
+func preparedStackCapacityReviewRows(configuration PreparedStackConfiguration) [][]string {
+	rows := [][]string{}
+	for _, serviceName := range sortedPreparedStackServiceNames(configuration) {
+		service := configuration.Services[serviceName]
+		if service.Replicas == nil && service.Resources == nil {
+			continue
+		}
+		rows = append(rows, []string{
+			serviceName,
+			optionalIntLabel(service.Replicas),
+			serviceResourcesSummary(service.Resources),
+			serviceResourceTarget(service.Resources),
+		})
+	}
+	return rows
+}
+
+func preparedInstanceCapacityReviewRows(instance PreparedInstance) [][]string {
+	rows := [][]string{}
+	for _, source := range instance.Source.Services {
+		service, ok := instance.Services[source.Name]
+		if !ok || (service.Replicas == nil && service.Resources == nil) {
+			continue
+		}
+		rows = append(rows, []string{
+			source.Name,
+			service.Target.StackService.Name,
+			optionalIntLabel(service.Replicas),
+			serviceResourcesSummary(service.Resources),
+			serviceResourceTarget(service.Resources),
+		})
+	}
+	return rows
+}
+
+func preparedInstanceVersionReviewRows(instance PreparedInstance) [][]string {
+	rows := [][]string{}
+	for _, source := range instance.Source.Services {
+		service, ok := instance.Services[source.Name]
+		if !ok || strings.TrimSpace(service.InstanceVersion) == "" {
+			continue
+		}
+		rows = append(rows, []string{source.Name, service.Target.StackService.Name, service.InstanceVersion})
+	}
+	return rows
+}
+
+func preparedInstanceEnvVarReviewRows(instance PreparedInstance) [][]string {
+	rows := [][]string{}
+	for _, source := range instance.Source.Services {
+		service, ok := instance.Services[source.Name]
+		if !ok {
+			continue
+		}
+		for _, variable := range service.InstanceEnvVars {
+			value := strconv.Quote(migratedEnvironmentValue(service.Source, variable, serviceTargetNamesFromPrepared(instance)))
+			if variable.Secret || variable.Protected {
+				value = "protected value transferred in memory"
+			}
+			rows = append(rows, []string{source.Name, service.Target.StackService.Name, variable.Name, value})
+		}
+	}
+	return rows
+}
+
+func optionalIntLabel(value *int) string {
+	if value == nil {
+		return "-"
+	}
+	return strconv.Itoa(*value)
+}
+
+func serviceResourceTarget(resources *PreparedServiceResources) string {
+	if resources == nil {
+		return "-"
+	}
+	return resources.Workload + "/" + resources.Container
 }
 
 func preparedMigrationForReview(prepared []PreparedMigration, sourceUUID string) (PreparedMigration, bool) {
@@ -258,18 +256,573 @@ func preparedMigrationForReview(prepared []PreparedMigration, sourceUUID string)
 	return PreparedMigration{}, false
 }
 
-func preparedStackSettingRows(configuration PreparedStackConfiguration) [][]string {
-	rows := [][]string{}
+func preparedStackSettingReviewItems(configuration PreparedStackConfiguration) []ReviewItem {
+	items := []ReviewItem{}
 	for _, serviceName := range sortedPreparedStackServiceNames(configuration) {
 		for _, mapping := range configuration.Services[serviceName].SettingMappings {
-			rows = append(rows, []string{
-				mapping.Source,
-				serviceName,
-				mapping.Name,
-				mapping.Value,
-				mapping.Action,
+			items = append(items, ReviewItem{
+				Severity: SeverityMigration,
+				Subject:  "setting " + serviceName + "." + mapping.Name,
+				Message:  fmt.Sprintf("%s → %q; %s", mapping.Source, mapping.Value, mapping.Action),
 			})
 		}
+	}
+	return items
+}
+
+func preparedStackEnvVarReviewRows(configuration PreparedStackConfiguration) [][]string {
+	rows := [][]string{}
+	for _, serviceName := range sortedPreparedStackServiceNames(configuration) {
+		for _, variable := range configuration.Services[serviceName].EnvVars {
+			if variable.Name == wodby1LegacyEnvVarsMarker {
+				continue
+			}
+			value := strconv.Quote(variable.Value)
+			if variable.Secret {
+				value = "protected value transferred in memory"
+			}
+			scope := "all instances"
+			if variable.EnvType != nil && strings.TrimSpace(*variable.EnvType) != "" {
+				scope = strings.ToUpper(strings.TrimSpace(*variable.EnvType)) + " instances"
+			}
+			rows = append(rows, []string{serviceName, variable.Name, value, scope})
+		}
+	}
+	return rows
+}
+
+func reviewItemsWithoutSubject(items []ReviewItem, subject string) []ReviewItem {
+	result := make([]ReviewItem, 0, len(items))
+	for _, item := range items {
+		if item.Subject != subject {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func reviewItemsWithoutMessageFragment(items []ReviewItem, fragment string) []ReviewItem {
+	result := make([]ReviewItem, 0, len(items))
+	for _, item := range items {
+		if !strings.Contains(item.Message, fragment) {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func reviewScopeHasItems(items []ReviewItem, app, instance string) bool {
+	for _, item := range items {
+		if item.App == app && item.Instance == instance {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewItemsWithPromotedCommonScope(items []ReviewItem, apps []AppPlan) []ReviewItem {
+	result := append([]ReviewItem(nil), items...)
+	for _, app := range apps {
+		if len(app.Instances) < 2 {
+			continue
+		}
+		instanceNames := map[string]bool{}
+		for _, instance := range app.Instances {
+			instanceNames[instance.Name] = true
+		}
+		type commonItem struct {
+			instances map[string]bool
+			first     ReviewItem
+		}
+		common := map[string]*commonItem{}
+		for _, item := range result {
+			if item.App != app.Name || !instanceNames[item.Instance] {
+				continue
+			}
+			key := strings.Join([]string{item.Severity, item.Subject, item.Message}, "\x00")
+			group := common[key]
+			if group == nil {
+				group = &commonItem{instances: map[string]bool{}, first: item}
+				common[key] = group
+			}
+			group.instances[item.Instance] = true
+		}
+		promoted := map[string]ReviewItem{}
+		for key, group := range common {
+			if len(group.instances) != len(instanceNames) {
+				continue
+			}
+			item := group.first
+			item.Instance = ""
+			item.Message = "All migrated instances: " + item.Message
+			promoted[key] = item
+		}
+		if len(promoted) == 0 {
+			continue
+		}
+		next := make([]ReviewItem, 0, len(result)-len(promoted)*(len(instanceNames)-1))
+		added := map[string]bool{}
+		for _, item := range result {
+			key := strings.Join([]string{item.Severity, item.Subject, item.Message}, "\x00")
+			promotedItem, found := promoted[key]
+			if !found || item.App != app.Name || !instanceNames[item.Instance] {
+				next = append(next, item)
+				continue
+			}
+			if !added[key] {
+				next = append(next, promotedItem)
+				added[key] = true
+			}
+		}
+		result = next
+	}
+	return result
+}
+
+func reviewItemsForScope(items []ReviewItem, severity, app, instance string) []ReviewItem {
+	result := make([]ReviewItem, 0)
+	for _, item := range items {
+		if item.Severity == severity && item.App == app && item.Instance == instance {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func reviewItemDetailRows(items []ReviewItem) [][]string {
+	rows := make([][]string, 0, len(items))
+	for _, item := range items {
+		rows = append(rows, []string{item.Subject, item.Message})
+	}
+	return rows
+}
+
+func printReviewItemDetails(w io.Writer, indent string, items []ReviewItem, color string) {
+	if len(items) == 0 {
+		return
+	}
+	fmt.Fprintln(w, indent+"Details:")
+	printReviewTableColor(w, indent+"  ", []string{"Subject", "Details"}, reviewItemDetailRows(items), color)
+}
+
+func printColoredSectionHeading(w io.Writer, indent, title, color string) {
+	fmt.Fprintf(w, "%s%s\n", indent, migrationColor(w, ansiBold+color, title+":"))
+}
+
+func printScopedReviewSections(w io.Writer, indent string, items []ReviewItem, app, instance string) {
+	migrations := reviewItemsForScope(items, SeverityMigration, app, instance)
+	if len(migrations) != 0 {
+		printColoredSectionHeading(w, indent, "Migrations", ansiGreen)
+		printReviewItemDetails(w, indent+"  ", migrations, ansiGreen)
+	}
+	printScopedNonMigrationSections(w, indent, items, app, instance)
+}
+
+func printScopedNonMigrationSections(w io.Writer, indent string, items []ReviewItem, app, instance string) {
+	sections := []struct {
+		severity string
+		title    string
+	}{
+		{SeverityConfirmation, "Warnings"},
+		{SeverityServiceWarning, "Enabled services not migrated"},
+		{SeverityBlocking, "Blocking"},
+		{SeverityManual, "Manual follow-up"},
+		{SeveritySkipped, "Intentionally skipped"},
+	}
+	for _, section := range sections {
+		scoped := reviewItemsForScope(items, section.severity, app, instance)
+		if len(scoped) == 0 {
+			continue
+		}
+		color := reviewSeverityColor(section.severity)
+		printColoredSectionHeading(w, indent, fmt.Sprintf("%s (%d)", section.title, len(scoped)), color)
+		printReviewTableColor(w, indent+"  ", []string{"Subject", "Details"}, reviewItemDetailRows(scoped), color)
+	}
+}
+
+func reviewStackRow(stack StackPlan) []string {
+	action := "use mapped stack"
+	target := firstNonEmpty(stack.Target, stack.Name)
+	if stack.CreateTarget {
+		action = "create and configure"
+		target = "new from catalog " + firstNonEmpty(stack.CatalogName, stack.Target)
+	} else if stack.ExplicitMapping {
+		action = "use and configure existing"
+	}
+	return []string{action, emptyDash(stack.Name), target, emptyDash(stack.TargetVersion)}
+}
+
+func sharedAppStackRows(app AppPlan) ([][]string, bool) {
+	if len(app.Instances) == 0 {
+		return nil, false
+	}
+	first := reviewStackRow(app.Instances[0].Stack)
+	for _, instance := range app.Instances[1:] {
+		if !sameReviewRow(first, reviewStackRow(instance.Stack)) {
+			return nil, false
+		}
+	}
+	return [][]string{first}, true
+}
+
+func serviceOverviewRows(services []ServicePlan) [][]string {
+	rows := make([][]string, 0, len(services))
+	for _, service := range services {
+		target := emptyDash(service.TargetName)
+		state := "disabled"
+		if service.Enabled {
+			state = "enabled"
+		}
+		stackChange := "reuse"
+		if service.AddToStack {
+			stackChange = "add service"
+		}
+		rows = append(rows, []string{
+			service.SourceName,
+			target,
+			emptyDash(service.SourceVersion),
+			emptyDash(service.TargetVersion),
+			emptyDash(service.VersionAction),
+			state,
+			service.Action,
+			stackChange,
+			strconv.Itoa(service.EnvVars),
+			strconv.Itoa(service.CronJobs),
+			strconv.Itoa(service.Settings),
+		})
+	}
+	return rows
+}
+
+func appServiceMigrationSummary(app AppPlan, patterns int) string {
+	services := map[string]bool{}
+	for _, instance := range app.Instances {
+		for _, service := range instance.Services {
+			services[service.SourceName] = true
+		}
+	}
+	return fmt.Sprintf("%d source service(s) across %d instance(s), consolidated into %d mapping pattern(s)", len(services), len(app.Instances), patterns)
+}
+
+func printServiceOverview(w io.Writer, indent string, rows [][]string) {
+	printReviewTable(w, indent, []string{"Source", "Target", "Source version", "Target version", "Version action", "State", "Action", "Stack change", "Env vars", "Cron jobs", "Source settings", "Applies to"}, rows)
+}
+
+func appServiceOverviewRows(app AppPlan) [][]string {
+	rowByKey := map[string][]string{}
+	instancesByKey := map[string]map[int]bool{}
+	keys := []string{}
+	for instanceIndex, instance := range app.Instances {
+		for _, row := range serviceOverviewRows(instance.Services) {
+			key := strings.Join(row, "\x00")
+			if _, exists := rowByKey[key]; !exists {
+				rowByKey[key] = row
+				instancesByKey[key] = map[int]bool{}
+				keys = append(keys, key)
+			}
+			instancesByKey[key][instanceIndex] = true
+		}
+	}
+	rows := make([][]string, 0, len(keys))
+	for _, key := range keys {
+		row := append([]string(nil), rowByKey[key]...)
+		row = append(row, appServiceOverviewScope(app, instancesByKey[key]))
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func appServiceOverviewScope(app AppPlan, selected map[int]bool) string {
+	if len(selected) == len(app.Instances) {
+		return "all instances"
+	}
+	byEnv := map[string][]int{}
+	for index, instance := range app.Instances {
+		envType := strings.ToUpper(strings.TrimSpace(instance.TargetEnvType))
+		if envType != "" {
+			byEnv[envType] = append(byEnv[envType], index)
+		}
+	}
+	envTypes := []string{}
+	covered := 0
+	for envType, indexes := range byEnv {
+		allSelected := true
+		for _, index := range indexes {
+			if !selected[index] {
+				allSelected = false
+				break
+			}
+		}
+		if allSelected {
+			envTypes = append(envTypes, envType)
+			covered += len(indexes)
+		}
+	}
+	if covered == len(selected) && len(envTypes) != 0 {
+		sort.Strings(envTypes)
+		return strings.Join(envTypes, "/") + " instances"
+	}
+	instances := []string{}
+	for index, instance := range app.Instances {
+		if selected[index] {
+			instances = append(instances, firstNonEmpty(instance.Title, instance.Name))
+		}
+	}
+	return "instance " + strings.Join(instances, ", ")
+}
+
+func sharedAppCronRows(app AppPlan) ([][]string, bool) {
+	if len(app.Instances) < 2 {
+		return nil, false
+	}
+	first := reviewCronRows(app.Instances[0])
+	if len(first) == 0 {
+		return nil, false
+	}
+	for _, instance := range app.Instances[1:] {
+		if !sameReviewRows(first, reviewCronRows(instance)) {
+			return nil, false
+		}
+	}
+	return first, true
+}
+
+func sameReviewRows(left, right [][]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if !sameReviewRow(left[index], right[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameReviewRow(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func printRepositoryMigration(w io.Writer, indent string, plan Plan, repository *RepositoryPlan, prepared PreparedMigration) {
+	if repository == nil && !preparedHasCodeStrategy(prepared) {
+		return
+	}
+	fmt.Fprintln(w, indent+"Repository and CI:")
+	ci := preparedCISummary(plan, prepared)
+	action := "unlinked"
+	repositoryName := "-"
+	buildService := preparedBuildServiceSummary(prepared)
+	gitIntegration := "-"
+	repositoryCheck := "not linked"
+	if repository != nil {
+		action = repository.Action
+		repositoryName = emptyDash(repository.RepositoryName)
+		if strings.TrimSpace(repository.TargetService) != "" {
+			buildService = repository.TargetService
+		}
+		if repository.GitIntegrationID > 0 {
+			gitIntegration = fmt.Sprintf("ID %d", repository.GitIntegrationID)
+		}
+		if strings.TrimSpace(repository.RemoteGitRepoID) != "" {
+			repositoryCheck = "exact match found"
+		}
+	}
+	printReviewTableColor(w, indent+"  ", []string{"Action", "CI", "Git integration", "Target repository", "Repository check", "Git ref used", "Build service"}, [][]string{{
+		action,
+		ci,
+		gitIntegration,
+		repositoryName,
+		repositoryCheck,
+		preparedGitRefSummary(prepared),
+		emptyDash(buildService),
+	}}, ansiGreen)
+}
+
+func preparedHasCodeStrategy(prepared PreparedMigration) bool {
+	for _, instance := range prepared.Instances {
+		if instance.BuildSource != nil || instance.SkipCode {
+			return true
+		}
+	}
+	return false
+}
+
+func preparedCISummary(plan Plan, prepared PreparedMigration) string {
+	usesWodbyCI := false
+	usesExternalCI := false
+	for _, instance := range prepared.Instances {
+		usesWodbyCI = usesWodbyCI || instance.UsesWodbyCI
+		usesExternalCI = usesExternalCI || instance.ExternalCIOnly
+	}
+	if usesWodbyCI && usesExternalCI {
+		return "Wodby CI and Custom CI (per instance)"
+	}
+	if usesExternalCI {
+		if plan.Target.CIIntegrationID > 0 {
+			return fmt.Sprintf("third-party CI (ID %d)", plan.Target.CIIntegrationID)
+		}
+		return "Custom CI (automatic)"
+	}
+	return "Wodby CI (default)"
+}
+
+func preparedBuildServiceSummary(prepared PreparedMigration) string {
+	names := map[string]bool{}
+	for _, instance := range prepared.Instances {
+		if instance.BuildSource != nil && strings.TrimSpace(instance.BuildSource.ServiceName) != "" {
+			names[instance.BuildSource.ServiceName] = true
+		}
+	}
+	result := make([]string, 0, len(names))
+	for name := range names {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return strings.Join(result, ", ")
+}
+
+func preparedGitRefSummary(prepared PreparedMigration) string {
+	type gitRef struct {
+		instance string
+		refType  string
+		ref      string
+	}
+	refs := []gitRef{}
+	for _, instance := range prepared.Instances {
+		if instance.BuildSource == nil || instance.BuildSource.Input.GitRef == nil || instance.BuildSource.Input.GitRefType == nil {
+			continue
+		}
+		ref := strings.TrimSpace(*instance.BuildSource.Input.GitRef)
+		refType := strings.ToLower(strings.TrimSpace(*instance.BuildSource.Input.GitRefType))
+		if ref == "" || refType == "" {
+			continue
+		}
+		refs = append(refs, gitRef{
+			instance: firstNonEmpty(instance.Source.Title, instance.Source.Name),
+			refType:  refType,
+			ref:      ref,
+		})
+	}
+	if len(refs) == 0 {
+		return "-"
+	}
+	allSame := true
+	for _, ref := range refs[1:] {
+		if ref.refType != refs[0].refType || ref.ref != refs[0].ref {
+			allSame = false
+			break
+		}
+	}
+	if allSame {
+		return fmt.Sprintf("%s %q", refs[0].refType, refs[0].ref)
+	}
+	parts := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		parts = append(parts, fmt.Sprintf("%s: %s %q", ref.instance, ref.refType, ref.ref))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func printIntegrationMigrations(w io.Writer, indent string, integrations []IntegrationPlan) {
+	if len(integrations) == 0 {
+		return
+	}
+	fmt.Fprintln(w, indent+"Integrations:")
+	rows := make([][]string, 0, len(integrations))
+	for _, integration := range integrations {
+		provider := integration.ProviderName
+		if integration.ProviderID > 0 {
+			provider = fmt.Sprintf("%s (ID %d, revision %d)", provider, integration.ProviderID, integration.ProviderRevID)
+		}
+		rows = append(rows, []string{
+			integration.Kind, provider, emptyDash(integration.Service), integration.Action,
+			emptyDash(strings.Join(integration.Variables, ", ")),
+		})
+	}
+	printReviewTableColor(w, indent+"  ", []string{"Kind", "Provider", "Service", "Action", "Variables"}, rows, ansiGreen)
+}
+
+func printBasicAuthMigration(w io.Writer, indent string, instance InstancePlan) {
+	if !instance.BasicAuth.Enabled {
+		return
+	}
+	status := "enabled"
+	if instance.BasicAuth.SecretRedacted {
+		status = "enabled, password redacted"
+	}
+	protectedRoutes := 0
+	for _, route := range instance.Routes {
+		if route.BasicAuth {
+			protectedRoutes++
+		}
+	}
+	fmt.Fprintln(w, indent+"Basic auth:")
+	printReviewTableColor(w, indent+"  ", []string{"Source", "Target", "Protected domains", "Login", "Password"}, [][]string{{
+		status,
+		"create Wodby 2 route auths",
+		strconv.Itoa(protectedRoutes),
+		emptyDash(instance.BasicAuth.Login),
+		"transferred only in memory",
+	}}, ansiGreen)
+}
+
+func reviewCronRows(instance InstancePlan) [][]string {
+	rows := [][]string{}
+	for _, service := range instance.Services {
+		for _, schedule := range service.CronSchedules {
+			rows = append(rows, []string{
+				service.SourceName,
+				emptyDash(service.TargetName),
+				schedule.Title,
+				schedule.Schedule,
+				schedule.Command,
+				schedule.TargetState,
+			})
+		}
+	}
+	return rows
+}
+
+func reviewRouteRows(plan Plan, instance InstancePlan) [][]string {
+	rows := [][]string{}
+	for _, route := range instance.Routes {
+		if strings.EqualFold(strings.TrimSpace(route.Type), "technical") {
+			continue
+		}
+		rows = append(rows, []string{
+			route.Host,
+			reviewRouteAction(route),
+			reviewRouteTarget(route),
+			reviewRouteTargetState(plan, route),
+			emptyDash(routeFlags(route)),
+		})
+	}
+	return rows
+}
+
+func reviewImportRows(instance InstancePlan) [][]string {
+	rows := make([][]string, 0, len(instance.Imports))
+	for _, item := range instance.Imports {
+		target := "-"
+		if item.TargetService != "" || item.TargetImport != "" {
+			target = emptyDash(item.TargetService) + ":" + emptyDash(item.TargetImport)
+		}
+		rows = append(rows, []string{
+			item.Component,
+			item.Action,
+			target,
+			emptyDash(firstNonEmpty(item.BackupUUID, item.SourceUUID)),
+			reviewBackupCreated(item.BackupCreated),
+			reviewByteSize(item.Size),
+		})
 	}
 	return rows
 }
@@ -285,24 +838,6 @@ func reviewSeverityColor(severity string) string {
 	default:
 		return ansiCyan
 	}
-}
-
-func reviewRows(items []ReviewItem, severity string) [][]string {
-	rows := make([][]string, 0)
-	for _, item := range items {
-		if item.Severity != severity {
-			continue
-		}
-		scope := item.App
-		if item.Instance != "" {
-			scope += "/" + item.Instance
-		}
-		if strings.TrimSpace(scope) == "" {
-			scope = "-"
-		}
-		rows = append(rows, []string{scope, item.Subject, item.Message})
-	}
-	return rows
 }
 
 func reviewBackupCreated(timestamp int64) string {

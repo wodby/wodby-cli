@@ -381,6 +381,9 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 	}
 
 	for _, issue := range export.Issues {
+		if handledLegacyCapacityIssue(issue) {
+			continue
+		}
 		severity := issue.Severity
 		switch severity {
 		case SeverityBlocking, SeverityMigration, SeverityConfirmation, SeverityServiceWarning, SeverityManual, SeveritySkipped:
@@ -460,9 +463,11 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 				appPlan.Repository.Action = "skip"
 				plan.addReview(SeveritySkipped, appPlan.Name, "", "repository", "source repository code is intentionally excluded from this migration")
 			case repositoryTarget.GitIntegrationID <= 0:
-				plan.addReview(SeverityBlocking, appPlan.Name, "", "repository", "source repository requires --target-git-integration-id; its remote repository ID will be resolved automatically by name")
+				appPlan.Repository.Action = "unlinked"
+				plan.addReview(SeverityMigration, appPlan.Name, "", "repository", "no target Git integration was selected; the repository will remain unlinked and application code will use Custom CI")
 			case repositoryName == "":
-				plan.addReview(SeverityBlocking, appPlan.Name, "", "repository", "source repository name could not be derived; pass --target-repository-name with an exact name exposed by the selected Git integration (use --target-repository-map for a server app)")
+				appPlan.Repository.Action = "unlinked"
+				plan.addReview(SeverityServiceWarning, appPlan.Name, "", "repository", "source repository name could not be derived; the repository will remain unlinked and application code will use Custom CI")
 			}
 			if credentialsRedacted {
 				plan.addReview(SeverityMigration, appPlan.Name, "", "repository URL", "credentials or query data were removed from the repository URL before writing the plan")
@@ -868,16 +873,29 @@ func buildInstancePlan(plan *Plan, app App, instance Instance, opts PlanOptions,
 			"selected source backup",
 			selectedBackupWarning(instance.Backups),
 		)
+		if selectedBackupUUIDCount(instance.Backups) > 1 {
+			plan.addReview(
+				SeverityServiceWarning,
+				app.Name,
+				instance.Name,
+				"mixed backup components",
+				"database and files were selected from different successful Wodby 1 backups; review the component completion times because the imported data may represent different application moments",
+			)
+		}
 	}
 	return instancePlan
 }
 
 func selectedBackupWarning(backups []Backup) string {
 	backupUUID := ""
+	backupUUIDs := map[string]bool{}
 	completed := int64(0)
 	for _, backup := range backups {
 		if backupUUID == "" {
 			backupUUID = strings.TrimSpace(backup.BackupUUID)
+		}
+		if strings.TrimSpace(backup.BackupUUID) != "" {
+			backupUUIDs[strings.TrimSpace(backup.BackupUUID)] = true
 		}
 		candidate := backup.BackupUpdated
 		if candidate <= 0 {
@@ -897,10 +915,26 @@ func selectedBackupWarning(backups []Backup) string {
 	if completed > 0 {
 		when = time.Unix(completed, 0).UTC().Format(time.RFC3339)
 	}
+	if len(backupUUIDs) > 1 {
+		return fmt.Sprintf(
+			"%d data components were selected and pinned independently from %d successful backups; changes after each component completion time shown below will not be migrated",
+			len(backups), len(backupUUIDs),
+		)
+	}
 	return fmt.Sprintf(
 		"backup %s completed at %s; changes made in Wodby 1 after this snapshot will not be migrated. To minimize the gap, optionally enable maintenance mode, create a backup manually, and rerun the preview",
 		firstNonEmpty(backupUUID, "(unknown UUID)"), when,
 	)
+}
+
+func selectedBackupUUIDCount(backups []Backup) int {
+	ids := map[string]bool{}
+	for _, backup := range backups {
+		if id := strings.TrimSpace(backup.BackupUUID); id != "" {
+			ids[id] = true
+		}
+	}
+	return len(ids)
 }
 
 func buildServicePlan(plan *Plan, app App, instance Instance, service Service, opts PlanOptions) ServicePlan {
@@ -910,7 +944,7 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 		TargetName:    service.Name,
 		Enabled:       targetServiceEnabled(instance, service),
 		Action:        "migrate",
-		Settings:      len(service.Configuration),
+		Settings:      migratableServiceSettingCount(service.Configuration),
 	}
 	if version, found := scopedMapping(opts.TargetVersionMap, app, instance.UUID, instance.Name, service.Name); found {
 		servicePlan.TargetVersion = strings.TrimSpace(version)

@@ -168,6 +168,12 @@ func targetSendmailLinkServices(instance PreparedInstance) []string {
 		if target == "" || !instance.EffectiveState[target] {
 			continue
 		}
+		// Derivatives compile link-provided environment variables through their
+		// parent app service and its links. Their inspection exposes the parent
+		// manifest, but that does not make the link independently configurable.
+		if isTargetServiceDerivative(mapping.Target) {
+			continue
+		}
 		hasLink := managed && target == "php"
 		if manifest := mapping.Target.ServiceRevision.Manifest; manifest != nil {
 			for _, link := range manifest.Links {

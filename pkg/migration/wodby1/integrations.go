@@ -115,13 +115,19 @@ func (c *TargetClient) prepareCIIntegration(ctx context.Context, app *PreparedAp
 		for index := range app.Instances {
 			app.Instances[index].CIIntegrationID = target.CIIntegrationID
 			app.Instances[index].UsesWodbyCI = false
+			app.Instances[index].ExternalCIOnly = true
 		}
 		return nil, nil, nil
 	}
 	usesCustomCI := false
 	for index := range app.Instances {
+		if app.Instances[index].SkipCode {
+			app.Instances[index].UsesWodbyCI = false
+			continue
+		}
 		deploymentType := strings.ToLower(strings.TrimSpace(stringProperty(app.Instances[index].Source.Properties, "deployment_type")))
-		if deploymentType == "ci" {
+		if deploymentType == "ci" || app.Instances[index].BuildSource == nil ||
+			strings.TrimSpace(app.Instances[index].BuildSource.Input.BuildSourceType) == "" {
 			usesCustomCI = true
 			app.Instances[index].CIIntegrationKey = "ci"
 			app.Instances[index].UsesWodbyCI = false
@@ -141,7 +147,7 @@ func (c *TargetClient) prepareCIIntegration(ctx context.Context, app *PreparedAp
 			Title: "CI for " + firstNonEmpty(app.App.App.Title, app.App.App.Name), Kind: "ci",
 		}, []ReviewItem{{
 			Severity: SeverityMigration, App: app.App.App.Name, Subject: "CI integration",
-			Message: "source instances with deployment type ci will use a create-or-reuse Custom CI integration; instances using Git deployment continue to use built-in Wodby CI unless --target-ci-integration-id overrides the app",
+			Message: "instances without a usable linked Git repository, or already using external deployment, will use a create-or-reuse Custom CI integration; linked Git deployments continue to use built-in Wodby CI unless --target-ci-integration-id overrides the app",
 		}, {
 			Severity: SeverityManual, App: app.App.App.Name, Subject: "Custom CI bootstrap build",
 			Message: "after the migration creates and configures the target app, run its third-party CI pipeline once, then rerun the same --apply command; the migration will adopt the completed build and continue deployment and data import",

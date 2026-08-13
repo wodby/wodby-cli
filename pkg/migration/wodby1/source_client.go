@@ -100,7 +100,7 @@ func (c *SourceClient) ExportApp(ctx context.Context, uuid string) (Export, erro
 	return c.ExportAppWithBackups(ctx, uuid, nil)
 }
 
-func (c *SourceClient) ExportAppWithBackups(ctx context.Context, uuid string, backups map[string]string) (Export, error) {
+func (c *SourceClient) ExportAppWithBackups(ctx context.Context, uuid string, backups SourceBackupSelection) (Export, error) {
 	if err := validateSourceUUID(uuid); err != nil {
 		return Export{}, err
 	}
@@ -119,7 +119,7 @@ func (c *SourceClient) ExportInstance(ctx context.Context, uuid string) (Export,
 	return c.ExportInstanceWithBackups(ctx, uuid, nil)
 }
 
-func (c *SourceClient) ExportInstanceWithBackups(ctx context.Context, uuid string, backups map[string]string) (Export, error) {
+func (c *SourceClient) ExportInstanceWithBackups(ctx context.Context, uuid string, backups SourceBackupSelection) (Export, error) {
 	if err := validateSourceUUID(uuid); err != nil {
 		return Export{}, err
 	}
@@ -138,7 +138,7 @@ func (c *SourceClient) ExportServer(ctx context.Context, uuid string) (Export, e
 	return c.ExportServerWithBackups(ctx, uuid, nil)
 }
 
-func (c *SourceClient) ExportServerWithBackups(ctx context.Context, uuid string, backups map[string]string) (Export, error) {
+func (c *SourceClient) ExportServerWithBackups(ctx context.Context, uuid string, backups SourceBackupSelection) (Export, error) {
 	if err := validateSourceUUID(uuid); err != nil {
 		return Export{}, err
 	}
@@ -153,10 +153,16 @@ func (c *SourceClient) ExportServerWithBackups(ctx context.Context, uuid string,
 	)
 }
 
-func sourceBackupQuery(backups map[string]string) url.Values {
+func sourceBackupQuery(backups SourceBackupSelection) url.Values {
 	query := url.Values{}
-	for instanceUUID, backupUUID := range backups {
-		query.Set("source_backup["+instanceUUID+"]", backupUUID)
+	for instanceUUID, components := range backups {
+		if backupUUID := strings.TrimSpace(components[allBackupComponents]); backupUUID != "" {
+			query.Set("source_backup["+instanceUUID+"]", backupUUID)
+			continue
+		}
+		for component, backupUUID := range components {
+			query.Set("source_backup["+instanceUUID+"]["+component+"]", backupUUID)
+		}
 	}
 	return query
 }

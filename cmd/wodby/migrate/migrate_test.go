@@ -161,6 +161,62 @@ func TestConfirmApplySupportsNonInteractiveApproval(t *testing.T) {
 	}
 }
 
+func TestMigrationPreparationProgressShowsCountedAppsAndInstances(t *testing.T) {
+	cmd := newWodby1AppCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	progress := newMigrationPreparationProgress(cmd, "app")
+	for _, title := range []string{
+		"Discover Wodby 2 target scope",
+		"Export and select Wodby 1 source data",
+		"Resolve target environment types",
+		"Build migration plan",
+		"Inspect target mappings and capabilities",
+	} {
+		progress.StartStep(title)
+		if title == "Inspect target mappings and capabilities" {
+			progress.TargetPreflight(wodby1.TargetPreflightProgress{
+				Stage: "app", AppIndex: 2, AppTotal: 4, AppName: "example", InstanceTotal: 3,
+			})
+			progress.TargetPreflight(wodby1.TargetPreflightProgress{
+				Stage: "instance", AppIndex: 2, AppTotal: 4, AppName: "example",
+				InstanceIndex: 1, InstanceTotal: 3, InstanceName: "dev",
+			})
+			progress.TargetPreflight(wodby1.TargetPreflightProgress{
+				Stage: "app_complete", AppIndex: 2, AppTotal: 4, AppName: "example",
+			})
+		}
+		progress.CompleteStep(title + " completed.")
+	}
+
+	text := output.String()
+	for _, expected := range []string{
+		"App migration preparation",
+		"[1/5] Discover Wodby 2 target scope",
+		"[5/5] Inspect target mappings and capabilities",
+		"App 2/4: example (3 instance(s))",
+		"Instance 1/3: dev",
+		"App 2/4 inspected.",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("preparation progress missing %q:\n%s", expected, text)
+		}
+	}
+}
+
+func TestMigrationPreparationProgressKeepsSingleInstancePreviewCompact(t *testing.T) {
+	cmd := newWodby1InstanceCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	progress := newMigrationPreparationProgress(cmd, "instance")
+	progress.StartStep("Export source")
+	progress.CompleteStep("Export complete")
+	progress.TargetPreflight(wodby1.TargetPreflightProgress{Stage: "instance", InstanceIndex: 1, InstanceTotal: 1})
+	if output.Len() != 0 {
+		t.Fatalf("single-instance preparation progress should be compact, got %q", output.String())
+	}
+}
+
 func TestWodby1MigrationExclusionFlagsMatchCommandScope(t *testing.T) {
 	instance := newWodby1InstanceCommand()
 	if instance.Flags().Lookup("exclude-app") != nil || instance.Flags().Lookup("exclude-instance") != nil {
@@ -351,7 +407,7 @@ func TestWodby1ServerMutationUsesPerAppResumeState(t *testing.T) {
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetArgs(args)
 	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "migrate source app demo (app-1)") {
+	if err == nil || !strings.Contains(err.Error(), "server migration completed with 2 failed app(s)") {
 		t.Fatalf("prepare error = %v", err)
 	}
 
@@ -388,7 +444,7 @@ func TestWodby1ServerResumePreservesSavedPlanAndExplainsContinuation(t *testing.
 	first.SilenceUsage = true
 	first.SetOut(&bytes.Buffer{})
 	first.SetArgs(args)
-	if err := first.Execute(); err == nil || !strings.Contains(err.Error(), "migrate source app demo") {
+	if err := first.Execute(); err == nil || !strings.Contains(err.Error(), "server migration completed with 2 failed app(s)") {
 		t.Fatalf("first server apply error = %v", err)
 	}
 	planPath, _, err := artifactPaths("server", "server-1", statePath)
@@ -405,7 +461,7 @@ func TestWodby1ServerResumePreservesSavedPlanAndExplainsContinuation(t *testing.
 	resume.SilenceUsage = true
 	resume.SetOut(&output)
 	resume.SetArgs(args)
-	if err := resume.Execute(); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+	if err := resume.Execute(); err == nil || !strings.Contains(err.Error(), "server migration completed with 2 failed app(s)") {
 		t.Fatalf("server resume error = %v", err)
 	}
 	after, err := os.ReadFile(planPath)
@@ -454,7 +510,7 @@ func TestWodby1ServerFreshApplyReplacesStalePlan(t *testing.T) {
 	cmd.SilenceUsage = true
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetArgs(args)
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "migrate source app demo (app-1)") {
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "server migration completed with 2 failed app(s)") {
 		t.Fatalf("apply error = %v", err)
 	}
 
@@ -584,7 +640,7 @@ func TestWodby1ServerRestartReplansAfterDefinitiveRejection(t *testing.T) {
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetArgs(args)
 	applyErr := cmd.Execute()
-	if applyErr == nil || !strings.Contains(applyErr.Error(), "migrate source app demo (app-1)") ||
+	if applyErr == nil || !strings.Contains(applyErr.Error(), "server migration completed with 2 failed app(s)") ||
 		strings.Contains(applyErr.Error(), "no longer match the applied plan") {
 		t.Fatalf("apply error = %v", applyErr)
 	}
@@ -2019,7 +2075,7 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 		writeMigrationJSON(w, wodby1.TargetStackRevision{
 			ID: 72, Name: "drupal11", Number: 5, Version: "11", StackID: 7,
 		})
-	case "/v1/stack-revisions/71/services":
+	case "/v1/stack-revisions/71/services", "/v1/stack-revisions/72/services":
 		writeMigrationJSON(w, []wodby1.TargetStackService{{
 			ID: 81, Name: "php", Title: "PHP", Type: "php", Main: true,
 			ServiceRevID: 91, ServiceRevName: "php", ServiceRevVersion: "8.3",
@@ -2033,7 +2089,11 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 			}},
 		})
 	case "/v1/stack-services/81/env-vars":
-		writeMigrationJSON(w, []wodby1.TargetStackServiceEnvVar{})
+		value := "true"
+		writeMigrationJSON(w, []wodby1.TargetStackServiceEnvVar{{
+			ID: 93, StackServiceID: 81,
+			Name: "WODBY_MIGRATIONS_ADD_LEGACY_WODBY1_ENV_VARS", Value: &value,
+		}})
 	case "/v1/stack-services/81/cron-schedules":
 		writeMigrationJSON(w, []wodby1.TargetStackServiceCronSchedule{})
 	case "/v1/stack-services/81/integrations":

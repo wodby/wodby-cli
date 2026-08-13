@@ -623,6 +623,66 @@ func TestTargetClientMutatesServiceConfigurationRoutesAuthAndImports(t *testing.
 	}
 }
 
+func TestTargetClientMutatesStackAndAppServiceCapacity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/stack-services/10":
+			body := decodeTargetExecutionObject(t, r)
+			assertTargetExecutionNumber(t, body, "replicas", 3)
+			writeTargetExecutionJSON(t, w, TargetStackService{ID: 11, Name: "nginx", Replicas: 3, ServiceRevID: 90})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/stack-services/10/resources":
+			assertTargetResourceBody(t, r)
+			writeTargetExecutionJSON(t, w, TargetOperationResult{Success: true})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-services/20/containers":
+			writeTargetExecutionJSON(t, w, []TargetAppServiceContainer{{
+				AppServiceID: 20, Workload: "app", Name: "app", RequestCPU: targetTestIntPtr(250), LimitMem: targetTestIntPtr(512),
+			}})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/app-services/20/resources":
+			assertTargetResourceBody(t, r)
+			writeTargetExecutionJSON(t, w, TargetOperationResult{Success: true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := mustTargetExecutionClient(t, server.URL)
+	replicas := 3
+	updated, err := client.UpdateStackService(context.Background(), 10, TargetStackServiceUpdateInput{Replicas: &replicas})
+	if err != nil || updated.Replicas != 3 {
+		t.Fatalf("updated stack service = %#v, err = %v", updated, err)
+	}
+	input := TargetResourcesInput{
+		Workload: targetTestStringPtr("app"), Container: targetTestStringPtr("app"),
+		RequestCPU: targetTestIntPtr(250), LimitMem: targetTestIntPtr(512),
+	}
+	if err := client.SetStackServiceResources(context.Background(), 10, input); err != nil {
+		t.Fatal(err)
+	}
+	containers, err := client.ListAppServiceContainers(context.Background(), 20)
+	if err != nil || len(containers) != 1 || *containers[0].RequestCPU != 250 {
+		t.Fatalf("containers = %#v, err = %v", containers, err)
+	}
+	if err := client.SetAppServiceResources(context.Background(), 20, input); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func targetTestIntPtr(value int) *int { return &value }
+
+func targetTestStringPtr(value string) *string { return &value }
+
+func assertTargetResourceBody(t *testing.T, r *http.Request) {
+	t.Helper()
+	body := decodeTargetExecutionObject(t, r)
+	if body["workload"] != "app" || body["container"] != "app" {
+		t.Fatalf("resource target = %#v", body)
+	}
+	assertTargetExecutionNumber(t, body, "requestCPU", 250)
+	assertTargetExecutionNumber(t, body, "limitMem", 512)
+	assertTargetExecutionAbsent(t, body, "requestMem", "limitCPU")
+}
+
 func TestTargetClientCreatesDisabledAppRoute(t *testing.T) {
 	disabled := true
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -132,13 +132,19 @@ func (e *MigrationExecutor) bindAppliedTargetStack(
 	if err != nil {
 		return PreparedMigration{}, errors.Wrap(err, "read applied target stack")
 	}
+	revisionID := stack.RevID
 	if stackConfigurationHasChanges(prepared.StackConfiguration) || len(prepared.StackAdditions) != 0 {
 		operation, ok := state.App.Operations[stackPublishOperation]
-		if !ok || operation.Status != MigrationOperationSucceeded || operation.TargetID != stack.ID || operation.TaskID != stack.RevID {
+		if !ok || operation.Status != MigrationOperationSucceeded || operation.TargetID != stack.ID || operation.TaskID <= 0 {
 			return PreparedMigration{}, errors.New("migration state does not contain the published target stack configuration revision")
 		}
+		// Resume against the exact revision published or recovered by this
+		// migration. The stack owner may have published a newer revision while
+		// the app migration was paused; that must not silently change the saved
+		// executable plan.
+		revisionID = operation.TaskID
 	}
-	return e.bindTargetStackRevision(ctx, prepared, stack, stack.RevID, len(prepared.StackAdditions) != 0)
+	return e.bindTargetStackRevision(ctx, prepared, stack, revisionID, len(prepared.StackAdditions) != 0)
 }
 
 func (e *MigrationExecutor) ensureTargetStackConfiguration(
@@ -157,6 +163,13 @@ func (e *MigrationExecutor) ensureTargetStackConfiguration(
 	}
 	if current.OrgID != plan.Target.OrgID || current.Public {
 		return PreparedMigration{}, errors.New("target stack configuration ownership no longer matches the migration target")
+	}
+	if operationSucceeded(&state.App, stackPublishOperation) {
+		operation := state.App.Operations[stackPublishOperation]
+		if operation.TargetID != current.ID || operation.TaskID <= 0 {
+			return PreparedMigration{}, errors.New("published target stack revision no longer matches migration state")
+		}
+		return e.bindTargetStackRevision(ctx, prepared, current, operation.TaskID, true)
 	}
 	createTarget := migrationCreatesTargetStack(plan, prepared)
 	if !createTarget && current.DraftRevID != nil && !stackConfigurationStarted(state) {
@@ -183,6 +196,12 @@ func (e *MigrationExecutor) ensureTargetStackConfiguration(
 			return PreparedMigration{}, errors.Errorf("target stack configuration service %q disappeared", name)
 		}
 		configuration := prepared.StackConfiguration.Services[name]
+		if err := e.ensureStackServiceReplicas(ctx, state, inspection.StackService, configuration.Replicas); err != nil {
+			return PreparedMigration{}, err
+		}
+		if err := e.ensureStackServiceResources(ctx, state, inspection.StackService, configuration.Resources); err != nil {
+			return PreparedMigration{}, err
+		}
 		if err := e.ensureStackServiceVersionOptions(ctx, state, inspection.StackService, configuration.VersionOptions); err != nil {
 			return PreparedMigration{}, err
 		}
@@ -208,13 +227,6 @@ func (e *MigrationExecutor) ensureTargetStackConfiguration(
 		return PreparedMigration{}, errors.Wrap(err, "read configured target stack")
 	}
 	if current.DraftRevID == nil {
-		if operationSucceeded(&state.App, stackPublishOperation) {
-			operation := state.App.Operations[stackPublishOperation]
-			if operation.TargetID != current.ID || operation.TaskID != current.RevID {
-				return PreparedMigration{}, errors.New("published target stack revision no longer matches migration state")
-			}
-			return e.bindTargetStackRevision(ctx, prepared, current, current.RevID, true)
-		}
 		// A publish response may have been lost. If every configuration item is
 		// present in the active revision, recover the idempotent operation.
 		matches, matchErr := e.targetStackConfigurationMatches(ctx, current.RevID, prepared.StackConfiguration)
@@ -267,6 +279,51 @@ func (e *MigrationExecutor) ensureTargetStackConfiguration(
 	}
 	e.reportProgress("Target stack %q configuration published as revision ID %d.", published.Name, published.RevID)
 	return e.bindTargetStackRevision(ctx, prepared, published, published.RevID, true)
+}
+
+func (e *MigrationExecutor) ensureStackServiceReplicas(ctx context.Context, state *MigrationState, service TargetStackService, desired *int) error {
+	if desired == nil {
+		return nil
+	}
+	operation := operationKey("stack_replicas", service.Name)
+	run, err := e.beginStackConfigurationMutation(state, operation, service.Replicas == *desired, service.ID)
+	if err != nil || !run {
+		return err
+	}
+	e.reportProgress("  Setting stack service %q replicas from %d to %d...", service.Name, service.Replicas, *desired)
+	updated, err := e.target.UpdateStackService(ctx, service.ID, TargetStackServiceUpdateInput{Replicas: cloneInt(desired)})
+	if err != nil {
+		return e.recordStackConfigurationMutationError(state, operation, "stack service replicas", err)
+	}
+	if updated.Name != service.Name || updated.Replicas != *desired {
+		return e.recordStackConfigurationMutationError(state, operation, "stack service replicas", errors.New("target returned different stack service replica configuration"))
+	}
+	if err := e.completeStackConfigurationMutation(state, operation, updated.ID); err != nil {
+		return err
+	}
+	e.reportProgress("  Stack service %q now uses %d replica(s).", service.Name, *desired)
+	return nil
+}
+
+func (e *MigrationExecutor) ensureStackServiceResources(ctx context.Context, state *MigrationState, service TargetStackService, desired *PreparedServiceResources) error {
+	if desired == nil {
+		return nil
+	}
+	operation := operationKey("stack_resources", service.Name, desired.Workload, desired.Container)
+	matches := stackServiceResourcesMatch(service.Containers, *desired)
+	run, err := e.beginStackConfigurationMutation(state, operation, matches, service.ID)
+	if err != nil || !run {
+		return err
+	}
+	e.reportProgress("  Setting stack service %q resources for %s/%s to %s...", service.Name, desired.Workload, desired.Container, serviceResourcesSummary(desired))
+	if err := e.target.SetStackServiceResources(ctx, service.ID, desired.TargetInput()); err != nil {
+		return e.recordStackConfigurationMutationError(state, operation, "stack service resources", err)
+	}
+	if err := e.completeStackConfigurationMutation(state, operation, service.ID); err != nil {
+		return err
+	}
+	e.reportProgress("  Stack service %q resources are configured.", service.Name)
+	return nil
 }
 
 func (e *MigrationExecutor) ensureStackServiceLinks(
@@ -558,6 +615,12 @@ func (e *MigrationExecutor) targetStackConfigurationMatches(ctx context.Context,
 		if !ok || (len(configuration.VersionOptions) != 0 && !stackServiceOptionsMatch(service.StackService.Options, configuration.VersionOptions)) {
 			return false, nil
 		}
+		if configuration.Replicas != nil && service.StackService.Replicas != *configuration.Replicas {
+			return false, nil
+		}
+		if configuration.Resources != nil && !stackServiceResourcesMatch(service.StackService.Containers, *configuration.Resources) {
+			return false, nil
+		}
 		settings := map[string]string{}
 		for _, setting := range service.StackService.Settings {
 			settings[setting.Name] = setting.Value
@@ -623,6 +686,25 @@ func (e *MigrationExecutor) targetStackConfigurationMatches(ctx context.Context,
 		}
 	}
 	return true, nil
+}
+
+func stackServiceResourcesMatch(items []TargetStackServiceContainer, desired PreparedServiceResources) bool {
+	matches := 0
+	for _, item := range items {
+		if item.Workload != desired.Workload || item.Name != desired.Container {
+			continue
+		}
+		matches++
+		if !resourceValuesEqual(item.RequestCPU, item.RequestMem, item.LimitCPU, item.LimitMem, desired) {
+			return false
+		}
+	}
+	return matches == 1
+}
+
+func resourceValuesEqual(requestCPU, requestMem, limitCPU, limitMem *int, desired PreparedServiceResources) bool {
+	return intPointersEqual(requestCPU, desired.RequestCPU) && intPointersEqual(requestMem, desired.RequestMem) &&
+		intPointersEqual(limitCPU, desired.LimitCPU) && intPointersEqual(limitMem, desired.LimitMem)
 }
 
 func migrationCreatesTargetStack(plan Plan, prepared PreparedMigration) bool {

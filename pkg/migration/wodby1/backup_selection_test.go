@@ -15,7 +15,7 @@ func TestResolveSourceBackups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selected["instance-1"] != "backup-1" || selected["instance-2"] != "backup-2" {
+	if selected["instance-1"][allBackupComponents] != "backup-1" || selected["instance-2"][allBackupComponents] != "backup-2" {
 		t.Fatalf("selection = %#v", selected)
 	}
 }
@@ -29,20 +29,23 @@ func TestResolveSourceBackupsAcceptsBareUUIDForInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selected["instance-1"] != "backup-1" {
+	if selected["instance-1"][allBackupComponents] != "backup-1" {
 		t.Fatalf("selection = %#v", selected)
 	}
 }
 
-func TestPlanSourceBackupsRejectsMixedSnapshots(t *testing.T) {
-	_, err := PlanSourceBackups(Plan{Apps: []AppPlan{{Instances: []InstancePlan{{
+func TestPlanSourceBackupsPinsMixedSnapshotsPerComponent(t *testing.T) {
+	selected, err := PlanSourceBackups(Plan{Apps: []AppPlan{{Instances: []InstancePlan{{
 		SourceUUID: "instance-1",
 		Imports: []ImportPlan{
-			{Action: "import", BackupUUID: "backup-1"},
-			{Action: "import", BackupUUID: "backup-2"},
+			{Action: "import", Component: "db", BackupUUID: "backup-1"},
+			{Action: "import", Component: "files", BackupUUID: "backup-2"},
 		},
 	}}}}})
-	if err == nil {
-		t.Fatal("expected mixed backup snapshots to be rejected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected["instance-1"]["db"] != "backup-1" || selected["instance-1"]["files"] != "backup-2" {
+		t.Fatalf("selection = %#v", selected)
 	}
 }

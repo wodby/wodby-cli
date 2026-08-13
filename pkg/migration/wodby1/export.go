@@ -311,10 +311,25 @@ type Service struct {
 	Name            string                 `json:"name"`
 	Version         string                 `json:"version,omitempty"`
 	Enabled         bool                   `json:"enabled"`
+	Replicas        *int                   `json:"replicas,omitempty"`
+	Resources       *ServiceResources      `json:"resources,omitempty"`
 	Configuration   map[string]interface{} `json:"configuration,omitempty"`
 	EnvVars         []EnvVar               `json:"env_vars,omitempty"`
 	CronJobs        []CronJob              `json:"cron_jobs,omitempty"`
 	SecretsRedacted []string               `json:"secrets_redacted,omitempty"`
+}
+
+// ServiceResources uses the Wodby 2 REST API units: CPU values are
+// millicores and memory values are Mi.
+type ServiceResources struct {
+	RequestCPU *int `json:"requestCPU,omitempty"`
+	RequestMem *int `json:"requestMem,omitempty"`
+	LimitCPU   *int `json:"limitCPU,omitempty"`
+	LimitMem   *int `json:"limitMem,omitempty"`
+}
+
+func (r *ServiceResources) HasValues() bool {
+	return r != nil && (r.RequestCPU != nil || r.RequestMem != nil || r.LimitCPU != nil || r.LimitMem != nil)
 }
 
 func (s *Service) UnmarshalJSON(data []byte) error {

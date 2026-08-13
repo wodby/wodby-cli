@@ -1,13 +1,20 @@
 package wodby1
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func prepareStackConfigurationTest(app PreparedAppMigration) (PreparedStackConfiguration, []ReviewItem, error) {
+	return prepareStackConfiguration(&app)
+}
 
 func TestPrepareStackConfigurationScopesEnvironmentValues(t *testing.T) {
 	app := stackConfigurationTestApp(
 		stackConfigurationTestInstance("prod", "PROD", "production", "shared"),
 		stackConfigurationTestInstance("dev", "DEV", "development", "shared"),
 	)
-	configuration, findings, err := prepareStackConfiguration(app)
+	configuration, findings, err := prepareStackConfigurationTest(app)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,17 +33,112 @@ func TestPrepareStackConfigurationScopesEnvironmentValues(t *testing.T) {
 	assertPreparedStackEnvVar(t, variables, "APP_MODE", "development", &dev)
 }
 
-func TestPrepareStackConfigurationBlocksSameEnvironmentTypeDifferences(t *testing.T) {
+func TestPrepareStackConfigurationCollapsesVariablePresentInEveryDevInstance(t *testing.T) {
+	devA := stackConfigurationTestInstance("dev-a", "DEV", "development", "shared")
+	devB := stackConfigurationTestInstance("dev-b", "DEV", "development", "shared")
+	prod := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
+	devA.Source.Services[0].EnvVars = append(devA.Source.Services[0].EnvVars, EnvVar{Name: "DEV_ONLY", Value: "enabled", Enabled: true})
+	devB.Source.Services[0].EnvVars = append(devB.Source.Services[0].EnvVars, EnvVar{Name: "DEV_ONLY", Value: "enabled", Enabled: true})
+
+	configuration, findings, err := prepareStackConfigurationTest(stackConfigurationTestApp(devA, devB, prod))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasBlockingFindings(findings) {
+		t.Fatalf("unexpected findings: %#v", findings)
+	}
+	dev := "DEV"
+	assertPreparedStackEnvVar(t, configuration.Services["php"].EnvVars, "DEV_ONLY", "enabled", &dev)
+	for _, variable := range configuration.Services["php"].EnvVars {
+		if variable.Name == "DEV_ONLY" && variable.EnvType == nil {
+			t.Fatalf("DEV_ONLY was incorrectly made global: %#v", configuration.Services["php"].EnvVars)
+		}
+	}
+}
+
+func TestPrepareStackConfigurationKeepsSameEnvironmentTypeDifferencesOnInstances(t *testing.T) {
 	app := stackConfigurationTestApp(
 		stackConfigurationTestInstance("dev-a", "DEV", "one", "shared"),
 		stackConfigurationTestInstance("dev-b", "DEV", "two", "shared"),
 	)
-	_, findings, err := prepareStackConfiguration(app)
+	configuration, findings, err := prepareStackConfiguration(&app)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasBlockingFindings(findings) {
-		t.Fatalf("findings = %#v, want blocking env conflict", findings)
+	if hasBlockingFindings(findings) {
+		t.Fatalf("unexpected findings: %#v", findings)
+	}
+	for _, variable := range configuration.Services["php"].EnvVars {
+		if variable.Name == "APP_MODE" {
+			t.Fatalf("divergent APP_MODE was incorrectly promoted to the stack: %#v", configuration.Services["php"].EnvVars)
+		}
+	}
+	for _, instance := range app.Instances {
+		variables := instance.Services["php"].InstanceEnvVars
+		if len(variables) != 1 || variables[0].Name != "APP_MODE" {
+			t.Fatalf("instance %q overrides = %#v, want APP_MODE", instance.Source.Name, variables)
+		}
+	}
+}
+
+func TestPrepareStackConfigurationKeepsDifferentCronsOnInstances(t *testing.T) {
+	left := stackConfigurationTestInstance("dev-a", "DEV", "development", "shared")
+	right := stackConfigurationTestInstance("dev-b", "DEV", "development", "shared")
+	left.Source.Services[0].CronJobs = []CronJob{{Title: "Drupal cron", Crontab: "*/5 * * * *", Command: "drush cron", Enabled: true}}
+	right.Source.Services[0].CronJobs = []CronJob{{Title: "Drupal cron", Crontab: "*/15 * * * *", Command: "drush cron", Enabled: true}}
+	leftService := left.Services["php"]
+	leftService.Source = left.Source.Services[0]
+	left.Services["php"] = leftService
+	rightService := right.Services["php"]
+	rightService.Source = right.Source.Services[0]
+	right.Services["php"] = rightService
+	app := stackConfigurationTestApp(left, right)
+
+	configuration, findings, err := prepareStackConfiguration(&app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasBlockingFindings(findings) {
+		t.Fatalf("unexpected findings: %#v", findings)
+	}
+	for _, instance := range app.Instances {
+		if schedules := instance.Services["php"].InstanceCronJobs; len(schedules) != 1 {
+			t.Fatalf("instance %q schedules = %#v, want one override", instance.Source.Name, schedules)
+		}
+	}
+	for _, schedule := range configuration.Services["php"].CronSchedules {
+		if strings.HasPrefix(schedule.Name, "w1-") {
+			t.Fatalf("divergent cron was incorrectly promoted to stack: %#v", schedule)
+		}
+	}
+}
+
+func TestPrepareStackConfigurationKeepsDifferentVersionsOnInstances(t *testing.T) {
+	left := stackConfigurationTestInstance("dev", "DEV", "development", "shared")
+	right := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
+	leftService := left.Services["php"]
+	leftService.TargetVersion = "8.2"
+	left.Services["php"] = leftService
+	rightService := right.Services["php"]
+	rightService.TargetVersion = "8.3"
+	right.Services["php"] = rightService
+	app := stackConfigurationTestApp(left, right)
+
+	configuration, findings, err := prepareStackConfiguration(&app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasBlockingFindings(findings) {
+		t.Fatalf("unexpected findings: %#v", findings)
+	}
+	if len(configuration.Services["php"].VersionOptions) != 0 {
+		t.Fatalf("divergent versions changed shared stack options: %#v", configuration.Services["php"].VersionOptions)
+	}
+	if got := app.Instances[0].Services["php"].InstanceVersion; got != "8.2" {
+		t.Fatalf("dev instance version = %q, want 8.2", got)
+	}
+	if got := app.Instances[1].Services["php"].InstanceVersion; got != "8.3" {
+		t.Fatalf("prod instance version = %q, want 8.3", got)
 	}
 }
 
@@ -45,7 +147,7 @@ func TestPrepareStackConfigurationBlocksGlobalSettingDifferences(t *testing.T) {
 	right := stackConfigurationTestInstance("dev", "DEV", "development", "shared")
 	left.Source.Services[0].Configuration = map[string]interface{}{"memory": "256M"}
 	right.Source.Services[0].Configuration = map[string]interface{}{"memory": "512M"}
-	_, findings, err := prepareStackConfiguration(stackConfigurationTestApp(left, right))
+	_, findings, err := prepareStackConfigurationTest(stackConfigurationTestApp(left, right))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +158,7 @@ func TestPrepareStackConfigurationBlocksGlobalSettingDifferences(t *testing.T) {
 
 func TestPrepareStackConfigurationSelectsOneSharedVersionAndDisablesDefaultCron(t *testing.T) {
 	instance := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
-	configuration, findings, err := prepareStackConfiguration(stackConfigurationTestApp(instance))
+	configuration, findings, err := prepareStackConfigurationTest(stackConfigurationTestApp(instance))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,6 +183,47 @@ func TestPrepareStackConfigurationSelectsOneSharedVersionAndDisablesDefaultCron(
 	}
 }
 
+func TestPrepareStackConfigurationOnlyAppliesDerivativeSpecificEnvironmentOverrides(t *testing.T) {
+	instance := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
+	derivativeManifest := drupalPHPSettingManifest()
+	derivativeManifest.Options = []TargetServiceOption{{Version: "8.3", Default: true}, {Version: "8.4"}}
+	derivativeManifest.CronSchedules = []TargetServiceCronSchedule{{
+		Name: "drupal-cron", Title: "Drupal cron", Schedule: "0 * * * *", Command: "drush cron",
+	}}
+	sshdSource := Service{
+		Name: "sshd", Enabled: true,
+		EnvVars: []EnvVar{{Name: "SSH_ONLY", Value: "yes", Enabled: true}},
+	}
+	sshdTarget := TargetStackServiceInspection{
+		StackService: TargetStackService{ID: 20, Name: "sshd", Type: "ssh", ServiceRevID: 21},
+		ServiceRevision: TargetServiceRevision{
+			ID: 21, Name: "drupal-php", Type: "php", ServiceID: 1000, Manifest: derivativeManifest,
+		},
+	}
+	instance.Source.Services = append(instance.Source.Services, sshdSource)
+	instance.Services["sshd"] = PreparedService{Source: sshdSource, Target: sshdTarget, TargetVersion: "8.4"}
+	instance.StackServices = append(instance.StackServices, sshdTarget)
+	instance.EffectiveState = map[string]bool{"php": true, "sshd": true}
+
+	configuration, findings, err := prepareStackConfigurationTest(stackConfigurationTestApp(instance))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasBlockingFindings(findings) {
+		t.Fatalf("unexpected findings: %#v", findings)
+	}
+	sshd := configuration.Services["sshd"]
+	if len(sshd.VersionOptions) != 0 || len(sshd.Settings) != 0 || len(sshd.CronSchedules) != 0 || len(sshd.Integrations) != 0 || len(sshd.Links) != 0 {
+		t.Fatalf("derivative received parent-owned configuration: %#v", sshd)
+	}
+	assertPreparedStackEnvVar(t, sshd.EnvVars, "SSH_ONLY", "yes", nil)
+	for _, variable := range sshd.EnvVars {
+		if variable.Name == wodby1LegacyEnvVarsMarker {
+			t.Fatalf("derivative received redundant compatibility marker: %#v", sshd.EnvVars)
+		}
+	}
+}
+
 func TestPrepareStackConfigurationMapsDrupalAppSettingsToPHP(t *testing.T) {
 	instance := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
 	instance.Source.Stack = Stack{Name: "drupal11"}
@@ -92,7 +235,7 @@ func TestPrepareStackConfigurationMapsDrupalAppSettingsToPHP(t *testing.T) {
 	app.App.App.Docroot = stringPointer("docroot/web")
 	app.App.App.SiteName = stringPointer("customer.example")
 
-	configuration, findings, err := prepareStackConfiguration(app)
+	configuration, findings, err := prepareStackConfigurationTest(app)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +267,7 @@ func TestPrepareStackConfigurationDoesNotRewriteMatchingDrupalAppSettings(t *tes
 	app.App.App.Docroot = stringPointer("web")
 	app.App.App.SiteName = stringPointer("default")
 
-	configuration, findings, err := prepareStackConfiguration(app)
+	configuration, findings, err := prepareStackConfigurationTest(app)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +304,7 @@ func TestPrepareStackConfigurationUsesExistingStackSettingOverrideAsEffectiveVal
 	app.App.App.Docroot = stringPointer("custom/web")
 	app.App.App.SiteName = stringPointer("default")
 
-	configuration, findings, err := prepareStackConfiguration(app)
+	configuration, findings, err := prepareStackConfigurationTest(app)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +336,7 @@ func TestPrepareStackConfigurationAddsPrivateGotenbergEndpoint(t *testing.T) {
 	app.App.App.Docroot = stringPointer("web")
 	app.App.App.SiteName = stringPointer("default")
 
-	configuration, findings, err := prepareStackConfiguration(app)
+	configuration, findings, err := prepareStackConfigurationTest(app)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +355,7 @@ func TestPrepareStackConfigurationBlocksMissingDrupalAppSettingsExport(t *testin
 	instance.EffectiveState = map[string]bool{"php": true}
 	app := stackConfigurationTestApp(instance)
 
-	_, findings, err := prepareStackConfiguration(app)
+	_, findings, err := prepareStackConfigurationTest(app)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +376,7 @@ func TestPrepareStackConfigurationBlocksMissingTargetDrupalSettingCapability(t *
 	app.App.App.Docroot = stringPointer("web")
 	app.App.App.SiteName = stringPointer("default")
 
-	_, findings, err := prepareStackConfiguration(app)
+	_, findings, err := prepareStackConfigurationTest(app)
 	if err != nil {
 		t.Fatal(err)
 	}

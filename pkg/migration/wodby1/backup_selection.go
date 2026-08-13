@@ -5,12 +5,19 @@ import (
 	"strings"
 )
 
+const allBackupComponents = "*"
+
+// SourceBackupSelection pins backup identities independently per data
+// component. The internal "*" component is used only for an explicit
+// user-selected whole backup before the source API returns its components.
+type SourceBackupSelection map[string]map[string]string
+
 // ResolveSourceBackups resolves user-facing backup selectors to immutable
 // source instance and backup UUID pairs. The export is used only for resolving
 // app/instance names; Wodby 1 validates that each selected backup belongs to
 // that instance and is successful when it creates the selected export.
-func ResolveSourceBackups(export Export, sourceKind string, values []string) (map[string]string, error) {
-	result := map[string]string{}
+func ResolveSourceBackups(export Export, sourceKind string, values []string) (SourceBackupSelection, error) {
+	result := SourceBackupSelection{}
 	if len(values) == 0 {
 		return result, nil
 	}
@@ -43,10 +50,13 @@ func ResolveSourceBackups(export Export, sourceKind string, values []string) (ma
 			if err != nil {
 				return nil, fmt.Errorf("resolve --source-backup instance %q: %w", instanceSelector, err)
 			}
-			if existing, found := result[instance.UUID]; found && existing != backupUUID {
+			if result[instance.UUID] == nil {
+				result[instance.UUID] = map[string]string{}
+			}
+			if existing, found := result[instance.UUID][allBackupComponents]; found && existing != backupUUID {
 				return nil, fmt.Errorf("--source-backup selects conflicting backups for instance %q", instance.Name)
 			}
-			result[instance.UUID] = backupUUID
+			result[instance.UUID][allBackupComponents] = backupUUID
 		}
 	}
 	if len(result) == 0 {
@@ -58,29 +68,37 @@ func ResolveSourceBackups(export Export, sourceKind string, values []string) (ma
 // PlanSourceBackups returns the immutable backup selection persisted by an
 // applied plan. It is used on resume so refreshing protected download URLs can
 // never silently switch to a newer backup.
-func PlanSourceBackups(plan Plan) (map[string]string, error) {
-	result := map[string]string{}
+func PlanSourceBackups(plan Plan) (SourceBackupSelection, error) {
+	result := SourceBackupSelection{}
 	for _, app := range plan.Apps {
 		for _, instance := range app.Instances {
 			for _, item := range instance.Imports {
 				if item.Action == "skip" || strings.TrimSpace(item.BackupUUID) == "" {
 					continue
 				}
-				backupUUID := strings.TrimSpace(item.BackupUUID)
-				if existing, found := result[instance.SourceUUID]; found && existing != backupUUID {
-					return nil, fmt.Errorf("applied plan contains multiple backup snapshots for source instance %q", instance.SourceUUID)
+				component := normalizeBackupComponent(item.Component)
+				if component == "" {
+					return nil, fmt.Errorf("applied plan contains an empty backup component for source instance %q", instance.SourceUUID)
 				}
-				result[instance.SourceUUID] = backupUUID
+				if result[instance.SourceUUID] == nil {
+					result[instance.SourceUUID] = map[string]string{}
+				}
+				backupUUID := strings.TrimSpace(item.BackupUUID)
+				if existing, found := result[instance.SourceUUID][component]; found && existing != backupUUID {
+					return nil, fmt.Errorf("applied plan contains multiple backup files for source instance %q component %q", instance.SourceUUID, component)
+				}
+				result[instance.SourceUUID][component] = backupUUID
 			}
 		}
 	}
 	return result, nil
 }
 
-// ExportSourceBackups returns the backup snapshots present in an export. Every
-// component of one instance must belong to the same Wodby 1 backup.
-func ExportSourceBackups(export Export) (map[string]string, error) {
-	result := map[string]string{}
+// ExportSourceBackups returns the component-level backup identities present in
+// an export. Different components may intentionally come from different
+// successful Wodby 1 backups.
+func ExportSourceBackups(export Export) (SourceBackupSelection, error) {
+	result := SourceBackupSelection{}
 	for _, app := range export.AppExports() {
 		for _, instance := range app.Instances {
 			for _, backup := range instance.Backups {
@@ -88,12 +106,23 @@ func ExportSourceBackups(export Export) (map[string]string, error) {
 				if backupUUID == "" {
 					return nil, fmt.Errorf("source instance %q backup component %q is missing its backup UUID", instance.Name, backup.Component)
 				}
-				if existing, found := result[instance.UUID]; found && existing != backupUUID {
-					return nil, fmt.Errorf("source instance %q export contains multiple backup snapshots", instance.Name)
+				component := normalizeBackupComponent(backup.Component)
+				if component == "" {
+					return nil, fmt.Errorf("source instance %q backup is missing its component", instance.Name)
 				}
-				result[instance.UUID] = backupUUID
+				if result[instance.UUID] == nil {
+					result[instance.UUID] = map[string]string{}
+				}
+				if existing, found := result[instance.UUID][component]; found && existing != backupUUID {
+					return nil, fmt.Errorf("source instance %q export contains multiple backup files for component %q", instance.Name, component)
+				}
+				result[instance.UUID][component] = backupUUID
 			}
 		}
 	}
 	return result, nil
+}
+
+func normalizeBackupComponent(component string) string {
+	return strings.ToLower(strings.TrimSpace(component))
 }

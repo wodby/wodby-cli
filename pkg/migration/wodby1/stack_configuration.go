@@ -50,22 +50,37 @@ type stackConfigServiceInstance struct {
 
 type stackEnvObservation struct {
 	instanceID string
+	sourceName string
 	envType    string
 	value      string
 	secret     bool
+	variable   EnvVar
 }
 
 type stackCronObservation struct {
 	instanceID string
+	sourceName string
 	envType    string
 	cron       PreparedStackCronSchedule
+	sourceCron CronJob
 }
 
-func prepareStackConfiguration(app PreparedAppMigration) (PreparedStackConfiguration, []ReviewItem, error) {
+type instanceServiceConfigKey struct {
+	instanceID string
+	sourceName string
+}
+
+func prepareStackConfiguration(app *PreparedAppMigration) (PreparedStackConfiguration, []ReviewItem, error) {
+	if app == nil {
+		return PreparedStackConfiguration{}, nil, fmt.Errorf("prepared app is required")
+	}
 	configuration := PreparedStackConfiguration{Services: map[string]PreparedStackServiceConfiguration{}}
 	findings := []ReviewItem{}
 	services := map[string][]stackConfigServiceInstance{}
 	inspections := map[string]TargetStackServiceInspection{}
+	instanceVersions := map[instanceServiceConfigKey]string{}
+	instanceEnvVars := map[instanceServiceConfigKey][]EnvVar{}
+	instanceCrons := map[instanceServiceConfigKey][]CronJob{}
 
 	for _, instance := range app.Instances {
 		for _, source := range instance.Source.Services {
@@ -91,50 +106,90 @@ func prepareStackConfiguration(app PreparedAppMigration) (PreparedStackConfigura
 	for _, targetName := range targetNames {
 		items := services[targetName]
 		serviceConfig := PreparedStackServiceConfiguration{Settings: map[string]string{}}
+		derivative := isTargetServiceDerivative(inspections[targetName])
 
-		versionOptions, versionFindings, err := preparedStackVersionOptions(app.App.App.Name, targetName, items)
-		if err != nil {
-			return PreparedStackConfiguration{}, nil, err
+		if !derivative {
+			versionOptions, versionOverrides, versionFindings, err := preparedStackVersionOptions(app.App.App.Name, targetName, items)
+			if err != nil {
+				return PreparedStackConfiguration{}, nil, err
+			}
+			serviceConfig.VersionOptions = versionOptions
+			for key, version := range versionOverrides {
+				instanceVersions[key] = version
+			}
+			findings = append(findings, versionFindings...)
 		}
-		serviceConfig.VersionOptions = versionOptions
-		findings = append(findings, versionFindings...)
 
-		envVars, envFindings := preparedStackEnvVars(app.App.App.Name, targetName, items)
+		envVars, envOverrides, envFindings := preparedStackEnvVars(app.App.App.Name, targetName, items)
 		serviceConfig.EnvVars = envVars
+		for key, variables := range envOverrides {
+			instanceEnvVars[key] = append(instanceEnvVars[key], variables...)
+		}
 		findings = append(findings, envFindings...)
 
-		settings, settingFindings := preparedStackSettings(app.App.App.Name, targetName, items)
-		serviceConfig.Settings = settings
-		for name, value := range settings {
-			serviceConfig.SettingMappings = append(serviceConfig.SettingMappings, PreparedStackSettingMapping{
-				Source: "Wodby 1 service setting",
-				Name:   name,
-				Value:  value,
-				Action: "set stack override",
-			})
+		if !derivative {
+			settings, settingFindings := preparedStackSettings(app.App.App.Name, targetName, items)
+			serviceConfig.Settings = settings
+			for name, value := range settings {
+				serviceConfig.SettingMappings = append(serviceConfig.SettingMappings, PreparedStackSettingMapping{
+					Source: "Wodby 1 service setting",
+					Name:   name,
+					Value:  value,
+					Action: "set stack override",
+				})
+			}
+			findings = append(findings, settingFindings...)
 		}
-		findings = append(findings, settingFindings...)
 
-		crons, cronFindings := preparedStackCrons(app.App.App.Name, targetName, items)
-		serviceConfig.CronSchedules = append(serviceConfig.CronSchedules, crons...)
-		findings = append(findings, cronFindings...)
-		serviceConfig.CronSchedules = append(serviceConfig.CronSchedules, disabledDefaultCronSchedules(inspections[targetName])...)
+		if !derivative {
+			crons, cronOverrides, cronFindings := preparedStackCrons(app.App.App.Name, targetName, items)
+			serviceConfig.CronSchedules = append(serviceConfig.CronSchedules, crons...)
+			for key, schedules := range cronOverrides {
+				instanceCrons[key] = append(instanceCrons[key], schedules...)
+			}
+			findings = append(findings, cronFindings...)
+			serviceConfig.CronSchedules = append(serviceConfig.CronSchedules, disabledDefaultCronSchedules(inspections[targetName])...)
+		}
 		sortPreparedStackServiceConfiguration(&serviceConfig)
-		configuration.Services[targetName] = serviceConfig
+		if !derivative || preparedStackServiceConfigurationHasChanges(serviceConfig) {
+			configuration.Services[targetName] = serviceConfig
+		}
 	}
-	appSettingFindings := prepareDrupalAppSettings(app, &configuration)
+	applyInstanceServiceConfiguration(app, instanceVersions, instanceEnvVars, instanceCrons)
+	appSettingFindings := prepareDrupalAppSettings(*app, &configuration)
 	findings = append(findings, appSettingFindings...)
-	gotenbergFindings := prepareGotenbergEndpoint(app, &configuration)
+	gotenbergFindings := prepareGotenbergEndpoint(*app, &configuration)
 	findings = append(findings, gotenbergFindings...)
-	addLegacyWodby1CompatibilityMarker(&configuration)
+	addLegacyWodby1CompatibilityMarker(&configuration, inspections)
 	return configuration, findings, nil
 }
 
-func addLegacyWodby1CompatibilityMarker(configuration *PreparedStackConfiguration) {
+func applyInstanceServiceConfiguration(
+	app *PreparedAppMigration,
+	versions map[instanceServiceConfigKey]string,
+	envVars map[instanceServiceConfigKey][]EnvVar,
+	crons map[instanceServiceConfigKey][]CronJob,
+) {
+	for instanceIndex := range app.Instances {
+		instance := &app.Instances[instanceIndex]
+		for sourceName, service := range instance.Services {
+			key := instanceServiceConfigKey{instanceID: instance.Source.UUID, sourceName: sourceName}
+			service.InstanceVersion = versions[key]
+			service.InstanceEnvVars = append([]EnvVar(nil), envVars[key]...)
+			service.InstanceCronJobs = append([]CronJob(nil), crons[key]...)
+			instance.Services[sourceName] = service
+		}
+	}
+}
+
+func addLegacyWodby1CompatibilityMarker(configuration *PreparedStackConfiguration, inspections map[string]TargetStackServiceInspection) {
 	if configuration == nil {
 		return
 	}
 	for name, service := range configuration.Services {
+		if isTargetServiceDerivative(inspections[name]) {
+			continue
+		}
 		found := false
 		for index := range service.EnvVars {
 			if service.EnvVars[index].Name == wodby1LegacyEnvVarsMarker && service.EnvVars[index].EnvType == nil {
@@ -369,30 +424,37 @@ func targetStackInspectionByName(items []TargetStackServiceInspection, name stri
 	return TargetStackServiceInspection{}, false
 }
 
-func preparedStackVersionOptions(appName, targetName string, items []stackConfigServiceInstance) ([]TargetStackServiceOptionInput, []ReviewItem, error) {
+func preparedStackVersionOptions(appName, targetName string, items []stackConfigServiceInstance) ([]TargetStackServiceOptionInput, map[instanceServiceConfigKey]string, []ReviewItem, error) {
 	selected := ""
+	overrides := map[instanceServiceConfigKey]string{}
 	for _, item := range items {
 		version := strings.TrimSpace(item.mapping.TargetVersion)
 		if version == "" {
 			continue
 		}
 		if selected != "" && selected != version {
-			return nil, []ReviewItem{{
-				Severity: SeverityBlocking,
+			for _, candidate := range items {
+				candidateVersion := strings.TrimSpace(candidate.mapping.TargetVersion)
+				if candidateVersion != "" {
+					overrides[instanceServiceConfigKey{instanceID: candidate.instance.Source.UUID, sourceName: candidate.source.Name}] = candidateVersion
+				}
+			}
+			return nil, overrides, []ReviewItem{{
+				Severity: SeverityMigration,
 				App:      appName,
-				Subject:  "stack service " + targetName + " version",
-				Message:  fmt.Sprintf("app instances resolve different target versions (%s and %s); one shared stack cannot represent both, so use consistent --target-version-map overrides", selected, version),
+				Subject:  "service " + targetName + " versions",
+				Message:  "source instances resolve different target versions; each version will be applied as an app-instance service override",
 			}}, nil
 		}
 		selected = version
 	}
 	if selected == "" || len(items) == 0 {
-		return nil, nil, nil
+		return nil, overrides, nil, nil
 	}
 	first := items[0]
 	options, err := effectiveTargetVersionOptions(first.mapping.Target, first.instance.Stack.RevisionManifest)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	currentDefault := ""
 	inputs := make([]TargetStackServiceOptionInput, 0, len(options))
@@ -408,18 +470,19 @@ func preparedStackVersionOptions(appName, targetName string, items []stackConfig
 		})
 	}
 	if !found {
-		return nil, nil, fmt.Errorf("selected target version %q disappeared from stack service %q options", selected, targetName)
+		return nil, nil, nil, fmt.Errorf("selected target version %q disappeared from stack service %q options", selected, targetName)
 	}
 	if currentDefault == selected {
-		return nil, nil, nil
+		return nil, overrides, nil, nil
 	}
-	return inputs, nil, nil
+	return inputs, overrides, nil, nil
 }
 
-func preparedStackEnvVars(appName, targetName string, items []stackConfigServiceInstance) ([]PreparedStackEnvVar, []ReviewItem) {
+func preparedStackEnvVars(appName, targetName string, items []stackConfigServiceInstance) ([]PreparedStackEnvVar, map[instanceServiceConfigKey][]EnvVar, []ReviewItem) {
 	expectedByEnv := map[string]map[string]bool{}
 	observations := map[string][]stackEnvObservation{}
 	findings := []ReviewItem{}
+	overrides := map[instanceServiceConfigKey][]EnvVar{}
 	for _, item := range items {
 		envType := normalizedTargetEnvType(item.instance.TargetEnvType)
 		if expectedByEnv[envType] == nil {
@@ -442,9 +505,11 @@ func preparedStackEnvVars(appName, targetName string, items []stackConfigService
 			}
 			observations[name] = append(observations[name], stackEnvObservation{
 				instanceID: item.instance.Source.UUID,
+				sourceName: item.source.Name,
 				envType:    envType,
 				value:      migratedEnvironmentValue(item.source, variable, targets),
 				secret:     variable.Secret || variable.Protected,
+				variable:   variable,
 			})
 		}
 	}
@@ -461,51 +526,71 @@ func preparedStackEnvVars(appName, targetName string, items []stackConfigService
 		for _, observation := range all {
 			byEnv[observation.envType] = append(byEnv[observation.envType], observation)
 		}
-		conflict := false
+		sharedByEnv := map[string]PreparedStackEnvVar{}
 		for envType, expected := range expectedByEnv {
 			seen := map[string]stackEnvObservation{}
+			invalid := false
 			for _, observation := range byEnv[envType] {
 				if previous, exists := seen[observation.instanceID]; exists && (previous.value != observation.value || previous.secret != observation.secret) {
-					conflict = true
+					findings = append(findings, stackConfigBlocker(appName, observation.instanceID, "env var "+name, "source instance defines the same custom environment variable more than once with different values"))
+					invalid = true
 				}
 				seen[observation.instanceID] = observation
 			}
+			if invalid {
+				continue
+			}
 			if len(seen) != 0 && len(seen) != len(expected) {
-				findings = append(findings, stackConfigBlocker(appName, "", "stack env var "+name, fmt.Sprintf("instances with target environment type %s do not agree on whether this variable exists", envType)))
-				conflict = true
+				for _, observation := range byEnv[envType] {
+					key := instanceServiceConfigKey{instanceID: observation.instanceID, sourceName: observation.sourceName}
+					overrides[key] = append(overrides[key], observation.variable)
+				}
+				continue
 			}
 			value, secret, consistent := commonStackEnvValue(byEnv[envType])
-			_ = value
-			_ = secret
 			if len(byEnv[envType]) != 0 && !consistent {
-				findings = append(findings, stackConfigBlocker(appName, "", "stack env var "+name, fmt.Sprintf("instances with target environment type %s have different values; environment-type scoping cannot distinguish them", envType)))
-				conflict = true
+				for _, observation := range byEnv[envType] {
+					key := instanceServiceConfigKey{instanceID: observation.instanceID, sourceName: observation.sourceName}
+					overrides[key] = append(overrides[key], observation.variable)
+				}
+				continue
 			}
-		}
-		if conflict {
-			continue
+			if len(byEnv[envType]) != 0 {
+				scope := envType
+				sharedByEnv[envType] = PreparedStackEnvVar{Name: name, Value: value, Secret: secret, EnvType: &scope}
+			}
 		}
 		allValue, allSecret, allSame := commonStackEnvValue(all)
 		expectedTotal := 0
 		for _, expected := range expectedByEnv {
 			expectedTotal += len(expected)
 		}
-		if allSame && len(uniqueStackEnvInstances(all)) == expectedTotal {
+		if allSame && len(uniqueStackEnvInstances(all)) == expectedTotal && len(overridesForEnvVariable(overrides, name)) == 0 {
 			result = append(result, PreparedStackEnvVar{Name: name, Value: allValue, Secret: allSecret})
 			continue
 		}
-		envTypes := make([]string, 0, len(byEnv))
-		for envType := range byEnv {
+		envTypes := make([]string, 0, len(sharedByEnv))
+		for envType := range sharedByEnv {
 			envTypes = append(envTypes, envType)
 		}
 		sort.Strings(envTypes)
 		for _, envType := range envTypes {
-			value, secret, _ := commonStackEnvValue(byEnv[envType])
-			scope := envType
-			result = append(result, PreparedStackEnvVar{Name: name, Value: value, Secret: secret, EnvType: &scope})
+			result = append(result, sharedByEnv[envType])
 		}
 	}
-	return result, findings
+	return result, overrides, findings
+}
+
+func overridesForEnvVariable(overrides map[instanceServiceConfigKey][]EnvVar, name string) []EnvVar {
+	result := []EnvVar{}
+	for _, variables := range overrides {
+		for _, variable := range variables {
+			if variable.Name == name {
+				result = append(result, variable)
+			}
+		}
+	}
+	return result
 }
 
 func preparedStackSettings(appName, targetName string, items []stackConfigServiceInstance) (map[string]string, []ReviewItem) {
@@ -513,6 +598,9 @@ func preparedStackSettings(appName, targetName string, items []stackConfigServic
 	findings := []ReviewItem{}
 	for _, item := range items {
 		for name, raw := range item.source.Configuration {
+			if name == "deployment" || name == "resources" {
+				continue
+			}
 			value, err := scalarConfigurationValue(raw)
 			if err != nil {
 				findings = append(findings, stackConfigBlocker(appName, item.instance.Source.Name, "stack service "+targetName+" setting "+name, err.Error()))
@@ -549,10 +637,11 @@ func preparedStackSettings(appName, targetName string, items []stackConfigServic
 	return result, findings
 }
 
-func preparedStackCrons(appName, targetName string, items []stackConfigServiceInstance) ([]PreparedStackCronSchedule, []ReviewItem) {
+func preparedStackCrons(appName, targetName string, items []stackConfigServiceInstance) ([]PreparedStackCronSchedule, map[instanceServiceConfigKey][]CronJob, []ReviewItem) {
 	expectedByEnv := map[string]map[string]bool{}
 	observations := map[string][]stackCronObservation{}
 	findings := []ReviewItem{}
+	overrides := map[instanceServiceConfigKey][]CronJob{}
 	for _, item := range items {
 		envType := normalizedTargetEnvType(item.instance.TargetEnvType)
 		if expectedByEnv[envType] == nil {
@@ -575,11 +664,13 @@ func preparedStackCrons(appName, targetName string, items []stackConfigServiceIn
 			name := "w1-" + shortDigest(targetName, title, cron.Crontab, command)
 			observations[name] = append(observations[name], stackCronObservation{
 				instanceID: item.instance.Source.UUID,
+				sourceName: item.source.Name,
 				envType:    envType,
 				cron: PreparedStackCronSchedule{
 					Name: name, Title: title, Crontab: cron.Crontab, Command: command,
 					Disabled: item.instance.DisableCronSchedules,
 				},
+				sourceCron: cron,
 			})
 		}
 	}
@@ -595,41 +686,60 @@ func preparedStackCrons(appName, targetName string, items []stackConfigServiceIn
 		for _, observation := range all {
 			byEnv[observation.envType] = append(byEnv[observation.envType], observation)
 		}
-		conflict := false
+		sharedByEnv := map[string]PreparedStackCronSchedule{}
 		for envType, expected := range expectedByEnv {
 			seen := map[string]bool{}
 			for _, observation := range byEnv[envType] {
 				seen[observation.instanceID] = true
 			}
 			if len(seen) != 0 && len(seen) != len(expected) {
-				findings = append(findings, stackConfigBlocker(appName, "", "stack cron "+name, fmt.Sprintf("instances with target environment type %s do not use the same schedule", envType)))
-				conflict = true
+				for _, observation := range byEnv[envType] {
+					key := instanceServiceConfigKey{instanceID: observation.instanceID, sourceName: observation.sourceName}
+					overrides[key] = append(overrides[key], observation.sourceCron)
+				}
+				continue
 			}
-		}
-		if conflict {
-			continue
+			if len(byEnv[envType]) != 0 {
+				cron := byEnv[envType][0].cron
+				scope := envType
+				cron.EnvType = &scope
+				sharedByEnv[envType] = cron
+			}
 		}
 		expectedTotal := 0
 		for _, expected := range expectedByEnv {
 			expectedTotal += len(expected)
 		}
-		if len(uniqueStackCronInstances(all)) == expectedTotal {
+		if len(uniqueStackCronInstances(all)) == expectedTotal && len(overridesForCron(overrides, name, targetName)) == 0 {
 			result = append(result, all[0].cron)
 			continue
 		}
-		envTypes := make([]string, 0, len(byEnv))
-		for envType := range byEnv {
+		envTypes := make([]string, 0, len(sharedByEnv))
+		for envType := range sharedByEnv {
 			envTypes = append(envTypes, envType)
 		}
 		sort.Strings(envTypes)
 		for _, envType := range envTypes {
-			cron := byEnv[envType][0].cron
-			scope := envType
-			cron.EnvType = &scope
-			result = append(result, cron)
+			result = append(result, sharedByEnv[envType])
 		}
 	}
-	return result, findings
+	return result, overrides, findings
+}
+
+func overridesForCron(overrides map[instanceServiceConfigKey][]CronJob, name, targetName string) []CronJob {
+	result := []CronJob{}
+	for _, schedules := range overrides {
+		for _, cron := range schedules {
+			title := strings.TrimSpace(cron.Title)
+			if title == "" {
+				title = "Migrated Wodby 1 cron"
+			}
+			if "w1-"+shortDigest(targetName, title, cron.Crontab, migratedEnvironmentReferences(cron.Command)) == name {
+				result = append(result, cron)
+			}
+		}
+	}
+	return result
 }
 
 func disabledDefaultCronSchedules(inspection TargetStackServiceInspection) []PreparedStackCronSchedule {
@@ -738,11 +848,15 @@ func optionalStringValue(value *string) string {
 
 func stackConfigurationHasChanges(configuration PreparedStackConfiguration) bool {
 	for _, service := range configuration.Services {
-		if len(service.VersionOptions) != 0 || len(service.EnvVars) != 0 || len(service.Settings) != 0 || len(service.CronSchedules) != 0 || len(service.Integrations) != 0 || len(service.Links) != 0 {
+		if preparedStackServiceConfigurationHasChanges(service) {
 			return true
 		}
 	}
 	return false
+}
+
+func preparedStackServiceConfigurationHasChanges(service PreparedStackServiceConfiguration) bool {
+	return service.Replicas != nil || service.Resources != nil || len(service.VersionOptions) != 0 || len(service.EnvVars) != 0 || len(service.Settings) != 0 || len(service.CronSchedules) != 0 || len(service.Integrations) != 0 || len(service.Links) != 0
 }
 
 func appUsesExplicitTargetStack(plan *AppPlan) bool {

@@ -30,6 +30,12 @@ func TestPrepareMailDeliveryLinksUsesStackScopeForSharedSelection(t *testing.T) 
 	if !hasReviewMessage(findings, SeverityMigration, "will be set stack-wide") {
 		t.Fatalf("findings = %#v", findings)
 	}
+	if links := app.StackConfiguration.Services["sshd"].Links; len(links) != 0 {
+		t.Fatalf("PHP SSH derivative received a direct mail link: %#v", links)
+	}
+	if hasReviewMessage(findings, SeverityMigration, `stack service "sshd" link "sendmail"`) {
+		t.Fatalf("PHP SSH derivative link was reported separately: %#v", findings)
+	}
 }
 
 func TestPrepareMailDeliveryLinksUsesInstanceScopeForDifferentSelections(t *testing.T) {
@@ -107,6 +113,12 @@ func mailDeliveryTestInstance(name, selected string) PreparedInstance {
 		StackService:    TargetStackService{ID: 12, Name: "mailpit", ServiceRevID: 102},
 		ServiceRevision: TargetServiceRevision{ID: 102, ServiceID: 1002},
 	}}
+	sshd := PreparedService{Target: TargetStackServiceInspection{
+		StackService: TargetStackService{ID: 13, Name: "sshd", Type: "ssh", ServiceRevID: 100},
+		ServiceRevision: TargetServiceRevision{
+			ID: 100, Name: "drupal-php", Type: "php", ServiceID: 1000, Manifest: phpManifest,
+		},
+	}}
 	return PreparedInstance{
 		Source: Instance{
 			UUID: name, Name: name, Stack: Stack{Name: "drupal11"},
@@ -118,8 +130,8 @@ func mailDeliveryTestInstance(name, selected string) PreparedInstance {
 			},
 		},
 		Services: map[string]PreparedService{
-			"php": php, "opensmtpd": opensmtpd, "mailhog": mailpit,
+			"php": php, "opensmtpd": opensmtpd, "mailhog": mailpit, "sshd": sshd,
 		},
-		EffectiveState: map[string]bool{"php": true, "opensmtpd": true, "mailpit": true},
+		EffectiveState: map[string]bool{"php": true, "opensmtpd": true, "mailpit": true, "sshd": true},
 	}
 }

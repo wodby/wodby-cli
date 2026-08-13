@@ -215,7 +215,7 @@ func TestPreflightTargetSelectsPublicCatalogStackForManagedAppByDefault(t *testi
 	}
 }
 
-func TestPreflightTargetBlocksRepositoryNameMissingFromIntegration(t *testing.T) {
+func TestPreflightTargetWarnsAndUsesCustomCIWhenRepositoryIsMissingFromIntegration(t *testing.T) {
 	export := preflightFixtureExport(true)
 	export.Apps[0].Instances[0].Services = []Service{{Name: "php", Enabled: true}}
 	options := preflightOwnerPlanOptions()
@@ -239,12 +239,17 @@ func TestPreflightTargetBlocksRepositoryNameMissingFromIntegration(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared.Instances[0].BuildSource != nil {
-		t.Fatalf("missing repository produced build source %#v", prepared.Instances[0].BuildSource)
+	if prepared.Instances[0].BuildSource == nil || prepared.Instances[0].BuildSource.ServiceName != "php" ||
+		prepared.Instances[0].BuildSource.Input.BuildSourceType != "" || !prepared.Instances[0].ExternalCIOnly {
+		t.Fatalf("missing repository Custom CI preparation = %#v", prepared.Instances[0])
 	}
 	if plan.Apps[0].Repository.RemoteGitRepoID != "" ||
-		!preflightHasReview(plan, SeverityBlocking, "repository", "--target-repository-name") {
+		plan.Apps[0].Repository.Action != "unlinked" ||
+		!preflightHasReview(plan, SeverityServiceWarning, "repository", "continue without a Git link") {
 		t.Fatalf("missing repository review = %#v", plan.Review)
+	}
+	if plan.Summary.Blocking != 0 {
+		t.Fatalf("missing optional repository blocked migration: %#v", plan.Review)
 	}
 }
 
@@ -477,6 +482,7 @@ func TestPreflightTargetPreparesEveryServerAppWithPerAppRecovery(t *testing.T) {
 	catalog := preflightOfficialCatalog()
 	catalog.apps = []TargetApp{{ID: 91, Name: "second", OrgID: 8}}
 	api := newPreflightTargetAPI(t, catalog)
+	progress := []TargetPreflightProgress{}
 
 	prepared, err := api.client.PreflightTarget(
 		context.Background(),
@@ -486,6 +492,9 @@ func TestPreflightTargetPreparesEveryServerAppWithPerAppRecovery(t *testing.T) {
 			SkipCode:            true,
 			SkipData:            true,
 			AllowedTargetAppIDs: map[string]int{"app-2": 91},
+			Progress: func(event TargetPreflightProgress) {
+				progress = append(progress, event)
+			},
 		},
 	)
 	if err != nil {
@@ -502,6 +511,18 @@ func TestPreflightTargetPreparesEveryServerAppWithPerAppRecovery(t *testing.T) {
 	}
 	if preflightHasReview(plan, SeverityBlocking, "target app name", "") {
 		t.Fatalf("state-backed server app was treated as a collision: %#v", plan.Review)
+	}
+	if len(progress) != 6 {
+		t.Fatalf("preflight progress = %#v, want app/instance/completion for two apps", progress)
+	}
+	for index, stage := range []string{"app", "instance", "app_complete", "app", "instance", "app_complete"} {
+		if progress[index].Stage != stage {
+			t.Fatalf("preflight progress[%d] = %#v, want stage %q", index, progress[index], stage)
+		}
+	}
+	if progress[0].AppIndex != 1 || progress[0].AppTotal != 2 || progress[0].InstanceTotal != 1 ||
+		progress[3].AppIndex != 2 || progress[4].InstanceIndex != 1 {
+		t.Fatalf("preflight progress counters = %#v", progress)
 	}
 }
 
@@ -1208,7 +1229,7 @@ func TestPreflightTargetResolvesUniqueImportsAndRequiresMapForAmbiguity(t *testi
 	})
 }
 
-func TestPreflightTargetBlocksEnabledBuildServiceWithoutSourceRepository(t *testing.T) {
+func TestPreflightTargetUsesCustomCIForBuildServiceWithoutSourceRepository(t *testing.T) {
 	export := preflightFixtureExport(false)
 	export.Apps[0].Instances[0].Services = []Service{{Name: "php", Enabled: true}}
 	api := newPreflightTargetAPI(t, preflightSingleBuildCatalog("php", false))
@@ -1223,16 +1244,20 @@ func TestPreflightTargetBlocksEnabledBuildServiceWithoutSourceRepository(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared.Instances[0].BuildSource != nil {
-		t.Fatalf("build source without repository = %#v", prepared.Instances[0].BuildSource)
+	if prepared.Instances[0].BuildSource == nil || prepared.Instances[0].BuildSource.ServiceName != "php" ||
+		prepared.Instances[0].BuildSource.Input.BuildSourceType != "" || !prepared.Instances[0].ExternalCIOnly {
+		t.Fatalf("build source without repository = %#v", prepared.Instances[0])
 	}
 	if !preflightHasReview(
 		plan,
-		SeverityBlocking,
+		SeverityMigration,
 		"application code",
-		"has no repository",
+		"Custom CI without a linked Git repository",
 	) {
 		t.Fatalf("missing repository review = %#v", plan.Review)
+	}
+	if plan.Summary.Blocking != 0 {
+		t.Fatalf("repository-less Custom CI migration blocked: %#v", plan.Review)
 	}
 
 	skippedPlan := preflightBuildPlan(t, export, preflightOwnerPlanOptions())
@@ -1304,6 +1329,8 @@ func newPreflightTargetAPI(t *testing.T, catalog preflightTargetCatalog) *prefli
 			return
 		}
 		switch {
+		case request.URL.Path == "/v1/providers/by-name/custom-ci":
+			preflightWriteJSON(w, TargetProvider{ID: 501, RevID: 502, Name: "custom-ci", Title: "Custom CI"})
 		case request.URL.Path == "/v1/catalog/stacks":
 			preflightWriteJSON(w, catalog.publicStacks)
 		case request.URL.Path == "/v1/apps":

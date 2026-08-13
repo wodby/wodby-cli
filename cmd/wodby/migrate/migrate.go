@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -82,6 +83,7 @@ type serverAppMigrationOutput struct {
 	Name          string `json:"name"`
 	StateFile     string `json:"stateFile"`
 	Status        string `json:"status"`
+	Error         string `json:"error,omitempty"`
 }
 
 type serverMigrationOutput struct {
@@ -131,8 +133,9 @@ and rerun the same command with --verify to validate the completed migration.
 
 The migration exports only the selected
 instance and its parent app metadata, then creates a new Wodby 2 app containing
-that instance. By default it imports the latest successful backup shown in the
-preview. Use --source-backup BACKUP_UUID to select a different snapshot, or
+that instance. By default it imports the newest successful backup file for each
+required component shown in the preview. Use --source-backup BACKUP_UUID to pin
+all components to a different complete snapshot, or
 --skip-data to omit data. Changes made after the selected backup completed are
 not migrated. Apply is resumable and stores its plan and state in the system
 temporary directory. When state exists, the same --apply command preserves the saved plan
@@ -162,11 +165,13 @@ func newWodby1ServerCommand() *cobra.Command {
 		Long: `Migrate every application hosted on one Wodby 1 server. The default
 command is a read-only preview; --apply performs the resumable migrations and
 --verify validates them after testing and DNS cutover. Each application has an
-isolated resume-state file and is
-processed sequentially. A shared --target-git-integration-id searches that
-integration for every source repository by name; use --target-repository-map
-for per-app integrations or repository-name overrides, or intentionally use --skip-code.
-By default, the latest successful backup of every included instance is selected.
+isolated resume-state file and is processed sequentially. Runtime failures are
+reported per app while remaining apps continue. A shared
+--target-git-integration-id searches that integration for every source
+repository by name; use --target-repository-map for per-app integrations or
+repository-name overrides. A missing repository match falls back to unlinked
+Custom CI. Use --skip-code only to omit code migration intentionally.
+By default, the newest successful file for each required backup component is selected.
 Use repeatable --source-backup APP/INSTANCE=BACKUP_UUID values to override
 individual snapshots, or --skip-data to omit data. Changes after each selected
 backup completed are not migrated. Test the
@@ -176,9 +181,9 @@ migrated apps before changing DNS, then use --verify. When per-app state exists,
 		Example: `  export WODBY1_SOURCE_TOKEN=...
   export WODBY_API_KEY=...
 
-  wodby migrate wodby1 server SERVER_UUID --target-cluster CLUSTER --skip-code [target and mapping options]
-  wodby migrate wodby1 server SERVER_UUID --target-cluster CLUSTER --skip-code [same options] --apply
-  wodby migrate wodby1 server SERVER_UUID --target-cluster CLUSTER --skip-code [same options] --verify`,
+  wodby migrate wodby1 server SERVER_UUID --target-cluster CLUSTER [target and mapping options]
+  wodby migrate wodby1 server SERVER_UUID --target-cluster CLUSTER [same options] --apply
+  wodby migrate wodby1 server SERVER_UUID --target-cluster CLUSTER [same options] --verify`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWodby1Server(cmd, args[0], opts)
@@ -216,9 +221,10 @@ func newWodby1AppCommand() *cobra.Command {
 		Long: `Migrate one Wodby 1 application. The default command is a read-only
 preview. Add --apply to create and populate the target, test it using its
 technical route, and change DNS only after testing succeeds. Rerun the same
-command with --verify after DNS cutover. By default, the latest successful
-backup of every instance is selected. Use repeatable --source-backup
-INSTANCE=BACKUP_UUID values to override snapshots, or --skip-data to omit data.
+command with --verify after DNS cutover. By default, the newest successful file
+for each required backup component is selected. Use repeatable --source-backup
+INSTANCE=BACKUP_UUID values to pin all components to explicit complete
+snapshots, or --skip-data to omit data.
 Changes after each selected backup completed are not migrated. If a target mutation is ambiguous, inspect Wodby 2 and pass
 --retry-ambiguous only with the exact operation ID printed by the command. When
 state exists, --apply preserves the saved plan and continues completed work;
@@ -272,8 +278,8 @@ func bindFlags(cmd *cobra.Command, opts *options) {
 	cmd.Flags().StringArrayVar(&opts.targetVersionMap, "target-version-map", nil, "Source-service version override ([APP/][INSTANCE/]SOURCE_SERVICE=TARGET_VERSION)")
 	cmd.Flags().StringArrayVar(&opts.targetImportMap, "target-import-map", nil, "Backup-to-import mapping ([APP/][INSTANCE/]COMPONENT=SERVICE:IMPORT)")
 
-	cmd.Flags().IntVar(&opts.targetCIIntegrationID, "target-ci-integration-id", 0, "Wodby 2 CI integration ID (defaults to 0 for built-in Wodby CI)")
-	cmd.Flags().IntVar(&opts.targetGitIntegrationID, "target-git-integration-id", 0, "Wodby 2 Git integration ID used to resolve the source repository")
+	cmd.Flags().IntVar(&opts.targetCIIntegrationID, "target-ci-integration-id", 0, "Wodby 2 CI integration ID override (otherwise Wodby CI with a linked repository, or automatic Custom CI fallback)")
+	cmd.Flags().IntVar(&opts.targetGitIntegrationID, "target-git-integration-id", 0, "Optional Wodby 2 Git integration ID used to find and link the source repository")
 	cmd.Flags().StringVar(&opts.targetRepositoryName, "target-repository-name", "", "Exact repository name in the selected Wodby 2 Git integration (defaults to the name derived from the Wodby 1 repository URL)")
 	cmd.Flags().StringVar(&opts.targetCodeService, "target-code-service", "", "Target connect-build service name when the stack has more than one")
 	cmd.Flags().StringVar(&opts.targetGitRef, "target-git-ref", "", "Git branch, tag, or commit to build (defaults to the source ref)")
@@ -466,6 +472,8 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 	if err != nil {
 		return err
 	}
+	preparation := newMigrationPreparationProgress(cmd, sourceKind)
+	preparation.StartStep("Discover Wodby 2 target scope")
 
 	// Verify the caller's role in the selected destination organization before
 	// asking Wodby 1 for the secret-bearing export.
@@ -524,10 +532,11 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 			printSingleResumeTargetValidated(cmd)
 		}
 	}
+	preparation.CompleteStep(fmt.Sprintf("Target %s / %s is ready.", scope.Org.Name, scope.Cluster.Name))
 
 	// The customer command transfers required credentials in memory. Wodby 1
 	// independently authorizes this export using the source organization role.
-	var exportSource func(context.Context, string, map[string]string) (wodby1.Export, error)
+	var exportSource func(context.Context, string, wodby1.SourceBackupSelection) (wodby1.Export, error)
 	switch sourceKind {
 	case "app":
 		exportSource = sourceClient.ExportAppWithBackups
@@ -536,13 +545,14 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 	default:
 		return errors.Errorf("unsupported single migration source kind %q", sourceKind)
 	}
-	backupSelection := map[string]string{}
+	backupSelection := wodby1.SourceBackupSelection{}
 	if reviewedPlan != nil {
 		backupSelection, err = wodby1.PlanSourceBackups(*reviewedPlan)
 		if err != nil {
 			return err
 		}
 	}
+	preparation.StartStep("Export and select Wodby 1 source data")
 	export, err := exportSource(cmd.Context(), sourceID, backupSelection)
 	if err != nil {
 		return err
@@ -561,7 +571,7 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 		if err != nil {
 			return err
 		}
-		if !sameStringMap(requested, backupSelection) {
+		if !sameSourceBackupSelection(requested, backupSelection) {
 			return errors.New("--source-backup does not match the snapshots pinned by the applied plan; use the original selection or restart before target changes")
 		}
 	}
@@ -573,7 +583,9 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 	if err != nil {
 		return err
 	}
+	preparation.CompleteStep(migrationExportSummary(export))
 
+	preparation.StartStep("Resolve target environment types")
 	selectors, err := wodby1.TargetEnvironmentSelectors(export, envMap)
 	if err != nil {
 		return err
@@ -586,7 +598,9 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 	for _, item := range resolved {
 		targetEnvs[item.Selector] = item.Env
 	}
+	preparation.CompleteStep(fmt.Sprintf("Resolved %d target environment selector(s).", len(resolved)))
 
+	preparation.StartStep("Build migration plan")
 	plan, err := wodby1.BuildPlan(export, wodby1.PlanOptions{
 		SourceKind:                    sourceKind,
 		SourceID:                      sourceID,
@@ -622,18 +636,23 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 			return err
 		}
 	}
+	preparation.CompleteStep(fmt.Sprintf("Planned %d app(s) and %d instance(s).", plan.Summary.Apps, plan.Summary.Instances))
+	preparation.StartStep("Inspect target mappings and capabilities")
 	prepared, err := targetClient.PreflightTarget(cmd.Context(), export, &plan, wodby1.TargetPreflightOptions{
 		SkipCode:                    opts.skipCode,
 		SkipData:                    opts.skipData,
 		GitRef:                      opts.targetGitRef,
 		GitRefType:                  opts.targetGitRefType,
+		CodeService:                 opts.targetCodeService,
 		AllowedTargetAppID:          allowedTargetAppID,
 		AllowStateBackedAppRecovery: allowTargetAppRecovery,
 		AddMissingServices:          opts.addMissingServices,
+		Progress:                    preparation.TargetPreflight,
 	})
 	if err != nil {
 		return err
 	}
+	preparation.CompleteStep("Target preflight completed.")
 
 	if !opts.apply && !opts.verify {
 		return printPreview(cmd, plan, prepared)
@@ -738,10 +757,7 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 }
 
 func migrationProgressReporter(cmd *cobra.Command) func(string) {
-	w := cmd.OutOrStdout()
-	if planOutputJSON(cmd) {
-		w = cmd.ErrOrStderr()
-	}
+	w := migrationProgressWriter(cmd)
 	step := 0
 	return func(message string) {
 		message = strings.TrimSpace(message)
@@ -763,6 +779,80 @@ func migrationProgressReporter(cmd *cobra.Command) func(string) {
 		}
 		fmt.Fprintf(w, "  %s\n", cliColor(w, progressMessageColor(message), message))
 	}
+}
+
+const migrationPreparationSteps = 5
+
+type migrationPreparationProgress struct {
+	w       io.Writer
+	enabled bool
+	kind    string
+	step    int
+}
+
+func newMigrationPreparationProgress(cmd *cobra.Command, sourceKind string) *migrationPreparationProgress {
+	sourceKind = strings.ToLower(strings.TrimSpace(sourceKind))
+	return &migrationPreparationProgress{
+		w:       migrationProgressWriter(cmd),
+		enabled: sourceKind == "app" || sourceKind == "server",
+		kind:    sourceKind,
+	}
+}
+
+func (p *migrationPreparationProgress) StartStep(title string) {
+	if p == nil || !p.enabled {
+		return
+	}
+	if p.step == 0 {
+		title := p.kind
+		if title != "" {
+			title = strings.ToUpper(title[:1]) + title[1:]
+		}
+		fmt.Fprintf(p.w, "\n%s\n", cliColor(p.w, cliColorBold+cliColorCyan, title+" migration preparation"))
+	}
+	p.step++
+	fmt.Fprintf(p.w, "\n%s\n", cliColor(p.w, cliColorBold+cliColorCyan, fmt.Sprintf("[%d/%d] %s", p.step, migrationPreparationSteps, title)))
+}
+
+func (p *migrationPreparationProgress) CompleteStep(message string) {
+	if p == nil || !p.enabled || strings.TrimSpace(message) == "" {
+		return
+	}
+	fmt.Fprintf(p.w, "  %s\n", cliColor(p.w, cliColorGreen, strings.TrimSpace(message)))
+}
+
+func (p *migrationPreparationProgress) TargetPreflight(event wodby1.TargetPreflightProgress) {
+	if p == nil || !p.enabled {
+		return
+	}
+	switch event.Stage {
+	case "app":
+		fmt.Fprintf(
+			p.w,
+			"  %s\n",
+			cliColor(p.w, cliColorBold, fmt.Sprintf("App %d/%d: %s (%d instance(s))", event.AppIndex, event.AppTotal, event.AppName, event.InstanceTotal)),
+		)
+	case "instance":
+		fmt.Fprintf(p.w, "    Instance %d/%d: %s\n", event.InstanceIndex, event.InstanceTotal, event.InstanceName)
+	case "app_complete":
+		fmt.Fprintf(p.w, "    %s\n", cliColor(p.w, cliColorGreen, fmt.Sprintf("App %d/%d inspected.", event.AppIndex, event.AppTotal)))
+	}
+}
+
+func migrationProgressWriter(cmd *cobra.Command) io.Writer {
+	if planOutputJSON(cmd) {
+		return cmd.ErrOrStderr()
+	}
+	return cmd.OutOrStdout()
+}
+
+func migrationExportSummary(export wodby1.Export) string {
+	apps := export.AppExports()
+	instances := 0
+	for _, app := range apps {
+		instances += len(app.Instances)
+	}
+	return fmt.Sprintf("Selected %d app(s) and %d instance(s) from Wodby 1.", len(apps), instances)
 }
 
 func migrationProgressStepTitle(message string) (string, bool) {
@@ -928,6 +1018,8 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 	if err != nil {
 		return err
 	}
+	preparation := newMigrationPreparationProgress(cmd, "server")
+	preparation.StartStep("Discover Wodby 2 target scope")
 	scope, err := targetClient.DiscoverTargetScope(cmd.Context(), wodby1.TargetScopeSelectors{
 		Project: opts.targetProject,
 		Cluster: opts.targetCluster,
@@ -957,14 +1049,16 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 			return incompatibleTargetAppExistsError(incompatiblePlan, planPath, path, state)
 		}
 	}
+	preparation.CompleteStep(fmt.Sprintf("Target %s / %s is ready.", scope.Org.Name, scope.Cluster.Name))
 
-	backupSelection := map[string]string{}
+	backupSelection := wodby1.SourceBackupSelection{}
 	if reviewedPlan != nil {
 		backupSelection, err = wodby1.PlanSourceBackups(*reviewedPlan)
 		if err != nil {
 			return err
 		}
 	}
+	preparation.StartStep("Export and select Wodby 1 source data")
 	export, err := sourceClient.ExportServerWithBackups(cmd.Context(), sourceID, backupSelection)
 	if err != nil {
 		return err
@@ -983,7 +1077,7 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 		if err != nil {
 			return err
 		}
-		if !sameStringMap(requested, backupSelection) {
+		if !sameSourceBackupSelection(requested, backupSelection) {
 			return errors.New("--source-backup does not match the snapshots pinned by the applied plan; use the original selection or restart before target changes")
 		}
 	}
@@ -1001,7 +1095,9 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 	if err := validateServerArtifactPaths(planPath, statePath, export); err != nil {
 		return err
 	}
+	preparation.CompleteStep(migrationExportSummary(export))
 
+	preparation.StartStep("Resolve target environment types")
 	selectors, err := wodby1.TargetEnvironmentSelectors(export, envMap)
 	if err != nil {
 		return err
@@ -1014,7 +1110,9 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 	for _, item := range resolved {
 		targetEnvs[item.Selector] = item.Env
 	}
+	preparation.CompleteStep(fmt.Sprintf("Resolved %d target environment selector(s).", len(resolved)))
 
+	preparation.StartStep("Build migration plan")
 	plan, err := wodby1.BuildPlan(export, wodby1.PlanOptions{
 		SourceKind:                    "server",
 		SourceID:                      sourceID,
@@ -1051,6 +1149,7 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 			return err
 		}
 	}
+	preparation.CompleteStep(fmt.Sprintf("Planned %d app(s) and %d instance(s).", plan.Summary.Apps, plan.Summary.Instances))
 
 	allowedTargetAppIDs := map[string]int{}
 	stateBackedRecovery := map[string]bool{}
@@ -1089,18 +1188,22 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 			stateBackedRecovery[app.SourceUUID] = allowRecovery
 		}
 	}
+	preparation.StartStep("Inspect target mappings and capabilities")
 	prepared, err := targetClient.PreflightTarget(cmd.Context(), export, &plan, wodby1.TargetPreflightOptions{
 		SkipCode:               opts.skipCode,
 		SkipData:               opts.skipData,
 		GitRef:                 opts.targetGitRef,
 		GitRefType:             opts.targetGitRefType,
+		CodeService:            opts.targetCodeService,
 		AllowedTargetAppIDs:    allowedTargetAppIDs,
 		StateBackedAppRecovery: stateBackedRecovery,
 		AddMissingServices:     opts.addMissingServices,
+		Progress:               preparation.TargetPreflight,
 	})
 	if err != nil {
 		return err
 	}
+	preparation.CompleteStep("Target preflight completed.")
 
 	if !opts.apply && !opts.verify {
 		return printPreview(cmd, plan, prepared)
@@ -1201,20 +1304,38 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 		})
 	}
 	results := make([]serverAppMigrationOutput, 0, len(executions))
-	for _, execution := range executions {
+	failedApps := 0
+	serverAction := "verification"
+	if opts.apply {
+		serverAction = "migration"
+	}
+	progressWriter := migrationProgressWriter(cmd)
+	for executionIndex, execution := range executions {
+		fmt.Fprintf(
+			progressWriter,
+			"\n%s\n",
+			cliColor(progressWriter, cliColorBold+cliColorCyan, fmt.Sprintf("Server %s: app %d/%d: %s", serverAction, executionIndex+1, len(executions), execution.name)),
+		)
 		if opts.apply {
 			_, err = execution.executor.Apply(cmd.Context(), execution.export, execution.plan, execution.prepared)
 		} else {
 			_, err = execution.executor.Verify(cmd.Context(), execution.export, execution.plan, execution.prepared, scope.Cluster)
 		}
 		if err != nil {
-			return errors.Wrapf(
-				err,
-				"migrate source app %s (%s) with state file %s",
-				execution.name,
-				execution.sourceAppUUID,
-				execution.statePath,
+			failedApps++
+			results = append(results, serverAppMigrationOutput{
+				SourceAppUUID: execution.sourceAppUUID,
+				Name:          execution.name,
+				StateFile:     execution.statePath,
+				Status:        "failed; rerun to resume",
+				Error:         err.Error(),
+			})
+			fmt.Fprintf(
+				progressWriter,
+				"%s\n",
+				cliColor(progressWriter, cliColorRed, fmt.Sprintf("App %d/%d failed: %s. Continuing with the next app.", executionIndex+1, len(executions), execution.name)),
 			)
+			continue
 		}
 		results = append(results, serverAppMigrationOutput{
 			SourceAppUUID: execution.sourceAppUUID,
@@ -1222,12 +1343,23 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 			StateFile:     execution.statePath,
 			Status:        publicMigrationStatus(opts.apply),
 		})
+		fmt.Fprintf(
+			progressWriter,
+			"%s\n",
+			cliColor(progressWriter, cliColorGreen, fmt.Sprintf("App %d/%d completed: %s", executionIndex+1, len(executions), execution.name)),
+		)
 	}
 	action := "verify"
 	if opts.apply {
 		action = "apply"
 	}
-	return printServerMigrationResult(cmd, action, plan, planPath, results)
+	if err := printServerMigrationResult(cmd, action, plan, planPath, results); err != nil {
+		return err
+	}
+	if failedApps != 0 {
+		return errors.Errorf("server migration completed with %d failed app(s); inspect the result above and rerun the same command to resume", failedApps)
+	}
+	return nil
 }
 
 func validateOptions(opts *options) error {
@@ -1319,6 +1451,38 @@ func sameStringMap(left, right map[string]string) bool {
 	for key, value := range left {
 		if right[key] != value {
 			return false
+		}
+	}
+	return true
+}
+
+func sameSourceBackupSelection(left, right wodby1.SourceBackupSelection) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for instanceID, leftComponents := range left {
+		rightComponents, found := right[instanceID]
+		if !found {
+			return false
+		}
+		if selected := strings.TrimSpace(leftComponents["*"]); selected != "" {
+			if len(rightComponents) == 0 {
+				return false
+			}
+			for _, backupUUID := range rightComponents {
+				if backupUUID != selected {
+					return false
+				}
+			}
+			continue
+		}
+		if len(leftComponents) != len(rightComponents) {
+			return false
+		}
+		for component, backupUUID := range leftComponents {
+			if rightComponents[component] != backupUUID {
+				return false
+			}
 		}
 	}
 	return true
@@ -1846,6 +2010,7 @@ func printPreview(cmd *cobra.Command, plan wodby1.Plan, prepared ...wodby1.Prepa
 			cliColor(cmd.OutOrStdout(), cliColorRed, fmt.Sprintf("Fix the %d blocking item(s) above, then rerun this preview.", plan.Summary.Blocking)),
 		)
 		fmt.Fprintln(cmd.OutOrStdout(), "This preview made no changes.")
+		printInstanceExclusionHints(cmd, plan)
 		return nil
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), cliColor(cmd.OutOrStdout(), cliColorGreen, "No blockers found."))
@@ -2033,8 +2198,43 @@ func printDeletedTargetRestartNotice(cmd *cobra.Command, planPath string, stateP
 func rejectBlockedMigrationAction(cmd *cobra.Command, plan wodby1.Plan, action string, prepared ...wodby1.PreparedMigration) error {
 	if !planOutputJSON(cmd) {
 		wodby1.PrintReview(cmd.OutOrStdout(), plan, prepared...)
+		printInstanceExclusionHints(cmd, plan)
 	}
 	return errors.Errorf("cannot %s migration: resolve the %d blocking review item(s) shown above", action, plan.Summary.Blocking)
+}
+
+func printInstanceExclusionHints(cmd *cobra.Command, plan wodby1.Plan) {
+	if plan.Source.Kind != "app" && plan.Source.Kind != "server" {
+		return
+	}
+	blocked := map[string]bool{}
+	for _, item := range plan.Review {
+		if item.Severity != wodby1.SeverityBlocking || item.Instance == "" {
+			continue
+		}
+		for _, app := range plan.Apps {
+			if item.App != "" && item.App != app.Name && item.App != app.Title {
+				continue
+			}
+			for _, instance := range app.Instances {
+				if item.Instance == instance.Name || item.Instance == instance.Title || item.Instance == instance.SourceUUID {
+					blocked[instance.SourceUUID] = true
+				}
+			}
+		}
+	}
+	if len(blocked) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(blocked))
+	for id := range blocked {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	fmt.Fprintln(cmd.OutOrStdout(), "To intentionally omit a blocked instance, rerun the preview with:")
+	for _, id := range ids {
+		fmt.Fprintf(cmd.OutOrStdout(), "  --exclude-instance %s\n", id)
+	}
 }
 
 func printArtifactNotice(cmd *cobra.Command, planPath, statePath string) {
@@ -2112,21 +2312,35 @@ func printServerMigrationResult(
 		encoder.SetIndent("", "  ")
 		return errors.WithStack(encoder.Encode(output))
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), cliColor(cmd.OutOrStdout(), cliColorGreen, fmt.Sprintf("Server migration %s completed for %d app(s).", action, len(apps))))
+	failed := 0
 	for _, app := range apps {
-		fmt.Fprintf(
-			cmd.OutOrStdout(),
-			"App %s: status=%s state=%s\n",
-			app.Name,
-			app.Status,
-			app.StateFile,
-		)
+		if app.Error != "" {
+			failed++
+		}
+	}
+	color := cliColorGreen
+	message := fmt.Sprintf("Server migration %s completed for %d app(s).", action, len(apps))
+	if failed != 0 {
+		color = cliColorOrange
+		message = fmt.Sprintf("Server migration %s processed %d app(s): %d succeeded, %d failed.", action, len(apps), len(apps)-failed, failed)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), cliColor(cmd.OutOrStdout(), color, message))
+	for _, app := range apps {
+		fmt.Fprintf(cmd.OutOrStdout(), "App %s: status=%s\n", app.Name, app.Status)
+		if viper.GetBool("verbose") {
+			fmt.Fprintf(cmd.OutOrStdout(), "  Resume-state file: %s\n", app.StateFile)
+		}
+		if app.Error != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "  Error: %s\n", app.Error)
+		}
 	}
 	printImportStatuses(cmd, plan, "completed")
 	if action == "apply" {
 		fmt.Fprintln(cmd.OutOrStdout(), "Test every app using its Wodby 2 technical route before changing DNS.")
 		fmt.Fprintln(cmd.OutOrStdout(), "After DNS points to Wodby 2, rerun the same command with --verify.")
-		fmt.Fprintf(cmd.OutOrStdout(), "Temporary plan file: %s\n", planPath)
+		if viper.GetBool("verbose") {
+			fmt.Fprintf(cmd.OutOrStdout(), "Temporary plan file: %s\n", planPath)
+		}
 	} else {
 		fmt.Fprintln(cmd.OutOrStdout(), "Target resources, DNS, routes, certificates, and data imports match the applied migrations.")
 	}

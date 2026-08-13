@@ -19,35 +19,47 @@ func (e *MigrationExecutor) ensureBackupPresets(
 	instances map[string]TargetAppInstance,
 ) error {
 	for _, item := range prepared.Instances {
-		destination := item.BackupDestination
-		if destination == nil {
-			continue
-		}
 		instance, ok := instances[item.Source.UUID]
 		if !ok || instance.ID <= 0 {
 			return errors.Errorf("target instance for backup presets is missing for source %q", item.Source.UUID)
 		}
-		services, err := e.target.ListAppServices(ctx, instance.ID)
-		if err != nil {
-			return errors.Wrap(err, "list target services before creating backup presets")
+		if err := e.ensureInstanceBackupPresets(ctx, state, item, instance); err != nil {
+			return err
 		}
-		byName := map[string]TargetAppService{}
-		for _, service := range services {
-			byName[service.Name] = service
+	}
+	return nil
+}
+
+func (e *MigrationExecutor) ensureInstanceBackupPresets(
+	ctx context.Context,
+	state *MigrationState,
+	item PreparedInstance,
+	instance TargetAppInstance,
+) error {
+	destination := item.BackupDestination
+	if destination == nil {
+		return nil
+	}
+	services, err := e.target.ListAppServices(ctx, instance.ID)
+	if err != nil {
+		return errors.Wrap(err, "list target services before creating backup presets")
+	}
+	byName := map[string]TargetAppService{}
+	for _, service := range services {
+		byName[service.Name] = service
+	}
+	capabilities := targetBackupCapabilities(item)
+	if len(capabilities) == 0 {
+		return errors.Errorf("target instance %q has no enabled service with a backup capability", item.Source.Name)
+	}
+	e.reportProgress("Step: configure backup destination for target instance %q (ID %d).", item.Source.Name, instance.ID)
+	for _, capability := range capabilities {
+		service, ok := byName[capability.serviceName]
+		if !ok || service.ID <= 0 || service.Disabled {
+			return errors.Errorf("target backup service %q is missing or disabled", capability.serviceName)
 		}
-		capabilities := targetBackupCapabilities(item)
-		if len(capabilities) == 0 {
-			return errors.Errorf("target instance %q has no enabled service with a backup capability", item.Source.Name)
-		}
-		e.reportProgress("Step: configure backup destination for target instance %q (ID %d).", item.Source.Name, instance.ID)
-		for _, capability := range capabilities {
-			service, ok := byName[capability.serviceName]
-			if !ok || service.ID <= 0 || service.Disabled {
-				return errors.Errorf("target backup service %q is missing or disabled", capability.serviceName)
-			}
-			if err := e.ensureBackupPreset(ctx, state, item.Source.UUID, service, capability.backupName, *destination); err != nil {
-				return err
-			}
+		if err := e.ensureBackupPreset(ctx, state, item.Source.UUID, service, capability.backupName, *destination); err != nil {
+			return err
 		}
 	}
 	return nil

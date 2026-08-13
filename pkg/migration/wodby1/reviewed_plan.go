@@ -259,7 +259,7 @@ func pinReviewedRepository(current *RepositoryPlan, reviewed *RepositoryPlan) er
 	if current.GitIntegrationID != reviewed.GitIntegrationID || current.RepositoryName != reviewed.RepositoryName {
 		return currentPlanDriftError("target Git integration or repository name changed")
 	}
-	if reviewed.Action != "skip" && reviewed.GitIntegrationID > 0 && reviewed.RepositoryName != "" {
+	if reviewed.Action == "connect" && reviewed.GitIntegrationID > 0 && reviewed.RepositoryName != "" {
 		if reviewed.RemoteGitRepoID == "" {
 			return invalidPlanError("reviewed target repository is missing its resolved remote ID")
 		}

@@ -81,13 +81,36 @@ func TestPrintReviewUsesTablesAndSeparateReviewSections(t *testing.T) {
 		},
 	}
 
+	gitRef := "main"
+	gitRefType := TargetGitRefBranch
+	devEnvType := "DEV"
+	phpReplicas := 2
+	phpRequestCPU := 250
+	mailLimitMem := 512
 	prepared := PreparedMigration{
 		App: AppExport{App: App{UUID: "app-1"}},
-		StackConfiguration: PreparedStackConfiguration{Services: map[string]PreparedStackServiceConfiguration{
-			"php": {SettingMappings: []PreparedStackSettingMapping{
-				{Source: "Wodby 1 app docroot", Name: "docroot", Value: "web", Action: "already matches target"},
-				{Source: "Wodby 1 app site directory", Name: "sitedir", Value: "test", Action: "set stack override"},
+		Instances: []PreparedInstance{{
+			Source: Instance{Name: "dev", Title: "Dev", Services: []Service{{Name: "mailhog"}}},
+			Services: map[string]PreparedService{
+				"mailhog": {
+					Target:    TargetStackServiceInspection{StackService: TargetStackService{Name: "mailpit"}},
+					Resources: &PreparedServiceResources{Workload: "mailpit", Container: "mailpit", LimitMem: &mailLimitMem},
+				},
+			},
+			BuildSource: &PreparedBuildSource{Input: TargetBuildSourceInput{
+				GitRef: &gitRef, GitRefType: &gitRefType,
 			}},
+		}},
+		StackConfiguration: PreparedStackConfiguration{Services: map[string]PreparedStackServiceConfiguration{
+			"php": {
+				Replicas:  &phpReplicas,
+				Resources: &PreparedServiceResources{Workload: "php", Container: "php", RequestCPU: &phpRequestCPU},
+				EnvVars:   []PreparedStackEnvVar{{Name: "APP_MODE", Value: "development", EnvType: &devEnvType}},
+				SettingMappings: []PreparedStackSettingMapping{
+					{Source: "Wodby 1 app docroot", Name: "docroot", Value: "web", Action: "already matches target"},
+					{Source: "Wodby 1 app site directory", Name: "sitedir", Value: "test", Action: "set stack override"},
+				},
+			},
 		}},
 	}
 
@@ -98,33 +121,47 @@ func TestPrintReviewUsesTablesAndSeparateReviewSections(t *testing.T) {
 		"Field",
 		"Value",
 		"Item                   Count",
-		"Migrations:",
 		"App 1/1: Demo → demo",
-		"Repository:",
-		"connect  Wodby CI (default)  ID 44            acme/demo          exact match found  php",
+		"Migrations:",
+		"Target stack (shared by all instances):",
+		"Repository and CI:",
+		"connect  Wodby CI (default)  ID 44            acme/demo          exact match found  branch \"main\"  php",
 		"Instance 1/1: Dev → dev (dev → dev)",
 		"create and configure  drupal         new from catalog drupal11  revision-4",
-		"Converted stack settings (shared by all instances):",
-		"Wodby 1 app docroot         php             docroot         web    already matches target",
-		"Wodby 1 app site directory  php             sitedir         test   set stack override",
+		"setting php.docroot",
+		"Wodby 1 app docroot → \"web\"; already matches target",
+		"setting php.sitedir",
+		"Wodby 1 app site directory → \"test\"; set stack override",
+		"Stack service environment variables:",
+		"php      APP_MODE  \"development\"  DEV instances",
+		"Stack service capacity (shared by all instances):",
+		"php      2         CPU request 250m  php/php",
+		"App-service capacity overrides:",
+		"mailhog         mailpit         -         memory limit 512Mi  mailpit/mailpit",
 		"Source   Target   Source version  Target version  Version action",
 		"mailhog  mailpit  -               -               -               enabled  substitute",
-		"Cron job → cron schedule migration:",
+		"3 source service(s) across 1 instance(s), consolidated into 3 mapping pattern(s)",
+		"Service mapping overview:",
+		"Cron jobs → cron schedules:",
 		"php             php             Drupal cron  0 * * * *  drush cron  disabled by target subscription",
 		"Custom domains:",
 		"Domain        Action  Target    Target state             Options",
 		"example.test  serve   nginx:80  will be created enabled  primary",
 		"db         import  mariadb:database  backup-2023-11-14  14 Nov 2023, 22:13 UTC  1.0 MiB",
-		"Additional migration details (1):",
 		"Warnings (1):",
 		"Enabled services not migrated (1):",
 		"Blocking (1):",
 		"Manual follow-up (1):",
 		"Intentionally skipped (1):",
-		"Scope     Subject  Details",
+		"Subject      Details",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("review output does not contain %q:\n%s", expected, text)
+		}
+	}
+	for _, duplicate := range []string{"Converted stack settings", "Drupal app settings"} {
+		if strings.Contains(text, duplicate) {
+			t.Fatalf("review output contains duplicate settings section %q:\n%s", duplicate, text)
 		}
 	}
 	for field, value := range map[string]string{
@@ -155,24 +192,62 @@ func TestPrintReviewUsesTablesAndSeparateReviewSections(t *testing.T) {
 			t.Fatalf("review output exposes internal detail %q:\n%s", internalDetail, text)
 		}
 	}
-	if strings.Contains(text, "Review items:") || strings.Contains(text, "[blocking]") {
+	if strings.Contains(text, "Review items:") || strings.Contains(text, "[blocking]") || strings.Contains(text, "Additional migration details") {
 		t.Fatalf("review output still uses the combined review list:\n%s", text)
 	}
 
-	previous := -1
-	for _, heading := range []string{
-		"Additional migration details (1):",
-		"Warnings (1):",
-		"Enabled services not migrated (1):",
-		"Blocking (1):",
-		"Manual follow-up (1):",
-		"Intentionally skipped (1):",
-	} {
-		index := strings.Index(text, heading)
-		if index <= previous {
-			t.Fatalf("review section %q is out of order:\n%s", heading, text)
-		}
-		previous = index
+	appIndex := strings.Index(text, "App 1/1: Demo → demo")
+	instanceIndex := strings.Index(text, "Instance 1/1: Dev → dev")
+	warningsIndex := strings.Index(text, "Warnings (1):")
+	blockingIndex := strings.Index(text, "Blocking (1):")
+	if appIndex < 0 || instanceIndex <= appIndex || warningsIndex <= instanceIndex || blockingIndex <= warningsIndex {
+		t.Fatalf("app/instance review hierarchy is out of order:\n%s", text)
+	}
+}
+
+func TestAppServiceOverviewRowsGroupsDifferencesByEnvironmentType(t *testing.T) {
+	enabled := ServicePlan{SourceName: "php", TargetName: "php", Enabled: true, Action: "migrate"}
+	disabled := enabled
+	disabled.Enabled = false
+	app := AppPlan{Instances: []InstancePlan{
+		{Name: "dev-a", Title: "Dev A", TargetEnvType: "DEV", Services: []ServicePlan{enabled}},
+		{Name: "dev-b", Title: "Dev B", TargetEnvType: "DEV", Services: []ServicePlan{enabled}},
+		{Name: "prod", Title: "Production", TargetEnvType: "PROD", Services: []ServicePlan{disabled}},
+	}}
+
+	rows := appServiceOverviewRows(app)
+	if len(rows) != 2 {
+		t.Fatalf("service overview rows = %#v, want two environment-scoped patterns", rows)
+	}
+	if got := rows[0][len(rows[0])-1]; got != "DEV instances" {
+		t.Fatalf("enabled service scope = %q, want DEV instances", got)
+	}
+	if got := rows[1][len(rows[1])-1]; got != "PROD instances" {
+		t.Fatalf("disabled service scope = %q, want PROD instances", got)
+	}
+}
+
+func TestPreparedGitRefSummaryShowsEachInstanceWhenRefsDiffer(t *testing.T) {
+	devRef, devType := "develop", TargetGitRefBranch
+	prodRef, prodType := "v1.2.3", TargetGitRefTag
+	prepared := PreparedMigration{Instances: []PreparedInstance{
+		{
+			Source: Instance{Name: "dev", Title: "Dev"},
+			BuildSource: &PreparedBuildSource{Input: TargetBuildSourceInput{
+				GitRef: &devRef, GitRefType: &devType,
+			}},
+		},
+		{
+			Source: Instance{Name: "prod", Title: "Production"},
+			BuildSource: &PreparedBuildSource{Input: TargetBuildSourceInput{
+				GitRef: &prodRef, GitRefType: &prodType,
+			}},
+		},
+	}}
+
+	want := `Dev: branch "develop"; Production: tag "v1.2.3"`
+	if got := preparedGitRefSummary(prepared); got != want {
+		t.Fatalf("prepared Git ref summary = %q, want %q", got, want)
 	}
 }
 
@@ -202,6 +277,80 @@ func TestPrintReviewColorsSeveritiesWhenForced(t *testing.T) {
 		!strings.Contains(text, ansiGreen) || !strings.Contains(text, ansiCyan) ||
 		!strings.Contains(text, ansiReset) {
 		t.Fatalf("forced color output is incomplete: %q", text)
+	}
+}
+
+func TestPrintReviewSeparatesMigrationAppAndInstanceScopes(t *testing.T) {
+	plan := Plan{
+		Apps: []AppPlan{{
+			Name: "demo",
+			Instances: []InstancePlan{{
+				Name: "dev",
+			}},
+		}},
+		Review: []ReviewItem{
+			{Severity: SeverityConfirmation, Subject: "global warning", Message: "migration-wide"},
+			{Severity: SeverityMigration, App: "demo", Subject: "app change", Message: "shared by instances"},
+			{Severity: SeverityBlocking, App: "demo", Subject: "app blocker", Message: "blocks the app"},
+			{Severity: SeverityMigration, App: "demo", Instance: "dev", Subject: "instance change", Message: "dev only"},
+			{Severity: SeverityConfirmation, App: "demo", Instance: "dev", Subject: "instance warning", Message: "review dev"},
+		},
+	}
+
+	var output bytes.Buffer
+	PrintReview(&output, plan)
+	text := output.String()
+	for _, expected := range []string{
+		"Migration-wide",
+		"global warning  migration-wide",
+		"App 1/1: demo → demo",
+		"app change  shared by instances",
+		"app blocker  blocks the app",
+		"Instance 1/1: dev → dev",
+		"instance change  dev only",
+		"instance warning  review dev",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("scoped review does not contain %q:\n%s", expected, text)
+		}
+	}
+	globalIndex := strings.Index(text, "Migration-wide")
+	appIndex := strings.Index(text, "App 1/1: demo → demo")
+	instanceIndex := strings.Index(text, "Instance 1/1: dev → dev")
+	if globalIndex < 0 || appIndex <= globalIndex || instanceIndex <= appIndex {
+		t.Fatalf("scope hierarchy is out of order:\n%s", text)
+	}
+}
+
+func TestPrintReviewPromotesDetailsSharedByEveryInstance(t *testing.T) {
+	plan := Plan{
+		Apps: []AppPlan{{
+			Name: "demo",
+			Instances: []InstancePlan{
+				{Name: "prod"},
+				{Name: "dev"},
+			},
+		}},
+		Review: []ReviewItem{
+			{Severity: SeverityMigration, App: "demo", Instance: "prod", Subject: "pipeline", Message: "Wodby CI pipeline found"},
+			{Severity: SeverityMigration, App: "demo", Instance: "dev", Subject: "pipeline", Message: "Wodby CI pipeline found"},
+			{Severity: SeverityConfirmation, App: "demo", Instance: "prod", Subject: "PHP version", Message: "production differs"},
+		},
+	}
+
+	var output bytes.Buffer
+	PrintReview(&output, plan)
+	text := output.String()
+	if strings.Count(text, "Wodby CI pipeline found") != 1 || !strings.Contains(text, "All migrated instances: Wodby CI pipeline found") {
+		t.Fatalf("common instance detail was not promoted to app scope:\n%s", text)
+	}
+	appDetail := strings.Index(text, "All migrated instances: Wodby CI pipeline found")
+	prodInstance := strings.Index(text, "Instance 1/2: prod → prod")
+	if appDetail < 0 || prodInstance <= appDetail {
+		t.Fatalf("promoted app detail is not before the instances:\n%s", text)
+	}
+	if !strings.Contains(text, "production differs") {
+		t.Fatalf("instance-specific warning disappeared:\n%s", text)
 	}
 }
 

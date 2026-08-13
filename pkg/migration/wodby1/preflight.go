@@ -21,11 +21,26 @@ type TargetPreflightOptions struct {
 	SkipData                    bool
 	GitRef                      string
 	GitRefType                  string
+	CodeService                 string
 	AllowedTargetAppID          int
 	AllowStateBackedAppRecovery bool
 	AllowedTargetAppIDs         map[string]int
 	StateBackedAppRecovery      map[string]bool
 	AddMissingServices          bool
+	Progress                    func(TargetPreflightProgress)
+}
+
+// TargetPreflightProgress reports the current app and, when applicable,
+// instance while target-side migration mappings are inspected. Indexes are
+// one-based so callers can render them directly.
+type TargetPreflightProgress struct {
+	Stage         string
+	AppIndex      int
+	AppTotal      int
+	AppName       string
+	InstanceIndex int
+	InstanceTotal int
+	InstanceName  string
 }
 
 // PreparedMigration is an in-memory target mapping. It can contain protected
@@ -100,6 +115,8 @@ type PreparedStackServiceAddition struct {
 }
 
 type PreparedStackServiceConfiguration struct {
+	Replicas        *int
+	Resources       *PreparedServiceResources
 	VersionOptions  []TargetStackServiceOptionInput
 	EnvVars         []PreparedStackEnvVar
 	Settings        map[string]string
@@ -184,9 +201,23 @@ type PreparedStackCronSchedule struct {
 }
 
 type PreparedService struct {
-	Source        Service
-	Target        TargetStackServiceInspection
-	TargetVersion string
+	Source           Service
+	Target           TargetStackServiceInspection
+	TargetVersion    string
+	InstanceVersion  string
+	InstanceEnvVars  []EnvVar
+	InstanceCronJobs []CronJob
+	Replicas         *int
+	Resources        *PreparedServiceResources
+}
+
+type PreparedServiceResources struct {
+	Workload   string
+	Container  string
+	RequestCPU *int
+	RequestMem *int
+	LimitCPU   *int
+	LimitMem   *int
 }
 
 type PreparedBuildSource struct {
@@ -249,7 +280,11 @@ func (c *TargetClient) PreflightTarget(
 	}
 	prepared := PreparedMigration{Apps: []PreparedAppMigration{}}
 	findings := []ReviewItem{}
-	for _, appExport := range appExports {
+	for appIndex, appExport := range appExports {
+		reportTargetPreflightProgress(opts.Progress, TargetPreflightProgress{
+			Stage: "app", AppIndex: appIndex + 1, AppTotal: len(appExports), AppName: appExport.App.Name,
+			InstanceTotal: len(appExport.Instances),
+		})
 		appPlan := planApps[appExport.App.UUID]
 		if appPlan == nil {
 			return PreparedMigration{}, errors.Errorf("migration plan is missing source app %q", appExport.App.UUID)
@@ -296,7 +331,11 @@ func (c *TargetClient) PreflightTarget(
 			planInstances[item.SourceUUID] = item
 		}
 		preparedApp := PreparedAppMigration{App: appExport, Instances: []PreparedInstance{}}
-		for _, sourceInstance := range appExport.Instances {
+		for instanceIndex, sourceInstance := range appExport.Instances {
+			reportTargetPreflightProgress(opts.Progress, TargetPreflightProgress{
+				Stage: "instance", AppIndex: appIndex + 1, AppTotal: len(appExports), AppName: appExport.App.Name,
+				InstanceIndex: instanceIndex + 1, InstanceTotal: len(appExport.Instances), InstanceName: sourceInstance.Name,
+			})
 			instancePlan, found := planInstances[sourceInstance.UUID]
 			if !found {
 				return PreparedMigration{}, errors.Errorf("migration plan is missing source instance %q", sourceInstance.UUID)
@@ -328,17 +367,11 @@ func (c *TargetClient) PreflightTarget(
 		sort.SliceStable(preparedApp.Instances, func(i, j int) bool {
 			return compareInstance(preparedApp.Instances[i].Source, preparedApp.Instances[j].Source) < 0
 		})
-		if plan.Target.CIIntegrationID == 0 && !opts.SkipCode {
-			pipelineFindings, err := c.preflightWodbyCIPipelines(ctx, preparedApp, appPlan.Repository)
-			if err != nil {
-				return PreparedMigration{}, err
-			}
-			findings = append(findings, pipelineFindings...)
-		}
-		stackConfiguration, stackFindings, err := prepareStackConfiguration(preparedApp)
+		stackConfiguration, stackFindings, err := prepareStackConfiguration(&preparedApp)
 		if err != nil {
 			return PreparedMigration{}, err
 		}
+		promoteSharedServiceCapacity(&preparedApp, &stackConfiguration)
 		preparedApp.StackConfiguration = stackConfiguration
 		findings = append(findings, stackFindings...)
 		mailFindings := prepareMailDeliveryLinks(&preparedApp)
@@ -348,15 +381,25 @@ func (c *TargetClient) PreflightTarget(
 			return PreparedMigration{}, err
 		}
 		findings = append(findings, integrationFindings...)
+		if !opts.SkipCode {
+			pipelineFindings, err := c.preflightWodbyCIPipelines(ctx, preparedApp, appPlan.Repository)
+			if err != nil {
+				return PreparedMigration{}, err
+			}
+			findings = append(findings, pipelineFindings...)
+		}
 		if appUsesExplicitTargetStack(appPlan) && stackConfigurationHasChanges(preparedApp.StackConfiguration) {
 			findings = append(findings, ReviewItem{
 				Severity: SeverityConfirmation,
 				App:      appExport.App.Name,
 				Subject:  "existing target stack configuration",
-				Message:  "the explicitly selected target stack will receive a new published revision containing migrated versions, variables, settings, schedules, and service links; existing app instances are not upgraded automatically",
+				Message:  "the explicitly selected target stack will receive a new published revision containing migrated replicas, resources, versions, variables, settings, schedules, and service links; existing app instances are not upgraded automatically",
 			})
 		}
 		prepared.Apps = append(prepared.Apps, preparedApp)
+		reportTargetPreflightProgress(opts.Progress, TargetPreflightProgress{
+			Stage: "app_complete", AppIndex: appIndex + 1, AppTotal: len(appExports), AppName: appExport.App.Name,
+		})
 	}
 	sharedVariableFindings, err := prepareSharedVariableIntegrations(&prepared, plan)
 	if err != nil {
@@ -382,6 +425,12 @@ func (c *TargetClient) PreflightTarget(
 		return PreparedMigration{}, err
 	}
 	return prepared, nil
+}
+
+func reportTargetPreflightProgress(progress func(TargetPreflightProgress), event TargetPreflightProgress) {
+	if progress != nil {
+		progress(event)
+	}
 }
 
 func preparedMigrationUsesLegacyWodby1EnvVars(prepared PreparedMigration) bool {
@@ -573,24 +622,28 @@ func (c *TargetClient) resolveRepositoryPlan(
 		}
 	}
 	if len(matches) == 0 {
+		plan.Action = "unlinked"
+		plan.RemoteGitRepoID = ""
 		return []ReviewItem{{
-			Severity: SeverityBlocking,
+			Severity: SeverityServiceWarning,
 			App:      app.Name,
 			Subject:  "repository",
 			Message: fmt.Sprintf(
-				"repository %q was not found in the selected Wodby 2 Git integration; pass --target-repository-name with an exact name exposed by that integration (or --target-repository-map %s=GIT_INTEGRATION_ID:REPOSITORY_NAME for this app in a server migration)",
+				"repository %q was not found in the selected Wodby 2 Git integration; the target will continue without a Git link and use Custom CI. Pass --target-repository-name with an exact name to link another repository (or --target-repository-map %s=GIT_INTEGRATION_ID:REPOSITORY_NAME for this app in a server migration)",
 				desiredName,
 				app.Name,
 			),
 		}}, nil
 	}
 	if len(matches) > 1 {
+		plan.Action = "unlinked"
+		plan.RemoteGitRepoID = ""
 		return []ReviewItem{{
-			Severity: SeverityBlocking,
+			Severity: SeverityServiceWarning,
 			App:      app.Name,
 			Subject:  "repository",
 			Message: fmt.Sprintf(
-				"repository name %q matched %d repositories in the selected Wodby 2 Git integration; the integration must expose a unique exact name",
+				"repository name %q matched %d repositories in the selected Wodby 2 Git integration; the target will continue without a Git link and use Custom CI",
 				desiredName,
 				len(matches),
 			),
@@ -805,8 +858,11 @@ func (c *TargetClient) preflightInstance(
 			})
 			continue
 		}
+		replicas, resources, capacityFindings := prepareServiceCapacity(app.Name, source.Name, sourceService, inspection)
+		findings = append(findings, capacityFindings...)
 		preparedServices[sourceService.Name] = PreparedService{
 			Source: sourceService, Target: inspection, TargetVersion: servicePlan.TargetVersion,
+			Replicas: replicas, Resources: resources,
 		}
 	}
 
@@ -1094,26 +1150,11 @@ func prepareBuildSource(
 		}
 		buildServices = append(buildServices, inspection)
 	}
-	if app.Repository == nil {
-		if len(buildServices) == 0 {
-			return nil, nil
-		}
-		return nil, []ReviewItem{{
-			Severity: SeverityBlocking,
-			App:      app.Name,
-			Instance: instance.Name,
-			Subject:  "application code",
-			Message:  "the target stack requires a build source but the Wodby 1 app has no repository; use --skip-code only for an intentional partial migration",
-		}}
-	}
-	if repositoryPlan == nil || repositoryPlan.GitIntegrationID <= 0 ||
-		strings.TrimSpace(repositoryPlan.RepositoryName) == "" ||
-		strings.TrimSpace(repositoryPlan.RemoteGitRepoID) == "" {
-		return nil, nil // The base plan already records the blocking mapping.
-	}
-
 	var selected TargetStackServiceInspection
-	serviceSelector := strings.TrimSpace(repositoryPlan.TargetService)
+	serviceSelector := strings.TrimSpace(opts.CodeService)
+	if repositoryPlan != nil && strings.TrimSpace(repositoryPlan.TargetService) != "" {
+		serviceSelector = strings.TrimSpace(repositoryPlan.TargetService)
+	}
 	if serviceSelector != "" {
 		for _, candidate := range buildServices {
 			if candidate.StackService.Name == serviceSelector {
@@ -1132,6 +1173,8 @@ func prepareBuildSource(
 		}
 	} else if len(buildServices) == 1 {
 		selected = buildServices[0]
+	} else if len(buildServices) == 0 {
+		return nil, nil
 	} else {
 		return nil, []ReviewItem{{
 			Severity: SeverityBlocking,
@@ -1139,6 +1182,19 @@ func prepareBuildSource(
 			Instance: instance.Name,
 			Subject:  "repository target service",
 			Message:  fmt.Sprintf("target stack has %d enabled connect-build services; select one with --target-code-service", len(buildServices)),
+		}}
+	}
+
+	connected := app.Repository != nil && repositoryPlan != nil && repositoryPlan.Action == "connect" &&
+		repositoryPlan.GitIntegrationID > 0 && strings.TrimSpace(repositoryPlan.RepositoryName) != "" &&
+		strings.TrimSpace(repositoryPlan.RemoteGitRepoID) != ""
+	if !connected {
+		return &PreparedBuildSource{ServiceName: selected.StackService.Name}, []ReviewItem{{
+			Severity: SeverityMigration,
+			App:      app.Name,
+			Instance: instance.Name,
+			Subject:  "application code",
+			Message:  fmt.Sprintf("target service %q will use third-party Custom CI without a linked Git repository", selected.StackService.Name),
 		}}
 	}
 

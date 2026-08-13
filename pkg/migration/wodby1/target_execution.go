@@ -229,6 +229,43 @@ func (c *TargetClient) CreateStackService(ctx context.Context, input TargetCreat
 	return item, nil
 }
 
+func (c *TargetClient) UpdateStackService(ctx context.Context, stackServiceID int, input TargetStackServiceUpdateInput) (TargetStackService, error) {
+	if err := targetRequirePositiveID("stack service", stackServiceID); err != nil {
+		return TargetStackService{}, err
+	}
+	if input.Replicas == nil {
+		return TargetStackService{}, errors.New("target stack service update must include at least one field")
+	}
+	if *input.Replicas < 0 {
+		return TargetStackService{}, errors.New("target stack service replicas must not be negative")
+	}
+	var item TargetStackService
+	if err := c.client.Put(ctx, "/stack-services/"+strconv.Itoa(stackServiceID), nil, input, &item); err != nil {
+		return TargetStackService{}, errors.Wrap(err, "update target Wodby 2 stack service")
+	}
+	if err := validateTargetStackService(item); err != nil {
+		return TargetStackService{}, err
+	}
+	return item, nil
+}
+
+func (c *TargetClient) SetStackServiceResources(ctx context.Context, stackServiceID int, input TargetResourcesInput) error {
+	if err := targetRequirePositiveID("stack service", stackServiceID); err != nil {
+		return err
+	}
+	if err := validateTargetResourcesInput(input); err != nil {
+		return err
+	}
+	var result TargetOperationResult
+	if err := c.client.Put(ctx, "/stack-services/"+strconv.Itoa(stackServiceID)+"/resources", nil, input, &result); err != nil {
+		return errors.Wrap(err, "set target Wodby 2 stack service resources")
+	}
+	if !result.Success {
+		return errors.New("target Wodby 2 stack service resource update was not successful")
+	}
+	return nil
+}
+
 func (c *TargetClient) PublishStackDraft(ctx context.Context, stackID int) (TargetStack, error) {
 	if err := targetRequirePositiveID("stack", stackID); err != nil {
 		return TargetStack{}, err
@@ -451,21 +488,37 @@ func (c *TargetClient) UpdateStackServiceCronSchedule(ctx context.Context, sched
 // TargetStackService describes one service in an immutable stack revision.
 // ID is the stack-service ID accepted by NewAppServiceInput.
 type TargetStackService struct {
-	ID                       int                         `json:"id"`
-	Name                     string                      `json:"name"`
-	Title                    string                      `json:"title"`
-	Type                     string                      `json:"type"`
-	Main                     bool                        `json:"main"`
-	Disabled                 bool                        `json:"disabled"`
-	Required                 bool                        `json:"required"`
-	Replicas                 int                         `json:"replicas"`
-	ServiceRevID             int                         `json:"serviceRevId"`
-	ServiceRevName           string                      `json:"serviceRevName"`
-	ServiceRevVersion        string                      `json:"serviceRevVersion"`
-	BuildSourceIntegrationID *int                        `json:"buildSourceIntegrationId,omitempty"`
-	BuildSourceRemoteRepoID  *string                     `json:"buildSourceRemoteRepoId,omitempty"`
-	Options                  []TargetStackServiceOption  `json:"options,omitempty"`
-	Settings                 []TargetStackServiceSetting `json:"settings,omitempty"`
+	ID                       int                           `json:"id"`
+	Name                     string                        `json:"name"`
+	Title                    string                        `json:"title"`
+	Type                     string                        `json:"type"`
+	Main                     bool                          `json:"main"`
+	Disabled                 bool                          `json:"disabled"`
+	Required                 bool                          `json:"required"`
+	Replicas                 int                           `json:"replicas"`
+	ServiceRevID             int                           `json:"serviceRevId"`
+	ServiceRevName           string                        `json:"serviceRevName"`
+	ServiceRevVersion        string                        `json:"serviceRevVersion"`
+	BuildSourceIntegrationID *int                          `json:"buildSourceIntegrationId,omitempty"`
+	BuildSourceRemoteRepoID  *string                       `json:"buildSourceRemoteRepoId,omitempty"`
+	Options                  []TargetStackServiceOption    `json:"options,omitempty"`
+	Settings                 []TargetStackServiceSetting   `json:"settings,omitempty"`
+	Containers               []TargetStackServiceContainer `json:"containers,omitempty"`
+}
+
+type TargetStackServiceUpdateInput struct {
+	Replicas *int `json:"replicas,omitempty"`
+}
+
+type TargetStackServiceContainer struct {
+	ID             *int   `json:"id,omitempty"`
+	StackServiceID int    `json:"stackServiceId"`
+	Workload       string `json:"workload"`
+	Name           string `json:"name"`
+	RequestCPU     *int   `json:"requestCPU,omitempty"`
+	RequestMem     *int   `json:"requestMem,omitempty"`
+	LimitCPU       *int   `json:"limitCPU,omitempty"`
+	LimitMem       *int   `json:"limitMem,omitempty"`
 }
 
 type TargetStackServiceOption struct {
@@ -583,6 +636,8 @@ type TargetUpdateStackServiceCronScheduleInput struct {
 type TargetServiceManifest struct {
 	Name          string                               `json:"name"`
 	Raw           string                               `json:"raw,omitempty"`
+	Scalable      bool                                 `json:"scalable,omitempty"`
+	Workloads     []TargetServiceWorkload              `json:"workloads,omitempty"`
 	Build         *TargetServiceBuildCapability        `json:"build,omitempty"`
 	Imports       []TargetServiceImportCapability      `json:"imports,omitempty"`
 	Backups       []TargetServiceBackupCapability      `json:"backups,omitempty"`
@@ -591,6 +646,16 @@ type TargetServiceManifest struct {
 	Options       []TargetServiceOption                `json:"options,omitempty"`
 	Settings      []TargetServiceSettingCapability     `json:"settings,omitempty"`
 	Links         []TargetServiceLinkCapability        `json:"links,omitempty"`
+}
+
+type TargetServiceWorkload struct {
+	Name       string                   `json:"name"`
+	Primary    bool                     `json:"primary,omitempty"`
+	Containers []TargetServiceContainer `json:"containers,omitempty"`
+}
+
+type TargetServiceContainer struct {
+	Name string `json:"name"`
 }
 
 type TargetServiceLinkCapability struct {
@@ -720,6 +785,26 @@ type TargetAppService struct {
 	ParentAppServiceID *int      `json:"parentAppServiceId,omitempty"`
 	CreatedAt          time.Time `json:"createdAt"`
 	UpdatedAt          time.Time `json:"updatedAt"`
+}
+
+type TargetAppServiceContainer struct {
+	ID           *int   `json:"id,omitempty"`
+	AppServiceID int    `json:"appServiceId"`
+	Workload     string `json:"workload"`
+	Name         string `json:"name"`
+	RequestCPU   *int   `json:"requestCPU,omitempty"`
+	RequestMem   *int   `json:"requestMem,omitempty"`
+	LimitCPU     *int   `json:"limitCPU,omitempty"`
+	LimitMem     *int   `json:"limitMem,omitempty"`
+}
+
+type TargetResourcesInput struct {
+	Workload   *string `json:"workload,omitempty"`
+	Container  *string `json:"container,omitempty"`
+	RequestCPU *int    `json:"requestCPU,omitempty"`
+	RequestMem *int    `json:"requestMem,omitempty"`
+	LimitCPU   *int    `json:"limitCPU,omitempty"`
+	LimitMem   *int    `json:"limitMem,omitempty"`
 }
 
 type TargetBuildSourceInput struct {
@@ -1682,6 +1767,39 @@ func (c *TargetClient) ListAppServices(ctx context.Context, appInstanceID int) (
 	return items, nil
 }
 
+func (c *TargetClient) ListAppServiceContainers(ctx context.Context, appServiceID int) ([]TargetAppServiceContainer, error) {
+	if err := targetRequirePositiveID("app service", appServiceID); err != nil {
+		return nil, err
+	}
+	items := []TargetAppServiceContainer{}
+	if err := c.client.Get(ctx, "/app-services/"+strconv.Itoa(appServiceID)+"/containers", nil, &items); err != nil {
+		return nil, errors.Wrap(err, "list target Wodby 2 app service containers")
+	}
+	for _, item := range items {
+		if err := validateTargetAppServiceContainer(item, appServiceID); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
+}
+
+func (c *TargetClient) SetAppServiceResources(ctx context.Context, appServiceID int, input TargetResourcesInput) error {
+	if err := targetRequirePositiveID("app service", appServiceID); err != nil {
+		return err
+	}
+	if err := validateTargetResourcesInput(input); err != nil {
+		return err
+	}
+	var result TargetOperationResult
+	if err := c.client.Put(ctx, "/app-services/"+strconv.Itoa(appServiceID)+"/resources", nil, input, &result); err != nil {
+		return errors.Wrap(err, "set target Wodby 2 app service resources")
+	}
+	if !result.Success {
+		return errors.New("target Wodby 2 app service resource update was not successful")
+	}
+	return nil
+}
+
 func (c *TargetClient) UpdateAppService(ctx context.Context, appServiceID int, input TargetAppServiceUpdateInput) (TargetAppService, error) {
 	if err := targetRequirePositiveID("app service", appServiceID); err != nil {
 		return TargetAppService{}, err
@@ -2402,7 +2520,22 @@ func validateTargetStackService(item TargetStackService) error {
 			return errors.New("target stack service returned an invalid setting")
 		}
 	}
+	for _, container := range item.Containers {
+		if err := validateTargetStackServiceContainer(container, item.ID); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func validateTargetStackServiceContainer(item TargetStackServiceContainer, stackServiceID int) error {
+	if item.StackServiceID != stackServiceID {
+		return errors.Errorf("target stack service container belongs to stack service ID %d, expected %d", item.StackServiceID, stackServiceID)
+	}
+	if strings.TrimSpace(item.Workload) == "" || strings.TrimSpace(item.Name) == "" {
+		return errors.New("target stack service container returned an empty workload or name")
+	}
+	return validateTargetResourceValues(item.RequestCPU, item.RequestMem, item.LimitCPU, item.LimitMem)
 }
 
 func validateTargetStackServiceEnvVar(item TargetStackServiceEnvVar, stackServiceID int) error {
@@ -2543,6 +2676,49 @@ func validateTargetAppService(item TargetAppService, appInstanceID int) error {
 	}
 	if strings.TrimSpace(item.Name) == "" {
 		return errors.Errorf("target Wodby 2 app service ID %d returned an empty name", item.ID)
+	}
+	return nil
+}
+
+func validateTargetAppServiceContainer(item TargetAppServiceContainer, appServiceID int) error {
+	if item.AppServiceID != appServiceID {
+		return errors.Errorf("target app service container belongs to app service ID %d, expected %d", item.AppServiceID, appServiceID)
+	}
+	if strings.TrimSpace(item.Workload) == "" || strings.TrimSpace(item.Name) == "" {
+		return errors.New("target app service container returned an empty workload or name")
+	}
+	return validateTargetResourceValues(item.RequestCPU, item.RequestMem, item.LimitCPU, item.LimitMem)
+}
+
+func validateTargetResourcesInput(input TargetResourcesInput) error {
+	if (input.Workload == nil) != (input.Container == nil) {
+		return errors.New("target resource workload and container must be specified together")
+	}
+	if input.Workload != nil && (strings.TrimSpace(*input.Workload) == "" || strings.TrimSpace(*input.Container) == "") {
+		return errors.New("target resource workload and container must not be empty")
+	}
+	if input.RequestCPU == nil && input.RequestMem == nil && input.LimitCPU == nil && input.LimitMem == nil {
+		return errors.New("target resource update must include at least one request or limit")
+	}
+	return validateTargetResourceValues(input.RequestCPU, input.RequestMem, input.LimitCPU, input.LimitMem)
+}
+
+func validateTargetResourceValues(requestCPU, requestMem, limitCPU, limitMem *int) error {
+	for name, value := range map[string]*int{
+		"requested CPU":    requestCPU,
+		"requested memory": requestMem,
+		"CPU limit":        limitCPU,
+		"memory limit":     limitMem,
+	} {
+		if value != nil && *value < 0 {
+			return errors.Errorf("target %s must not be negative", name)
+		}
+	}
+	if requestCPU != nil && limitCPU != nil && *requestCPU > *limitCPU {
+		return errors.New("target requested CPU must not exceed its limit")
+	}
+	if requestMem != nil && limitMem != nil && *requestMem > *limitMem {
+		return errors.New("target requested memory must not exceed its limit")
 	}
 	return nil
 }

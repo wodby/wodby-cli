@@ -99,6 +99,40 @@ func (e *MigrationExecutor) reportProgress(format string, args ...interface{}) {
 	}
 }
 
+type instanceStageFailure struct {
+	instance string
+	stage    string
+	err      error
+}
+
+type instanceStageFailures struct {
+	items []instanceStageFailure
+}
+
+func (f *instanceStageFailures) add(instance, stage string, err error) {
+	if err != nil {
+		f.items = append(f.items, instanceStageFailure{instance: instance, stage: stage, err: err})
+	}
+}
+
+func (f *instanceStageFailures) Error() string {
+	if f == nil || len(f.items) == 0 {
+		return ""
+	}
+	first := f.items[0]
+	if len(f.items) == 1 {
+		return fmt.Sprintf("instance %q failed during %s: %v", first.instance, first.stage, first.err)
+	}
+	return fmt.Sprintf(
+		"%d instances failed; first failure: instance %q during %s: %v",
+		len(f.items), first.instance, first.stage, first.err,
+	)
+}
+
+func (f *instanceStageFailures) empty() bool {
+	return f == nil || len(f.items) == 0
+}
+
 // Apply creates and configures the target, deploys its routes, and imports the
 // selected backup. It resumes from the last durable internal checkpoint.
 func (e *MigrationExecutor) Apply(
@@ -196,21 +230,34 @@ func (e *MigrationExecutor) Prepare(
 	if err != nil {
 		return MigrationPhaseResult{}, err
 	}
+	failed := map[string]bool{}
+	failures := &instanceStageFailures{}
+	recordFailure := func(item PreparedInstance, stage string, err error) {
+		failed[item.Source.UUID] = true
+		failures.add(item.Source.Name, stage, err)
+		e.reportProgress("Instance %q failed during %s: %v. Continuing with other instances.", item.Source.Name, stage, err)
+	}
 	for _, item := range prepared.Instances {
 		instance := instances[item.Source.UUID]
 		e.reportProgress("Step: configure target instance %q (ID %d).", item.Source.Name, instance.ID)
 		if err := e.prepareInstance(ctx, state, item, instance); err != nil {
-			return MigrationPhaseResult{}, err
+			recordFailure(item, "configuration", err)
 		}
 	}
 	for _, item := range prepared.Instances {
+		if failed[item.Source.UUID] {
+			continue
+		}
 		instance := instances[item.Source.UUID]
 		e.reportProgress("Step: build and deploy target instance %q (ID %d).", item.Source.Name, instance.ID)
 		if err := e.ensureTechnicalDeployment(ctx, state, item, instance, "prepare_deploy"); err != nil {
-			return MigrationPhaseResult{}, err
+			recordFailure(item, "initial build and deployment", err)
 		}
 	}
 	for _, item := range prepared.Instances {
+		if failed[item.Source.UUID] {
+			continue
+		}
 		instance := instances[item.Source.UUID]
 		instancePlan := planInstance(plan, item.Source.UUID)
 		if !planHasProtectedTechnicalRoutes(instancePlan) {
@@ -218,10 +265,13 @@ func (e *MigrationExecutor) Prepare(
 		}
 		e.reportProgress("Step: migrate basic authentication to generated technical routes for target instance %q (ID %d).", item.Source.Name, instance.ID)
 		if err := e.ensureTechnicalRouteAuths(ctx, state, item, instance, instancePlan); err != nil {
-			return MigrationPhaseResult{}, err
+			recordFailure(item, "technical route authentication", err)
 		}
 	}
 	for _, item := range prepared.Instances {
+		if failed[item.Source.UUID] {
+			continue
+		}
 		instance := instances[item.Source.UUID]
 		instancePlan := planInstance(plan, item.Source.UUID)
 		if instancePlan == nil {
@@ -233,10 +283,13 @@ func (e *MigrationExecutor) Prepare(
 		}
 		e.reportProgress("Step: create custom routes for target instance %q (ID %d).", item.Source.Name, instance.ID)
 		if err := e.ensureCustomRoutes(ctx, state, plan, item, instance); err != nil {
-			return MigrationPhaseResult{}, err
+			recordFailure(item, "custom routes", err)
 		}
 	}
 	for _, item := range prepared.Instances {
+		if failed[item.Source.UUID] {
+			continue
+		}
 		instance := instances[item.Source.UUID]
 		instancePlan := planInstance(plan, item.Source.UUID)
 		if !planHasCustomRoutes(instancePlan) {
@@ -245,32 +298,54 @@ func (e *MigrationExecutor) Prepare(
 		}
 		e.reportProgress("Step: deploy staged routes for target instance %q (ID %d).", item.Source.Name, instance.ID)
 		if err := e.ensureTechnicalDeployment(ctx, state, item, instance, "apply_deploy"); err != nil {
-			return MigrationPhaseResult{}, err
+			recordFailure(item, "route deployment", err)
 		}
 	}
 	for _, item := range prepared.Instances {
+		if failed[item.Source.UUID] {
+			continue
+		}
 		instance := instances[item.Source.UUID]
 		if err := e.waitAppInstanceOK(ctx, instance.ID, "finish target preparation"); err != nil {
-			return MigrationPhaseResult{}, errors.Wrap(err, "wait for target instance after deployment")
+			recordFailure(item, "deployment readiness", errors.Wrap(err, "wait for target instance after deployment"))
 		}
 	}
-	if err := e.ensureBackupPresets(ctx, state, prepared, instances); err != nil {
-		return MigrationPhaseResult{}, err
+	for _, item := range prepared.Instances {
+		if failed[item.Source.UUID] {
+			continue
+		}
+		if err := e.ensureInstanceBackupPresets(ctx, state, item, instances[item.Source.UUID]); err != nil {
+			recordFailure(item, "backup presets", err)
+		}
 	}
 
-	if err := state.SetAppTarget(app.ID, MigrationResourceReady); err != nil {
+	appStatus := MigrationResourceReady
+	if !failures.empty() {
+		appStatus = MigrationResourceCreating
+	}
+	if err := state.SetAppTarget(app.ID, appStatus); err != nil {
 		return MigrationPhaseResult{}, err
 	}
 	for sourceID, instance := range instances {
+		if failed[sourceID] {
+			continue
+		}
 		if err := state.SetInstanceTarget(sourceID, instance.ID, MigrationResourceReady); err != nil {
 			return MigrationPhaseResult{}, err
 		}
 	}
-	if err := state.SetStatus(MigrationStatusRunning); err != nil {
+	status := MigrationStatusRunning
+	if !failures.empty() {
+		status = MigrationStatusFailed
+	}
+	if err := state.SetStatus(status); err != nil {
 		return MigrationPhaseResult{}, err
 	}
 	if err := SaveMigrationState(e.statePath, state); err != nil {
 		return MigrationPhaseResult{}, err
+	}
+	if !failures.empty() {
+		return MigrationPhaseResult{Phase: MigrationPhasePrepare, State: state}, failures
 	}
 	e.reportProgress("Target app %q (ID %d) is prepared.", app.Name, app.ID)
 	return MigrationPhaseResult{Phase: MigrationPhasePrepare, State: state}, nil
@@ -660,7 +735,22 @@ func (e *MigrationExecutor) SyncData(
 	if err != nil {
 		return MigrationPhaseResult{}, err
 	}
+	instanceNames := map[string]string{}
+	for _, item := range prepared.Instances {
+		instanceNames[item.Source.UUID] = item.Source.Name
+	}
+	failed := map[string]bool{}
+	failures := &instanceStageFailures{}
+	recordFailure := func(sourceID, component, stage string, err error) {
+		failed[sourceID] = true
+		name := firstNonEmpty(instanceNames[sourceID], sourceID)
+		failures.add(name, stage, err)
+		e.reportProgress("Instance %q component %q failed during %s: %v. Continuing with other instances.", name, component, stage, err)
+	}
 	for _, item := range imports {
+		if failed[item.SourceInstanceUUID] {
+			continue
+		}
 		instanceState := state.Instances[item.SourceInstanceUUID]
 		if instanceState == nil || instanceState.TargetID <= 0 {
 			return MigrationPhaseResult{}, errors.New("migration state is missing a prepared target instance")
@@ -669,34 +759,49 @@ func (e *MigrationExecutor) SyncData(
 			e.reportProgress("Refreshing the protected download URL for backup component %q...", item.Backup.Component)
 			item, err = e.refreshDataImport(ctx, item, prepared, plan, digest)
 			if err != nil {
-				return MigrationPhaseResult{}, err
+				recordFailure(item.SourceInstanceUUID, item.Backup.Component, "source backup refresh", err)
+				continue
 			}
 		}
 		if err := e.waitAppInstanceOK(ctx, instanceState.TargetID, "start the next data import"); err != nil {
-			return MigrationPhaseResult{}, errors.Wrap(err, "wait for target instance before data import")
+			recordFailure(item.SourceInstanceUUID, item.Backup.Component, "target readiness before data import", errors.Wrap(err, "wait for target instance before data import"))
+			continue
 		}
 		services, err := e.target.ListAppServices(ctx, instanceState.TargetID)
 		if err != nil {
-			return MigrationPhaseResult{}, errors.Wrap(err, "read target services before data import")
+			recordFailure(item.SourceInstanceUUID, item.Backup.Component, "target service discovery", errors.Wrap(err, "read target services before data import"))
+			continue
 		}
 		service, err := exactAppService(services, item.Destination.ServiceName)
 		if err != nil {
-			return MigrationPhaseResult{}, err
+			recordFailure(item.SourceInstanceUUID, item.Backup.Component, "target import mapping", err)
+			continue
 		}
 		if service.Disabled ||
 			service.ServiceRevID != item.Destination.StackService.StackService.ServiceRevID {
-			return MigrationPhaseResult{}, errors.New("target import service no longer matches the approved enabled stack service")
+			recordFailure(item.SourceInstanceUUID, item.Backup.Component, "target import mapping", errors.New("target import service no longer matches the approved enabled stack service"))
+			continue
 		}
 		if err := e.ensureImport(ctx, state, item, instanceState.TargetID, service.ID); err != nil {
-			return MigrationPhaseResult{}, err
+			recordFailure(item.SourceInstanceUUID, item.Backup.Component, "data import", err)
+			continue
 		}
 		if err := e.waitAppInstanceOK(
 			ctx,
 			instanceState.TargetID,
 			fmt.Sprintf("continue after the %q data import", item.Backup.Component),
 		); err != nil {
-			return MigrationPhaseResult{}, errors.Wrap(err, "wait for target instance after data import")
+			recordFailure(item.SourceInstanceUUID, item.Backup.Component, "target readiness after data import", errors.Wrap(err, "wait for target instance after data import"))
 		}
+	}
+	if !failures.empty() {
+		if err := state.SetStatus(MigrationStatusFailed); err != nil {
+			return MigrationPhaseResult{}, err
+		}
+		if err := SaveMigrationState(e.statePath, state); err != nil {
+			return MigrationPhaseResult{}, err
+		}
+		return MigrationPhaseResult{Phase: MigrationPhaseSyncData, State: state}, failures
 	}
 	e.reportProgress("All planned data imports completed.")
 	return e.finishRunningPhase(state, MigrationPhaseSyncData)
@@ -1668,6 +1773,55 @@ func (e *MigrationExecutor) prepareInstance(
 			return err
 		}
 	}
+	for _, source := range prepared.Source.Services {
+		mapping, ok := prepared.Services[source.Name]
+		if !ok {
+			continue
+		}
+		target, ok := byName[mapping.Target.StackService.Name]
+		if !ok {
+			return errors.Errorf("target instance is missing mapped service %q", mapping.Target.StackService.Name)
+		}
+		if err := e.ensureServiceReplicas(ctx, state, prepared.Source.UUID, target, mapping.Replicas); err != nil {
+			return err
+		}
+		if err := e.ensureAppServiceResources(ctx, state, prepared.Source.UUID, target, mapping.Resources); err != nil {
+			return err
+		}
+		if err := e.ensureServiceVersion(ctx, state, prepared.Source.UUID, target, mapping.InstanceVersion); err != nil {
+			return err
+		}
+		if len(mapping.InstanceEnvVars) != 0 {
+			instanceSource := mapping.Source
+			instanceSource.EnvVars = append([]EnvVar(nil), mapping.InstanceEnvVars...)
+			if err := e.ensureServiceEnvironment(
+				ctx,
+				state,
+				prepared.Source.UUID,
+				target,
+				instanceSource,
+				prepared.Source.Properties,
+				serviceTargetNamesFromPrepared(prepared),
+			); err != nil {
+				return err
+			}
+		}
+		if len(mapping.InstanceCronJobs) != 0 {
+			instanceSource := mapping.Source
+			instanceSource.CronJobs = append([]CronJob(nil), mapping.InstanceCronJobs...)
+			if err := e.ensureServiceCrons(
+				ctx,
+				state,
+				prepared.Source.UUID,
+				target,
+				instanceSource,
+				mapping.Target,
+				prepared.DisableCronSchedules,
+			); err != nil {
+				return err
+			}
+		}
+	}
 	for _, link := range prepared.ServiceLinks {
 		service, ok := byName[link.ServiceName]
 		if !ok {
@@ -1681,7 +1835,7 @@ func (e *MigrationExecutor) prepareInstance(
 			return err
 		}
 	}
-	if prepared.BuildSource != nil {
+	if prepared.BuildSource != nil && strings.TrimSpace(prepared.BuildSource.Input.BuildSourceType) != "" {
 		service, ok := byName[prepared.BuildSource.ServiceName]
 		if !ok {
 			return errors.New("target code service disappeared after preflight")
@@ -1697,6 +1851,73 @@ func (e *MigrationExecutor) prepareInstance(
 		}
 	}
 	return nil
+}
+
+func (e *MigrationExecutor) ensureServiceReplicas(ctx context.Context, state *MigrationState, sourceID string, service TargetAppService, desired *int) error {
+	if desired == nil {
+		return nil
+	}
+	operation := operationKey("service_replicas", strconv.Itoa(service.ID))
+	if service.Replicas == *desired {
+		e.reportProgress("Service %q (ID %d) already uses %d replica(s).", service.Name, service.ID, *desired)
+		return e.recordObservedInstanceOperation(state, sourceID, operation, service.ID, 0)
+	}
+	run, err := e.beginInstanceMutation(state, sourceID, operation, false)
+	if err != nil || !run {
+		return err
+	}
+	e.reportProgress("Changing service %q (ID %d) replicas from %d to %d...", service.Name, service.ID, service.Replicas, *desired)
+	updated, err := e.target.UpdateAppService(ctx, service.ID, TargetAppServiceUpdateInput{Replicas: cloneInt(desired)})
+	if err != nil {
+		return e.recordInstanceMutationError(state, sourceID, operation, "service replicas update", err)
+	}
+	if updated.Replicas != *desired {
+		return e.recordInstanceMutationError(state, sourceID, operation, "service replicas update", errors.Errorf("target returned %d replicas, expected %d", updated.Replicas, *desired))
+	}
+	if err := e.completeInstanceMutation(state, sourceID, operation, service.ID, 0); err != nil {
+		return err
+	}
+	e.reportProgress("Service %q now uses %d replica(s).", service.Name, *desired)
+	return nil
+}
+
+func (e *MigrationExecutor) ensureAppServiceResources(ctx context.Context, state *MigrationState, sourceID string, service TargetAppService, desired *PreparedServiceResources) error {
+	if desired == nil {
+		return nil
+	}
+	containers, err := e.target.ListAppServiceContainers(ctx, service.ID)
+	if err != nil {
+		return err
+	}
+	operation := operationKey("service_resources", strconv.Itoa(service.ID), desired.Workload, desired.Container)
+	matches := appServiceResourcesMatch(containers, *desired)
+	run, err := e.beginInstanceMutation(state, sourceID, operation, matches)
+	if err != nil || !run {
+		return err
+	}
+	e.reportProgress("Setting service %q resources for %s/%s to %s...", service.Name, desired.Workload, desired.Container, serviceResourcesSummary(desired))
+	if err := e.target.SetAppServiceResources(ctx, service.ID, desired.TargetInput()); err != nil {
+		return e.recordInstanceMutationError(state, sourceID, operation, "service resources update", err)
+	}
+	if err := e.completeInstanceMutation(state, sourceID, operation, service.ID, 0); err != nil {
+		return err
+	}
+	e.reportProgress("Service %q resources are configured.", service.Name)
+	return nil
+}
+
+func appServiceResourcesMatch(items []TargetAppServiceContainer, desired PreparedServiceResources) bool {
+	matches := 0
+	for _, item := range items {
+		if item.Workload != desired.Workload || item.Name != desired.Container {
+			continue
+		}
+		matches++
+		if !resourceValuesEqual(item.RequestCPU, item.RequestMem, item.LimitCPU, item.LimitMem, desired) {
+			return false
+		}
+	}
+	return matches == 1
 }
 
 func (e *MigrationExecutor) ensureAppServiceLink(
@@ -2121,7 +2342,8 @@ func (e *MigrationExecutor) ensureServiceCrons(
 		if strings.TrimSpace(cron.Crontab) == "" || strings.TrimSpace(cron.Command) == "" {
 			return errors.New("source application cron requires both schedule and command")
 		}
-		name := "w1-" + shortDigest(sourceID, source.Name, strconv.Itoa(index), cron.Crontab, cron.Command)
+		command := migratedEnvironmentReferences(cron.Command)
+		name := "w1-" + shortDigest(sourceID, source.Name, strconv.Itoa(index), cron.Crontab, command)
 		matches := byName[name]
 		if len(matches) > 1 {
 			return &TargetAmbiguousMatchError{Resource: "app service cron schedule", Name: name, Count: len(matches)}
@@ -2134,7 +2356,7 @@ func (e *MigrationExecutor) ensureServiceCrons(
 		desiredDisabled := disableMigrated
 		if len(matches) == 1 {
 			item := matches[0]
-			if item.Title == title && item.Crontab == cron.Crontab && item.Command == cron.Command && item.Disabled == desiredDisabled {
+			if item.Title == title && item.Crontab == cron.Crontab && item.Command == command && item.Disabled == desiredDisabled {
 				if err := e.recordObservedInstanceOperation(state, sourceID, operation, item.ID, 0); err != nil {
 					return err
 				}
@@ -2150,7 +2372,7 @@ func (e *MigrationExecutor) ensureServiceCrons(
 				Disabled: &desiredDisabled,
 				Title:    &title,
 				Crontab:  &cron.Crontab,
-				Command:  &cron.Command,
+				Command:  &command,
 			}); err != nil {
 				return e.recordInstanceMutationError(state, sourceID, operation, "cron schedule update", err)
 			}
@@ -2169,7 +2391,7 @@ func (e *MigrationExecutor) ensureServiceCrons(
 			Name:     &name,
 			Title:    title,
 			Crontab:  cron.Crontab,
-			Command:  cron.Command,
+			Command:  command,
 			Disabled: &desiredDisabled,
 		})
 		if err != nil {
@@ -4692,7 +4914,7 @@ func (e *MigrationExecutor) verifyInstance(
 			return errors.Errorf("target service %q enabled state no longer matches the source", inspection.StackService.Name)
 		}
 	}
-	if prepared.BuildSource != nil {
+	if prepared.BuildSource != nil && strings.TrimSpace(prepared.BuildSource.Input.BuildSourceType) != "" {
 		service, ok := byName[prepared.BuildSource.ServiceName]
 		if !ok || !operationSucceeded(resource, operationKey("build_source", strconv.Itoa(service.ID))) {
 			return errors.New("target build source is not recorded as successfully reconciled")
@@ -4717,6 +4939,45 @@ func (e *MigrationExecutor) verifyInstance(
 				service.Version,
 				mapping.TargetVersion,
 			)
+		}
+		if mapping.Replicas != nil && service.Replicas != *mapping.Replicas {
+			return errors.Errorf("target service %q uses %d replicas, expected %d", service.Name, service.Replicas, *mapping.Replicas)
+		}
+		if mapping.Resources != nil {
+			containers, err := e.target.ListAppServiceContainers(ctx, service.ID)
+			if err != nil {
+				return errors.Wrap(err, "verify target service resources")
+			}
+			if !appServiceResourcesMatch(containers, *mapping.Resources) {
+				return errors.Errorf("target service %q resources no longer match the source", service.Name)
+			}
+		}
+		if len(mapping.InstanceEnvVars) != 0 {
+			instanceSource := mapping.Source
+			instanceSource.EnvVars = append([]EnvVar(nil), mapping.InstanceEnvVars...)
+			if err := e.verifyServiceEnvironment(
+				ctx,
+				service.ID,
+				instanceSource,
+				prepared.Source.Properties,
+				serviceTargetNamesFromPrepared(prepared),
+			); err != nil {
+				return err
+			}
+		}
+		if len(mapping.InstanceCronJobs) != 0 {
+			instanceSource := mapping.Source
+			instanceSource.CronJobs = append([]CronJob(nil), mapping.InstanceCronJobs...)
+			if err := e.verifyServiceCrons(
+				ctx,
+				prepared.Source.UUID,
+				service.ID,
+				instanceSource,
+				mapping.Target,
+				prepared.DisableCronSchedules,
+			); err != nil {
+				return err
+			}
 		}
 	}
 	if err := e.verifyRoutes(ctx, prepared, instance.ID, plan); err != nil {
@@ -4847,10 +5108,11 @@ func (e *MigrationExecutor) verifyServiceCrons(
 		if !cron.Enabled || cron.Classification == "source_only_infrastructure" {
 			continue
 		}
-		name := "w1-" + shortDigest(sourceID, source.Name, strconv.Itoa(index), cron.Crontab, cron.Command)
+		command := migratedEnvironmentReferences(cron.Command)
+		name := "w1-" + shortDigest(sourceID, source.Name, strconv.Itoa(index), cron.Crontab, command)
 		matches := byName[name]
 		if len(matches) != 1 || matches[0].Disabled != disableMigrated ||
-			matches[0].Crontab != cron.Crontab || matches[0].Command != cron.Command {
+			matches[0].Crontab != cron.Crontab || matches[0].Command != command {
 			return errors.Errorf("target cron schedule %q no longer matches the source", name)
 		}
 	}

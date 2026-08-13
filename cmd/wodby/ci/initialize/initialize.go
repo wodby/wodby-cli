@@ -19,7 +19,6 @@ import (
 	"github.com/wodby/wodby-cli/pkg/api"
 	"github.com/wodby/wodby-cli/pkg/cicache"
 	"github.com/wodby/wodby-cli/pkg/cidata"
-	"github.com/wodby/wodby-cli/pkg/ciuser"
 	"github.com/wodby/wodby-cli/pkg/config"
 	"github.com/wodby/wodby-cli/pkg/docker"
 	"github.com/wodby/wodby-cli/pkg/types"
@@ -205,7 +204,12 @@ var Cmd = &cobra.Command{
 			return err
 		}
 
-		shouldFixPermissions, permissionFixReason := permissionFixDecision(opts.fixPermissions, config.DataContainer != "")
+		shouldFixPermissions, permissionFixReason := permissionFixDecision(
+			opts.fixPermissions,
+			config.DataContainer != "",
+			config.BuildConfig.Custom,
+			config.Metadata.Provider,
+		)
 		if shouldFixPermissions {
 			fmt.Printf("Fixing codebase permissions: %s...\n", permissionFixReason)
 
@@ -264,36 +268,13 @@ var Cmd = &cobra.Command{
 
 			fmt.Printf("Initializing service %s...", service.Name)
 
-			runConfig := docker.RunConfig{
-				Image:   service.Image,
-				WorkDir: workingDir,
-			}
-
-			hasExplicitHome := false
-			for envName, envVal := range config.BuildConfig.Init.Environment {
-				if envName == "HOME" {
-					hasExplicitHome = true
-				}
-				runConfig.Env = append(runConfig.Env, fmt.Sprintf("%s=%s", envName, envVal))
-			}
-
-			if config.DataContainer != "" {
-				runConfig.VolumesFrom = []string{config.DataContainer}
-			} else {
-				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, workingDir))
-			}
-			if shouldMapInitUser(opts.fixPermissions, config.DataContainer != "") {
-				runConfig.User, err = ciuser.ResolveBindUser(config.Context)
-				if err != nil {
-					return err
-				}
-				if runConfig.User != "" {
-					runConfig.ClearEntrypoint = true
-					if !hasExplicitHome {
-						runConfig.Env = append(runConfig.Env, "HOME=/tmp")
-					}
-				}
-			}
+			runConfig := managedInitRunConfig(
+				service.Image,
+				workingDir,
+				config.Context,
+				config.DataContainer,
+				config.BuildConfig.Init.Environment,
+			)
 
 			err = dockerClient.Run(strings.Split(config.BuildConfig.Init.Command, " "), runConfig)
 
@@ -317,17 +298,36 @@ func init() {
 	Cmd.Flags().StringVarP(&opts.provider, "provider", "p", "", "Override detected build provider name")
 }
 
-func permissionFixDecision(explicit, hasDataContainer bool) (bool, string) {
+func permissionFixDecision(explicit, hasDataContainer, customStack bool, provider string) (bool, string) {
 	if explicit {
 		return true, "requested explicitly with --fix-permissions"
 	}
 	if hasDataContainer {
 		return true, "preparing the Docker-in-Docker data volume"
 	}
+	if !customStack && provider != "" && provider != "Unknown" {
+		return true, fmt.Sprintf("preparing a managed stack checkout for %s", provider)
+	}
 
-	return false, "--fix-permissions was not set"
+	return false, "checkout ownership does not require automatic preparation"
 }
 
-func shouldMapInitUser(explicitPermissionFix, hasDataContainer bool) bool {
-	return !explicitPermissionFix && !hasDataContainer
+// managedInitRunConfig preserves the image's default user and entrypoint.
+// Managed image actions rely on their entrypoints to provide commands such as
+// init-drupal, and arbitrary workspace identities may not exist in the image.
+func managedInitRunConfig(image, workingDir, context, dataContainer string, environment map[string]interface{}) docker.RunConfig {
+	runConfig := docker.RunConfig{
+		Image:   image,
+		WorkDir: workingDir,
+	}
+	for envName, envVal := range environment {
+		runConfig.Env = append(runConfig.Env, fmt.Sprintf("%s=%s", envName, envVal))
+	}
+	if dataContainer != "" {
+		runConfig.VolumesFrom = []string{dataContainer}
+	} else {
+		runConfig.Volumes = []string{fmt.Sprintf("%s:%s", context, workingDir)}
+	}
+
+	return runConfig
 }

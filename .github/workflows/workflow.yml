@@ -48,7 +48,7 @@ jobs:
       run: |
         set -euo pipefail
 
-        WODBY_DOCKER_INTEGRATION=1 go test ./pkg/cicache ./pkg/cidata ./pkg/docker
+        WODBY_DOCKER_INTEGRATION=1 go test ./cmd/wodby/ci/initialize ./pkg/cicache ./pkg/cidata ./pkg/docker
 
         test_home="${RUNNER_TEMP}/wodby-home"
         context="${RUNNER_TEMP}/wodby-context"

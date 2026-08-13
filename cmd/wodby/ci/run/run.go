@@ -113,6 +113,7 @@ var Cmd = &cobra.Command{
 			runConfig.Env = withMappedUserHome(runConfig.Env, explicitEnv)
 		}
 
+		strictCache := cacheConfigurationIsExplicit(opts.cache)
 		cacheNames, err := resolveRunCacheProfileNames(
 			opts.cache,
 			opts.noCache,
@@ -121,41 +122,52 @@ var Cmd = &cobra.Command{
 			imageConfig.Labels,
 		)
 		if err != nil {
-			return errors.WithStack(err)
+			if cacheErr := handleCacheFailure("configuration", strictCache, err); cacheErr != nil {
+				return errors.WithStack(cacheErr)
+			}
+			cacheNames = nil
 		}
 		if len(cacheNames) > 0 {
-			hostHome, cacheRoot, err := resolveHostCacheStorage(config.Context, config.DataContainer != "")
-			if err != nil {
-				return errors.WithStack(err)
+			cacheConfig := runConfig
+			cacheConfig.Env = append([]string(nil), runConfig.Env...)
+			cacheConfig.Volumes = append([]string(nil), runConfig.Volumes...)
+			cacheConfig.VolumesFrom = append([]string(nil), runConfig.VolumesFrom...)
+
+			hostHome, cacheRoot, cacheErr := resolveHostCacheStorage(config.Context, config.DataContainer != "")
+			if cacheErr == nil {
+				cacheNames, cacheErr = addCacheProfiles(
+					&cacheConfig,
+					cacheNames,
+					explicitEnv,
+					hostHome,
+					cacheRoot,
+					config.DataContainer != "",
+					runConfig.User,
+				)
 			}
-			cacheNames, err = addCacheProfiles(
-				&runConfig,
-				cacheNames,
-				explicitEnv,
-				hostHome,
-				cacheRoot,
-				config.DataContainer != "",
-				runConfig.User,
-			)
-			if err != nil {
-				return errors.WithStack(err)
+			if cacheErr == nil && config.DataContainer != "" && len(cacheNames) > 0 {
+				cacheErr = cicache.PrepareDataContainerProfiles(config.DataContainer, cacheNames)
+			}
+			if cacheErr != nil {
+				if handledErr := handleCacheFailure("setup", strictCache, cacheErr); handledErr != nil {
+					return errors.WithStack(handledErr)
+				}
+				cacheNames = nil
+			} else {
+				runConfig = cacheConfig
 			}
 		}
 
 		if opts.path != "" {
 			runConfig.WorkDir = fmt.Sprintf("%s/%s", workingDir, opts.path)
 		}
-		if config.DataContainer != "" && len(cacheNames) > 0 {
-			if err := cicache.PrepareDataContainerProfiles(config.DataContainer, cacheNames); err != nil {
-				return errors.WithStack(err)
-			}
-		}
-
 		runErr := dockerClient.Run(args, runConfig)
 		if config.DataContainer != "" && len(cacheNames) > 0 {
 			exportErr := cicache.ExportDataContainerProfiles(config.DataContainer, config.Context, cacheNames)
 			if runErr == nil && exportErr != nil {
-				return errors.WithStack(exportErr)
+				if cacheErr := handleCacheFailure("export", strictCache, exportErr); cacheErr != nil {
+					return errors.WithStack(cacheErr)
+				}
 			}
 		}
 		if runErr != nil {

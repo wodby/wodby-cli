@@ -1,6 +1,7 @@
 package run
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -256,6 +257,39 @@ func TestResolveCacheProfileNames(t *testing.T) {
 				t.Fatalf("resolveCacheProfileNames() = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCacheConfigurationIsExplicit(t *testing.T) {
+	tests := []struct {
+		name   string
+		values []string
+		want   bool
+	}{
+		{name: "implicit"},
+		{name: "auto", values: []string{"auto"}},
+		{name: "none", values: []string{"none"}},
+		{name: "profile", values: []string{"composer"}, want: true},
+		{name: "profiles", values: []string{"composer,npm"}, want: true},
+		{name: "invalid explicit combination", values: []string{"auto,composer"}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cacheConfigurationIsExplicit(tt.values); got != tt.want {
+				t.Fatalf("cacheConfigurationIsExplicit(%v) = %t, want %t", tt.values, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleCacheFailure(t *testing.T) {
+	sentinel := errors.New("cache unavailable")
+	if err := handleCacheFailure("setup", false, sentinel); err != nil {
+		t.Fatalf("automatic cache failure returned %v", err)
+	}
+	if err := handleCacheFailure("setup", true, sentinel); !errors.Is(err, sentinel) {
+		t.Fatalf("explicit cache failure = %v, want sentinel", err)
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/wodby/wodby-cli/pkg/api"
 	"github.com/wodby/wodby-cli/pkg/ci"
 	"github.com/wodby/wodby-cli/pkg/cicache"
+	"github.com/wodby/wodby-cli/pkg/cidata"
 	"github.com/wodby/wodby-cli/pkg/docker"
 	"github.com/wodby/wodby-cli/pkg/types"
 	"github.com/wodby/wodby-cli/pkg/version"
@@ -199,7 +200,7 @@ var Cmd = &cobra.Command{
 				return errors.Wrap(err, string(output))
 			}
 			if err := cicache.ImportDataContainer(config.DataContainer, config.WorkingDir, config.Context); err != nil {
-				return errors.WithStack(err)
+				logger.Warnf("Skipping automatic cache import: %v", err)
 			}
 		}
 
@@ -222,18 +223,26 @@ var Cmd = &cobra.Command{
 				return errors.WithStack(err)
 			}
 
-			if defaultUser != "root" {
+			if config.DataContainer != "" {
+				uid, gid, err := dockerClient.ResolveImageUserIdentity(mainService.Image, defaultUser)
+				if err != nil {
+					return errors.WithStack(err)
+				}
+				if uid == 0 {
+					logger.Info("Skipping codebase permissions fix: main service image default user resolves to root")
+				} else {
+					if err := cidata.FixOwnership(config.DataContainer, config.WorkingDir, fmt.Sprintf("%d:%d", uid, gid)); err != nil {
+						return errors.WithStack(err)
+					}
+				}
+			} else if defaultUser != "root" {
 				runConfig := docker.RunConfig{
 					Image:           mainService.Image,
 					User:            "root",
 					WorkDir:         config.WorkingDir,
 					ClearEntrypoint: true,
 				}
-				if config.DataContainer != "" {
-					runConfig.VolumesFrom = []string{config.DataContainer}
-				} else {
-					runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", opts.context, config.WorkingDir))
-				}
+				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", opts.context, config.WorkingDir))
 
 				args := []string{"chown", "-R", docker.ChownSpec(defaultUser), "."}
 				err := dockerClient.Run(args, runConfig)

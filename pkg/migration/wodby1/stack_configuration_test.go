@@ -103,6 +103,8 @@ func TestPrepareStackConfigurationMapsDrupalAppSettingsToPHP(t *testing.T) {
 	if settings["docroot"] != "docroot/web" || settings["sitedir"] != "customer.example" {
 		t.Fatalf("Drupal PHP settings = %#v", settings)
 	}
+	assertPreparedStackSettingMapping(t, configuration.Services["php"].SettingMappings, "docroot", "docroot/web", "set stack override")
+	assertPreparedStackSettingMapping(t, configuration.Services["php"].SettingMappings, "sitedir", "customer.example", "set stack override")
 	if !hasReviewMessage(findings, SeverityMigration, `Drupal subdirectory "docroot/web" and site directory "customer.example"`) {
 		t.Fatalf("Drupal app setting migration detail missing: %#v", findings)
 	}
@@ -129,9 +131,11 @@ func TestPrepareStackConfigurationDoesNotRewriteMatchingDrupalAppSettings(t *tes
 	if hasBlockingFindings(findings) {
 		t.Fatalf("unexpected findings: %#v", findings)
 	}
-	if stackConfigurationHasChanges(configuration) {
-		t.Fatalf("matching Drupal PHP defaults prepared an unnecessary stack change: %#v", configuration)
+	if settings := configuration.Services["php"].Settings; len(settings) != 0 {
+		t.Fatalf("matching Drupal PHP defaults prepared unnecessary setting overrides: %#v", settings)
 	}
+	assertPreparedStackSettingMapping(t, configuration.Services["php"].SettingMappings, "docroot", "web", "already matches target")
+	assertPreparedStackSettingMapping(t, configuration.Services["php"].SettingMappings, "sitedir", "default", "already matches target")
 	if !hasReviewMessage(findings, SeverityMigration, `Drupal subdirectory "web" and site directory "default"`) {
 		t.Fatalf("Drupal app setting migration detail missing: %#v", findings)
 	}
@@ -164,8 +168,8 @@ func TestPrepareStackConfigurationUsesExistingStackSettingOverrideAsEffectiveVal
 	if hasBlockingFindings(findings) {
 		t.Fatalf("unexpected findings: %#v", findings)
 	}
-	if stackConfigurationHasChanges(configuration) {
-		t.Fatalf("matching stack override prepared an unnecessary stack change: %#v", configuration)
+	if settings := configuration.Services["php"].Settings; len(settings) != 0 {
+		t.Fatalf("matching stack override prepared unnecessary setting overrides: %#v", settings)
 	}
 }
 
@@ -299,6 +303,19 @@ func assertPreparedStackEnvVar(t *testing.T, variables []PreparedStackEnvVar, na
 		}
 	}
 	t.Fatalf("env var %s/%v not found in %#v", name, envType, variables)
+}
+
+func assertPreparedStackSettingMapping(t *testing.T, mappings []PreparedStackSettingMapping, name, value, action string) {
+	t.Helper()
+	for _, mapping := range mappings {
+		if mapping.Name == name {
+			if mapping.Value != value || mapping.Action != action {
+				t.Fatalf("setting mapping %s = %#v, want value %q and action %q", name, mapping, value, action)
+			}
+			return
+		}
+	}
+	t.Fatalf("setting mapping %s not found in %#v", name, mappings)
 }
 
 func hasBlockingFindings(findings []ReviewItem) bool {

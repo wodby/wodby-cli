@@ -636,14 +636,14 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 	}
 
 	if !opts.apply && !opts.verify {
-		return printPreview(cmd, plan)
+		return printPreview(cmd, plan, prepared)
 	}
 	if plan.Summary.Blocking != 0 {
 		action := "apply"
 		if opts.verify {
 			action = "verify"
 		}
-		return rejectBlockedMigrationAction(cmd, plan, action)
+		return rejectBlockedMigrationAction(cmd, plan, action, prepared)
 	}
 	if reviewedPlan != nil && plan.PlanHash != reviewedPlan.PlanHash {
 		return errors.Errorf(
@@ -671,7 +671,7 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 				printRestartNotice(cmd, planPath, statePath)
 			}
 		}
-		if err := printApplyReview(cmd, plan, resumeState != nil); err != nil {
+		if err := printApplyReview(cmd, plan, resumeState != nil, prepared); err != nil {
 			return err
 		}
 		if resumeState == nil {
@@ -1103,14 +1103,14 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 	}
 
 	if !opts.apply && !opts.verify {
-		return printPreview(cmd, plan)
+		return printPreview(cmd, plan, prepared)
 	}
 	if plan.Summary.Blocking != 0 {
 		action := "apply"
 		if opts.verify {
 			action = "verify"
 		}
-		return rejectBlockedMigrationAction(cmd, plan, action)
+		return rejectBlockedMigrationAction(cmd, plan, action, prepared)
 	}
 	if reviewedPlan != nil && plan.PlanHash != reviewedPlan.PlanHash {
 		return errors.Errorf(
@@ -1134,7 +1134,7 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 		if reviewedPlan == nil && opts.restart {
 			printRestartNotice(cmd, planPath, statePath)
 		}
-		if err := printApplyReview(cmd, plan, reviewedPlan != nil); err != nil {
+		if err := printApplyReview(cmd, plan, reviewedPlan != nil, prepared); err != nil {
 			return err
 		}
 		if reviewedPlan == nil {
@@ -1830,13 +1830,13 @@ func stateBackedTargetAppState(state *wodby1.MigrationState) (targetID int, allo
 	}
 }
 
-func printPreview(cmd *cobra.Command, plan wodby1.Plan) error {
+func printPreview(cmd *cobra.Command, plan wodby1.Plan, prepared ...wodby1.PreparedMigration) error {
 	if planOutputJSON(cmd) {
 		encoder := json.NewEncoder(cmd.OutOrStdout())
 		encoder.SetIndent("", "  ")
 		return errors.WithStack(encoder.Encode(plan))
 	}
-	wodby1.PrintReview(cmd.OutOrStdout(), plan)
+	wodby1.PrintReview(cmd.OutOrStdout(), plan, prepared...)
 	fmt.Fprintln(cmd.OutOrStdout(), "\nNext step:")
 	if plan.Status == "blocked" || plan.Summary.Blocking != 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), cliColor(cmd.OutOrStdout(), cliColorRed, "Preview result: blocked."))
@@ -1866,11 +1866,11 @@ func printPreview(cmd *cobra.Command, plan wodby1.Plan) error {
 	return nil
 }
 
-func printApplyReview(cmd *cobra.Command, plan wodby1.Plan, continuing bool) error {
+func printApplyReview(cmd *cobra.Command, plan wodby1.Plan, continuing bool, prepared ...wodby1.PreparedMigration) error {
 	if planOutputJSON(cmd) {
 		return nil
 	}
-	wodby1.PrintReview(cmd.OutOrStdout(), plan)
+	wodby1.PrintReview(cmd.OutOrStdout(), plan, prepared...)
 	if continuing {
 		fmt.Fprintln(cmd.OutOrStdout(), "\nContinuing the saved migration plan shown above.")
 	} else {
@@ -2030,9 +2030,9 @@ func printDeletedTargetRestartNotice(cmd *cobra.Command, planPath string, stateP
 	fmt.Fprintf(w, "The stale resume state will be replaced: %s\n", statePath)
 }
 
-func rejectBlockedMigrationAction(cmd *cobra.Command, plan wodby1.Plan, action string) error {
+func rejectBlockedMigrationAction(cmd *cobra.Command, plan wodby1.Plan, action string, prepared ...wodby1.PreparedMigration) error {
 	if !planOutputJSON(cmd) {
-		wodby1.PrintReview(cmd.OutOrStdout(), plan)
+		wodby1.PrintReview(cmd.OutOrStdout(), plan, prepared...)
 	}
 	return errors.Errorf("cannot %s migration: resolve the %d blocking review item(s) shown above", action, plan.Summary.Blocking)
 }

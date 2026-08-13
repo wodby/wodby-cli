@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func PrintReview(w io.Writer, plan Plan) {
+func PrintReview(w io.Writer, plan Plan, prepared ...PreparedMigration) {
 	fmt.Fprintf(w, "%s\n", migrationColor(w, ansiBold+ansiCyan, "Wodby 1 to Wodby 2 migration plan"))
 	printReviewTable(w, "  ", []string{"Field", "Value"}, reviewOverviewRows(plan))
 	fmt.Fprintf(w, "\nSummary:\n")
@@ -74,6 +74,13 @@ func PrintReview(w io.Writer, plan Plan) {
 				})
 			}
 			printReviewTable(w, "    ", []string{"Kind", "Provider", "Service", "Action", "Variables"}, rows)
+		}
+		if preparedApp, found := preparedMigrationForReview(prepared, app.SourceUUID); found {
+			rows := preparedStackSettingRows(preparedApp.StackConfiguration)
+			if len(rows) != 0 {
+				fmt.Fprintln(w, "  Converted stack settings (shared by all instances):")
+				printReviewTable(w, "    ", []string{"Source", "Target service", "Target setting", "Value", "Action"}, rows)
+			}
 		}
 		for instanceIndex, instance := range app.Instances {
 			fmt.Fprintf(
@@ -154,7 +161,7 @@ func PrintReview(w io.Writer, plan Plan) {
 						strconv.Itoa(service.Settings),
 					})
 				}
-				printReviewTable(w, "      ", []string{"Source", "Target", "Source version", "Target version", "Version action", "State", "Action", "Stack change", "Env vars", "Cron jobs", "Settings"}, rows)
+				printReviewTable(w, "      ", []string{"Source", "Target", "Source version", "Target version", "Version action", "State", "Action", "Stack change", "Env vars", "Cron jobs", "Source settings"}, rows)
 			}
 			cronRows := [][]string{}
 			for _, service := range instance.Services {
@@ -240,6 +247,31 @@ func PrintReview(w io.Writer, plan Plan) {
 			printReviewTableColor(w, "  ", []string{"Scope", "Subject", "Details"}, rows, color)
 		}
 	}
+}
+
+func preparedMigrationForReview(prepared []PreparedMigration, sourceUUID string) (PreparedMigration, bool) {
+	for _, migration := range prepared {
+		if app, found := migration.ForApp(sourceUUID); found {
+			return app, true
+		}
+	}
+	return PreparedMigration{}, false
+}
+
+func preparedStackSettingRows(configuration PreparedStackConfiguration) [][]string {
+	rows := [][]string{}
+	for _, serviceName := range sortedPreparedStackServiceNames(configuration) {
+		for _, mapping := range configuration.Services[serviceName].SettingMappings {
+			rows = append(rows, []string{
+				mapping.Source,
+				serviceName,
+				mapping.Name,
+				mapping.Value,
+				mapping.Action,
+			})
+		}
+	}
+	return rows
 }
 
 func reviewSeverityColor(severity string) string {

@@ -258,7 +258,7 @@ func TestBuildPlanAppliesWodby2ServiceCompatibilityPolicy(t *testing.T) {
 		t.Fatalf("apache route replacement = %#v", route)
 	}
 	if !hasReviewMessage(plan.Review, SeverityServiceWarning, "Apache is intentionally not migrated") ||
-		!hasReviewMessage(plan.Review, SeverityConfirmation, "https://wodby.com/stacks/gotenberg/migrate-from-athenapdf") ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "https://wodby.com/docs/2.0/stacks/catalog/gotenberg/#migrate-from-athenapdf") ||
 		!hasReviewMessage(plan.Review, SeverityServiceWarning, "application cron jobs are migrated as Wodby 2 service cron schedules") ||
 		!hasReviewMessage(plan.Review, SeverityMigration, "mailhog will be substituted with mailpit") ||
 		!hasReviewMessage(plan.Review, SeverityMigration, "memcache will be substituted with memcached") ||

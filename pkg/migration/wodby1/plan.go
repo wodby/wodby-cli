@@ -954,7 +954,7 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 			servicePlan.TargetName = "gotenberg"
 			servicePlan.Action = "substitute"
 			confirmationSeverity = SeverityConfirmation
-			confirmation = "Gotenberg is not API-compatible with AthenaPDF; see https://wodby.com/stacks/gotenberg/migrate-from-athenapdf"
+			confirmation = "Gotenberg is not API-compatible with AthenaPDF; see https://wodby.com/docs/2.0/stacks/catalog/gotenberg/#migrate-from-athenapdf"
 		case "mailhog":
 			servicePlan.TargetName = "mailpit"
 			servicePlan.Action = "substitute"

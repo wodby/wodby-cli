@@ -81,8 +81,18 @@ func TestPrintReviewUsesTablesAndSeparateReviewSections(t *testing.T) {
 		},
 	}
 
+	prepared := PreparedMigration{
+		App: AppExport{App: App{UUID: "app-1"}},
+		StackConfiguration: PreparedStackConfiguration{Services: map[string]PreparedStackServiceConfiguration{
+			"php": {SettingMappings: []PreparedStackSettingMapping{
+				{Source: "Wodby 1 app docroot", Name: "docroot", Value: "web", Action: "already matches target"},
+				{Source: "Wodby 1 app site directory", Name: "sitedir", Value: "test", Action: "set stack override"},
+			}},
+		}},
+	}
+
 	var output bytes.Buffer
-	PrintReview(&output, plan)
+	PrintReview(&output, plan, prepared)
 	text := output.String()
 	for _, expected := range []string{
 		"Field",
@@ -94,6 +104,9 @@ func TestPrintReviewUsesTablesAndSeparateReviewSections(t *testing.T) {
 		"connect  Wodby CI (default)  ID 44            acme/demo          exact match found  php",
 		"Instance 1/1: Dev → dev (dev → dev)",
 		"create and configure  drupal         new from catalog drupal11  revision-4",
+		"Converted stack settings (shared by all instances):",
+		"Wodby 1 app docroot         php             docroot         web    already matches target",
+		"Wodby 1 app site directory  php             sitedir         test   set stack override",
 		"Source   Target   Source version  Target version  Version action",
 		"mailhog  mailpit  -               -               -               enabled  substitute",
 		"Cron job → cron schedule migration:",

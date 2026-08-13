@@ -100,12 +100,23 @@ type PreparedStackServiceAddition struct {
 }
 
 type PreparedStackServiceConfiguration struct {
-	VersionOptions []TargetStackServiceOptionInput
-	EnvVars        []PreparedStackEnvVar
-	Settings       map[string]string
-	CronSchedules  []PreparedStackCronSchedule
-	Integrations   []PreparedStackIntegrationLink
-	Links          []PreparedStackServiceLink
+	VersionOptions  []TargetStackServiceOptionInput
+	EnvVars         []PreparedStackEnvVar
+	Settings        map[string]string
+	SettingMappings []PreparedStackSettingMapping
+	CronSchedules   []PreparedStackCronSchedule
+	Integrations    []PreparedStackIntegrationLink
+	Links           []PreparedStackServiceLink
+}
+
+// PreparedStackSettingMapping describes a source-to-target setting conversion
+// for the human-readable migration review. It is deliberately kept in the
+// in-memory prepared migration and is not persisted in the migration plan.
+type PreparedStackSettingMapping struct {
+	Source string
+	Name   string
+	Value  string
+	Action string
 }
 
 type PreparedStackServiceLink struct {

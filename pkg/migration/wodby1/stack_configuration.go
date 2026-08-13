@@ -105,6 +105,14 @@ func prepareStackConfiguration(app PreparedAppMigration) (PreparedStackConfigura
 
 		settings, settingFindings := preparedStackSettings(app.App.App.Name, targetName, items)
 		serviceConfig.Settings = settings
+		for name, value := range settings {
+			serviceConfig.SettingMappings = append(serviceConfig.SettingMappings, PreparedStackSettingMapping{
+				Source: "Wodby 1 service setting",
+				Name:   name,
+				Value:  value,
+				Action: "set stack override",
+			})
+		}
 		findings = append(findings, settingFindings...)
 
 		crons, cronFindings := preparedStackCrons(app.App.App.Name, targetName, items)
@@ -324,11 +332,24 @@ func prepareDrupalAppSettings(app PreparedAppMigration, configuration *PreparedS
 		if existing, found := service.Settings[name]; found && existing != value {
 			return []ReviewItem{stackConfigBlocker(app.App.App.Name, "", "Drupal app settings", fmt.Sprintf("target PHP setting %q resolves both from source service configuration (%q) and the Wodby 1 app setting (%q)", name, existing, value))}
 		}
+		action := "already matches target"
 		if settingNeedsUpdate[name] {
 			service.Settings[name] = value
+			action = "set stack override"
 		}
+		source := "Wodby 1 app site directory"
+		if name == "docroot" {
+			source = "Wodby 1 app docroot"
+		}
+		upsertPreparedStackSettingMapping(&service, PreparedStackSettingMapping{
+			Source: source,
+			Name:   name,
+			Value:  value,
+			Action: action,
+		})
 	}
-	if len(service.Settings) != 0 || len(service.VersionOptions) != 0 || len(service.EnvVars) != 0 || len(service.CronSchedules) != 0 || len(service.Integrations) != 0 || len(service.Links) != 0 {
+	sortPreparedStackServiceConfiguration(&service)
+	if len(service.SettingMappings) != 0 || len(service.Settings) != 0 || len(service.VersionOptions) != 0 || len(service.EnvVars) != 0 || len(service.CronSchedules) != 0 || len(service.Integrations) != 0 || len(service.Links) != 0 {
 		configuration.Services["php"] = service
 	}
 	return []ReviewItem{{
@@ -669,6 +690,13 @@ func stackConfigBlocker(app, instance, subject, message string) ReviewItem {
 }
 
 func sortPreparedStackServiceConfiguration(configuration *PreparedStackServiceConfiguration) {
+	sort.SliceStable(configuration.SettingMappings, func(i, j int) bool {
+		left, right := configuration.SettingMappings[i], configuration.SettingMappings[j]
+		if left.Name != right.Name {
+			return left.Name < right.Name
+		}
+		return left.Source < right.Source
+	})
 	sort.SliceStable(configuration.EnvVars, func(i, j int) bool {
 		left, right := configuration.EnvVars[i], configuration.EnvVars[j]
 		if left.Name != right.Name {
@@ -689,6 +717,16 @@ func sortPreparedStackServiceConfiguration(configuration *PreparedStackServiceCo
 	sort.SliceStable(configuration.Links, func(i, j int) bool {
 		return configuration.Links[i].Name < configuration.Links[j].Name
 	})
+}
+
+func upsertPreparedStackSettingMapping(configuration *PreparedStackServiceConfiguration, mapping PreparedStackSettingMapping) {
+	for index := range configuration.SettingMappings {
+		if configuration.SettingMappings[index].Name == mapping.Name {
+			configuration.SettingMappings[index] = mapping
+			return
+		}
+	}
+	configuration.SettingMappings = append(configuration.SettingMappings, mapping)
 }
 
 func optionalStringValue(value *string) string {

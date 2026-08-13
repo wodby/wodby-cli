@@ -75,6 +75,53 @@ func TestNewBuildFiles(t *testing.T) {
 	})
 }
 
+func TestEnsureTemporaryDockerignore(t *testing.T) {
+	context := t.TempDir()
+	files := newBuildFiles(context, "php", "")
+
+	cleanup, err := ensureTemporaryDockerignore(files, ".git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(files.dockerignorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dockerignoreContains(string(content), ".wodby-ci-cache") {
+		t.Fatalf("temporary dockerignore does not exclude cache: %q", content)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(files.dockerignorePath); !os.IsNotExist(err) {
+		t.Fatalf("temporary dockerignore still exists: %v", err)
+	}
+}
+
+func TestEnsureTemporaryDockerignoreRestoresExistingFile(t *testing.T) {
+	context := t.TempDir()
+	files := newBuildFiles(context, "php", "")
+	original := []byte("vendor\n")
+	if err := os.WriteFile(files.dockerignorePath, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup, err := ensureTemporaryDockerignore(files, ".git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(files.dockerignorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != string(original) {
+		t.Fatalf("restored dockerignore = %q, want %q", content, original)
+	}
+}
+
 func TestPrioritizeMainService(t *testing.T) {
 	t.Run("moves main service to the front", func(t *testing.T) {
 		services := []*types.AppServiceBuildConfig{

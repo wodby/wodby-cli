@@ -92,8 +92,6 @@ func (c *Client) Build(config BuildConfig) error {
 
 	fmt.Printf("Building:\n docker %s\n", strings.Join(args, " "))
 	cmd := exec.Command("docker", args...)
-	cmd.Env = os.Environ()
-	cmd.Env = append(cmd.Env, "DOCKER_BUILDKIT=1")
 
 	return cmdStartVerboseRedacted(cmd, config.RedactValues)
 }

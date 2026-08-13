@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/distribution/reference"
@@ -16,29 +17,24 @@ const cacheLabel = "com.wodby.ci.cache"
 
 type cacheProfile struct {
 	envName       string
-	hostPath      []string
 	containerPath string
 }
 
 var cacheProfiles = map[string]cacheProfile{
 	"npm": {
 		envName:       "NPM_CONFIG_CACHE",
-		hostPath:      []string{".npm"},
 		containerPath: "/tmp/wodby-cache/npm",
 	},
 	"composer": {
 		envName:       "COMPOSER_CACHE_DIR",
-		hostPath:      []string{".composer", "cache"},
 		containerPath: "/tmp/wodby-cache/composer",
 	},
 	"bundler": {
 		envName:       "BUNDLE_USER_CACHE",
-		hostPath:      []string{".bundle", "cache"},
 		containerPath: "/tmp/wodby-cache/bundler",
 	},
 	"uv": {
 		envName:       "UV_CACHE_DIR",
-		hostPath:      []string{".cache", "uv"},
 		containerPath: "/tmp/wodby-cache/uv",
 	},
 }
@@ -88,23 +84,8 @@ func withMappedUserHome(env []string, explicitEnv map[string]struct{}) []string 
 	return append(env, "HOME=/tmp")
 }
 
-func resolveRunCacheProfileNames(explicit []string, disabled bool, explicitUser, dataContainer, image string, labels map[string]string) ([]string, error) {
-	names, err := resolveCacheProfileNames(
-		explicit,
-		disabled,
-		explicitUser == "" && dataContainer == "",
-		image,
-		labels,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	if dataContainer != "" && len(names) > 0 {
-		return nil, errors.New("dependency cache bind mounts are not supported with Docker-in-Docker")
-	}
-
-	return names, nil
+func resolveRunCacheProfileNames(explicit []string, disabled bool, explicitUser, image string, labels map[string]string) ([]string, error) {
+	return resolveCacheProfileNames(explicit, disabled, explicitUser == "", image, labels)
 }
 
 func resolveCacheProfileNames(explicit []string, disabled, autoAllowed bool, image string, labels map[string]string) ([]string, error) {
@@ -195,35 +176,52 @@ func knownImageCacheProfiles(image string) []string {
 	}
 }
 
-func addCacheProfiles(config *docker.RunConfig, names []string, explicitEnv map[string]struct{}, hostHome, cacheRoot string) error {
-	if cacheRoot != "" && !filepath.IsAbs(cacheRoot) {
-		absoluteRoot, err := filepath.Abs(cacheRoot)
-		if err != nil {
-			return errors.Wrap(err, "failed to resolve WODBY_CI_CACHE_DIR")
-		}
-		cacheRoot = absoluteRoot
-	}
-
+func addCacheProfiles(config *docker.RunConfig, names []string, explicitEnv map[string]struct{}, cacheRoot string, dataContainer bool, user string) ([]string, error) {
+	active := make([]string, 0, len(names))
 	for _, name := range names {
 		profile := cacheProfiles[name]
 		if _, ok := explicitEnv[profile.envName]; ok {
 			continue
 		}
 
-		hostPath := filepath.Join(append([]string{hostHome}, profile.hostPath...)...)
-		if cacheRoot != "" {
-			hostPath = filepath.Join(cacheRoot, name)
+		if volumeTargetsPath(config.Volumes, profile.containerPath) {
+			config.Env = append(config.Env, fmt.Sprintf("%s=%s", profile.envName, profile.containerPath))
+			continue
 		}
-		if !volumeTargetsPath(config.Volumes, profile.containerPath) {
+
+		if !dataContainer {
+			hostPath := filepath.Join(cacheRoot, name)
 			if err := os.MkdirAll(hostPath, 0755); err != nil {
-				return errors.Wrapf(err, "failed to create %s cache directory", name)
+				return nil, errors.Wrapf(err, "failed to create %s cache directory", name)
+			}
+			if uid, gid, ok := numericIdentity(user); ok && canChownCacheDirectories() {
+				if err := os.Chown(hostPath, uid, gid); err != nil {
+					return nil, errors.Wrapf(err, "failed to set %s cache directory ownership", name)
+				}
 			}
 			config.Volumes = append(config.Volumes, fmt.Sprintf("%s:%s", hostPath, profile.containerPath))
 		}
 		config.Env = append(config.Env, fmt.Sprintf("%s=%s", profile.envName, profile.containerPath))
+		active = append(active, name)
 	}
 
-	return nil
+	return active, nil
+}
+
+func numericIdentity(user string) (int, int, bool) {
+	parts := strings.SplitN(user, ":", 2)
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	uid, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, false
+	}
+	gid, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, false
+	}
+	return uid, gid, true
 }
 
 func volumeTargetsPath(volumes []string, target string) bool {

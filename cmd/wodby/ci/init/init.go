@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/viper"
 	"github.com/wodby/wodby-cli/pkg/api"
 	"github.com/wodby/wodby-cli/pkg/ci"
+	"github.com/wodby/wodby-cli/pkg/cicache"
 	"github.com/wodby/wodby-cli/pkg/docker"
 	"github.com/wodby/wodby-cli/pkg/types"
 	"github.com/wodby/wodby-cli/pkg/version"
@@ -179,6 +180,7 @@ var Cmd = &cobra.Command{
 				"docker",
 				"create",
 				fmt.Sprintf("--volume=%s", config.WorkingDir),
+				fmt.Sprintf("--volume=%s", cicache.ContainerRoot),
 				fmt.Sprintf("--name=%s", config.DataContainer),
 				"alpine",
 				"/bin/true",
@@ -196,6 +198,9 @@ var Cmd = &cobra.Command{
 			if err != nil {
 				return errors.Wrap(err, string(output))
 			}
+			if err := cicache.ImportDataContainer(config.DataContainer, config.WorkingDir, config.Context); err != nil {
+				return errors.WithStack(err)
+			}
 		}
 
 		content, err := json.MarshalIndent(config, "", "    ")
@@ -207,9 +212,7 @@ var Cmd = &cobra.Command{
 			return errors.WithStack(err)
 		}
 
-		shouldFixPermissions, permissionFixReason := permissionFixDecision(
-			opts.fixPermissions,
-		)
+		shouldFixPermissions, permissionFixReason := permissionFixDecision(opts.fixPermissions, config.DataContainer != "")
 
 		if shouldFixPermissions {
 			logger.Infof("Fixing codebase permissions: %s", permissionFixReason)
@@ -221,8 +224,10 @@ var Cmd = &cobra.Command{
 
 			if defaultUser != "root" {
 				runConfig := docker.RunConfig{
-					Image: mainService.Image,
-					User:  "root",
+					Image:           mainService.Image,
+					User:            "root",
+					WorkDir:         config.WorkingDir,
+					ClearEntrypoint: true,
 				}
 				if config.DataContainer != "" {
 					runConfig.VolumesFrom = []string{config.DataContainer}
@@ -270,9 +275,12 @@ func init() {
 	Cmd.Flags().StringVarP(&opts.provider, "provider", "p", "", "Override detected build provider name")
 }
 
-func permissionFixDecision(explicit bool) (bool, string) {
+func permissionFixDecision(explicit, hasDataContainer bool) (bool, string) {
 	if explicit {
 		return true, "requested explicitly with --fix-permissions"
+	}
+	if hasDataContainer {
+		return true, "preparing the Docker-in-Docker data volume"
 	}
 
 	return false, "--fix-permissions was not set"

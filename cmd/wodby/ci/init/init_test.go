@@ -71,10 +71,11 @@ func TestFindMainServiceBuildConfig(t *testing.T) {
 
 func TestPermissionFixDecision(t *testing.T) {
 	testCases := []struct {
-		name       string
-		explicit   bool
-		want       bool
-		wantReason string
+		name             string
+		explicit         bool
+		hasDataContainer bool
+		want             bool
+		wantReason       string
 	}{
 		{
 			name:       "enabled explicitly",
@@ -88,11 +89,17 @@ func TestPermissionFixDecision(t *testing.T) {
 			want:       false,
 			wantReason: "--fix-permissions was not set",
 		},
+		{
+			name:             "enabled for dind data volume",
+			hasDataContainer: true,
+			want:             true,
+			wantReason:       "preparing the Docker-in-Docker data volume",
+		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, reason := permissionFixDecision(tc.explicit)
+			got, reason := permissionFixDecision(tc.explicit, tc.hasDataContainer)
 			if got != tc.want {
 				t.Fatalf("permissionFixDecision() = %v, want %v", got, tc.want)
 			}

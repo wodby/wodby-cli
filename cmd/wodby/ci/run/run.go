@@ -1,7 +1,6 @@
 package run
 
 import (
-	"os"
 	"path"
 	"strings"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"github.com/wodby/wodby-cli/pkg/cicache"
 	"github.com/wodby/wodby-cli/pkg/docker"
 	"github.com/wodby/wodby-cli/pkg/types"
 )
@@ -30,6 +30,7 @@ type options struct {
 var opts options
 var v = viper.New()
 var currentHostUser = defaultCurrentHostUser
+var workspaceOwner = defaultWorkspaceOwner
 
 var Cmd = &cobra.Command{
 	Use:   "run [OPTIONS] -s SERVICE | -i IMAGE",
@@ -116,7 +117,6 @@ var Cmd = &cobra.Command{
 			opts.cache,
 			opts.noCache,
 			opts.user,
-			config.DataContainer,
 			image,
 			imageConfig.Labels,
 		)
@@ -124,15 +124,19 @@ var Cmd = &cobra.Command{
 			return errors.WithStack(err)
 		}
 		if len(cacheNames) > 0 {
-			cacheRoot := os.Getenv("WODBY_CI_CACHE_DIR")
-			hostHome := ""
-			if cacheRoot == "" {
-				hostHome, err = os.UserHomeDir()
-				if err != nil {
-					return errors.WithStack(err)
-				}
+			cacheRoot, err := cicache.HostRoot(config.Context)
+			if err != nil {
+				return errors.WithStack(err)
 			}
-			if err := addCacheProfiles(&runConfig, cacheNames, explicitEnv, hostHome, cacheRoot); err != nil {
+			cacheNames, err = addCacheProfiles(
+				&runConfig,
+				cacheNames,
+				explicitEnv,
+				cacheRoot,
+				config.DataContainer != "",
+				runConfig.User,
+			)
+			if err != nil {
 				return errors.WithStack(err)
 			}
 		}
@@ -140,10 +144,21 @@ var Cmd = &cobra.Command{
 		if opts.path != "" {
 			runConfig.WorkDir = fmt.Sprintf("%s/%s", workingDir, opts.path)
 		}
+		if config.DataContainer != "" && len(cacheNames) > 0 {
+			if err := cicache.PrepareDataContainerProfiles(config.DataContainer, cacheNames); err != nil {
+				return errors.WithStack(err)
+			}
+		}
 
-		err = dockerClient.Run(args, runConfig)
-		if err != nil {
-			return errors.WithStack(err)
+		runErr := dockerClient.Run(args, runConfig)
+		if config.DataContainer != "" && len(cacheNames) > 0 {
+			exportErr := cicache.ExportDataContainerProfiles(config.DataContainer, config.Context, cacheNames)
+			if runErr == nil && exportErr != nil {
+				return errors.WithStack(exportErr)
+			}
+		}
+		if runErr != nil {
+			return errors.WithStack(runErr)
 		}
 
 		return nil
@@ -157,7 +172,7 @@ func init() {
 	Cmd.Flags().StringSliceVarP(&opts.volumes, "volume", "v", []string{}, "Volumes")
 	Cmd.Flags().StringSliceVarP(&opts.env, "env", "e", []string{}, "Environment variables")
 	Cmd.Flags().StringVar(&opts.envFile, "env-file", "", "Env file")
-	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "User (defaults to current uid:gid for bind-mounted contexts, except 1000:1000)")
+	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "User (defaults to the workspace uid:gid for bind-mounted contexts)")
 	Cmd.Flags().StringVarP(&opts.path, "path", "p", "", "Working dir (relative path)")
 	Cmd.Flags().StringSliceVar(&opts.cache, "cache", []string{}, "Cache profiles to enable instead of auto-detection (npm, composer, bundler, uv)")
 	Cmd.Flags().BoolVar(&opts.noCache, "no-cache", false, "Disable automatic cache mounts")
@@ -177,8 +192,14 @@ func resolveRunUser(explicitUser string, config *types.Config) (string, error) {
 		return "", err
 	}
 
-	if user == "1000:1000" {
-		return "", nil
+	if strings.HasPrefix(user, "0:") && config.Context != "" {
+		owner, err := workspaceOwner(config.Context)
+		if err != nil {
+			return "", err
+		}
+		if owner != "" && !strings.HasPrefix(owner, "0:") {
+			return owner, nil
+		}
 	}
 
 	return user, nil

@@ -10,6 +10,7 @@ import (
 func TestResolveRunUser(t *testing.T) {
 	t.Cleanup(func() {
 		currentHostUser = defaultCurrentHostUser
+		workspaceOwner = defaultWorkspaceOwner
 	})
 
 	t.Run("uses explicit user override", func(t *testing.T) {
@@ -32,7 +33,7 @@ func TestResolveRunUser(t *testing.T) {
 		}
 	})
 
-	t.Run("skips custom user for default image uid gid", func(t *testing.T) {
+	t.Run("always uses uid 1000 for bind mounted contexts", func(t *testing.T) {
 		currentHostUser = func() (string, error) {
 			return "1000:1000", nil
 		}
@@ -42,8 +43,42 @@ func TestResolveRunUser(t *testing.T) {
 			t.Fatalf("resolveRunUser() error = %v", err)
 		}
 
-		if got != "" {
-			t.Fatalf("resolveRunUser() = %q, want empty user", got)
+		if got != "1000:1000" {
+			t.Fatalf("resolveRunUser() = %q, want %q", got, "1000:1000")
+		}
+	})
+
+	t.Run("uses workspace owner when cli runs as root", func(t *testing.T) {
+		currentHostUser = func() (string, error) {
+			return "0:0", nil
+		}
+		workspaceOwner = func(string) (string, error) {
+			return "1002:121", nil
+		}
+
+		got, err := resolveRunUser("", &types.Config{Context: "/workspace"})
+		if err != nil {
+			t.Fatalf("resolveRunUser() error = %v", err)
+		}
+		if got != "1002:121" {
+			t.Fatalf("resolveRunUser() = %q, want %q", got, "1002:121")
+		}
+	})
+
+	t.Run("keeps root when workspace is root owned", func(t *testing.T) {
+		currentHostUser = func() (string, error) {
+			return "0:0", nil
+		}
+		workspaceOwner = func(string) (string, error) {
+			return "0:0", nil
+		}
+
+		got, err := resolveRunUser("", &types.Config{Context: "/workspace"})
+		if err != nil {
+			t.Fatalf("resolveRunUser() error = %v", err)
+		}
+		if got != "0:0" {
+			t.Fatalf("resolveRunUser() = %q, want %q", got, "0:0")
 		}
 	})
 

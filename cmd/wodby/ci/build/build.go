@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/wodby/wodby-cli/pkg/cicache"
 	"github.com/wodby/wodby-cli/pkg/docker"
 	"github.com/wodby/wodby-cli/pkg/types"
 
@@ -40,7 +41,8 @@ var opts options
 
 const DefaultDockerignore = `.git
 .gitignore
-.dockerignore`
+.dockerignore
+.wodby-ci-cache`
 
 const DefaultDockerfileTpl = `ARG WODBY_BASE_IMAGE
 FROM ${WODBY_BASE_IMAGE}
@@ -206,7 +208,6 @@ var Cmd = &cobra.Command{
 			}
 
 			var cleanUpDockerfile bool
-			var cleanUpDockerignore bool
 			if !fileExists(buildFiles.dockerfilePath) {
 				cleanUpDockerfile = true
 				fmt.Printf("Creating temporary Dockerfile: %s\n", buildFiles.dockerfilePath)
@@ -216,19 +217,12 @@ var Cmd = &cobra.Command{
 					return errors.WithStack(err)
 				}
 			}
-			if !fileExists(buildFiles.dockerignorePath) {
-				// Exclude dockerignore and dockerfile.
-				dockerignore = fmt.Sprintf("%s\n%s\n%s", dockerignore, buildFiles.dockerfileName, buildFiles.dockerignoreName)
-				fmt.Printf("Creating temporary .dockerignore: %s\n", buildFiles.dockerignorePath)
-				err = os.WriteFile(buildFiles.dockerignorePath, []byte(dockerignore), 0600)
-				if err != nil {
-					if cleanUpDockerfile {
-						_ = os.Remove(buildFiles.dockerfilePath)
-					}
-					_ = os.Remove(buildFiles.dockerignorePath)
-					return errors.WithStack(err)
+			cleanUpDockerignore, err := ensureTemporaryDockerignore(buildFiles, dockerignore)
+			if err != nil {
+				if cleanUpDockerfile {
+					_ = os.Remove(buildFiles.dockerfilePath)
 				}
-				cleanUpDockerignore = true
+				return errors.WithStack(err)
 			}
 
 			tag = appBuildImageTag(config, appServiceBuildConfig.Name)
@@ -242,35 +236,26 @@ var Cmd = &cobra.Command{
 				Load:         true,
 				RedactValues: redactValues,
 			})
-			if err != nil {
-				if cleanUpDockerfile {
-					fmt.Println("Cleaning up Dockerfile")
-					_ = os.Remove(buildFiles.dockerfilePath)
-				}
-				if cleanUpDockerignore {
-					fmt.Println("Cleaning up .dockerignore")
-					_ = os.Remove(buildFiles.dockerignorePath)
-				}
-				return errors.WithStack(err)
+			buildErr := err
+			if buildErr == nil {
+				config.BuiltServices = append(config.BuiltServices, types.BuiltService{
+					Name:  appServiceBuildConfig.Name,
+					Image: tag,
+				})
 			}
-			config.BuiltServices = append(config.BuiltServices, types.BuiltService{
-				Name:  appServiceBuildConfig.Name,
-				Image: tag,
-			})
 
+			cleanUpDockerignoreErr := cleanUpDockerignore()
 			if cleanUpDockerfile {
 				fmt.Println("Cleaning up dockerfile")
-				err = os.Remove(buildFiles.dockerfilePath)
-				if err != nil {
+				if err := os.Remove(buildFiles.dockerfilePath); err != nil && buildErr == nil && cleanUpDockerignoreErr == nil {
 					return errors.WithStack(err)
 				}
 			}
-			if cleanUpDockerignore {
-				fmt.Println("Cleaning up dockerignore")
-				err = os.Remove(buildFiles.dockerignorePath)
-				if err != nil {
-					return errors.WithStack(err)
-				}
+			if buildErr != nil {
+				return errors.WithStack(buildErr)
+			}
+			if cleanUpDockerignoreErr != nil {
+				return errors.WithStack(cleanUpDockerignoreErr)
 			}
 		}
 
@@ -420,6 +405,55 @@ func dockerfileArgNames(dockerfile string) []string {
 func fileExists(filePath string) bool {
 	_, err := os.Stat(filePath)
 	return err == nil
+}
+
+func ensureTemporaryDockerignore(files tempBuildFiles, fallback string) (func() error, error) {
+	original, err := os.ReadFile(files.dockerignorePath)
+	existed := err == nil
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	content := string(original)
+	mode := os.FileMode(0600)
+	if existed {
+		info, err := os.Stat(files.dockerignorePath)
+		if err != nil {
+			return nil, err
+		}
+		mode = info.Mode().Perm()
+	} else {
+		content = fmt.Sprintf("%s\n%s\n%s", fallback, files.dockerfileName, files.dockerignoreName)
+	}
+
+	if !dockerignoreContains(content, cicache.DirectoryName) {
+		content = strings.TrimRight(content, "\n") + "\n" + cicache.DirectoryName + "\n"
+	}
+	if existed && content == string(original) {
+		return func() error { return nil }, nil
+	}
+
+	fmt.Printf("Preparing temporary .dockerignore: %s\n", files.dockerignorePath)
+	if err := os.WriteFile(files.dockerignorePath, []byte(content), mode); err != nil {
+		return nil, err
+	}
+
+	return func() error {
+		fmt.Printf("Restoring .dockerignore: %s\n", files.dockerignorePath)
+		if existed {
+			return os.WriteFile(files.dockerignorePath, original, mode)
+		}
+		return os.Remove(files.dockerignorePath)
+	}, nil
+}
+
+func dockerignoreContains(content, entry string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.TrimSpace(line) == entry {
+			return true
+		}
+	}
+	return false
 }
 
 func parseBuildArg(raw string) (string, string, error) {

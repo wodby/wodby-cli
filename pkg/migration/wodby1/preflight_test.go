@@ -89,6 +89,14 @@ func TestPreflightTargetResolvesOfficialStackServicesAndRehashesPlan(t *testing.
 		repository.RemoteGitRepoID != "remote-repo-17" {
 		t.Fatalf("resolved repository = %#v", repository)
 	}
+	if !hasReviewMessage(plan.Review, SeverityMigration, `Wodby CI will be used by default; pipeline ".wodby/pipeline.yml" was found in repository "acme/example" at Git branch "main"`) {
+		t.Fatalf("successful Wodby CI pipeline validation is not disclosed: %#v", plan.Review)
+	}
+	for _, item := range plan.Review {
+		if item.Subject == "new target stack" {
+			t.Fatalf("explicit target stack produced a catalog creation warning: %#v", item)
+		}
+	}
 
 	if len(prepared.Instances) != 1 {
 		t.Fatalf("prepared instances = %#v", prepared.Instances)
@@ -185,8 +193,10 @@ func TestPreflightTargetSelectsPublicCatalogStackForManagedAppByDefault(t *testi
 	if stack.TargetID != 5 || stack.TargetRevID != 71 || stack.Target != "drupal11" || !stack.CreateTarget {
 		t.Fatalf("preflighted catalog stack = %#v", stack)
 	}
-	if !hasReviewMessage(plan.Review, SeverityConfirmation, "new target stack will be created") {
-		t.Fatalf("catalog creation review = %#v", plan.Review)
+	for _, item := range plan.Review {
+		if item.Subject == "new target stack" || item.Subject == "target stack revision" {
+			t.Fatalf("deterministic catalog stack selection should be shown in the migration table, not as a review item: %#v", item)
+		}
 	}
 }
 
@@ -653,7 +663,9 @@ func TestPreflightTargetHonorsExplicitCustomStackAndServiceMappings(t *testing.T
 
 func TestPreflightTargetAcceptsBuiltInServiceCompatibilityMappings(t *testing.T) {
 	export := preflightFixtureExport(false)
+	export.Apps[0].Instances[0].Properties = map[string]interface{}{"cache_redis": false}
 	export.Apps[0].Instances[0].Services = []Service{
+		{Name: "php", Enabled: true},
 		{Name: "apache", Enabled: true},
 		{Name: "athenapdf", Enabled: true},
 		{Name: "crond", Enabled: true},
@@ -678,6 +690,7 @@ func TestPreflightTargetAcceptsBuiltInServiceCompatibilityMappings(t *testing.T)
 		},
 		stackServices: map[int][]TargetStackService{
 			71: {
+				{ID: 18, Name: "php", Required: true, ServiceRevID: 108},
 				{ID: 11, Name: "nginx", Required: true, ServiceRevID: 101},
 				{ID: 12, Name: "valkey", ServiceRevID: 102},
 				{ID: 13, Name: "vinyl", ServiceRevID: 103},
@@ -688,6 +701,7 @@ func TestPreflightTargetAcceptsBuiltInServiceCompatibilityMappings(t *testing.T)
 			},
 		},
 		revisions: map[int]TargetServiceRevision{
+			108: {ID: 108, ServiceID: 208, Name: "php", Manifest: &TargetServiceManifest{Name: "php", Links: []TargetServiceLinkCapability{{Name: "sendmail"}}}},
 			101: {ID: 101, ServiceID: 201, Name: "nginx", Manifest: &TargetServiceManifest{Name: "nginx"}},
 			102: {ID: 102, ServiceID: 202, Name: "valkey", Manifest: &TargetServiceManifest{Name: "valkey"}},
 			103: {ID: 103, ServiceID: 203, Name: "vinyl", Manifest: &TargetServiceManifest{Name: "vinyl"}},
@@ -719,13 +733,17 @@ func TestPreflightTargetAcceptsBuiltInServiceCompatibilityMappings(t *testing.T)
 		t.Fatalf("crond plan = %#v", service)
 	}
 	assertPreflightServicePlan(t, instancePlan, "mailhog", "mailpit", 15, 105)
+	assertPreflightServicePlan(t, instancePlan, "php", "php", 18, 108)
 	assertPreflightServicePlan(t, instancePlan, "nginx", "nginx", 11, 101)
 	assertPreflightServicePlan(t, instancePlan, "pma", "phpmyadmin", 16, 106)
 	assertPreflightServicePlan(t, instancePlan, "redis", "valkey", 12, 102)
+	if preflightFindServicePlan(t, instancePlan, "redis").Enabled {
+		t.Fatalf("redis plan should disable mapped valkey: %#v", preflightFindServicePlan(t, instancePlan, "redis"))
+	}
 	assertPreflightServicePlan(t, instancePlan, "sshd", "sshd", 17, 107)
 	assertPreflightServicePlan(t, instancePlan, "varnish", "vinyl", 13, 103)
 	preparedInstance := prepared.Instances[0]
-	if len(preparedInstance.Services) != 7 ||
+	if len(preparedInstance.Services) != 8 ||
 		preparedInstance.Services["athenapdf"].Target.StackService.Name != "gotenberg" ||
 		preparedInstance.Services["mailhog"].Target.StackService.Name != "mailpit" ||
 		preparedInstance.Services["pma"].Target.StackService.Name != "phpmyadmin" ||
@@ -733,6 +751,13 @@ func TestPreflightTargetAcceptsBuiltInServiceCompatibilityMappings(t *testing.T)
 		preparedInstance.Services["sshd"].Target.StackService.Name != "sshd" ||
 		preparedInstance.Services["varnish"].Target.StackService.Name != "vinyl" {
 		t.Fatalf("prepared compatibility services = %#v", preparedInstance.Services)
+	}
+	links := prepared.StackConfiguration.Services["php"].Links
+	if len(links) != 1 || links[0].Name != "sendmail" || links[0].LinkedServiceName != "mailpit" {
+		t.Fatalf("stack-wide mail delivery link = %#v", links)
+	}
+	if preparedInstance.EffectiveState["valkey"] {
+		t.Fatalf("cache_redis=false should disable target valkey: %#v", preparedInstance.EffectiveState)
 	}
 }
 
@@ -1033,6 +1058,7 @@ func TestPreflightTargetBlocksDisabledInheritedEnvironmentOverride(t *testing.T)
 func TestPreflightTargetResolvesUniqueImportsAndRequiresMapForAmbiguity(t *testing.T) {
 	export := preflightFixtureExport(false)
 	export.Apps[0].Instances[0].Services = []Service{
+		{Name: "php", Enabled: true},
 		{Name: "mariadb", Enabled: true},
 		{Name: "files-nfs", Enabled: true},
 	}
@@ -1064,6 +1090,10 @@ func TestPreflightTargetResolvesUniqueImportsAndRequiresMapForAmbiguity(t *testi
 		}
 		assertPreflightImportPlan(t, &plan.Apps[0].Instances[0], "db", "mariadb", "database", 12)
 		assertPreflightImportPlan(t, &plan.Apps[0].Instances[0], "files", "files-nfs", "files", 13)
+		if hasReviewMessage(plan.Review, SeverityConfirmation, "backup will import") ||
+			hasReviewMessage(plan.Review, SeverityConfirmation, "selected only when the target stack exposes") {
+			t.Fatalf("deterministic database import should be shown in the migration table, not as a review item: %#v", plan.Review)
+		}
 		if len(prepared.Instances[0].Imports) != 2 {
 			t.Fatalf("prepared imports = %#v", prepared.Instances[0].Imports)
 		}
@@ -1152,6 +1182,10 @@ func TestPreflightTargetResolvesUniqueImportsAndRequiresMapForAmbiguity(t *testi
 			t.Fatalf("explicit import mapping blockers = %#v", plan.Review)
 		}
 		assertPreflightImportPlan(t, &plan.Apps[0].Instances[0], "db", "mariadb", "database", 12)
+		if hasReviewMessage(plan.Review, SeverityConfirmation, "backup will import") ||
+			hasReviewMessage(plan.Review, SeverityConfirmation, "backup will use explicit target import") {
+			t.Fatalf("explicit database import should be shown in the migration table, not as a review item: %#v", plan.Review)
+		}
 		database := prepared.Instances[0].Imports["backup-db"]
 		if database.ServiceName != "mariadb" || database.ImportName != "database" {
 			t.Fatalf("explicit database import = %#v", database)
@@ -1357,6 +1391,14 @@ func newPreflightTargetAPI(t *testing.T, catalog preflightTargetCatalog) *prefli
 				http.NotFound(w, request)
 				return
 			}
+			for index := range services {
+				if services[index].Name == "php" && len(services[index].Settings) == 0 {
+					services[index].Settings = []TargetStackServiceSetting{
+						{ID: services[index].ID*10 + 1, StackServiceID: services[index].ID, Name: "docroot", Value: "web"},
+						{ID: services[index].ID*10 + 2, StackServiceID: services[index].ID, Name: "sitedir", Value: "default"},
+					}
+				}
+			}
 			preflightWriteJSON(w, services)
 		case strings.HasPrefix(request.URL.Path, "/v1/stack-revisions/"):
 			value := strings.TrimPrefix(request.URL.Path, "/v1/stack-revisions/")
@@ -1506,10 +1548,15 @@ func preflightSingleBuildCatalog(name string, disabled bool) preflightTargetCata
 
 func preflightDataCatalog(ambiguousDatabase bool) preflightTargetCatalog {
 	services := []TargetStackService{
+		{ID: 11, Name: "php", ServiceRevID: 101},
 		{ID: 12, Name: "mariadb", ServiceRevID: 102},
 		{ID: 13, Name: "files-nfs", ServiceRevID: 103},
 	}
 	revisions := map[int]TargetServiceRevision{
+		101: {
+			ID: 101, Name: "drupal11-php", ServiceID: 201,
+			Manifest: &TargetServiceManifest{Name: "drupal11-php"},
+		},
 		102: {
 			ID: 102, Name: "mariadb", ServiceID: 202,
 			Manifest: &TargetServiceManifest{
@@ -1555,9 +1602,11 @@ func preflightDataCatalog(ambiguousDatabase bool) preflightTargetCatalog {
 }
 
 func preflightFixtureExport(withRepository bool) Export {
+	docroot := "web"
+	siteName := "default"
 	app := App{
 		UUID: "app-1", Name: "example", Title: "Example", Type: "app",
-		Status: "ok", Created: 10, Updated: 20,
+		Docroot: &docroot, SiteName: &siteName, Status: "ok", Created: 10, Updated: 20,
 	}
 	if withRepository {
 		app.Repository = &Repository{

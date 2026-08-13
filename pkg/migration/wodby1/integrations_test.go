@@ -85,7 +85,7 @@ func TestPrepareSMTPIntegrationUsesSESKindForAWS(t *testing.T) {
 	if item == nil || item.ProviderName != "aws" || item.Kind != "ses" || item.Scope == nil || *item.Scope != "eu-west-1" {
 		t.Fatalf("SMTP integration = %#v", item)
 	}
-	if len(findings) != 1 || findings[0].Severity != SeverityConfirmation {
+	if len(findings) != 1 || findings[0].Severity != SeverityMigration {
 		t.Fatalf("findings = %#v", findings)
 	}
 }
@@ -140,7 +140,7 @@ func TestPrepareBackupIntegrationsUsesWodbyBlobPlaceholderAndAWSProvider(t *test
 	if len(items) != 1 || items[0].ProviderName != "aws" || items[0].Kind != "s3" || items[0].Scope == nil || *items[0].Scope != "eu-west-1" {
 		t.Fatalf("integrations = %#v", items)
 	}
-	if len(findings) != 2 {
+	if len(findings) != 3 {
 		t.Fatalf("findings = %#v", findings)
 	}
 	if got := app.Instances[0].BackupDestination; got == nil || got.IntegrationID != 0 || !got.Auto || got.TimeZone != "Europe/Paris" {
@@ -160,12 +160,72 @@ func TestPrepareBackupIntegrationsCreatesDisabledWodbyBlobPresetOnFreePlan(t *te
 	}
 	client := &TargetClient{}
 	items, findings, err := client.prepareBackupIntegrations(context.Background(), &app, PlanTarget{})
-	if err != nil || len(items) != 0 || len(findings) != 1 {
+	if err != nil || len(items) != 0 || len(findings) != 2 {
 		t.Fatalf("items = %#v, findings = %#v, err = %v", items, findings, err)
 	}
 	got := app.Instances[0].BackupDestination
 	if got == nil || !got.Auto || !got.Disabled || got.IntegrationID != 0 || got.TimeZone != "UTC" {
 		t.Fatalf("destination = %#v", got)
+	}
+}
+
+func TestPrepareBackupIntegrationsDefaultsMissingMirrorToWodbyBlob(t *testing.T) {
+	tests := []struct {
+		name         string
+		config       *BackupConfig
+		autoBackups  bool
+		wantAuto     bool
+		wantDisabled bool
+		severity     string
+		message      string
+	}{
+		{
+			name: "automatic backups on paid plan", config: &BackupConfig{Enabled: true}, autoBackups: true,
+			wantAuto: true, severity: SeverityMigration,
+			message: "Wodby 1 automatic backups are enabled, so enabled automatic-backup presets will be created",
+		},
+		{
+			name: "manual backups on paid plan", config: &BackupConfig{Enabled: false}, autoBackups: true,
+			severity: SeverityMigration,
+			message:  "Wodby 1 automatic backups are not enabled, so manual backup presets will be created",
+		},
+		{
+			name: "automatic backups on free plan", config: &BackupConfig{Enabled: true}, autoBackups: false,
+			wantAuto: true, wantDisabled: true, severity: SeverityConfirmation,
+			message: "Wodby 1 automatic backups are enabled, but the target subscription does not allow them",
+		},
+		{
+			name: "missing legacy config on free plan", config: nil, autoBackups: false,
+			wantAuto: true, wantDisabled: true, severity: SeverityConfirmation,
+			message: "source export does not report whether automatic backups are enabled",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			app := PreparedAppMigration{
+				App: AppExport{App: App{UUID: "app-1", Name: "demo"}},
+				Instances: []PreparedInstance{{Source: Instance{
+					UUID: "dev-1", Name: "dev", BackupConfig: test.config,
+				}}},
+			}
+			client := &TargetClient{}
+			items, findings, err := client.prepareBackupIntegrations(context.Background(), &app, PlanTarget{
+				OrgCapabilities: &TargetOrgCapabilities{AutoBackups: test.autoBackups},
+			})
+			if err != nil || len(items) != 0 || len(findings) != 2 {
+				t.Fatalf("items = %#v, findings = %#v, err = %v", items, findings, err)
+			}
+			destination := app.Instances[0].BackupDestination
+			if destination == nil || destination.IntegrationID != wodbyBlobIntegrationID ||
+				destination.Auto != test.wantAuto || destination.Disabled != test.wantDisabled {
+				t.Fatalf("destination = %#v", destination)
+			}
+			if !hasReviewMessage(findings, SeverityMigration, "target backup presets will use Wodby Blob storage") ||
+				!hasReviewMessage(findings, test.severity, test.message) {
+				t.Fatalf("findings = %#v", findings)
+			}
+		})
 	}
 }
 
@@ -201,7 +261,7 @@ func TestPrepareSharedVariableIntegrationsMovesCommonBundleOutOfPerAppStacks(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(findings) != 1 || findings[0].Severity != SeverityConfirmation {
+	if len(findings) != 1 || findings[0].Severity != SeverityMigration {
 		t.Fatalf("findings = %#v", findings)
 	}
 	for index, app := range prepared.Apps {

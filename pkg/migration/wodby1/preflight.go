@@ -81,6 +81,7 @@ type PreparedInstance struct {
 	CIIntegrationID      int
 	UsesWodbyCI          bool
 	ExternalCIOnly       bool
+	ServiceLinks         []PreparedAppServiceLink
 }
 
 // PreparedStackConfiguration is the application-wide configuration applied to
@@ -104,6 +105,18 @@ type PreparedStackServiceConfiguration struct {
 	Settings       map[string]string
 	CronSchedules  []PreparedStackCronSchedule
 	Integrations   []PreparedStackIntegrationLink
+	Links          []PreparedStackServiceLink
+}
+
+type PreparedStackServiceLink struct {
+	Name              string
+	LinkedServiceName string
+}
+
+type PreparedAppServiceLink struct {
+	ServiceName       string
+	Name              string
+	LinkedServiceName string
 }
 
 type PreparedIntegration struct {
@@ -317,6 +330,8 @@ func (c *TargetClient) PreflightTarget(
 		}
 		preparedApp.StackConfiguration = stackConfiguration
 		findings = append(findings, stackFindings...)
+		mailFindings := prepareMailDeliveryLinks(&preparedApp)
+		findings = append(findings, mailFindings...)
 		integrationFindings, err := c.prepareAppIntegrations(ctx, &preparedApp, appPlan, plan.Target)
 		if err != nil {
 			return PreparedMigration{}, err
@@ -327,7 +342,7 @@ func (c *TargetClient) PreflightTarget(
 				Severity: SeverityConfirmation,
 				App:      appExport.App.Name,
 				Subject:  "existing target stack configuration",
-				Message:  "the explicitly selected target stack will receive a new published revision containing migrated versions, variables, settings, and schedules; existing app instances are not upgraded automatically",
+				Message:  "the explicitly selected target stack will receive a new published revision containing migrated versions, variables, settings, schedules, and service links; existing app instances are not upgraded automatically",
 			})
 		}
 		prepared.Apps = append(prepared.Apps, preparedApp)
@@ -453,6 +468,19 @@ func (c *TargetClient) preflightWodbyCIPipelines(
 			checked[key] = true
 		}
 		if presence[key] {
+			findings = append(findings, ReviewItem{
+				Severity: SeverityMigration,
+				App:      app.App.App.Name,
+				Instance: instance.Source.Name,
+				Subject:  "Wodby CI pipeline",
+				Message: fmt.Sprintf(
+					"Wodby CI will be used by default; pipeline %q was found in repository %q at Git %s %q",
+					wodbyCIPipelinePath,
+					repository.RepositoryName,
+					strings.ToLower(key.refType),
+					key.ref,
+				),
+			})
 			continue
 		}
 
@@ -547,15 +575,7 @@ func (c *TargetClient) resolveRepositoryPlan(
 		)
 	}
 	plan.RemoteGitRepoID = resolvedID
-	return []ReviewItem{{
-		Severity: SeverityConfirmation,
-		App:      app.Name,
-		Subject:  "repository",
-		Message: fmt.Sprintf(
-			"repository %q will be connected through the selected Wodby 2 Git integration when the target app is configured",
-			desiredName,
-		),
-	}}, nil
+	return nil, nil
 }
 
 func (c *TargetClient) preflightInstance(
@@ -606,22 +626,7 @@ func (c *TargetClient) preflightInstance(
 	plan.Stack.TargetID = stack.ID
 	plan.Stack.TargetRevID = stack.RevID
 	plan.Stack.TargetVersion = stackVersionLabel(stack)
-	stackMessage := fmt.Sprintf("target stack %s (%s) will be used", stack.Name, plan.Stack.TargetVersion)
-	if plan.Stack.CreateTarget {
-		stackMessage = fmt.Sprintf(
-			"a new target stack will be created for app %q from public catalog stack %s (%s) and reused by all of the app's instances",
-			app.Name,
-			stack.Name,
-			plan.Stack.TargetVersion,
-		)
-	}
-	findings := []ReviewItem{{
-		Severity: SeverityConfirmation,
-		App:      app.Name,
-		Instance: source.Name,
-		Subject:  "target stack revision",
-		Message:  stackMessage,
-	}}
+	findings := []ReviewItem{}
 
 	sourceByName := make(map[string]Service, len(source.Services))
 	for _, service := range source.Services {
@@ -648,7 +653,7 @@ func (c *TargetClient) preflightInstance(
 		}
 		inspection, exists := byName[servicePlan.TargetName]
 		if !exists {
-			if !sourceService.Enabled {
+			if !servicePlan.Enabled {
 				continue
 			}
 			if !opts.AddMissingServices && !servicePlan.AddToStack {
@@ -694,13 +699,6 @@ func (c *TargetClient) preflightInstance(
 				ServiceRevision: serviceRevision,
 			}
 			byName[servicePlan.TargetName] = inspection
-			findings = append(findings, ReviewItem{
-				Severity: SeverityConfirmation,
-				App:      app.Name,
-				Instance: source.Name,
-				Subject:  "additional stack service " + servicePlan.TargetName,
-				Message:  fmt.Sprintf("target stack does not include %q; exact Wodby 2 service ID %d (revision ID %d) will be added to the app's dedicated stack", servicePlan.TargetName, catalogService.ID, serviceRevision.ID),
-			})
 		}
 		if sourceService.Enabled && sourceService.Name == "sshd" &&
 			servicePlan.Action == "substitute" && !isPHPSSHDerivativeTarget(inspection) {
@@ -745,7 +743,7 @@ func (c *TargetClient) preflightInstance(
 			servicePlan.TargetID = inspection.StackService.ID
 			servicePlan.TargetServiceRevID = inspection.StackService.ServiceRevID
 		}
-		if sourceService.Enabled {
+		if servicePlan.Enabled {
 			versionFinding, hasVersionFinding, err := resolveServiceVersion(
 				servicePlan,
 				inspection,
@@ -765,8 +763,8 @@ func (c *TargetClient) preflightInstance(
 			servicePlan.TargetVersion = ""
 			servicePlan.VersionAction = ""
 		}
-		effective[inspection.StackService.Name] = sourceService.Enabled
-		if !sourceService.Enabled && inspection.StackService.Required {
+		effective[inspection.StackService.Name] = servicePlan.Enabled
+		if !servicePlan.Enabled && inspection.StackService.Required {
 			findings = append(findings, ReviewItem{
 				Severity: SeverityBlocking,
 				App:      app.Name,
@@ -892,15 +890,6 @@ func (c *TargetClient) preflightInstance(
 					prepared.ImportByComponent[component] = *destination
 				}
 			}
-		}
-		if len(source.Backups) == 0 {
-			findings = append(findings, ReviewItem{
-				Severity: SeverityConfirmation,
-				App:      app.Name,
-				Instance: source.Name,
-				Subject:  "fresh source backup",
-				Message:  "create a fresh Wodby 1 backup after enabling maintenance mode before sync-data",
-			})
 		}
 	}
 	return prepared, findings, nil
@@ -1162,7 +1151,7 @@ func prepareBuildSource(
 				GitRefType:      &gitRefType,
 			},
 		}, []ReviewItem{{
-			Severity: SeverityConfirmation,
+			Severity: SeverityMigration,
 			App:      app.Name,
 			Instance: instance.Name,
 			Subject:  "repository build source",
@@ -1250,13 +1239,7 @@ func resolveImportDestination(
 	plan.TargetImport = selected.ImportName
 	plan.TargetServiceID = selected.StackService.StackService.ID
 	plan.TargetServiceRevID = selected.StackService.StackService.ServiceRevID
-	return &selected, []ReviewItem{{
-		Severity: SeverityConfirmation,
-		App:      app.Name,
-		Instance: instance.Name,
-		Subject:  "backup " + backup.Component,
-		Message:  fmt.Sprintf("backup will import through target service %q capability %q", selected.ServiceName, selected.ImportName),
-	}}
+	return &selected, nil
 }
 
 func findBackupByUUID(items []Backup, uuid string) (Backup, bool) {

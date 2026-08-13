@@ -47,7 +47,7 @@ func progressMessageColor(message string) string {
 			return cliColorGreen
 		}
 	}
-	for _, value := range []string{"warning", "--force", "skipping", "skipped", "deferred", "bypass"} {
+	for _, value := range []string{"warning", "later writes", "skipping", "skipped", "deferred", "bypass"} {
 		if strings.Contains(lower, value) {
 			return cliColorOrange
 		}

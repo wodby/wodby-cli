@@ -65,11 +65,9 @@ func (e Export) ContentDigest() (string, error) {
 	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
 }
 
-// ConfigDigest identifies the source application configuration independently
-// from backup selection and the write-freeze flag. A migration can therefore
-// prepare infrastructure, let the customer enable maintenance mode and create
-// a fresh backup, then safely resume data synchronization without accepting
-// unrelated source drift.
+// ConfigDigest identifies source application configuration independently from
+// the selected backup. Backup identity is pinned separately by the applied
+// plan and migration state.
 func (e Export) ConfigDigest() (string, error) {
 	e.GeneratedAt = 0
 	e.Digest = ""
@@ -214,6 +212,8 @@ type App struct {
 	Name       string      `json:"name"`
 	Title      string      `json:"title"`
 	Type       string      `json:"type"`
+	Docroot    *string     `json:"docroot,omitempty"`
+	SiteName   *string     `json:"sitename,omitempty"`
 	Status     string      `json:"status,omitempty"`
 	Created    int64       `json:"created,omitempty"`
 	Updated    int64       `json:"updated,omitempty"`

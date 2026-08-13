@@ -72,8 +72,10 @@ func TestSourceClientExportsApp(t *testing.T) {
 
 func TestSourceClientExportsInstance(t *testing.T) {
 	var gotPath string
+	var gotBackup string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
+		gotBackup = r.URL.Query().Get("source_backup[instance-1]")
 		_ = json.NewEncoder(w).Encode(Export{
 			Schema:          ExportSchemaV2,
 			Source:          &ExportSource{Kind: "instance", UUID: "instance-1"},
@@ -90,13 +92,18 @@ func TestSourceClientExportsInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	export, err := client.ExportInstance(context.Background(), "instance-1")
+	export, err := client.ExportInstanceWithBackups(context.Background(), "instance-1", map[string]string{
+		"instance-1": "backup-1",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	if gotPath != "/api/v4/migrations/v2/instances/instance-1/export" {
 		t.Fatalf("path = %q", gotPath)
+	}
+	if gotBackup != "backup-1" {
+		t.Fatalf("source backup selector = %q", gotBackup)
 	}
 	if export.Source == nil || export.Source.Kind != "instance" || export.Source.UUID != "instance-1" {
 		t.Fatalf("source = %#v", export.Source)
@@ -142,6 +149,24 @@ func TestDecodeExportRejectsUnsupportedSchema(t *testing.T) {
 	_, err := DecodeExport([]byte(`{"schema":"old","app":{"uuid":"app-1","name":"demo"}}`))
 	if err == nil {
 		t.Fatal("expected unsupported schema error")
+	}
+}
+
+func TestDecodeExportPreservesRawAppDocrootAndSiteName(t *testing.T) {
+	export, err := DecodeExport([]byte(`{
+  "schema":"wodby1-migration/v2",
+  "source":{"kind":"instance","uuid":"instance-1"},
+  "apps":[{
+    "app":{"uuid":"app-1","name":"demo","docroot":"docroot/web","sitename":"customer.example"},
+    "instances":[{"uuid":"instance-1","name":"dev","type":"dev","stack":{"name":"drupal11"}}]
+  }]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := export.Apps[0].App
+	if app.Docroot == nil || *app.Docroot != "docroot/web" || app.SiteName == nil || *app.SiteName != "customer.example" {
+		t.Fatalf("app settings = docroot %#v, site %#v", app.Docroot, app.SiteName)
 	}
 }
 

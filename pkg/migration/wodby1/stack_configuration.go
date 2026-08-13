@@ -2,8 +2,14 @@ package wodby1
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
+)
+
+var (
+	wodby1AppDocrootPattern  = regexp.MustCompile(`^[a-zA-Z0-9_./-]*$`)
+	wodby1AppSiteNamePattern = regexp.MustCompile(`^[a-zA-Z0-9.-]+$`)
 )
 
 func mergePreparedStackAdditions(appName string, instances []PreparedInstance) ([]PreparedStackServiceAddition, []ReviewItem) {
@@ -108,7 +114,202 @@ func prepareStackConfiguration(app PreparedAppMigration) (PreparedStackConfigura
 		sortPreparedStackServiceConfiguration(&serviceConfig)
 		configuration.Services[targetName] = serviceConfig
 	}
+	appSettingFindings := prepareDrupalAppSettings(app, &configuration)
+	findings = append(findings, appSettingFindings...)
+	gotenbergFindings := prepareGotenbergEndpoint(app, &configuration)
+	findings = append(findings, gotenbergFindings...)
 	return configuration, findings, nil
+}
+
+// prepareGotenbergEndpoint gives managed Drupal and WordPress application code
+// a stable private endpoint for the mapped Gotenberg service. The Drupal
+// Gotenberg module stores its base URL in Drupal configuration rather than
+// reading this variable itself; the public migration guide documents the
+// settings.php override needed to consume it.
+func prepareGotenbergEndpoint(app PreparedAppMigration, configuration *PreparedStackConfiguration) []ReviewItem {
+	if configuration == nil || len(app.Instances) == 0 {
+		return nil
+	}
+
+	expectedByEnv := map[string]map[string]bool{}
+	observations := map[string][]stackEnvObservation{}
+	for _, instance := range app.Instances {
+		family := sourceStackFamily(instance.Source.Stack)
+		if !strings.HasPrefix(family, "drupal") && !strings.HasPrefix(family, "wordpress") {
+			return nil
+		}
+		envType := normalizedTargetEnvType(instance.TargetEnvType)
+		if expectedByEnv[envType] == nil {
+			expectedByEnv[envType] = map[string]bool{}
+		}
+		expectedByEnv[envType][instance.Source.UUID] = true
+
+		targets := serviceTargetNamesFromPrepared(instance)
+		targetName, found := mappedGotenbergTarget(targets)
+		if !found || !instance.EffectiveState[targetName] {
+			continue
+		}
+		if !instance.EffectiveState["php"] {
+			return []ReviewItem{stackConfigBlocker(app.App.App.Name, instance.Source.Name, "Gotenberg endpoint", "the mapped Gotenberg service is enabled but the managed target PHP service is not enabled")}
+		}
+		endpoint, _ := privateGotenbergEndpoint(targets)
+		observations[envType] = append(observations[envType], stackEnvObservation{
+			instanceID: instance.Source.UUID,
+			envType:    envType,
+			value:      endpoint,
+		})
+	}
+	if len(observations) == 0 {
+		return nil
+	}
+
+	for envType, expected := range expectedByEnv {
+		seen := uniqueStackEnvInstances(observations[envType])
+		if len(seen) != 0 && len(seen) != len(expected) {
+			return []ReviewItem{stackConfigBlocker(app.App.App.Name, "", "Gotenberg endpoint", fmt.Sprintf("instances with target environment type %s do not agree on whether Gotenberg is enabled", envType))}
+		}
+		if _, _, consistent := commonStackEnvValue(observations[envType]); !consistent {
+			return []ReviewItem{stackConfigBlocker(app.App.App.Name, "", "Gotenberg endpoint", fmt.Sprintf("instances with target environment type %s resolve different private Gotenberg endpoints", envType))}
+		}
+	}
+
+	service := configuration.Services["php"]
+	filtered := service.EnvVars[:0]
+	for _, variable := range service.EnvVars {
+		if !strings.EqualFold(variable.Name, "GOTENBERG_ENDPOINT") {
+			filtered = append(filtered, variable)
+		}
+	}
+	service.EnvVars = filtered
+
+	all := []stackEnvObservation{}
+	for _, items := range observations {
+		all = append(all, items...)
+	}
+	expectedTotal := 0
+	for _, expected := range expectedByEnv {
+		expectedTotal += len(expected)
+	}
+	if value, _, same := commonStackEnvValue(all); same && len(uniqueStackEnvInstances(all)) == expectedTotal {
+		service.EnvVars = append(service.EnvVars, PreparedStackEnvVar{Name: "GOTENBERG_ENDPOINT", Value: value})
+	} else {
+		envTypes := make([]string, 0, len(observations))
+		for envType := range observations {
+			envTypes = append(envTypes, envType)
+		}
+		sort.Strings(envTypes)
+		for _, envType := range envTypes {
+			value, _, _ := commonStackEnvValue(observations[envType])
+			scope := envType
+			service.EnvVars = append(service.EnvVars, PreparedStackEnvVar{Name: "GOTENBERG_ENDPOINT", Value: value, EnvType: &scope})
+		}
+	}
+	sortPreparedStackServiceConfiguration(&service)
+	configuration.Services["php"] = service
+
+	return []ReviewItem{{
+		Severity: SeverityMigration,
+		App:      app.App.App.Name,
+		Subject:  "Gotenberg endpoint",
+		Message:  "target PHP will receive GOTENBERG_ENDPOINT with the private in-cluster Gotenberg URL",
+	}}
+}
+
+// prepareDrupalAppSettings preserves the Wodby 1 app-level new-app choices on
+// the Wodby 2 Drupal PHP stack service. Nginx derives both settings from its
+// backend service, so duplicating the values on nginx would be incorrect.
+func prepareDrupalAppSettings(app PreparedAppMigration, configuration *PreparedStackConfiguration) []ReviewItem {
+	if configuration == nil || len(app.Instances) == 0 {
+		return nil
+	}
+	isDrupal := false
+	hasOtherFamily := false
+	for _, instance := range app.Instances {
+		family := sourceStackFamily(instance.Source.Stack)
+		if strings.HasPrefix(family, "drupal") {
+			isDrupal = true
+		} else {
+			hasOtherFamily = true
+		}
+	}
+	if !isDrupal {
+		return nil
+	}
+	if hasOtherFamily {
+		return []ReviewItem{stackConfigBlocker(app.App.App.Name, "", "Drupal app settings", "the app's migrated instances do not resolve to one Drupal stack family")}
+	}
+	if app.App.App.Docroot == nil || app.App.App.SiteName == nil {
+		return []ReviewItem{stackConfigBlocker(
+			app.App.App.Name,
+			"",
+			"Drupal app settings",
+			"the Wodby 1 export does not include the raw app docroot and site directory; deploy the current Wodby 1 migration API before retrying",
+		)}
+	}
+	docroot := strings.TrimSpace(*app.App.App.Docroot)
+	if len(docroot) > 128 || !wodby1AppDocrootPattern.MatchString(docroot) || strings.Contains(docroot, "..") || strings.HasPrefix(docroot, "/") {
+		return []ReviewItem{stackConfigBlocker(app.App.App.Name, "", "Drupal app docroot", fmt.Sprintf("source app docroot %q is not a safe relative path", docroot))}
+	}
+	siteName := strings.TrimSpace(*app.App.App.SiteName)
+	if siteName == "" {
+		siteName = "default"
+	}
+	if len(siteName) > 128 || !wodby1AppSiteNamePattern.MatchString(siteName) {
+		return []ReviewItem{stackConfigBlocker(app.App.App.Name, "", "Drupal site directory", fmt.Sprintf("source Drupal site directory %q is invalid", siteName))}
+	}
+
+	desiredSettings := map[string]string{"docroot": docroot, "sitedir": siteName}
+	settingNeedsUpdate := map[string]bool{}
+	for _, instance := range app.Instances {
+		php, found := targetStackInspectionByName(instance.StackServices, "php")
+		if !found || !instance.EffectiveState["php"] {
+			return []ReviewItem{stackConfigBlocker(app.App.App.Name, instance.Source.Name, "Drupal app settings", "the enabled target Drupal PHP service named \"php\" was not found")}
+		}
+		available := map[string]TargetStackServiceSetting{}
+		for _, setting := range php.StackService.Settings {
+			available[setting.Name] = setting
+		}
+		for _, name := range []string{"docroot", "sitedir"} {
+			setting, found := available[name]
+			if !found {
+				return []ReviewItem{stackConfigBlocker(app.App.App.Name, instance.Source.Name, "Drupal app settings", fmt.Sprintf("target PHP service does not expose required setting %q", name))}
+			}
+			if setting.Value != desiredSettings[name] {
+				settingNeedsUpdate[name] = true
+			}
+		}
+	}
+
+	service := configuration.Services["php"]
+	if service.Settings == nil {
+		service.Settings = map[string]string{}
+	}
+	for name, value := range desiredSettings {
+		if existing, found := service.Settings[name]; found && existing != value {
+			return []ReviewItem{stackConfigBlocker(app.App.App.Name, "", "Drupal app settings", fmt.Sprintf("target PHP setting %q resolves both from source service configuration (%q) and the Wodby 1 app setting (%q)", name, existing, value))}
+		}
+		if settingNeedsUpdate[name] {
+			service.Settings[name] = value
+		}
+	}
+	if len(service.Settings) != 0 || len(service.VersionOptions) != 0 || len(service.EnvVars) != 0 || len(service.CronSchedules) != 0 || len(service.Integrations) != 0 || len(service.Links) != 0 {
+		configuration.Services["php"] = service
+	}
+	return []ReviewItem{{
+		Severity: SeverityMigration,
+		App:      app.App.App.Name,
+		Subject:  "Drupal app settings",
+		Message:  fmt.Sprintf("Wodby 1 Drupal subdirectory %q and site directory %q will map to target PHP settings docroot and sitedir", docroot, siteName),
+	}}
+}
+
+func targetStackInspectionByName(items []TargetStackServiceInspection, name string) (TargetStackServiceInspection, bool) {
+	for _, item := range items {
+		if item.StackService.Name == name {
+			return item, true
+		}
+	}
+	return TargetStackServiceInspection{}, false
 }
 
 func preparedStackVersionOptions(appName, targetName string, items []stackConfigServiceInstance) ([]TargetStackServiceOptionInput, []ReviewItem, error) {
@@ -449,6 +650,9 @@ func sortPreparedStackServiceConfiguration(configuration *PreparedStackServiceCo
 	sort.SliceStable(configuration.Integrations, func(i, j int) bool {
 		return configuration.Integrations[i].Name < configuration.Integrations[j].Name
 	})
+	sort.SliceStable(configuration.Links, func(i, j int) bool {
+		return configuration.Links[i].Name < configuration.Links[j].Name
+	})
 }
 
 func optionalStringValue(value *string) string {
@@ -460,7 +664,7 @@ func optionalStringValue(value *string) string {
 
 func stackConfigurationHasChanges(configuration PreparedStackConfiguration) bool {
 	for _, service := range configuration.Services {
-		if len(service.VersionOptions) != 0 || len(service.EnvVars) != 0 || len(service.Settings) != 0 || len(service.CronSchedules) != 0 || len(service.Integrations) != 0 {
+		if len(service.VersionOptions) != 0 || len(service.EnvVars) != 0 || len(service.Settings) != 0 || len(service.CronSchedules) != 0 || len(service.Integrations) != 0 || len(service.Links) != 0 {
 			return true
 		}
 	}

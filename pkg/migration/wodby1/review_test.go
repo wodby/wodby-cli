@@ -32,36 +32,52 @@ func TestPrintReviewUsesTablesAndSeparateReviewSections(t *testing.T) {
 				EnvoyGateway:   true,
 				RedirectRoutes: true,
 			},
+			OrgCapabilities: &TargetOrgCapabilities{CustomDomains: true, CronSchedules: true},
 		},
 		Summary: PlanSummary{
-			Apps: 1, Instances: 1, Services: 2, Routes: 1,
-			Blocking: 1, Confirmation: 1, Manual: 1, Intentionally: 1,
+			Apps: 1, Instances: 1, Services: 2, Routes: 1, Imports: 1,
+			Migrations: 1, ServiceWarnings: 1, Blocking: 1, Confirmation: 1, Manual: 1, Intentionally: 1,
 		},
 		Apps: []AppPlan{{
 			SourceUUID: "app-1",
 			Name:       "demo",
 			Title:      "Demo",
+			Repository: &RepositoryPlan{
+				Action: "connect", GitIntegrationID: 44, RepositoryName: "acme/demo",
+				RemoteGitRepoID: "remote-repo-17", TargetService: "php",
+			},
 			Instances: []InstancePlan{{
 				Name:       "dev",
 				Title:      "Dev",
 				SourceType: "dev",
 				TargetEnv:  "dev",
-				Stack:      StackPlan{Name: "drupal", Target: "drupal11"},
+				Stack: StackPlan{
+					Name: "drupal", Target: "drupal11", CatalogName: "drupal11",
+					CreateTarget: true, TargetVersion: "revision-4",
+				},
 				Services: []ServicePlan{
-					{SourceName: "mailhog", TargetName: "mailpit", Enabled: true, Action: "substitute"},
+					{SourceName: "mailhog", TargetName: "mailpit", Enabled: true, Action: "substitute", Settings: 1},
+					{SourceName: "php", TargetName: "php", Enabled: true, Action: "migrate", CronJobs: 1,
+						CronSchedules: []CronSchedulePlan{{Title: "Drupal cron", Schedule: "0 * * * *", Command: "drush cron", TargetState: "disabled by target subscription"}}},
 					{SourceName: "xhprof", Enabled: true, Action: "skip"},
 				},
 				Routes: []RoutePlan{{
 					Host: "example.test", Action: "create_backend", Type: "user",
 					Service: "nginx", PortNumber: &port, Primary: true,
 				}},
+				Imports: []ImportPlan{{
+					Component: "db", Action: "import", TargetService: "mariadb", TargetImport: "database",
+					BackupUUID: "backup-2023-11-14", BackupCreated: 1700000000, Size: 1048576,
+				}},
 			}},
 		}},
 		Review: []ReviewItem{
 			{Severity: SeverityBlocking, App: "demo", Instance: "dev", Subject: "backup", Message: "create a backup"},
-			{Severity: SeverityConfirmation, App: "demo", Instance: "dev", Subject: "service mailhog", Message: "use mailpit"},
+			{Severity: SeverityMigration, App: "demo", Instance: "dev", Subject: "service mailhog", Message: "mailhog will map to mailpit"},
+			{Severity: SeverityConfirmation, App: "demo", Instance: "dev", Subject: "PHP version", Message: "source PHP 7.3 is EOL; target PHP 8.3 requires review"},
 			{Severity: SeverityManual, App: "demo", Instance: "dev", Subject: "DNS", Message: "switch after verification"},
-			{Severity: SeveritySkipped, App: "demo", Instance: "dev", Subject: "service xhprof", Message: "not migrated"},
+			{Severity: SeverityServiceWarning, App: "demo", Instance: "dev", Subject: "service xhprof", Message: "enabled but not migrated"},
+			{Severity: SeveritySkipped, App: "demo", Instance: "dev", Subject: "route disabled.example", Message: "disabled source route is not migrated"},
 		},
 	}
 
@@ -72,11 +88,24 @@ func TestPrintReviewUsesTablesAndSeparateReviewSections(t *testing.T) {
 		"Field",
 		"Value",
 		"Item                   Count",
+		"Migrations:",
+		"App 1/1: Demo → demo",
+		"Repository:",
+		"connect  Wodby CI (default)  ID 44            acme/demo          exact match found  php",
+		"Instance 1/1: Dev → dev (dev → dev)",
+		"create and configure  drupal         new from catalog drupal11  revision-4",
 		"Source   Target   Source version  Target version  Version action",
 		"mailhog  mailpit  -               -               -               enabled  substitute",
-		"Host          Action          Type  Service  Port  Flags",
+		"Cron job → cron schedule migration:",
+		"php             php             Drupal cron  0 * * * *  drush cron  disabled by target subscription",
+		"Custom domains:",
+		"Domain        Action  Target    Target state             Options",
+		"example.test  serve   nginx:80  will be created enabled  primary",
+		"db         import  mariadb:database  backup-2023-11-14  14 Nov 2023, 22:13 UTC  1.0 MiB",
+		"Additional migration details (1):",
+		"Warnings (1):",
+		"Enabled services not migrated (1):",
 		"Blocking (1):",
-		"Requires confirmation (1):",
 		"Manual follow-up (1):",
 		"Intentionally skipped (1):",
 		"Scope     Subject  Details",
@@ -90,10 +119,6 @@ func TestPrintReviewUsesTablesAndSeparateReviewSections(t *testing.T) {
 		"Target organization": "chingis23",
 		"Target cluster":      "sdfbsdgre",
 		"Target CI":           "Wodby CI (built-in)",
-		"Target app":          "demo",
-		"Target instance":     "dev",
-		"Environment mapping": "dev -> dev",
-		"Target stack":        "drupal11",
 	} {
 		if !reviewTableContainsRow(text, field, value) {
 			t.Fatalf("review overview table does not contain %q = %q:\n%s", field, value, text)
@@ -123,8 +148,10 @@ func TestPrintReviewUsesTablesAndSeparateReviewSections(t *testing.T) {
 
 	previous := -1
 	for _, heading := range []string{
+		"Additional migration details (1):",
+		"Warnings (1):",
+		"Enabled services not migrated (1):",
 		"Blocking (1):",
-		"Requires confirmation (1):",
 		"Manual follow-up (1):",
 		"Intentionally skipped (1):",
 	} {
@@ -150,14 +177,17 @@ func TestPrintReviewColorsSeveritiesWhenForced(t *testing.T) {
 	})
 	t.Setenv("CLICOLOR_FORCE", "1")
 	plan := Plan{Review: []ReviewItem{
+		{Severity: SeverityMigration, Subject: "migration", Message: "do it"},
 		{Severity: SeverityBlocking, Subject: "blocked", Message: "fix it"},
 		{Severity: SeverityConfirmation, Subject: "warning", Message: "review it"},
+		{Severity: SeverityServiceWarning, Subject: "service xhprof", Message: "enabled but not migrated"},
 	}}
 	var output bytes.Buffer
 	PrintReview(&output, plan)
 	text := output.String()
 	if !strings.Contains(text, ansiRed) || !strings.Contains(text, ansiOrange) ||
-		!strings.Contains(text, ansiCyan) || !strings.Contains(text, ansiReset) {
+		!strings.Contains(text, ansiGreen) || !strings.Contains(text, ansiCyan) ||
+		!strings.Contains(text, ansiReset) {
 		t.Fatalf("forced color output is incomplete: %q", text)
 	}
 }

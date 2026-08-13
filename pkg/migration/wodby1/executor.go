@@ -20,7 +20,6 @@ import (
 const (
 	defaultMigrationPollInterval = 2 * time.Second
 	defaultMigrationTimeout      = 30 * time.Minute
-	defaultMigrationBackupAge    = time.Hour
 )
 
 // MigrationExecutorOptions controls resumable target mutations.
@@ -31,9 +30,7 @@ type MigrationExecutorOptions struct {
 	StatePath               string
 	PollInterval            time.Duration
 	OperationTimeout        time.Duration
-	MaxBackupAge            time.Duration
 	RetryAmbiguousOperation string
-	AllowLiveSource         bool
 	Progress                func(string)
 	Now                     func() time.Time
 	LookupHost              func(context.Context, string) ([]string, error)
@@ -54,9 +51,7 @@ type MigrationExecutor struct {
 	statePath               string
 	pollInterval            time.Duration
 	operationTimeout        time.Duration
-	maxBackupAge            time.Duration
 	retryAmbiguousOperation string
-	allowLiveSource         bool
 	progress                func(string)
 	now                     func() time.Time
 	lookupHost              func(context.Context, string) ([]string, error)
@@ -76,11 +71,8 @@ func NewMigrationExecutor(client *TargetClient, opts MigrationExecutorOptions) (
 	if opts.OperationTimeout == 0 {
 		opts.OperationTimeout = defaultMigrationTimeout
 	}
-	if opts.MaxBackupAge == 0 {
-		opts.MaxBackupAge = defaultMigrationBackupAge
-	}
-	if opts.PollInterval < 0 || opts.OperationTimeout <= 0 || opts.MaxBackupAge <= 0 {
-		return nil, errors.New("migration polling interval, timeout, and maximum backup age must be positive")
+	if opts.PollInterval < 0 || opts.OperationTimeout <= 0 {
+		return nil, errors.New("migration polling interval and timeout must be positive")
 	}
 	if opts.Now == nil {
 		opts.Now = func() time.Time { return time.Now().UTC() }
@@ -93,9 +85,7 @@ func NewMigrationExecutor(client *TargetClient, opts MigrationExecutorOptions) (
 		statePath:               opts.StatePath,
 		pollInterval:            opts.PollInterval,
 		operationTimeout:        opts.OperationTimeout,
-		maxBackupAge:            opts.MaxBackupAge,
 		retryAmbiguousOperation: opts.RetryAmbiguousOperation,
-		allowLiveSource:         opts.AllowLiveSource,
 		progress:                opts.Progress,
 		now:                     opts.Now,
 		lookupHost:              opts.LookupHost,
@@ -127,24 +117,28 @@ func (e *MigrationExecutor) Apply(
 	}
 	e.reportProgress("Starting resumable migration apply.")
 	if preparedHasImports(prepared) {
-		if e.allowLiveSource {
-			e.reportProgress("Preflight: validate the existing source backup before target changes (--force allows post-backup writes to be excluded).")
-		} else {
-			e.reportProgress("Preflight: validate maintenance mode and the fresh source backup before target changes.")
-		}
+		e.reportProgress("Preflight: validate and pin the selected source backup before target changes.")
 		digest, err := export.BackupDigest()
 		if err != nil {
 			return MigrationPhaseResult{}, errors.Wrap(err, "compute selected backup digest")
 		}
-		requireFresh := state.Source.BackupDigest == ""
-		if !requireFresh && state.Source.BackupDigest != digest {
+		if plan.Source.BackupDigest != digest {
+			return MigrationPhaseResult{}, errors.New("selected source backup does not match the applied migration plan")
+		}
+		if state.Source.BackupDigest != "" && state.Source.BackupDigest != digest {
 			return MigrationPhaseResult{}, errors.New("migration state is already bound to a different backup snapshot")
 		}
-		if _, err := prepareDataSync(export, prepared, e.now(), e.maxBackupAge, dataSyncOptions{
-			requireFresh:    requireFresh,
-			allowLiveSource: e.allowLiveSource,
-		}); err != nil {
+		if _, err := prepareDataSync(export, prepared, e.now()); err != nil {
 			return MigrationPhaseResult{}, errors.Wrap(err, "apply preflight failed before target changes")
+		}
+		if state.Source.BackupDigest == "" {
+			if err := state.SetBackupDigest(digest); err != nil {
+				return MigrationPhaseResult{}, err
+			}
+			if err := SaveMigrationState(e.statePath, state); err != nil {
+				return MigrationPhaseResult{}, err
+			}
+			e.reportProgress("Selected source backup pinned to the migration state.")
 		}
 		e.reportProgress("Apply preflight passed; target changes may begin.")
 	}
@@ -213,6 +207,17 @@ func (e *MigrationExecutor) Prepare(
 		instance := instances[item.Source.UUID]
 		e.reportProgress("Step: build and deploy target instance %q (ID %d).", item.Source.Name, instance.ID)
 		if err := e.ensureTechnicalDeployment(ctx, state, item, instance, "prepare_deploy"); err != nil {
+			return MigrationPhaseResult{}, err
+		}
+	}
+	for _, item := range prepared.Instances {
+		instance := instances[item.Source.UUID]
+		instancePlan := planInstance(plan, item.Source.UUID)
+		if !planHasProtectedTechnicalRoutes(instancePlan) {
+			continue
+		}
+		e.reportProgress("Step: migrate basic authentication to generated technical routes for target instance %q (ID %d).", item.Source.Name, instance.ID)
+		if err := e.ensureTechnicalRouteAuths(ctx, state, item, instance, instancePlan); err != nil {
 			return MigrationPhaseResult{}, err
 		}
 	}
@@ -604,9 +609,19 @@ func planHasCustomRoutes(plan *InstancePlan) bool {
 	return false
 }
 
-// SyncData imports the backup snapshot selected by the current export. The
-// normal path requires a fresh, write-frozen snapshot; the explicit live-source
-// override accepts an existing snapshot. Imports run sequentially to reduce
+func planHasProtectedTechnicalRoutes(plan *InstancePlan) bool {
+	if plan == nil {
+		return false
+	}
+	for _, route := range plan.Routes {
+		if route.Action == "skip_technical" && route.BasicAuth {
+			return true
+		}
+	}
+	return false
+}
+
+// SyncData imports the backup snapshot selected by the applied plan. Imports run sequentially to reduce
 // load. Backup URLs remain absent from CLI plan/state artifacts; Wodby 2 retains
 // an active URL only until the corresponding import reaches a terminal state.
 func (e *MigrationExecutor) SyncData(
@@ -630,34 +645,20 @@ func (e *MigrationExecutor) SyncData(
 		e.reportProgress("No data imports are planned; data synchronization is complete.")
 		return e.finishRunningPhase(state, MigrationPhaseSyncData)
 	}
-	if e.allowLiveSource {
-		e.reportProgress("Step: validate the existing Wodby 1 backup snapshot and import its data (--force).")
-	} else {
-		e.reportProgress("Step: validate the fresh Wodby 1 backup snapshot and import its data.")
-	}
+	e.reportProgress("Step: validate the selected Wodby 1 backup snapshot and import its data.")
 	digest, err := export.BackupDigest()
 	if err != nil {
 		return MigrationPhaseResult{}, errors.Wrap(err, "compute selected backup digest")
 	}
-	requireFresh := state.Source.BackupDigest == ""
-	if !requireFresh && state.Source.BackupDigest != digest {
+	if plan.Source.BackupDigest != digest {
+		return MigrationPhaseResult{}, errors.New("selected source backup does not match the applied migration plan")
+	}
+	if state.Source.BackupDigest != digest {
 		return MigrationPhaseResult{}, errors.New("migration state is already bound to a different backup snapshot")
 	}
-	imports, err := prepareDataSync(export, prepared, e.now(), e.maxBackupAge, dataSyncOptions{
-		requireFresh:    requireFresh,
-		allowLiveSource: e.allowLiveSource,
-	})
+	imports, err := prepareDataSync(export, prepared, e.now())
 	if err != nil {
 		return MigrationPhaseResult{}, err
-	}
-	if requireFresh {
-		if err := state.SetBackupDigest(digest); err != nil {
-			return MigrationPhaseResult{}, err
-		}
-		if err := SaveMigrationState(e.statePath, state); err != nil {
-			return MigrationPhaseResult{}, err
-		}
-		e.reportProgress("Source backup snapshot accepted and pinned to the migration state.")
 	}
 	for _, item := range imports {
 		instanceState := state.Instances[item.SourceInstanceUUID]
@@ -729,9 +730,7 @@ func (e *MigrationExecutor) refreshDataImport(
 	if refreshedDigest != backupDigest {
 		return PreparedDataImport{}, errors.New("source backup snapshot changed after data synchronization started")
 	}
-	items, err := prepareDataSync(refreshed, prepared, e.now(), e.maxBackupAge, dataSyncOptions{
-		allowLiveSource: e.allowLiveSource,
-	})
+	items, err := prepareDataSync(refreshed, prepared, e.now())
 	if err != nil {
 		return PreparedDataImport{}, err
 	}
@@ -755,8 +754,7 @@ func (e *MigrationExecutor) refreshDataImport(
 }
 
 // ValidateFinalize checks the preconditions for final traffic cutover without
-// starting a deployment. The source must remain write-frozen when data was
-// imported.
+// starting a deployment.
 func (e *MigrationExecutor) ValidateFinalize(
 	ctx context.Context,
 	export Export,
@@ -827,11 +825,6 @@ func (e *MigrationExecutor) validateFinalizeReadiness(
 		if err := e.verifyCompletedImports(ctx, state, prepared); err != nil {
 			return err
 		}
-		if !e.allowLiveSource {
-			if err := requireMaintenanceMode(export, prepared); err != nil {
-				return err
-			}
-		}
 	}
 	if cluster.ID != plan.Target.ClusterID {
 		return errors.New("finalization cluster does not match the approved target")
@@ -888,9 +881,6 @@ func (e *MigrationExecutor) Verify(
 			return MigrationPhaseResult{}, errors.New("apply must complete data imports before verification")
 		}
 		if err := e.verifyCompletedImports(ctx, state, prepared); err != nil {
-			return MigrationPhaseResult{}, err
-		}
-		if err := requireMaintenanceMode(export, prepared); err != nil {
 			return MigrationPhaseResult{}, err
 		}
 	}
@@ -1158,25 +1148,6 @@ func (e *MigrationExecutor) verifyCompletedImports(
 			if !strings.EqualFold(strings.TrimSpace(imported.Status), "COMPLETED") {
 				return errors.Errorf("data import for component %q has target status %q", component, imported.Status)
 			}
-		}
-	}
-	return nil
-}
-
-func requireMaintenanceMode(export Export, prepared PreparedMigration) error {
-	instances := map[string]Instance{}
-	for _, app := range export.AppExports() {
-		for _, item := range app.Instances {
-			instances[item.UUID] = item
-		}
-	}
-	for _, item := range prepared.Instances {
-		if len(item.ImportByComponent) == 0 {
-			continue
-		}
-		current, ok := instances[item.Source.UUID]
-		if !ok || !sourceMaintenanceMode(current.Properties) {
-			return errors.Errorf("source instance %q must remain in maintenance mode through finalization", item.Source.Name)
 		}
 	}
 	return nil
@@ -1697,6 +1668,19 @@ func (e *MigrationExecutor) prepareInstance(
 			return err
 		}
 	}
+	for _, link := range prepared.ServiceLinks {
+		service, ok := byName[link.ServiceName]
+		if !ok {
+			return errors.Errorf("target app service link source %q is missing", link.ServiceName)
+		}
+		linked, ok := byName[link.LinkedServiceName]
+		if !ok {
+			return errors.Errorf("target app service link target %q is missing", link.LinkedServiceName)
+		}
+		if err := e.ensureAppServiceLink(ctx, state, prepared.Source.UUID, service, link.Name, linked); err != nil {
+			return err
+		}
+	}
 	if prepared.BuildSource != nil {
 		service, ok := byName[prepared.BuildSource.ServiceName]
 		if !ok {
@@ -1712,6 +1696,44 @@ func (e *MigrationExecutor) prepareInstance(
 			return err
 		}
 	}
+	return nil
+}
+
+func (e *MigrationExecutor) ensureAppServiceLink(
+	ctx context.Context,
+	state *MigrationState,
+	sourceID string,
+	service TargetAppService,
+	name string,
+	linked TargetAppService,
+) error {
+	current, err := e.target.ListAppServiceLinks(ctx, service.ID)
+	if err != nil {
+		return err
+	}
+	matches := []TargetAppServiceLink{}
+	for _, item := range current {
+		if item.Name == name {
+			matches = append(matches, item)
+		}
+	}
+	if len(matches) > 1 {
+		return &TargetAmbiguousMatchError{Resource: "app service link", Name: name, Count: len(matches)}
+	}
+	operation := operationKey("service_link", strconv.Itoa(service.ID), name)
+	matchesDesired := len(matches) == 1 && matches[0].LinkedAppServiceID == linked.ID
+	run, err := e.beginInstanceMutation(state, sourceID, operation, matchesDesired)
+	if err != nil || !run {
+		return err
+	}
+	e.reportProgress("Setting service %q link %q to service %q...", service.Name, name, linked.Name)
+	if err := e.target.SetAppServiceLink(ctx, service.ID, name, linked.ID); err != nil {
+		return e.recordInstanceMutationError(state, sourceID, operation, "app service link update", err)
+	}
+	if err := e.completeInstanceMutation(state, sourceID, operation, service.ID, 0); err != nil {
+		return err
+	}
+	e.reportProgress("Service %q link %q now uses %q.", service.Name, name, linked.Name)
 	return nil
 }
 
@@ -3361,9 +3383,120 @@ func (e *MigrationExecutor) ensureCustomRoutes(
 			); err != nil {
 				return err
 			}
+			if err := e.waitAppInstanceOK(ctx, instance.ID, "apply custom route authentication"); err != nil {
+				return errors.Wrap(err, "wait for target instance after custom route authentication")
+			}
 		}
 	}
 	return nil
+}
+
+func (e *MigrationExecutor) ensureTechnicalRouteAuths(
+	ctx context.Context,
+	state *MigrationState,
+	prepared PreparedInstance,
+	instance TargetAppInstance,
+	plan *InstancePlan,
+) error {
+	if prepared.Source.BasicAuth == nil || !prepared.Source.BasicAuth.Enabled ||
+		prepared.Source.BasicAuth.IsPasswordRedacted() || prepared.Source.BasicAuth.Password == "" {
+		return errors.New("source basic-auth secret is unavailable at apply time")
+	}
+	services, err := e.target.ListAppServices(ctx, instance.ID)
+	if err != nil {
+		return errors.Wrap(err, "list target services before migrating technical route authentication")
+	}
+	ports, err := e.target.ListAppPorts(ctx, instance.ID)
+	if err != nil {
+		return errors.Wrap(err, "list target ports before migrating technical route authentication")
+	}
+	routes, err := e.target.ListAppRoutes(ctx, instance.ID)
+	if err != nil {
+		return errors.Wrap(err, "list generated target routes before migrating authentication")
+	}
+	targets, err := protectedTechnicalAuthTargets(prepared, plan, services, ports, routes)
+	if err != nil {
+		return err
+	}
+	for _, route := range targets {
+		if err := e.ensureRouteAuth(
+			ctx,
+			state,
+			prepared.Source.UUID,
+			instance.ID,
+			route.AppServiceID,
+			route.ID,
+			*prepared.Source.BasicAuth,
+		); err != nil {
+			return err
+		}
+		if err := e.waitAppInstanceOK(ctx, instance.ID, "apply technical route authentication"); err != nil {
+			return errors.Wrap(err, "wait for target instance after technical route authentication")
+		}
+	}
+	return nil
+}
+
+// protectedTechnicalAuthTargets maps protected Wodby 1 technical domains to
+// the Wodby 2 technical routes generated by the first deployment. Technical
+// hostnames change between platforms, so the stable identity is the mapped
+// service, port, and whether the route is the instance's root domain.
+func protectedTechnicalAuthTargets(
+	prepared PreparedInstance,
+	plan *InstancePlan,
+	services []TargetAppService,
+	ports []TargetAppPort,
+	routes []TargetAppRoute,
+) ([]TargetAppRoute, error) {
+	if plan == nil {
+		return nil, errors.New("migration plan is missing route inventory for an instance")
+	}
+	serviceByName, err := indexAppServices(services)
+	if err != nil {
+		return nil, err
+	}
+	targets := map[int]TargetAppRoute{}
+	for _, source := range plan.Routes {
+		if source.Action != "skip_technical" || !source.BasicAuth {
+			continue
+		}
+		mapping, ok := prepared.Services[source.Service]
+		if !ok {
+			return nil, errors.Errorf("protected technical route %q service %q has no approved target mapping", source.Host, source.Service)
+		}
+		service, ok := serviceByName[mapping.Target.StackService.Name]
+		if !ok {
+			return nil, errors.Errorf("mapped target service %q for protected technical route %q is missing", mapping.Target.StackService.Name, source.Host)
+		}
+		if source.PortNumber == nil {
+			return nil, errors.Errorf("protected technical route %q is missing its source port number", source.Host)
+		}
+		port, err := exactAppPort(ports, service.ID, *source.PortNumber)
+		if err != nil {
+			return nil, errors.Wrapf(err, "map protected technical route %q", source.Host)
+		}
+		matched := 0
+		for _, route := range routes {
+			if !route.Technical || route.AppServiceID != service.ID || route.PortID != port.ID || route.Main != source.Primary {
+				continue
+			}
+			targets[route.ID] = route
+			matched++
+		}
+		if matched == 0 {
+			role := "service"
+			if source.Primary {
+				role = "root"
+			}
+			return nil, errors.Errorf("generated target %s technical route corresponding to %q was not found", role, source.Host)
+		}
+	}
+	result := make([]TargetAppRoute, 0, len(targets))
+	for _, route := range targets {
+		result = append(result, route)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
 }
 
 func exactAppPort(items []TargetAppPort, serviceID, number int) (TargetAppPort, error) {
@@ -4511,6 +4644,29 @@ func (e *MigrationExecutor) verifyInstance(
 	if err != nil {
 		return err
 	}
+	for _, link := range prepared.ServiceLinks {
+		service, ok := byName[link.ServiceName]
+		if !ok {
+			return errors.Errorf("target app service link source %q is missing during verification", link.ServiceName)
+		}
+		linked, ok := byName[link.LinkedServiceName]
+		if !ok {
+			return errors.Errorf("target app service link target %q is missing during verification", link.LinkedServiceName)
+		}
+		links, err := e.target.ListAppServiceLinks(ctx, service.ID)
+		if err != nil {
+			return errors.Wrap(err, "verify target app service links")
+		}
+		matches := 0
+		for _, actual := range links {
+			if actual.Name == link.Name && actual.LinkedAppServiceID == linked.ID {
+				matches++
+			}
+		}
+		if matches != 1 {
+			return errors.Errorf("target service %q link %q does not uniquely use service %q", service.Name, link.Name, linked.Name)
+		}
+	}
 	deploymentInput, err := technicalDeploymentInput(prepared, services, nil)
 	if err != nil {
 		return err
@@ -4726,6 +4882,26 @@ func (e *MigrationExecutor) verifyRoutes(
 	auths, err := e.target.ListAppAuths(ctx, instanceID)
 	if err != nil {
 		return errors.Wrap(err, "verify target route authentication")
+	}
+	technicalAuthRoutes, err := protectedTechnicalAuthTargets(prepared, plan, services, ports, routes)
+	if err != nil {
+		return err
+	}
+	for _, route := range technicalAuthRoutes {
+		if prepared.Source.BasicAuth == nil {
+			return errors.New("source basic-auth inventory disappeared")
+		}
+		count := 0
+		for _, actual := range auths {
+			if actual.AppServiceID != nil && *actual.AppServiceID == route.AppServiceID &&
+				actual.AppRouteID != nil && *actual.AppRouteID == route.ID &&
+				actual.Login == prepared.Source.BasicAuth.Login {
+				count++
+			}
+		}
+		if count != 1 {
+			return errors.Errorf("target technical route %q authentication is missing or ambiguous", route.Host)
+		}
 	}
 	for _, expected := range plan.Routes {
 		if expected.Action != "create_backend" && expected.Action != "create_redirect" {

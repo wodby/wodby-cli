@@ -38,6 +38,18 @@ func TestMigratedEnvironmentValueDoesNotRewriteUnknownSMTPService(t *testing.T) 
 	}
 }
 
+func TestMigratedEnvironmentValueRewritesGotenbergEndpoint(t *testing.T) {
+	variable := EnvVar{Name: "GOTENBERG_ENDPOINT", Value: "https://old.example.com", Enabled: true}
+	for _, targets := range []map[string]string{
+		{"gotenberg": "gotenberg"},
+		{"athenapdf": "gotenberg"},
+	} {
+		if got := migratedEnvironmentValue(Service{Name: "php"}, variable, targets); got != "http://gotenberg:3000" {
+			t.Fatalf("GOTENBERG_ENDPOINT = %q", got)
+		}
+	}
+}
+
 func TestMigratedEnvironmentReferencesUsesWodby2RuntimeNames(t *testing.T) {
 	input := `drush -l ${WODBY_URL_PRIMARY} --uri=$WODBY_HOST_PRIMARY --env=${WODBY_ENVIRONMENT_NAME} --build=$APP_BUILD_NUM`
 	want := `drush -l ${WODBY_PRIMARY_URL} --uri=$WODBY_PRIMARY_HOST --env=${WODBY_ENV_NAME} --build=$WODBY_BUILD_NUMBER`

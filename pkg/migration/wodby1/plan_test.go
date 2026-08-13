@@ -55,7 +55,7 @@ func TestBuildPlanCapturesManagedMigrationReviewItems(t *testing.T) {
 				{Name: "athenapdf", Enabled: true},
 				{Name: "rsyslog", Enabled: true},
 			},
-			Backups: []Backup{{UUID: "backup-1", Component: "database", URL: "https://example.com/backup.sql", Status: "ok"}},
+			Backups: []Backup{{UUID: "backup-file-1", BackupUUID: "backup-1", Component: "database", URL: "https://example.com/backup.sql", Status: "ok"}},
 		}},
 	}
 
@@ -97,7 +97,7 @@ func TestBuildPlanCapturesManagedMigrationReviewItems(t *testing.T) {
 	}
 }
 
-func TestBuildPlanBlocksDataMigrationUntilFreezeAndFreshBackup(t *testing.T) {
+func TestBuildPlanWarnsThatChangesAfterSelectedBackupAreExcluded(t *testing.T) {
 	instance := Instance{
 		UUID: "inst-1", Name: "prod", Type: "prod", Status: "ok", Updated: 200,
 		Stack:      Stack{Name: "drupal11"},
@@ -124,61 +124,19 @@ func TestBuildPlanBlocksDataMigrationUntilFreezeAndFreshBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasReviewMessage(plan.Review, SeverityBlocking, "not in maintenance mode") {
-		t.Fatalf("maintenance-mode blocker = %#v", plan.Review)
-	}
-	if !hasReviewMessage(plan.Review, SeverityBlocking, "[App instance] > Stack > Settings") ||
-		!hasReviewMessage(plan.Review, SeverityBlocking, "--force") {
-		t.Fatalf("maintenance-mode instructions = %#v", plan.Review)
-	}
-
-	forcedOptions := options
-	forcedOptions.AllowLiveSource = true
-	plan, err = BuildPlan(export, forcedOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if hasReviewMessage(plan.Review, SeverityBlocking, "maintenance mode") ||
-		!hasReviewMessage(plan.Review, SeverityConfirmation, "writes") ||
-		!hasReviewMessage(plan.Review, SeverityConfirmation, "[App instance] > Stack > Settings") {
-		t.Fatalf("forced existing-backup review = %#v", plan.Review)
-	}
-
-	export.Apps[0].Instances[0].Properties["maintenance_mode"] = true
-	plan, err = BuildPlan(export, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hasReviewMessage(plan.Review, SeverityBlocking, "backup predates") {
-		t.Fatalf("post-freeze backup blocker = %#v", plan.Review)
-	}
-	plan, err = BuildPlan(export, forcedOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if hasReviewMessage(plan.Review, SeverityBlocking, "backup predates") ||
-		!hasReviewMessage(plan.Review, SeverityConfirmation, "--force") {
-		t.Fatalf("forced pre-freeze backup review = %#v", plan.Review)
-	}
-
-	export.Apps[0].Instances[0].Backups[0].BackupCreated = 200
-	export.Apps[0].Instances[0].Backups[0].BackupUpdated = 210
-	plan, err = BuildPlan(export, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if hasReviewMessage(plan.Review, SeverityBlocking, "maintenance mode") ||
-		hasReviewMessage(plan.Review, SeverityBlocking, "backup predates") {
-		t.Fatalf("ready data migration remained blocked: %#v", plan.Review)
+	if !hasReviewMessage(plan.Review, SeverityConfirmation, "backup backup-1") ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "changes made in Wodby 1 after this snapshot") ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "optionally enable maintenance mode") {
+		t.Fatalf("selected-backup warning = %#v", plan.Review)
 	}
 }
 
-func TestForceExistingBackupReviewDoesNotChangeExecutablePlanHash(t *testing.T) {
+func TestSelectedBackupChangesExecutablePlanHash(t *testing.T) {
 	base := Plan{
 		Schema: MigrationPlanSchema,
 		Source: PlanSource{
 			Kind: "instance", ID: "instance-1", Schema: ExportSchemaV2,
-			ConfigDigest: strings.Repeat("a", 64),
+			ConfigDigest: strings.Repeat("a", 64), BackupDigest: strings.Repeat("b", 64),
 		},
 		Target: PlanTarget{
 			OrgID: 1, ClusterID: 2, DiscoveryVerified: true,
@@ -186,7 +144,9 @@ func TestForceExistingBackupReviewDoesNotChangeExecutablePlanHash(t *testing.T) 
 		},
 		Apps: []AppPlan{{
 			SourceUUID: "app-1",
-			Instances:  []InstancePlan{{SourceUUID: "instance-1"}},
+			Instances: []InstancePlan{{SourceUUID: "instance-1", Imports: []ImportPlan{{
+				SourceUUID: "file-1", BackupUUID: "backup-1", BackupCreated: 100,
+			}}}},
 		}},
 		Review: []ReviewItem{},
 	}
@@ -196,35 +156,15 @@ func TestForceExistingBackupReviewDoesNotChangeExecutablePlanHash(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	forced := base
-	forced.Review = append(forced.Review, ReviewItem{
-		Severity: SeverityConfirmation,
-		App:      "demo",
-		Instance: "dev",
-		Subject:  forceExistingBackupReviewSubject,
-		Message:  "writes after the selected backup will not be migrated",
-	})
-	forced.Summary = PlanSummary{}
-	forced.computeSummary()
-	forcedHash, err := forced.contentDigest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if forcedHash != baseHash {
-		t.Fatalf("force acknowledgement changed executable plan hash: %s != %s", forcedHash, baseHash)
-	}
-	forced.PlanHash = baseHash
-	if err := forced.ValidateReviewed(); err != nil {
-		t.Fatalf("force acknowledgement invalidated resumable plan: %v", err)
-	}
-
-	forced.Apps[0].Instances[0].TargetEnv = "production"
-	changedHash, err := forced.contentDigest()
+	changed := base
+	changed.Source.BackupDigest = strings.Repeat("c", 64)
+	changed.Apps[0].Instances[0].Imports[0].BackupUUID = "backup-2"
+	changedHash, err := changed.contentDigest()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if changedHash == baseHash {
-		t.Fatal("executable target change was incorrectly ignored")
+		t.Fatal("selected backup change was incorrectly ignored")
 	}
 }
 
@@ -317,18 +257,21 @@ func TestBuildPlanAppliesWodby2ServiceCompatibilityPolicy(t *testing.T) {
 	if route := instance.Routes[0]; route.Service != "nginx" || route.Action != "create_backend" {
 		t.Fatalf("apache route replacement = %#v", route)
 	}
-	if !hasReviewMessage(plan.Review, SeveritySkipped, "Apache is intentionally not migrated") ||
-		!hasReviewMessage(plan.Review, SeverityConfirmation, "athenapdf will be substituted with gotenberg") ||
-		!hasReviewMessage(plan.Review, SeveritySkipped, "application cron jobs are migrated as Wodby 2 service cron schedules") ||
-		!hasReviewMessage(plan.Review, SeverityConfirmation, "mailhog will be substituted with mailpit") ||
-		!hasReviewMessage(plan.Review, SeverityConfirmation, "memcache will be substituted with memcached") ||
-		!hasReviewMessage(plan.Review, SeverityConfirmation, "managed phpmyadmin service") ||
-		!hasReviewMessage(plan.Review, SeverityConfirmation, "redis will be substituted with valkey") ||
-		!hasReviewMessage(plan.Review, SeverityConfirmation, "PHP SSH derivative service") ||
-		!hasReviewMessage(plan.Review, SeverityConfirmation, "varnish will be substituted with vinyl") ||
-		!hasReviewMessage(plan.Review, SeveritySkipped, "xhprof is intentionally not migrated") ||
-		!hasReviewMessage(plan.Review, SeverityConfirmation, "Apache-backed source route") {
+	if !hasReviewMessage(plan.Review, SeverityServiceWarning, "Apache is intentionally not migrated") ||
+		!hasReviewMessage(plan.Review, SeverityConfirmation, "https://wodby.com/stacks/gotenberg/migrate-from-athenapdf") ||
+		!hasReviewMessage(plan.Review, SeverityServiceWarning, "application cron jobs are migrated as Wodby 2 service cron schedules") ||
+		!hasReviewMessage(plan.Review, SeverityMigration, "mailhog will be substituted with mailpit") ||
+		!hasReviewMessage(plan.Review, SeverityMigration, "memcache will be substituted with memcached") ||
+		!hasReviewMessage(plan.Review, SeverityMigration, "managed phpmyadmin service") ||
+		!hasReviewMessage(plan.Review, SeverityMigration, "redis will be substituted with valkey") ||
+		!hasReviewMessage(plan.Review, SeverityMigration, "PHP SSH derivative service") ||
+		!hasReviewMessage(plan.Review, SeverityMigration, "varnish will be substituted with vinyl") ||
+		!hasReviewMessage(plan.Review, SeverityServiceWarning, "xhprof is intentionally not migrated") ||
+		!hasReviewMessage(plan.Review, SeverityMigration, "Apache-backed source route") {
 		t.Fatalf("compatibility review = %#v", plan.Review)
+	}
+	if plan.Summary.ServiceWarnings != 4 {
+		t.Fatalf("enabled skipped service warnings = %d, review = %#v", plan.Summary.ServiceWarnings, plan.Review)
 	}
 
 	explicit, err := BuildPlan(export, PlanOptions{
@@ -437,7 +380,7 @@ func TestBuildPlanTreatsForkedManagedDrupalAndWordPressStacksAsManaged(t *testin
 			if hasReviewMessage(plan.Review, SeverityBlocking, "requires an explicit target") {
 				t.Fatalf("forked managed stack was treated as fully custom: %#v", plan.Review)
 			}
-			if !hasReviewMessage(plan.Review, SeverityConfirmation, "SMTP endpoint will be rewritten from mailhog:25 to mailpit:1025") {
+			if !hasReviewMessage(plan.Review, SeverityMigration, "SMTP endpoint will be rewritten from mailhog:25 to mailpit:1025") {
 				t.Fatalf("SMTP endpoint rewrite missing: %#v", plan.Review)
 			}
 			if got := hasReviewMessage(plan.Review, SeverityBlocking, "does not support Drupal"); got != test.blocking {
@@ -903,8 +846,27 @@ func TestBuildPlanPreservesExplicitRedactionAndBasicAuthSemantics(t *testing.T) 
 		t.Fatalf("protected route basic auth = %#v", instance.Routes[1])
 	}
 	if len(plan.Review) != 3 || plan.Review[0].Subject != "env var REDACTED_VALUE" ||
-		plan.Review[1].Subject != "basic auth" ||
-		plan.Review[2].Severity != SeverityConfirmation {
+		!hasReviewMessage(plan.Review, SeverityMigration, "Wodby 2 route auths will be created") {
+		t.Fatalf("review = %#v", plan.Review)
+	}
+}
+
+func TestBuildPlanBlocksUnmappableProtectedTechnicalRoute(t *testing.T) {
+	export := Export{
+		Schema: ExportSchemaV1,
+		App:    &App{UUID: "app-1", Name: "demo"},
+		Instances: []Instance{{
+			UUID: "inst-1", Name: "prod", Type: "prod", Stack: Stack{Name: "drupal10"},
+			BasicAuth: &BasicAuth{Enabled: true, Login: "ada", Password: "secret"},
+			Domains:   []Domain{{Name: "prod.demo.wodby.cloud", Type: "technical", Protected: true}},
+		}},
+	}
+
+	plan, err := BuildPlan(export, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasReviewMessage(plan.Review, SeverityBlocking, "protected technical route is missing its service or port") {
 		t.Fatalf("review = %#v", plan.Review)
 	}
 }
@@ -1295,7 +1257,7 @@ func TestBuildPlanMarksUnresolvedPayloadsForReview(t *testing.T) {
 					Service: "nginx", PortNumber: &port,
 				}},
 				Backups: []Backup{{
-					UUID: "backup-1", Component: "database", URL: "https://backups.example.com/database.sql", Status: "ok",
+					UUID: "backup-file-1", BackupUUID: "backup-1", Component: "database", URL: "https://backups.example.com/database.sql", Status: "ok",
 				}},
 			}},
 		}},
@@ -1322,8 +1284,8 @@ func TestBuildPlanMarksUnresolvedPayloadsForReview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Status != "requires_review" || plan.Summary.Blocking != 0 ||
-		plan.Summary.Confirmation < 4 || plan.Summary.Manual != 0 {
+	if plan.Status != "target_scope_validated" || plan.Summary.Blocking != 0 ||
+		plan.Summary.Migrations < 3 || plan.Summary.Confirmation != 0 || plan.Summary.Manual != 0 {
 		t.Fatalf("status = %q, summary = %#v, review = %#v", plan.Status, plan.Summary, plan.Review)
 	}
 }
@@ -1408,8 +1370,12 @@ func TestBuildPlanTreatsOptionalServicePropertiesAsEffectiveOnlyWhenServiceIsEna
 		t.Fatal(err)
 	}
 	if plan.Summary.Blocking != 0 ||
-		!hasReviewMessage(plan.Review, SeverityConfirmation, "application integration will be enabled") {
-		t.Fatalf("disabled source integration was not enabled for migration: %#v", plan.Review)
+		!hasReviewMessage(plan.Review, SeverityMigration, `mapped Wodby 2 service "valkey" will be disabled`) {
+		t.Fatalf("disabled source integration did not disable the mapped service: %#v", plan.Review)
+	}
+	redisPlan := preflightFindServicePlan(t, &plan.Apps[0].Instances[0], "redis")
+	if redisPlan.Enabled {
+		t.Fatalf("redis target service should be disabled: %#v", redisPlan)
 	}
 
 	enabledIntegration := cloneExportForTest(t, disabledIntegration)
@@ -1419,8 +1385,109 @@ func TestBuildPlanTreatsOptionalServicePropertiesAsEffectiveOnlyWhenServiceIsEna
 		t.Fatal(err)
 	}
 	if plan.Summary.Blocking != 0 ||
-		!hasReviewMessage(plan.Review, SeverityConfirmation, "enabled source integration") {
+		!hasReviewMessage(plan.Review, SeverityMigration, "enabled source cache integration") {
 		t.Fatalf("enabled effective integration was not reviewable: %#v", plan.Review)
+	}
+}
+
+func TestBuildPlanNamesResolvedTargetMailService(t *testing.T) {
+	for _, test := range []struct {
+		source string
+		target string
+	}{
+		{source: "opensmtpd", target: "opensmtpd"},
+		{source: "mailhog", target: "mailpit"},
+	} {
+		t.Run(test.source, func(t *testing.T) {
+			export := Export{
+				Schema: ExportSchemaV1,
+				App:    &App{UUID: "app-1", Name: "demo"},
+				Instances: []Instance{{
+					UUID:       "instance-1",
+					Name:       "dev",
+					Type:       "dev",
+					Stack:      Stack{Name: "drupal"},
+					Properties: map[string]interface{}{"mail_service": test.source},
+					Services:   []Service{{Name: test.source, Enabled: true}},
+				}},
+			}
+
+			plan, err := BuildPlan(export, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected := `source mail service "` + test.source + `" will map to Wodby 2 service "` + test.target + `"`
+			if !hasReviewMessage(plan.Review, SeverityMigration, expected) {
+				t.Fatalf("resolved mail service mapping %q missing: %#v", expected, plan.Review)
+			}
+		})
+	}
+}
+
+func TestBuildPlanDescribesCreatedCronScheduleState(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		cronAllowed  bool
+		message      string
+		confirmation bool
+	}{
+		{
+			name:        "enabled",
+			cronAllowed: true,
+			message:     `1 Wodby 2 cron schedule will be added to target service "php" in enabled state`,
+		},
+		{
+			name:         "disabled by subscription",
+			cronAllowed:  false,
+			message:      `1 Wodby 2 cron schedule will be added to target service "php" in disabled state because the target subscription does not allow cron execution`,
+			confirmation: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			export := Export{
+				Schema: ExportSchemaV1,
+				App:    &App{UUID: "app-1", Name: "demo"},
+				Instances: []Instance{{
+					UUID: "instance-1", Name: "dev", Type: "dev", Stack: Stack{Name: "drupal"},
+					Services: []Service{{
+						Name: "php", Enabled: true,
+						CronJobs: []CronJob{{Crontab: "0 * * * *", Command: "drush cron", Enabled: true}},
+					}},
+				}},
+			}
+			scope := TargetScopeDiscovery{Org: TargetOrg{
+				ID: 1,
+				Capabilities: &TargetOrgCapabilities{
+					CustomDomains: true,
+					CronSchedules: test.cronAllowed,
+				},
+			}}
+
+			plan, err := BuildPlan(export, PlanOptions{
+				SourceKind: "app", SourceID: "app-1", TargetScope: &scope,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !hasReviewMessage(plan.Review, SeverityMigration, test.message) {
+				t.Fatalf("cron schedule migration detail %q missing: %#v", test.message, plan.Review)
+			}
+			schedules := plan.Apps[0].Instances[0].Services[0].CronSchedules
+			if len(schedules) != 1 || schedules[0].Title != "Migrated Wodby 1 cron" ||
+				schedules[0].Schedule != "0 * * * *" || schedules[0].Command != "drush cron" {
+				t.Fatalf("cron schedule details = %#v", schedules)
+			}
+			wantState := "enabled"
+			if !test.cronAllowed {
+				wantState = "disabled by target subscription"
+			}
+			if schedules[0].TargetState != wantState {
+				t.Fatalf("cron target state = %q, want %q", schedules[0].TargetState, wantState)
+			}
+			if got := hasReviewMessage(plan.Review, SeverityConfirmation, "migrated schedules will be created disabled"); got != test.confirmation {
+				t.Fatalf("cron subscription confirmation = %t, want %t: %#v", got, test.confirmation, plan.Review)
+			}
+		})
 	}
 }
 
@@ -1454,8 +1521,8 @@ func TestBuildPlanMigratesPropertyDerivedPHPEnvironment(t *testing.T) {
 	if service.EnvVars != 2 || plan.Summary.EnvVars != 2 {
 		t.Fatalf("property-derived PHP environment was not selected: %#v", service)
 	}
-	if !hasReviewMessage(plan.Review, SeverityConfirmation, "OPcache") ||
-		!hasReviewMessage(plan.Review, SeverityConfirmation, "Xdebug") {
+	if !hasReviewMessage(plan.Review, SeverityMigration, "OPcache") ||
+		!hasReviewMessage(plan.Review, SeverityMigration, "Xdebug") {
 		t.Fatalf("property-derived behavior was not disclosed: %#v", plan.Review)
 	}
 }

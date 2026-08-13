@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 )
 
 func PrintReview(w io.Writer, plan Plan) {
@@ -21,14 +23,43 @@ func PrintReview(w io.Writer, plan Plan) {
 		{"Env vars", strconv.Itoa(plan.Summary.EnvVars)},
 		{"Cron jobs", strconv.Itoa(plan.Summary.CronJobs)},
 		{"Imports", strconv.Itoa(plan.Summary.Imports)},
+		{"Migration notes", strconv.Itoa(plan.Summary.Migrations)},
+		{"Warnings", strconv.Itoa(plan.Summary.Confirmation + plan.Summary.ServiceWarnings)},
 		{"Blocking", strconv.Itoa(plan.Summary.Blocking)},
-		{"Requires confirmation", strconv.Itoa(plan.Summary.Confirmation)},
 		{"Manual follow-up", strconv.Itoa(plan.Summary.Manual)},
 		{"Intentionally skipped", strconv.Itoa(plan.Summary.Intentionally)},
 	})
 
-	for _, app := range plan.Apps {
-		fmt.Fprintf(w, "\nApp: %s\n", firstNonEmpty(app.Title, app.Name))
+	fmt.Fprintf(w, "\n%s\n", migrationColor(w, ansiBold+ansiGreen, "Migrations:"))
+	for appIndex, app := range plan.Apps {
+		fmt.Fprintf(
+			w,
+			"\n%s\n",
+			migrationColor(w, ansiBold+ansiGreen, fmt.Sprintf("App %d/%d: %s → %s", appIndex+1, len(plan.Apps), firstNonEmpty(app.Title, app.Name), app.Name)),
+		)
+		if app.Repository != nil {
+			fmt.Fprintln(w, "  Repository:")
+			ci := "Wodby CI (default)"
+			if plan.Target.CIIntegrationID > 0 {
+				ci = fmt.Sprintf("third-party CI (ID %d)", plan.Target.CIIntegrationID)
+			}
+			gitIntegration := "-"
+			if app.Repository.GitIntegrationID > 0 {
+				gitIntegration = fmt.Sprintf("ID %d", app.Repository.GitIntegrationID)
+			}
+			repositoryCheck := "not validated"
+			if strings.TrimSpace(app.Repository.RemoteGitRepoID) != "" {
+				repositoryCheck = "exact match found"
+			}
+			printReviewTable(w, "    ", []string{"Action", "CI", "Git integration", "Target repository", "Repository check", "Build service"}, [][]string{{
+				app.Repository.Action,
+				ci,
+				gitIntegration,
+				emptyDash(app.Repository.RepositoryName),
+				repositoryCheck,
+				emptyDash(app.Repository.TargetService),
+			}})
+		}
 		if len(app.Integrations) != 0 {
 			fmt.Fprintln(w, "  Integrations:")
 			rows := make([][]string, 0, len(app.Integrations))
@@ -44,19 +75,54 @@ func PrintReview(w io.Writer, plan Plan) {
 			}
 			printReviewTable(w, "    ", []string{"Kind", "Provider", "Service", "Action", "Variables"}, rows)
 		}
-		for _, instance := range app.Instances {
+		for instanceIndex, instance := range app.Instances {
 			fmt.Fprintf(
 				w,
-				"  Instance: %s (%s)\n",
-				firstNonEmpty(instance.Title, instance.Name),
-				emptyDash(instance.SourceType),
+				"\n  %s\n",
+				migrationColor(w, ansiBold, fmt.Sprintf(
+					"Instance %d/%d: %s → %s (%s → %s)",
+					instanceIndex+1,
+					len(app.Instances),
+					firstNonEmpty(instance.Title, instance.Name),
+					instance.Name,
+					emptyDash(instance.SourceType),
+					emptyDash(instance.TargetEnv),
+				)),
 			)
+			stackAction := "use mapped stack"
+			stackSource := emptyDash(instance.Stack.Name)
+			stackTarget := firstNonEmpty(instance.Stack.Target, instance.Stack.Name)
+			if instance.Stack.CreateTarget {
+				stackAction = "create and configure"
+				stackTarget = "new from catalog " + firstNonEmpty(instance.Stack.CatalogName, instance.Stack.Target)
+			} else if instance.Stack.ExplicitMapping {
+				stackAction = "use and configure existing"
+			}
+			fmt.Fprintln(w, "    Stack:")
+			printReviewTable(w, "      ", []string{"Action", "Wodby 1 stack", "Wodby 2 stack", "Revision"}, [][]string{{
+				stackAction,
+				stackSource,
+				stackTarget,
+				emptyDash(instance.Stack.TargetVersion),
+			}})
 			if instance.BasicAuth.Enabled {
 				status := "enabled"
 				if instance.BasicAuth.SecretRedacted {
 					status = "enabled, password redacted"
 				}
-				fmt.Fprintf(w, "    Basic auth: %s\n", status)
+				protectedRoutes := 0
+				for _, route := range instance.Routes {
+					if route.BasicAuth {
+						protectedRoutes++
+					}
+				}
+				fmt.Fprintf(
+					w,
+					"    Basic auth: %s; create Wodby 2 route auths for %d protected domain(s), login %q; password transferred only in memory\n",
+					status,
+					protectedRoutes,
+					instance.BasicAuth.Login,
+				)
 			}
 			if len(instance.Services) != 0 {
 				fmt.Fprintf(w, "    Services:\n")
@@ -85,30 +151,48 @@ func PrintReview(w io.Writer, plan Plan) {
 						stackChange,
 						strconv.Itoa(service.EnvVars),
 						strconv.Itoa(service.CronJobs),
+						strconv.Itoa(service.Settings),
 					})
 				}
-				printReviewTable(w, "      ", []string{"Source", "Target", "Source version", "Target version", "Version action", "State", "Action", "Stack change", "Env vars", "Cron jobs"}, rows)
+				printReviewTable(w, "      ", []string{"Source", "Target", "Source version", "Target version", "Version action", "State", "Action", "Stack change", "Env vars", "Cron jobs", "Settings"}, rows)
+			}
+			cronRows := [][]string{}
+			for _, service := range instance.Services {
+				for _, schedule := range service.CronSchedules {
+					cronRows = append(cronRows, []string{
+						service.SourceName,
+						emptyDash(service.TargetName),
+						schedule.Title,
+						schedule.Schedule,
+						schedule.Command,
+						schedule.TargetState,
+					})
+				}
+			}
+			if len(cronRows) != 0 {
+				fmt.Fprintln(w, "    Cron job → cron schedule migration:")
+				printReviewTable(w, "      ", []string{"Source service", "Target service", "Title", "Schedule", "Command", "Target state"}, cronRows)
 			}
 			if len(instance.Routes) != 0 {
-				fmt.Fprintf(w, "    Routes:\n")
 				rows := make([][]string, 0, len(instance.Routes))
 				for _, route := range instance.Routes {
+					if strings.EqualFold(strings.TrimSpace(route.Type), "technical") {
+						continue
+					}
 					flags := routeFlags(route)
 					flags = emptyDash(flags)
-					port := "-"
-					if route.PortNumber != nil {
-						port = fmt.Sprintf("%d", *route.PortNumber)
-					}
 					rows = append(rows, []string{
 						route.Host,
-						route.Action,
-						emptyDash(route.Type),
-						emptyDash(route.Service),
-						port,
+						reviewRouteAction(route),
+						reviewRouteTarget(route),
+						reviewRouteTargetState(plan, route),
 						flags,
 					})
 				}
-				printReviewTable(w, "      ", []string{"Host", "Action", "Type", "Service", "Port", "Flags"}, rows)
+				if len(rows) != 0 {
+					fmt.Fprintf(w, "    Custom domains:\n")
+					printReviewTable(w, "      ", []string{"Domain", "Action", "Target", "Target state", "Options"}, rows)
+				}
 			}
 			if len(instance.Imports) != 0 {
 				fmt.Fprintf(w, "    Data imports:\n")
@@ -122,39 +206,34 @@ func PrintReview(w io.Writer, plan Plan) {
 						item.Component,
 						item.Action,
 						target,
-						strconv.FormatInt(item.BackupCreated, 10),
-						strconv.FormatInt(item.Size, 10),
+						emptyDash(firstNonEmpty(item.BackupUUID, item.SourceUUID)),
+						reviewBackupCreated(item.BackupCreated),
+						reviewByteSize(item.Size),
 					})
 				}
-				printReviewTable(w, "      ", []string{"Component", "Action", "Target", "Backup created", "Size"}, rows)
+				printReviewTable(w, "      ", []string{"Component", "Action", "Target", "Backup", "Backup created", "Size"}, rows)
 			}
 		}
+	}
+
+	migrationRows := reviewRows(plan.Review, SeverityMigration)
+	if len(migrationRows) != 0 {
+		fmt.Fprintf(w, "\n%s\n", migrationColor(w, ansiBold+ansiGreen, fmt.Sprintf("Additional migration details (%d):", len(migrationRows))))
+		printReviewTableColor(w, "  ", []string{"Scope", "Subject", "Details"}, migrationRows, ansiGreen)
 	}
 
 	sections := []struct {
 		severity string
 		title    string
 	}{
+		{SeverityConfirmation, "Warnings"},
+		{SeverityServiceWarning, "Enabled services not migrated"},
 		{SeverityBlocking, "Blocking"},
-		{SeverityConfirmation, "Requires confirmation"},
 		{SeverityManual, "Manual follow-up"},
 		{SeveritySkipped, "Intentionally skipped"},
 	}
 	for _, section := range sections {
-		rows := make([][]string, 0)
-		for _, item := range plan.Review {
-			if item.Severity != section.severity {
-				continue
-			}
-			scope := item.App
-			if item.Instance != "" {
-				scope += "/" + item.Instance
-			}
-			if strings.TrimSpace(scope) == "" {
-				scope = "-"
-			}
-			rows = append(rows, []string{scope, item.Subject, item.Message})
-		}
+		rows := reviewRows(plan.Review, section.severity)
 		if len(rows) != 0 {
 			color := reviewSeverityColor(section.severity)
 			fmt.Fprintf(w, "\n%s\n", migrationColor(w, ansiBold+color, fmt.Sprintf("%s (%d):", section.title, len(rows))))
@@ -167,7 +246,7 @@ func reviewSeverityColor(severity string) string {
 	switch severity {
 	case SeverityBlocking:
 		return ansiRed
-	case SeverityConfirmation, SeverityManual:
+	case SeverityConfirmation, SeverityServiceWarning, SeverityManual:
 		return ansiOrange
 	case SeveritySkipped:
 		return ansiGray
@@ -176,19 +255,68 @@ func reviewSeverityColor(severity string) string {
 	}
 }
 
-func reviewOverviewRows(plan Plan) [][]string {
+func reviewRows(items []ReviewItem, severity string) [][]string {
 	rows := make([][]string, 0)
-	instanceCount := 0
-	for _, app := range plan.Apps {
-		instanceCount += len(app.Instances)
-		for _, instance := range app.Instances {
-			rows = append(rows, []string{"Source", reviewSourceLabel(app, instance)})
+	for _, item := range items {
+		if item.Severity != severity {
+			continue
 		}
-		if len(app.Instances) == 0 {
-			rows = append(rows, []string{"Source", firstNonEmpty(app.Title, app.Name)})
+		scope := item.App
+		if item.Instance != "" {
+			scope += "/" + item.Instance
+		}
+		if strings.TrimSpace(scope) == "" {
+			scope = "-"
+		}
+		rows = append(rows, []string{scope, item.Subject, item.Message})
+	}
+	return rows
+}
+
+func reviewBackupCreated(timestamp int64) string {
+	if timestamp <= 0 {
+		return "-"
+	}
+	return time.Unix(timestamp, 0).UTC().Format("2 Jan 2006, 15:04 UTC")
+}
+
+func reviewByteSize(size int64) string {
+	if size < 0 {
+		return "-"
+	}
+	if size < 1024 {
+		return fmt.Sprintf("%d B", size)
+	}
+	units := []string{"KiB", "MiB", "GiB", "TiB"}
+	value := float64(size)
+	unit := "B"
+	for _, candidate := range units {
+		value /= 1024
+		unit = candidate
+		if value < 1024 {
+			break
 		}
 	}
-	if len(rows) == 0 {
+	precision := 1
+	if math.Abs(value) >= 10 {
+		precision = 0
+	}
+	return fmt.Sprintf("%.*f %s", precision, value, unit)
+}
+
+func reviewOverviewRows(plan Plan) [][]string {
+	rows := make([][]string, 0)
+	instanceCount := plan.Summary.Instances
+	if instanceCount == 0 {
+		for _, app := range plan.Apps {
+			instanceCount += len(app.Instances)
+		}
+	}
+	if len(plan.Apps) == 1 && len(plan.Apps[0].Instances) == 1 {
+		rows = append(rows, []string{"Source", reviewSourceLabel(plan.Apps[0], plan.Apps[0].Instances[0])})
+	} else if len(plan.Apps) != 0 {
+		rows = append(rows, []string{"Source", fmt.Sprintf("%d app(s), %d instance(s)", len(plan.Apps), instanceCount)})
+	} else {
 		rows = append(rows, []string{"Source", "Wodby 1 " + emptyDash(plan.Source.Kind)})
 	}
 
@@ -237,47 +365,6 @@ func reviewOverviewRows(plan Plan) [][]string {
 		}
 	}
 
-	for _, app := range plan.Apps {
-		appContext := ""
-		if len(plan.Apps) > 1 {
-			appContext = firstNonEmpty(app.Title, app.Name) + ": "
-		}
-		rows = append(rows, []string{
-			"Target app",
-			appContext + emptyDash(app.Name),
-		})
-		for _, instance := range app.Instances {
-			context := ""
-			if instanceCount > 1 {
-				context = reviewInstanceLabel(app, instance) + ": "
-			}
-			rows = append(
-				rows,
-				[]string{
-					"Target instance",
-					context + emptyDash(instance.Name),
-				},
-				[]string{
-					"Environment mapping",
-					context + emptyDash(instance.SourceType) + " -> " + emptyDash(instance.TargetEnv),
-				},
-				[]string{
-					"Source stack",
-					context + emptyDash(instance.Stack.Name),
-				},
-				[]string{
-					"Target stack",
-					context + firstNonEmpty(instance.Stack.Target, instance.Stack.Name),
-				},
-			)
-			if strings.TrimSpace(instance.Stack.Type) != "" {
-				rows = append(rows, []string{
-					"Application type",
-					context + instance.Stack.Type,
-				})
-			}
-		}
-	}
 	return rows
 }
 
@@ -337,6 +424,9 @@ func verifiedLabel(verified bool) string {
 
 func routeFlags(route RoutePlan) string {
 	var flags []string
+	if route.SSL {
+		flags = append(flags, "TLS")
+	}
 	if route.Primary {
 		flags = append(flags, "primary")
 	}
@@ -357,6 +447,63 @@ func routeFlags(route RoutePlan) string {
 		flags = append(flags, "review")
 	}
 	return strings.Join(flags, " ")
+}
+
+func reviewRouteAction(route RoutePlan) string {
+	switch route.Action {
+	case "create_backend":
+		return "serve"
+	case "create_redirect":
+		return "redirect"
+	case "skip_disabled":
+		return "skip disabled source domain"
+	case "skip_technical":
+		return "skip technical domain"
+	default:
+		return route.Action
+	}
+}
+
+func reviewRouteTarget(route RoutePlan) string {
+	if route.Action == "create_redirect" {
+		switch {
+		case strings.TrimSpace(route.RedirectTarget) != "":
+			return route.RedirectTarget
+		case route.RedirectToWWW:
+			return "www hostname"
+		case route.RedirectNonWWW:
+			return "non-www hostname"
+		default:
+			return "redirect target"
+		}
+	}
+	if strings.TrimSpace(route.Service) == "" {
+		return "-"
+	}
+	if route.PortNumber == nil {
+		return route.Service
+	}
+	return fmt.Sprintf("%s:%d", route.Service, *route.PortNumber)
+}
+
+func reviewRouteTargetState(plan Plan, route RoutePlan) string {
+	switch route.Action {
+	case "create_backend", "create_redirect":
+		if plan.Target.OrgCapabilities == nil {
+			return "creation state not verified"
+		}
+		if !plan.Target.OrgCapabilities.CustomDomains {
+			return "will be created disabled"
+		}
+		return "will be created enabled"
+	case "skip_disabled", "skip_technical":
+		return "will not be migrated"
+	default:
+		if route.ReviewRequired {
+			return "blocked"
+		}
+		return "not resolved"
+	}
 }
 
 func firstNonEmpty(values ...string) string {

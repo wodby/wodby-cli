@@ -140,7 +140,7 @@ func (c *TargetClient) prepareCIIntegration(ctx context.Context, app *PreparedAp
 			Name:  migrationResourceName("ci", app.App.App.Name, app.App.App.UUID),
 			Title: "CI for " + firstNonEmpty(app.App.App.Title, app.App.App.Name), Kind: "ci",
 		}, []ReviewItem{{
-			Severity: SeverityConfirmation, App: app.App.App.Name, Subject: "CI integration",
+			Severity: SeverityMigration, App: app.App.App.Name, Subject: "CI integration",
 			Message: "source instances with deployment type ci will use a create-or-reuse Custom CI integration; instances using Git deployment continue to use built-in Wodby CI unless --target-ci-integration-id overrides the app",
 		}, {
 			Severity: SeverityManual, App: app.App.App.Name, Subject: "Custom CI bootstrap build",
@@ -224,7 +224,7 @@ func (c *TargetClient) prepareSMTPIntegration(ctx context.Context, app PreparedA
 		scope = &region
 	}
 	findings = append(findings, ReviewItem{
-		Severity: SeverityConfirmation, App: app.App.App.Name, Subject: "SMTP relay integration",
+		Severity: SeverityMigration, App: app.App.App.Name, Subject: "SMTP relay integration",
 		Message: fmt.Sprintf("the %s SMTP credentials will be resolved server-side, reusing an existing matching integration or creating %q; relay secrets remain outside the plan and state files", providerName, "SMTP for "+app.App.App.Title),
 	})
 	kind := "smtp"
@@ -343,25 +343,55 @@ func (c *TargetClient) prepareBackupIntegrations(ctx context.Context, app *Prepa
 	for index := range app.Instances {
 		instance := &app.Instances[index]
 		config := instance.Source.BackupConfig
-		if config == nil || strings.TrimSpace(config.Provider) == "" {
-			continue
+		configReported := config != nil
+		if config == nil {
+			config = &BackupConfig{}
 		}
 		providerName := strings.ToLower(strings.TrimSpace(config.Provider))
 		destination := &PreparedBackupDestination{Auto: config.Enabled, TimeZone: timeZone}
 		switch providerName {
-		case "wodby", "wodby_cloud", "wodby-cloud":
+		case "", "wodby", "wodby_cloud", "wodby-cloud":
+			usesDefaultBlob := providerName == ""
 			destination.IntegrationID = wodbyBlobIntegrationID
-			if !autoBackups {
+			destinationDescription := "Wodby 1 uses Wodby Cloud storage, so target backup presets will use Wodby Blob storage"
+			if usesDefaultBlob {
+				destinationDescription = "no Wodby 1 backup mirror is configured, so target backup presets will use Wodby Blob storage"
+			}
+			findings = append(findings, ReviewItem{
+				Severity: SeverityMigration, App: app.App.App.Name, Instance: instance.Source.Name, Subject: "backup destination",
+				Message: destinationDescription,
+			})
+			if !configReported {
 				destination.Auto = true
 				destination.Disabled = true
 				findings = append(findings, ReviewItem{
-					Severity: SeverityConfirmation, App: app.App.App.Name, Instance: instance.Source.Name, Subject: "backup destination",
-					Message: "Wodby Cloud backup mirroring will become a disabled Wodby Blob automatic-backup preset because the target subscription does not include automatic backups; enabling it later requires a paid plan",
+					Severity: SeverityConfirmation, App: app.App.App.Name, Instance: instance.Source.Name, Subject: "automatic backups",
+					Message: "the source export does not report whether automatic backups are enabled, so the target preset will be created disabled and must be reviewed",
+				})
+			} else if config.Enabled && !autoBackups {
+				destination.Disabled = true
+				findings = append(findings, ReviewItem{
+					Severity: SeverityConfirmation, App: app.App.App.Name, Instance: instance.Source.Name, Subject: "automatic backups",
+					Message: "Wodby 1 automatic backups are enabled, but the target subscription does not allow them, so the automatic-backup presets will be created disabled and can be enabled after upgrading",
+				})
+			} else if !config.Enabled && !autoBackups {
+				// Free organizations may persist only disabled Wodby Blob presets.
+				// Preserve the destination for a later upgrade without claiming
+				// that Wodby 1 automatic backups were enabled.
+				destination.Auto = true
+				destination.Disabled = true
+				findings = append(findings, ReviewItem{
+					Severity: SeverityConfirmation, App: app.App.App.Name, Instance: instance.Source.Name, Subject: "automatic backups",
+					Message: "Wodby 1 automatic backups are not enabled, and the target subscription permits only disabled Wodby Blob presets, so the presets will be staged disabled for later review",
 				})
 			} else {
+				message := "Wodby 1 automatic backups are not enabled, so manual backup presets will be created"
+				if config.Enabled {
+					message = "Wodby 1 automatic backups are enabled, so enabled automatic-backup presets will be created with the target organization's default 02:00-05:00 window"
+				}
 				findings = append(findings, ReviewItem{
-					Severity: SeverityConfirmation, App: app.App.App.Name, Instance: instance.Source.Name, Subject: "backup destination",
-					Message: "Wodby Cloud backup mirroring will use Wodby Blob storage with the target organization's default 02:00-05:00 backup window",
+					Severity: SeverityMigration, App: app.App.App.Name, Instance: instance.Source.Name, Subject: "automatic backups",
+					Message: message,
 				})
 			}
 		case "aws_s3", "aws-s3", "s3":
@@ -402,7 +432,7 @@ func (c *TargetClient) prepareBackupIntegrations(ctx context.Context, app *Prepa
 			destination.IntegrationKey = key
 			destination.Bucket = strings.TrimSpace(config.Bucket)
 			findings = append(findings, ReviewItem{
-				Severity: SeverityConfirmation, App: app.App.App.Name, Instance: instance.Source.Name, Subject: "backup destination",
+				Severity: SeverityMigration, App: app.App.App.Name, Instance: instance.Source.Name, Subject: "backup destination",
 				Message: "the AWS S3 credentials will be resolved server-side and reused when they match an existing integration; the backup preset will use the target organization's default 02:00-05:00 window",
 			})
 		default:

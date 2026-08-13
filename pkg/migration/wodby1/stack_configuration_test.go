@@ -80,6 +80,122 @@ func TestPrepareStackConfigurationSelectsOneSharedVersionAndDisablesDefaultCron(
 	}
 }
 
+func TestPrepareStackConfigurationMapsDrupalAppSettingsToPHP(t *testing.T) {
+	instance := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
+	instance.Source.Stack = Stack{Name: "drupal11"}
+	instance.EffectiveState = map[string]bool{"php": true}
+	php := instance.Services["php"]
+	php.Target.StackService.Settings = []TargetStackServiceSetting{
+		{ID: 101, StackServiceID: 10, Name: "docroot", Value: "web"},
+		{ID: 102, StackServiceID: 10, Name: "sitedir", Value: "default"},
+	}
+	instance.Services["php"] = php
+	instance.StackServices = []TargetStackServiceInspection{php.Target}
+	app := stackConfigurationTestApp(instance)
+	app.App.App.Docroot = stringPointer("docroot/web")
+	app.App.App.SiteName = stringPointer("customer.example")
+
+	configuration, findings, err := prepareStackConfiguration(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasBlockingFindings(findings) {
+		t.Fatalf("unexpected findings: %#v", findings)
+	}
+	settings := configuration.Services["php"].Settings
+	if settings["docroot"] != "docroot/web" || settings["sitedir"] != "customer.example" {
+		t.Fatalf("Drupal PHP settings = %#v", settings)
+	}
+	if !hasReviewMessage(findings, SeverityMigration, `Drupal subdirectory "docroot/web" and site directory "customer.example"`) {
+		t.Fatalf("Drupal app setting migration detail missing: %#v", findings)
+	}
+}
+
+func TestPrepareStackConfigurationDoesNotRewriteMatchingDrupalAppSettings(t *testing.T) {
+	instance := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
+	instance.Source.Stack = Stack{Name: "drupal11"}
+	instance.Source.Services = nil
+	instance.Services = nil
+	instance.EffectiveState = map[string]bool{"php": true}
+	php := TargetStackServiceInspection{StackService: TargetStackService{
+		ID: 10, Name: "php", ServiceRevID: 11,
+		Settings: []TargetStackServiceSetting{
+			{ID: 101, StackServiceID: 10, Name: "docroot", Value: "web"},
+			{ID: 102, StackServiceID: 10, Name: "sitedir", Value: "default"},
+		},
+	}}
+	instance.StackServices = []TargetStackServiceInspection{php}
+	app := stackConfigurationTestApp(instance)
+	app.App.App.Docroot = stringPointer("web")
+	app.App.App.SiteName = stringPointer("default")
+
+	configuration, findings, err := prepareStackConfiguration(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasBlockingFindings(findings) {
+		t.Fatalf("unexpected findings: %#v", findings)
+	}
+	if stackConfigurationHasChanges(configuration) {
+		t.Fatalf("matching Drupal PHP defaults prepared an unnecessary stack change: %#v", configuration)
+	}
+	if !hasReviewMessage(findings, SeverityMigration, `Drupal subdirectory "web" and site directory "default"`) {
+		t.Fatalf("Drupal app setting migration detail missing: %#v", findings)
+	}
+}
+
+func TestPrepareStackConfigurationAddsPrivateGotenbergEndpoint(t *testing.T) {
+	instance := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
+	instance.Source.Stack = Stack{Name: "drupal11"}
+	instance.Source.Services = append(instance.Source.Services, Service{Name: "athenapdf", Enabled: true})
+	gotenberg := TargetStackServiceInspection{
+		StackService:    TargetStackService{ID: 20, Name: "gotenberg", ServiceRevID: 21},
+		ServiceRevision: TargetServiceRevision{ID: 21, Name: "gotenberg"},
+	}
+	instance.Services["athenapdf"] = PreparedService{
+		Source: instance.Source.Services[1],
+		Target: gotenberg,
+	}
+	php := instance.Services["php"]
+	php.Target.StackService.Settings = []TargetStackServiceSetting{
+		{ID: 101, StackServiceID: 10, Name: "docroot", Value: "web"},
+		{ID: 102, StackServiceID: 10, Name: "sitedir", Value: "default"},
+	}
+	instance.Services["php"] = php
+	instance.StackServices = []TargetStackServiceInspection{php.Target, gotenberg}
+	instance.EffectiveState = map[string]bool{"php": true, "gotenberg": true}
+	app := stackConfigurationTestApp(instance)
+	app.App.App.Docroot = stringPointer("web")
+	app.App.App.SiteName = stringPointer("default")
+
+	configuration, findings, err := prepareStackConfiguration(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasBlockingFindings(findings) {
+		t.Fatalf("unexpected findings: %#v", findings)
+	}
+	assertPreparedStackEnvVar(t, configuration.Services["php"].EnvVars, "GOTENBERG_ENDPOINT", "http://gotenberg:3000", nil)
+	if !hasReviewMessage(findings, SeverityMigration, "private in-cluster Gotenberg URL") {
+		t.Fatalf("Gotenberg endpoint migration detail missing: %#v", findings)
+	}
+}
+
+func TestPrepareStackConfigurationBlocksMissingDrupalAppSettingsExport(t *testing.T) {
+	instance := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
+	instance.Source.Stack = Stack{Name: "drupal11"}
+	instance.EffectiveState = map[string]bool{"php": true}
+	app := stackConfigurationTestApp(instance)
+
+	_, findings, err := prepareStackConfiguration(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasReviewMessage(findings, SeverityBlocking, "does not include the raw app docroot and site directory") {
+		t.Fatalf("missing export blocker = %#v", findings)
+	}
+}
+
 func stackConfigurationTestApp(instances ...PreparedInstance) PreparedAppMigration {
 	exported := make([]Instance, 0, len(instances))
 	for _, instance := range instances {

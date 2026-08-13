@@ -689,7 +689,7 @@ func TestTargetClientListsInstanceConfigurationResources(t *testing.T) {
 				t.Fatalf("routes query = %q", r.URL.RawQuery)
 			}
 			writeTargetExecutionJSON(t, w, []TargetAppRoute{{
-				ID: 33, Host: "example.com", AppInstanceID: 20, AppServiceID: 30, PortID: 34,
+				ID: 33, Host: "example.com", Technical: true, AppInstanceID: 20, AppServiceID: 30, PortID: 34,
 			}})
 		case "/v1/app-routes/33/settings":
 			writeTargetExecutionJSON(t, w, []TargetAppRouteSetting{{
@@ -728,7 +728,7 @@ func TestTargetClientListsInstanceConfigurationResources(t *testing.T) {
 	if items, err := client.ListAppPorts(context.Background(), 20); err != nil || len(items) != 1 {
 		t.Fatalf("ports = %#v, err = %v", items, err)
 	}
-	if items, err := client.ListAppRoutes(context.Background(), 20); err != nil || len(items) != 1 {
+	if items, err := client.ListAppRoutes(context.Background(), 20); err != nil || len(items) != 1 || !items[0].Technical {
 		t.Fatalf("routes = %#v, err = %v", items, err)
 	}
 	if items, err := client.ListAppRouteSettings(context.Background(), 33); err != nil || len(items) != 1 {
@@ -745,6 +745,46 @@ func TestTargetClientListsInstanceConfigurationResources(t *testing.T) {
 	}
 	if items, err := client.ListAppServiceCronSchedules(context.Background(), 30); err != nil || len(items) != 1 {
 		t.Fatalf("cron schedules = %#v, err = %v", items, err)
+	}
+}
+
+func TestTargetClientServiceLinkEndpoints(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/stack-services/10/links":
+			writeTargetExecutionJSON(t, w, []TargetStackServiceLink{{
+				ID: 11, StackServiceID: 10, LinkedStackServiceID: 20, Name: "sendmail",
+			}})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/stack-services/10/links/sendmail":
+			body := decodeTargetExecutionObject(t, r)
+			assertTargetExecutionNumber(t, body, "linkedStackServiceId", 20)
+			writeTargetExecutionJSON(t, w, TargetOperationResult{Success: true})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-services/30/links":
+			writeTargetExecutionJSON(t, w, []TargetAppServiceLink{{
+				ID: 31, AppServiceID: 30, LinkedAppServiceID: 40, Name: "sendmail",
+			}})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/app-services/30/links/sendmail":
+			body := decodeTargetExecutionObject(t, r)
+			assertTargetExecutionNumber(t, body, "linkedAppServiceId", 40)
+			writeTargetExecutionJSON(t, w, TargetOperationResult{Success: true})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client := mustTargetExecutionClient(t, server.URL)
+	if links, err := client.ListStackServiceLinks(context.Background(), 10); err != nil || len(links) != 1 {
+		t.Fatalf("stack links = %#v, err = %v", links, err)
+	}
+	if err := client.SetStackServiceLink(context.Background(), 10, "sendmail", 20); err != nil {
+		t.Fatal(err)
+	}
+	if links, err := client.ListAppServiceLinks(context.Background(), 30); err != nil || len(links) != 1 {
+		t.Fatalf("app links = %#v, err = %v", links, err)
+	}
+	if err := client.SetAppServiceLink(context.Background(), 30, "sendmail", 40); err != nil {
+		t.Fatal(err)
 	}
 }
 

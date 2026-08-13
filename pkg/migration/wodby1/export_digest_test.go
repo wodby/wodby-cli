@@ -159,7 +159,7 @@ func TestPublicDigestsExcludeLowEntropyAndFreeFormSecrets(t *testing.T) {
 	}
 }
 
-func TestPlanHashSurvivesWriteFreezeAndFreshBackupButBindsConfiguration(t *testing.T) {
+func TestPlanHashPinsSelectedBackupAndBindsConfiguration(t *testing.T) {
 	base := Export{
 		Schema:          ExportSchemaV2,
 		GeneratedAt:     100,
@@ -218,8 +218,8 @@ func TestPlanHashSurvivesWriteFreezeAndFreshBackupButBindsConfiguration(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.PlanHash != second.PlanHash {
-		t.Fatalf("write freeze or refreshed backup changed plan hash: %q != %q", first.PlanHash, second.PlanHash)
+	if first.PlanHash == second.PlanHash {
+		t.Fatal("replacement source backup did not change the migration plan hash")
 	}
 
 	changed := cloneExportForTest(t, fresh)

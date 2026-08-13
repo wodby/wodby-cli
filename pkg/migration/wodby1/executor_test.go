@@ -1463,8 +1463,12 @@ func TestApplyChecksDataReadinessBeforeTargetRequests(t *testing.T) {
 	now := time.Unix(10_000, 0)
 	export, prepared := refreshDataImportFixture()
 	export.Source = &ExportSource{Kind: "instance", UUID: "instance-1"}
-	export.Apps[0].Instances[0].Properties["maintenance_mode"] = false
+	export.Apps[0].Instances[0].Backups[0].Status = "failed"
 	configDigest, err := export.MigrationConfigDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupDigest, err := export.BackupDigest()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1472,7 +1476,7 @@ func TestApplyChecksDataReadinessBeforeTargetRequests(t *testing.T) {
 		Schema: MigrationPlanSchema,
 		Source: PlanSource{
 			Kind: "instance", ID: "instance-1", Schema: ExportSchemaV2,
-			ConfigDigest: configDigest,
+			ConfigDigest: configDigest, BackupDigest: backupDigest,
 		},
 		Target: PlanTarget{
 			OrgID: 1, ClusterID: 3,
@@ -1505,7 +1509,6 @@ func TestApplyChecksDataReadinessBeforeTargetRequests(t *testing.T) {
 		StatePath:        filepath.Join(t.TempDir(), "state.json"),
 		PollInterval:     time.Millisecond,
 		OperationTimeout: time.Second,
-		MaxBackupAge:     time.Hour,
 		Now:              func() time.Time { return now },
 	})
 	if err != nil {
@@ -1513,7 +1516,7 @@ func TestApplyChecksDataReadinessBeforeTargetRequests(t *testing.T) {
 	}
 	_, err = executor.Apply(context.Background(), export, plan, prepared)
 	if err == nil || !strings.Contains(err.Error(), "apply preflight failed before target changes") ||
-		!strings.Contains(err.Error(), "not in maintenance mode") {
+		!strings.Contains(err.Error(), "status") {
 		t.Fatalf("apply error = %v", err)
 	}
 	if targetRequests != 0 {
@@ -1569,9 +1572,209 @@ func TestPlanHasCustomRoutes(t *testing.T) {
 	if planHasCustomRoutes(&technical) {
 		t.Fatal("technical routes should not trigger a second deployment")
 	}
+	if planHasProtectedTechnicalRoutes(&technical) {
+		t.Fatal("unprotected technical routes should not trigger auth migration")
+	}
+	technical.Routes[0].BasicAuth = true
+	if !planHasProtectedTechnicalRoutes(&technical) {
+		t.Fatal("protected technical routes should trigger auth migration")
+	}
 	custom := InstancePlan{Routes: []RoutePlan{{Action: "create_backend"}}}
 	if !planHasCustomRoutes(&custom) {
 		t.Fatal("custom routes should trigger a second deployment")
+	}
+}
+
+func TestProtectedTechnicalAuthTargetsMapsRootAndServiceRoutes(t *testing.T) {
+	port := 80
+	prepared := PreparedInstance{Services: map[string]PreparedService{
+		"nginx": {
+			Target: TargetStackServiceInspection{StackService: TargetStackService{Name: "nginx"}},
+		},
+	}}
+	plan := &InstancePlan{Routes: []RoutePlan{
+		{Host: "nginx.dev.demo.wodby.cloud", Service: "nginx", PortNumber: &port, Action: "skip_technical", BasicAuth: true},
+		{Host: "dev.demo.wodby.cloud", Service: "nginx", PortNumber: &port, Action: "skip_technical", BasicAuth: true, Primary: true},
+		{Host: "public.example.com", Service: "nginx", PortNumber: &port, Action: "create_backend"},
+	}}
+	services := []TargetAppService{{ID: 10, Name: "nginx"}}
+	ports := []TargetAppPort{{ID: 20, AppServiceID: 10, Number: 80}}
+	routes := []TargetAppRoute{
+		{ID: 30, Host: "nginx.dev.demo.example", Technical: true, AppServiceID: 10, PortID: 20},
+		{ID: 31, Host: "dev.demo.example", Technical: true, Main: true, Primary: true, AppServiceID: 10, PortID: 20},
+		{ID: 32, Host: "public.example.com", AppServiceID: 10, PortID: 20},
+	}
+
+	targets, err := protectedTechnicalAuthTargets(prepared, plan, services, ports, routes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 2 || targets[0].ID != 30 || targets[1].ID != 31 {
+		t.Fatalf("technical auth targets = %#v", targets)
+	}
+}
+
+func TestProtectedTechnicalAuthTargetsRejectsMissingGeneratedRoute(t *testing.T) {
+	port := 80
+	prepared := PreparedInstance{Services: map[string]PreparedService{
+		"nginx": {
+			Target: TargetStackServiceInspection{StackService: TargetStackService{Name: "nginx"}},
+		},
+	}}
+	plan := &InstancePlan{Routes: []RoutePlan{{
+		Host: "dev.demo.wodby.cloud", Service: "nginx", PortNumber: &port,
+		Action: "skip_technical", BasicAuth: true, Primary: true,
+	}}}
+	_, err := protectedTechnicalAuthTargets(
+		prepared,
+		plan,
+		[]TargetAppService{{ID: 10, Name: "nginx"}},
+		[]TargetAppPort{{ID: 20, AppServiceID: 10, Number: 80}},
+		[]TargetAppRoute{{ID: 30, Technical: true, AppServiceID: 10, PortID: 20}},
+	)
+	if err == nil || !strings.Contains(err.Error(), "root technical route") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestEnsureTechnicalRouteAuthsCreatesScopedWodby2Auth(t *testing.T) {
+	created := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-services":
+			writeTargetExecutionJSON(t, w, []TargetAppService{{ID: 10, Name: "nginx", AppInstanceID: 20, ServiceRevID: 11}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-ports":
+			writeTargetExecutionJSON(t, w, []TargetAppPort{{ID: 21, AppEndpointID: 22, AppInstanceID: 20, AppServiceID: 10, Number: 80}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-routes":
+			writeTargetExecutionJSON(t, w, []TargetAppRoute{{
+				ID: 31, Host: "dev.demo.example", Technical: true, Main: true, Primary: true,
+				AppInstanceID: 20, AppServiceID: 10, PortID: 21,
+			}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-auths":
+			writeTargetExecutionJSON(t, w, []TargetAppAuth{})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/app-auths":
+			var input TargetCreateAppAuthInput
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatal(err)
+			}
+			if input.AppInstanceID != 20 || input.AppServiceID == nil || *input.AppServiceID != 10 ||
+				input.AppRouteID == nil || *input.AppRouteID != 31 || input.Login != "ada" ||
+				input.Password != "secret" || input.Realm != "Restricted" {
+				t.Fatalf("auth input = %#v", input)
+			}
+			created = true
+			writeTargetExecutionJSON(t, w, TargetAppAuth{
+				ID: 41, AppInstanceID: 20, AppServiceID: input.AppServiceID,
+				AppRouteID: input.AppRouteID, Login: input.Login, Realm: input.Realm,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-instances/20":
+			writeTargetExecutionJSON(t, w, TargetAppInstance{
+				ID: 20, Name: "dev", Status: "OK", AppID: 50, ClusterID: 60,
+				EnvID: 70, StackID: 80, StackRevID: 90,
+			})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	state, statePath := newExecutorTestState(t)
+	executor := &MigrationExecutor{
+		target:           mustTargetExecutionClient(t, server.URL),
+		statePath:        statePath,
+		operationTimeout: time.Second,
+		pollInterval:     time.Millisecond,
+	}
+	port := 80
+	prepared := PreparedInstance{
+		Source: Instance{
+			UUID:      "instance-1",
+			BasicAuth: &BasicAuth{Enabled: true, Login: "ada", Password: "secret"},
+		},
+		Services: map[string]PreparedService{
+			"nginx": {Target: TargetStackServiceInspection{StackService: TargetStackService{Name: "nginx"}}},
+		},
+	}
+	plan := &InstancePlan{Routes: []RoutePlan{{
+		Host: "dev.demo.wodby.cloud", Service: "nginx", PortNumber: &port,
+		Action: "skip_technical", BasicAuth: true, Primary: true,
+	}}}
+
+	if err := executor.ensureTechnicalRouteAuths(context.Background(), state, prepared, TargetAppInstance{ID: 20}, plan); err != nil {
+		t.Fatal(err)
+	}
+	if !created || !operationSucceeded(state.Instances["instance-1"], operationKey("route_auth", "31", "ada")) {
+		t.Fatalf("technical route auth was not recorded: %#v", state.Instances["instance-1"])
+	}
+}
+
+func TestEnsureAppServiceLinkAppliesInstanceOverride(t *testing.T) {
+	updated := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-services/10/links":
+			writeTargetExecutionJSON(t, w, []TargetAppServiceLink{{
+				ID: 30, AppServiceID: 10, LinkedAppServiceID: 12, Name: "sendmail",
+			}})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/app-services/10/links/sendmail":
+			body := decodeTargetExecutionObject(t, r)
+			assertTargetExecutionNumber(t, body, "linkedAppServiceId", 11)
+			updated = true
+			writeTargetExecutionJSON(t, w, TargetOperationResult{Success: true})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	state, statePath := newExecutorTestState(t)
+	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), statePath: statePath}
+	err := executor.ensureAppServiceLink(
+		context.Background(), state, "instance-1",
+		TargetAppService{ID: 10, Name: "php"}, "sendmail",
+		TargetAppService{ID: 11, Name: "opensmtpd"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated || !operationSucceeded(state.Instances["instance-1"], operationKey("service_link", "10", "sendmail")) {
+		t.Fatalf("app service link operation = %#v", state.Instances["instance-1"])
+	}
+}
+
+func TestEnsureStackServiceLinksAppliesSharedSelection(t *testing.T) {
+	updated := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/stack-services/10/links":
+			writeTargetExecutionJSON(t, w, []TargetStackServiceLink{{
+				ID: 30, StackServiceID: 10, LinkedStackServiceID: 12, Name: "sendmail",
+			}})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/stack-services/10/links/sendmail":
+			body := decodeTargetExecutionObject(t, r)
+			assertTargetExecutionNumber(t, body, "linkedStackServiceId", 11)
+			updated = true
+			writeTargetExecutionJSON(t, w, TargetOperationResult{Success: true})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	state, statePath := newExecutorTestState(t)
+	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), statePath: statePath}
+	err := executor.ensureStackServiceLinks(
+		context.Background(), state, TargetStackService{ID: 10, Name: "php"},
+		[]PreparedStackServiceLink{{Name: "sendmail", LinkedServiceName: "opensmtpd"}},
+		map[string]TargetStackServiceInspection{
+			"opensmtpd": {StackService: TargetStackService{ID: 11, Name: "opensmtpd"}},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated || !operationSucceeded(&state.App, operationKey("stack_link", "php", "sendmail")) {
+		t.Fatalf("stack service link operation = %#v", state.App)
 	}
 }
 

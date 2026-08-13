@@ -195,6 +195,9 @@ func (e *MigrationExecutor) ensureTargetStackConfiguration(
 		if err := e.ensureStackServiceIntegrations(ctx, state, inspection.StackService, configuration.Integrations); err != nil {
 			return PreparedMigration{}, err
 		}
+		if err := e.ensureStackServiceLinks(ctx, state, inspection.StackService, configuration.Links, byName); err != nil {
+			return PreparedMigration{}, err
+		}
 		if err := e.ensureStackServiceCronSchedules(ctx, state, inspection.StackService, configuration.CronSchedules); err != nil {
 			return PreparedMigration{}, err
 		}
@@ -264,6 +267,52 @@ func (e *MigrationExecutor) ensureTargetStackConfiguration(
 	}
 	e.reportProgress("Target stack %q configuration published as revision ID %d.", published.Name, published.RevID)
 	return e.bindTargetStackRevision(ctx, prepared, published, published.RevID, true)
+}
+
+func (e *MigrationExecutor) ensureStackServiceLinks(
+	ctx context.Context,
+	state *MigrationState,
+	service TargetStackService,
+	desired []PreparedStackServiceLink,
+	services map[string]TargetStackServiceInspection,
+) error {
+	if len(desired) == 0 {
+		return nil
+	}
+	current, err := e.target.ListStackServiceLinks(ctx, service.ID)
+	if err != nil {
+		return err
+	}
+	for _, link := range desired {
+		target, ok := services[link.LinkedServiceName]
+		if !ok {
+			return errors.Errorf("stack service link %q target %q disappeared", link.Name, link.LinkedServiceName)
+		}
+		matches := []TargetStackServiceLink{}
+		for _, existing := range current {
+			if existing.Name == link.Name {
+				matches = append(matches, existing)
+			}
+		}
+		if len(matches) > 1 {
+			return &TargetAmbiguousMatchError{Resource: "stack service link", Name: link.Name, Count: len(matches)}
+		}
+		matchesDesired := len(matches) == 1 && matches[0].LinkedStackServiceID == target.StackService.ID
+		operation := operationKey("stack_link", service.Name, link.Name)
+		run, err := e.beginStackConfigurationMutation(state, operation, matchesDesired, service.ID)
+		if err != nil || !run {
+			return err
+		}
+		e.reportProgress("  Setting stack service %q link %q to service %q...", service.Name, link.Name, target.StackService.Name)
+		if err := e.target.SetStackServiceLink(ctx, service.ID, link.Name, target.StackService.ID); err != nil {
+			return e.recordStackConfigurationMutationError(state, operation, "stack service link update", err)
+		}
+		if err := e.completeStackConfigurationMutation(state, operation, service.ID); err != nil {
+			return err
+		}
+		e.reportProgress("  Stack service %q link %q now uses %q.", service.Name, link.Name, target.StackService.Name)
+	}
+	return nil
 }
 
 func (e *MigrationExecutor) ensureStackServiceVersionOptions(ctx context.Context, state *MigrationState, service TargetStackService, desired []TargetStackServiceOptionInput) error {
@@ -546,6 +595,25 @@ func (e *MigrationExecutor) targetStackConfigurationMatches(ctx context.Context,
 			matches := 0
 			for _, actual := range integrations {
 				if actual.Name == desired.Name && actual.IntegrationID == desired.IntegrationID {
+					matches++
+				}
+			}
+			if matches != 1 {
+				return false, nil
+			}
+		}
+		links, err := e.target.ListStackServiceLinks(ctx, service.StackService.ID)
+		if err != nil {
+			return false, err
+		}
+		for _, desired := range configuration.Links {
+			target, ok := byName[desired.LinkedServiceName]
+			if !ok {
+				return false, nil
+			}
+			matches := 0
+			for _, actual := range links {
+				if actual.Name == desired.Name && actual.LinkedStackServiceID == target.StackService.ID {
 					matches++
 				}
 			}

@@ -7,70 +7,23 @@ import (
 	"time"
 )
 
-func TestValidateBackupAfterFreeze(t *testing.T) {
-	t.Run("rejects backup from before maintenance update", func(t *testing.T) {
-		err := validateBackupAfterFreeze(Backup{BackupCreated: 99}, 100)
-		if err == nil || !strings.Contains(err.Error(), "predates") {
-			t.Fatalf("error = %v", err)
-		}
-	})
-
-	t.Run("accepts backup started at freeze timestamp", func(t *testing.T) {
-		if err := validateBackupAfterFreeze(Backup{BackupCreated: 100}, 100); err != nil {
-			t.Fatal(err)
-		}
-	})
-
-	t.Run("accepts backup started after freeze", func(t *testing.T) {
-		if err := validateBackupAfterFreeze(Backup{BackupCreated: 101}, 100); err != nil {
-			t.Fatal(err)
-		}
-	})
-
-	t.Run("rejects later source mutation", func(t *testing.T) {
-		err := validateBackupAfterFreeze(Backup{BackupCreated: 100}, 101)
-		if err == nil || !strings.Contains(err.Error(), "predates") {
-			t.Fatalf("error = %v", err)
-		}
-	})
-}
-
-func TestValidateFreshBackupUsesCompletionTimeForMaximumAge(t *testing.T) {
+func TestValidateBackupAcceptsOldSuccessfulSnapshot(t *testing.T) {
 	now := time.Unix(10_000, 0)
 	backup := Backup{
 		Status:        "ok",
 		URL:           "https://backups.example.test/file?expires=11000&signature=value",
 		BackupCreated: 1_000,
-		BackupUpdated: 9_900,
+		BackupUpdated: 1_100,
 	}
-	if err := validateFreshBackup(backup, now, time.Hour); err != nil {
-		t.Fatalf("fresh completed backup rejected because it started long ago: %v", err)
-	}
-
-	backup.BackupUpdated = 6_000
-	err := validateFreshBackup(backup, now, time.Hour)
-	if err == nil || !strings.Contains(err.Error(), "completion is older") {
-		t.Fatalf("error = %v, want stale completion", err)
-	}
-}
-
-func TestValidateFreshBackupFallsBackToFileUpdateForLegacyExport(t *testing.T) {
-	now := time.Unix(10_000, 0)
-	backup := Backup{
-		Status:        "ok",
-		URL:           "https://backups.example.test/file",
-		Updated:       9_900,
-		BackupCreated: 1_000,
-	}
-	if err := validateFreshBackup(backup, now, time.Hour); err != nil {
-		t.Fatal(err)
+	if err := validateBackup(backup, now); err != nil {
+		t.Fatalf("old selected backup rejected: %v", err)
 	}
 }
 
 func TestRefreshDataImportObtainsNewURLForSameBoundSnapshot(t *testing.T) {
 	now := time.Unix(10_000, 0)
 	base, prepared := refreshDataImportFixture()
-	imports, err := PrepareDataSync(base, prepared, now, time.Hour)
+	imports, err := PrepareDataSync(base, prepared, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,8 +40,7 @@ func TestRefreshDataImportObtainsNewURLForSameBoundSnapshot(t *testing.T) {
 		"https://backups.example.test/file?expires=12000&signature=new"
 	refreshes := 0
 	executor := &MigrationExecutor{
-		now:          func() time.Time { return now.Add(2 * time.Hour) },
-		maxBackupAge: time.Hour,
+		now: func() time.Time { return now.Add(2 * time.Hour) },
 		refreshSource: func(context.Context) (Export, error) {
 			refreshes++
 			return refreshed, nil
@@ -113,7 +65,7 @@ func TestPrepareDataSyncAcceptsSingleInstanceSource(t *testing.T) {
 	now := time.Unix(10_000, 0)
 	export, prepared := refreshDataImportFixture()
 	export.Source = &ExportSource{Kind: "instance", UUID: "instance-1"}
-	if _, err := PrepareDataSync(export, prepared, now, time.Hour); err != nil {
+	if _, err := PrepareDataSync(export, prepared, now); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -150,7 +102,7 @@ func TestBoundBackupStillValidatesSafetyMetadata(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			export, prepared := refreshDataImportFixture()
 			test.mutate(&export.Apps[0].Instances[0].Backups[0])
-			_, err := prepareDataSync(export, prepared, now, time.Hour, dataSyncOptions{})
+			_, err := prepareDataSync(export, prepared, now)
 			if err == nil || !strings.Contains(err.Error(), test.wantError) {
 				t.Fatalf("error = %v, want %q", err, test.wantError)
 			}
@@ -158,7 +110,7 @@ func TestBoundBackupStillValidatesSafetyMetadata(t *testing.T) {
 	}
 }
 
-func TestPrepareDataSyncForceAllowsExistingBackupFromLiveSource(t *testing.T) {
+func TestPrepareDataSyncAcceptsSelectedBackupFromLiveSource(t *testing.T) {
 	now := time.Unix(10_000, 0)
 	export, prepared := refreshDataImportFixture()
 	export.Apps[0].Instances[0].Properties["maintenance_mode"] = false
@@ -166,24 +118,16 @@ func TestPrepareDataSyncForceAllowsExistingBackupFromLiveSource(t *testing.T) {
 	export.Apps[0].Instances[0].Backups[0].BackupCreated = 1_000
 	export.Apps[0].Instances[0].Backups[0].BackupUpdated = 1_100
 
-	_, err := prepareDataSync(export, prepared, now, time.Hour, dataSyncOptions{
-		requireFresh:    true,
-		allowLiveSource: true,
-	})
+	_, err := PrepareDataSync(export, prepared, now)
 	if err != nil {
-		t.Fatalf("forced old backup from a live source was rejected: %v", err)
-	}
-
-	_, err = PrepareDataSync(export, prepared, now, time.Hour)
-	if err == nil || !strings.Contains(err.Error(), "not in maintenance mode") {
-		t.Fatalf("strict data sync error = %v, want maintenance-mode failure", err)
+		t.Fatalf("selected old backup from a live source was rejected: %v", err)
 	}
 }
 
 func TestRefreshDataImportRejectsReplacementSnapshot(t *testing.T) {
 	now := time.Unix(10_000, 0)
 	base, prepared := refreshDataImportFixture()
-	imports, err := PrepareDataSync(base, prepared, now, time.Hour)
+	imports, err := PrepareDataSync(base, prepared, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,8 +143,7 @@ func TestRefreshDataImportRejectsReplacementSnapshot(t *testing.T) {
 	replacement.Apps[0].Instances[0].Backups[0].UUID = "file-2"
 	replacement.Apps[0].Instances[0].Backups[0].BackupUUID = "snapshot-2"
 	executor := &MigrationExecutor{
-		now:          func() time.Time { return now },
-		maxBackupAge: time.Hour,
+		now: func() time.Time { return now },
 		refreshSource: func(context.Context) (Export, error) {
 			return replacement, nil
 		},

@@ -111,6 +111,27 @@ func TestLoadReviewedPlanRequiresSecureExactJSONAndValidHash(t *testing.T) {
 	})
 }
 
+func TestLoadReviewedPlanReportsUnsupportedSchemaMetadata(t *testing.T) {
+	plan := reviewedPlanFixture(t)
+	plan.Schema = "wodby1-migration-plan/v5"
+	path := filepath.Join(t.TempDir(), "reviewed.json")
+	writeReviewedPlanFixture(t, path, plan)
+
+	_, err := LoadReviewedPlan(path)
+	var schemaErr *UnsupportedMigrationPlanSchemaError
+	if !errors.As(err, &schemaErr) {
+		t.Fatalf("LoadReviewedPlan() error = %v", err)
+	}
+	if !errors.Is(err, ErrMigrationPlanInvalid) {
+		t.Fatalf("LoadReviewedPlan() error does not wrap ErrMigrationPlanInvalid: %v", err)
+	}
+	if schemaErr.Actual != "wodby1-migration-plan/v5" ||
+		schemaErr.Supported != MigrationPlanSchema ||
+		schemaErr.SourceKind != "app" || schemaErr.SourceID != "app-1" {
+		t.Fatalf("unsupported schema metadata = %#v", schemaErr)
+	}
+}
+
 func TestPinReviewedTargetsCopiesOnlyResolvedImmutableIdentity(t *testing.T) {
 	reviewed := reviewedPlanFixture(t)
 	current, err := cloneMigrationPlan(reviewed)

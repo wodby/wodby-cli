@@ -308,6 +308,46 @@ func (c *TargetClient) SetStackServiceSetting(ctx context.Context, stackServiceI
 	return nil
 }
 
+func (c *TargetClient) ListStackServiceLinks(ctx context.Context, stackServiceID int) ([]TargetStackServiceLink, error) {
+	if err := targetRequirePositiveID("stack service", stackServiceID); err != nil {
+		return nil, err
+	}
+	items := []TargetStackServiceLink{}
+	if err := c.client.Get(ctx, "/stack-services/"+strconv.Itoa(stackServiceID)+"/links", nil, &items); err != nil {
+		return nil, errors.Wrap(err, "list target Wodby 2 stack service links")
+	}
+	for _, item := range items {
+		if err := validateTargetStackServiceLink(item, stackServiceID); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
+}
+
+func (c *TargetClient) SetStackServiceLink(ctx context.Context, stackServiceID int, name string, linkedStackServiceID int) error {
+	if err := targetRequirePositiveID("stack service", stackServiceID); err != nil {
+		return err
+	}
+	name, err := targetSafePathName("stack service link", name)
+	if err != nil {
+		return err
+	}
+	if err := targetRequirePositiveID("linked stack service", linkedStackServiceID); err != nil {
+		return err
+	}
+	var result TargetOperationResult
+	body := struct {
+		LinkedStackServiceID *int `json:"linkedStackServiceId,omitempty"`
+	}{LinkedStackServiceID: &linkedStackServiceID}
+	if err := c.client.Put(ctx, "/stack-services/"+strconv.Itoa(stackServiceID)+"/links/"+name, nil, body, &result); err != nil {
+		return errors.Wrap(err, "set target Wodby 2 stack service link")
+	}
+	if !result.Success {
+		return errors.New("target Wodby 2 stack service link update was not successful")
+	}
+	return nil
+}
+
 func (c *TargetClient) ListStackServiceEnvVars(ctx context.Context, stackServiceID int) ([]TargetStackServiceEnvVar, error) {
 	if err := targetRequirePositiveID("stack service", stackServiceID); err != nil {
 		return nil, err
@@ -544,6 +584,12 @@ type TargetServiceManifest struct {
 	Integrations  []TargetServiceIntegrationCapability `json:"integrations,omitempty"`
 	CronSchedules []TargetServiceCronSchedule          `json:"cron,omitempty"`
 	Options       []TargetServiceOption                `json:"options,omitempty"`
+	Links         []TargetServiceLinkCapability        `json:"links,omitempty"`
+}
+
+type TargetServiceLinkCapability struct {
+	Name     string `json:"name"`
+	Required bool   `json:"required,omitempty"`
 }
 
 type TargetServiceBackupCapability struct {
@@ -712,6 +758,20 @@ type TargetAppServiceEnvVarSource struct {
 	Integration *string `json:"integration,omitempty"`
 }
 
+type TargetAppServiceLink struct {
+	ID                 int    `json:"id"`
+	AppServiceID       int    `json:"appServiceId"`
+	LinkedAppServiceID int    `json:"linkedAppServiceId"`
+	Name               string `json:"name"`
+}
+
+type TargetStackServiceLink struct {
+	ID                   int    `json:"id"`
+	StackServiceID       int    `json:"stackServiceId"`
+	LinkedStackServiceID int    `json:"linkedStackServiceId"`
+	Name                 string `json:"name"`
+}
+
 type TargetCreateAppServiceEnvVarInput struct {
 	Workload  *string `json:"workload,omitempty"`
 	Container *string `json:"container,omitempty"`
@@ -813,6 +873,7 @@ type TargetAppRoute struct {
 	Main               bool        `json:"main"`
 	Primary            bool        `json:"primary"`
 	Private            bool        `json:"private"`
+	Technical          bool        `json:"technical"`
 	AppInstanceID      int         `json:"appInstanceId"`
 	AppServiceID       int         `json:"appServiceId"`
 	PortID             int         `json:"portId"`
@@ -1291,6 +1352,11 @@ func (c *TargetClient) GetServiceRevision(ctx context.Context, serviceRevID int)
 				return TargetServiceRevision{}, errors.Errorf("target Wodby 2 service revision ID %d returned an invalid integration capability", serviceRevID)
 			}
 		}
+		for _, capability := range item.Manifest.Links {
+			if strings.TrimSpace(capability.Name) == "" {
+				return TargetServiceRevision{}, errors.Errorf("target Wodby 2 service revision ID %d returned a link capability without a name", serviceRevID)
+			}
+		}
 	}
 	return item, nil
 }
@@ -1617,6 +1683,46 @@ func (c *TargetClient) UpdateAppService(ctx context.Context, appServiceID int, i
 		return TargetAppService{}, err
 	}
 	return item, nil
+}
+
+func (c *TargetClient) ListAppServiceLinks(ctx context.Context, appServiceID int) ([]TargetAppServiceLink, error) {
+	if err := targetRequirePositiveID("app service", appServiceID); err != nil {
+		return nil, err
+	}
+	items := []TargetAppServiceLink{}
+	if err := c.client.Get(ctx, "/app-services/"+strconv.Itoa(appServiceID)+"/links", nil, &items); err != nil {
+		return nil, errors.Wrap(err, "list target Wodby 2 app service links")
+	}
+	for _, item := range items {
+		if err := validateTargetAppServiceLink(item, appServiceID); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
+}
+
+func (c *TargetClient) SetAppServiceLink(ctx context.Context, appServiceID int, name string, linkedAppServiceID int) error {
+	if err := targetRequirePositiveID("app service", appServiceID); err != nil {
+		return err
+	}
+	name, err := targetSafePathName("app service link", name)
+	if err != nil {
+		return err
+	}
+	if err := targetRequirePositiveID("linked app service", linkedAppServiceID); err != nil {
+		return err
+	}
+	var result TargetOperationResult
+	body := struct {
+		LinkedAppServiceID *int `json:"linkedAppServiceId,omitempty"`
+	}{LinkedAppServiceID: &linkedAppServiceID}
+	if err := c.client.Put(ctx, "/app-services/"+strconv.Itoa(appServiceID)+"/links/"+name, nil, body, &result); err != nil {
+		return errors.Wrap(err, "set target Wodby 2 app service link")
+	}
+	if !result.Success {
+		return errors.New("target Wodby 2 app service link update was not successful")
+	}
+	return nil
 }
 
 func (c *TargetClient) UpdateAppServiceBuildSource(ctx context.Context, appServiceID int, input TargetBuildSourceInput) (TargetAppService, error) {
@@ -2420,6 +2526,44 @@ func validateTargetAppService(item TargetAppService, appInstanceID int) error {
 	}
 	if strings.TrimSpace(item.Name) == "" {
 		return errors.Errorf("target Wodby 2 app service ID %d returned an empty name", item.ID)
+	}
+	return nil
+}
+
+func validateTargetAppServiceLink(item TargetAppServiceLink, appServiceID int) error {
+	for label, id := range map[string]int{
+		"app service link":   item.ID,
+		"app service":        item.AppServiceID,
+		"linked app service": item.LinkedAppServiceID,
+	} {
+		if err := targetRequirePositiveID(label, id); err != nil {
+			return err
+		}
+	}
+	if item.AppServiceID != appServiceID {
+		return errors.Errorf("target app service link ID %d belongs to app service ID %d, expected %d", item.ID, item.AppServiceID, appServiceID)
+	}
+	if strings.TrimSpace(item.Name) == "" {
+		return errors.Errorf("target app service link ID %d returned an empty name", item.ID)
+	}
+	return nil
+}
+
+func validateTargetStackServiceLink(item TargetStackServiceLink, stackServiceID int) error {
+	for label, id := range map[string]int{
+		"stack service link":   item.ID,
+		"stack service":        item.StackServiceID,
+		"linked stack service": item.LinkedStackServiceID,
+	} {
+		if err := targetRequirePositiveID(label, id); err != nil {
+			return err
+		}
+	}
+	if item.StackServiceID != stackServiceID {
+		return errors.Errorf("target stack service link ID %d belongs to stack service ID %d, expected %d", item.ID, item.StackServiceID, stackServiceID)
+	}
+	if strings.TrimSpace(item.Name) == "" {
+		return errors.Errorf("target stack service link ID %d returned an empty name", item.ID)
 	}
 	return nil
 }

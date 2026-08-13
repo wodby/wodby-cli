@@ -112,9 +112,12 @@ func TestWodby1MigrationExposesPreviewApplyVerifyWorkflow(t *testing.T) {
 			t.Fatalf("legacy --%s flag must not be customer-facing", name)
 		}
 	}
-	force := cmd.Flags().Lookup("force")
-	if force == nil || !strings.Contains(force.Usage, "without maintenance mode") {
-		t.Fatal("--force must explicitly describe its limited live-source behavior")
+	backup := cmd.Flags().Lookup("source-backup")
+	if backup == nil || !strings.Contains(backup.Usage, "BACKUP_UUID") {
+		t.Fatal("--source-backup must describe the supported snapshot selectors")
+	}
+	if cmd.Flags().Lookup("force") != nil || cmd.Flags().Lookup("max-backup-age") != nil {
+		t.Fatal("maintenance-mode and backup-age bypass flags must not be exposed")
 	}
 }
 
@@ -218,6 +221,28 @@ func TestWodby1MigrationShowsUsageOnlyForCommandErrors(t *testing.T) {
 		}
 		if strings.Contains(output.String(), "Usage:") {
 			t.Fatalf("migration blocker unexpectedly showed usage:\n%s", output.String())
+		}
+	})
+
+	t.Run("preview blockers are not command errors", func(t *testing.T) {
+		fixture := newMigrationAPIFixture(t, "owner", "ok", false)
+		defer fixture.Close()
+		fixture.setSourceKind("instance")
+		setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+
+		var output bytes.Buffer
+		cmd := newWodby1InstanceCommand()
+		cmd.SetOut(&output)
+		cmd.SetErr(&output)
+		cmd.SetArgs(append(fixture.instancePlanArgs("", "text"), "--skip-data=false"))
+
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("blocked preview returned an error: %v\n%s", err, output.String())
+		}
+		if !strings.Contains(output.String(), "Preview result: blocked") ||
+			strings.Contains(output.String(), "Migration not started") ||
+			strings.Contains(output.String(), "Error:") {
+			t.Fatalf("blocked preview output is unclear:\n%s", output.String())
 		}
 	})
 }
@@ -439,6 +464,71 @@ func TestWodby1ServerFreshApplyReplacesStalePlan(t *testing.T) {
 	}
 	if plan.Source.Kind != "server" || plan.Source.ID != "server-1" {
 		t.Fatalf("replaced plan source = %#v", plan.Source)
+	}
+}
+
+func TestWodby1ServerCommandExplainsIncompatibleSavedPlanAndPerAppState(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	fixture.setSourceKind("server")
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	t.Setenv("TMPDIR", t.TempDir())
+	statePath := filepath.Join(t.TempDir(), "server-state.json")
+
+	var preview bytes.Buffer
+	previewCmd := newWodby1ServerCommand()
+	previewCmd.SilenceUsage = true
+	previewCmd.SetOut(&preview)
+	previewCmd.SetArgs(fixture.serverPlanArgs("", "json"))
+	if err := previewCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var plan wodby1.Plan
+	if err := json.Unmarshal(preview.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	planPath, _, err := artifactPaths("server", "server-1", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureArtifactDirectories(planPath, statePath); err != nil {
+		t.Fatal(err)
+	}
+	incompatible := plan
+	incompatible.Schema = "wodby1-migration-plan/v5"
+	if err := writePlanFile(planPath, incompatible); err != nil {
+		t.Fatal(err)
+	}
+	childStatePath := serverAppStatePath(statePath, "app-1")
+	saveSuccessfulTargetState(t, childStatePath, wodby1.MigrationStateIdentity{
+		Source: wodby1.MigrationStateSourceIdentity{
+			Kind: "app", ID: "app-1", ConfigDigest: strings.Repeat("a", 64),
+		},
+		PlanHash: strings.Repeat("b", 64),
+		Target: wodby1.MigrationStateTarget{
+			OrgID: plan.Target.OrgID, ProjectID: plan.Target.ProjectID, ClusterID: plan.Target.ClusterID,
+		},
+	}, "instance-1", 101, 201)
+
+	cmd := newWodby1ServerCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs(append(fixture.serverPlanArgs("", "text"), "--state-file", statePath, "--apply"))
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("expected incompatible server plan error")
+	}
+	for _, expected := range []string{
+		"cannot be resumed",
+		"Saved plan schema: wodby1-migration-plan/v5",
+		"Plan: " + planPath,
+		childStatePath,
+		"Saved target app ID(s): 101",
+		"--apply --restart",
+	} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("error missing %q:\n%s", expected, err)
+		}
 	}
 }
 
@@ -877,7 +967,121 @@ func TestWodby1AppCommandResumePreservesSavedPlanAndExplainsContinuation(t *test
 	}
 }
 
-func TestSingleResumeNoticeExplainsForceOverride(t *testing.T) {
+func TestWodby1AppCommandExplainsIncompatibleSavedPlan(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	t.Setenv("TMPDIR", t.TempDir())
+
+	plan, planPath, statePath := saveIncompatibleAppliedPlan(t, fixture, 101)
+	cmd := newWodby1AppCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs(append(fixture.planArgs("", "text"), "--apply"))
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected incompatible plan error")
+	}
+	for _, expected := range []string{
+		"cannot be resumed",
+		"Saved plan schema: wodby1-migration-plan/v5",
+		"Supported schema: " + wodby1.MigrationPlanSchema,
+		"Plan: " + planPath,
+		"State: " + statePath,
+		"Saved target app ID(s): 101",
+		"--apply --restart",
+	} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("error missing %q:\n%s", expected, err)
+		}
+	}
+	if fixture.sourceRequestCount() != 1 {
+		// The one request belongs to the preview used to construct a valid
+		// fixture; incompatible-plan handling itself must fail before APIs.
+		t.Fatalf("incompatible resume made source API requests: %v", fixture.sourceRequestPaths())
+	}
+	loadedState, loadErr := wodby1.LoadMigrationState(statePath, migrationStateIdentity(plan))
+	if loadErr != nil || loadedState.App.TargetID != 101 {
+		t.Fatalf("incompatible resume changed saved state: %#v, %v", loadedState, loadErr)
+	}
+}
+
+func TestWodby1AppCommandRestartsIncompatiblePlanAfterTargetDeletion(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	t.Setenv("TMPDIR", t.TempDir())
+
+	_, planPath, statePath := saveIncompatibleAppliedPlan(t, fixture, 101)
+	var output bytes.Buffer
+	cmd := newWodby1AppCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&output)
+	cmd.SetArgs(append(fixture.planArgs("", "text"), "--apply", "--restart"))
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "app creation is ambiguous") {
+		t.Fatalf("restart error = %v", err)
+	}
+	for _, expected := range []string{
+		"Saved target app ID 101 no longer exists",
+		"The previous applied plan will be replaced: " + planPath,
+		"The stale resume state will be replaced: " + statePath,
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("restart output missing %q:\n%s", expected, output.String())
+		}
+	}
+	newPlan, loadErr := wodby1.LoadReviewedPlan(planPath)
+	if loadErr != nil {
+		t.Fatalf("load replacement plan: %v", loadErr)
+	}
+	if newPlan.Schema != wodby1.MigrationPlanSchema {
+		t.Fatalf("replacement plan schema = %q", newPlan.Schema)
+	}
+	newState, loadErr := wodby1.InspectMigrationState(statePath)
+	if loadErr != nil {
+		t.Fatalf("load replacement state: %v", loadErr)
+	}
+	if newState.App.TargetID == 101 {
+		t.Fatal("restart preserved the obsolete target app ID")
+	}
+}
+
+func TestWodby1AppCommandRequiresDeletingTargetBeforeRestartingIncompatiblePlan(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	fixture.setTargetApp101Exists(true)
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	t.Setenv("TMPDIR", t.TempDir())
+
+	_, planPath, statePath := saveIncompatibleAppliedPlan(t, fixture, 101)
+	cmd := newWodby1AppCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs(append(fixture.planArgs("", "text"), "--apply", "--restart"))
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected existing target app error")
+	}
+	for _, expected := range []string{
+		"incompatible plan schema",
+		"Plan: " + planPath,
+		"State: " + statePath,
+		"Target app ID 101 still exists",
+		"Delete it",
+		"--apply --restart",
+	} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("error missing %q:\n%s", expected, err)
+		}
+	}
+	state, loadErr := wodby1.InspectMigrationState(statePath)
+	if loadErr != nil || state.App.TargetID != 101 {
+		t.Fatalf("unsafe restart changed state: %#v, %v", state, loadErr)
+	}
+}
+
+func TestSingleResumeNoticeExplainsPinnedBackup(t *testing.T) {
 	previousVerbose := viper.GetBool("verbose")
 	viper.Set("verbose", false)
 	t.Cleanup(func() { viper.Set("verbose", previousVerbose) })
@@ -889,7 +1093,7 @@ func TestSingleResumeNoticeExplainsForceOverride(t *testing.T) {
 		Phase:  wodby1.MigrationPhaseSyncData,
 	}
 
-	printSingleResumeNotice(cmd, "/tmp/plan.json", "/tmp/state.json", state, true)
+	printSingleResumeNotice(cmd, "/tmp/plan.json", "/tmp/state.json", state)
 
 	text := output.String()
 	wanted := []string{
@@ -900,9 +1104,8 @@ func TestSingleResumeNoticeExplainsForceOverride(t *testing.T) {
 		"Step 2/3: Select run mode",
 		"Mode: continue the saved plan",
 		"Step 3/3: Apply command options",
-		"--force: enabled",
-		"Maintenance-mode and backup-age requirements will be bypassed",
-		"A completed backup is still required; writes made after it are not included",
+		"Source backups: use the snapshots pinned by the saved plan",
+		"Protected download URLs will be refreshed without changing snapshots",
 	}
 	previous := -1
 	for _, item := range wanted {
@@ -928,13 +1131,13 @@ func TestSingleResumeNoticeShowsArtifactPathsOnlyWhenVerbose(t *testing.T) {
 	cmd := newWodby1AppCommand()
 	cmd.SetOut(&output)
 
-	printSingleResumeNotice(cmd, "/tmp/plan.json", "/tmp/state.json", nil, false)
+	printSingleResumeNotice(cmd, "/tmp/plan.json", "/tmp/state.json", nil)
 
 	text := output.String()
 	for _, expected := range []string{
 		"Plan file: /tmp/plan.json",
 		"State file: /tmp/state.json",
-		"--force: disabled",
+		"Source backups: use the snapshots pinned by the saved plan",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("verbose resume notice missing %q:\n%s", expected, text)
@@ -949,7 +1152,7 @@ func TestMigrationProgressReporterFormatsProcessSteps(t *testing.T) {
 	report := migrationProgressReporter(cmd)
 
 	report("Starting resumable migration apply.")
-	report("Preflight: validate the existing source backup before target changes (--force allows post-backup writes to be excluded).")
+	report("Preflight: validate and pin the selected source backup before target changes.")
 	report("Apply preflight passed; target changes may begin.")
 	report("Step: create or resume the target app and app instances.")
 	report("Target app created.")
@@ -957,7 +1160,7 @@ func TestMigrationProgressReporterFormatsProcessSteps(t *testing.T) {
 	text := output.String()
 	wanted := []string{
 		"Migration process",
-		"Step 1: validate the existing source backup before target changes",
+		"Step 1: validate and pin the selected source backup before target changes",
 		"  Apply preflight passed; target changes may begin.",
 		"Step 2: create or resume the target app and app instances",
 		"  Target app created.",
@@ -992,7 +1195,7 @@ func TestMigrationProgressReporterUsesSemanticColorsWhenForced(t *testing.T) {
 	report("Starting resumable migration apply.")
 	report("Step: create target resources.")
 	report("Target app created.")
-	report("Warning: --force bypass is enabled.")
+	report("Warning: selected backup excludes later writes.")
 	text := output.String()
 	if !strings.Contains(text, cliColorCyan) || !strings.Contains(text, cliColorGreen) ||
 		!strings.Contains(text, cliColorOrange) || !strings.Contains(text, cliColorReset) {
@@ -1369,9 +1572,9 @@ func TestWodby1AppCommandRejectsInvalidLocalInputBeforeNetwork(t *testing.T) {
 			want: "--restart requires --apply",
 		},
 		{
-			name: "force requires data import",
-			args: []string{"--force", "--skip-data", "--target-stack-id", "7"},
-			want: "--force cannot be used with --skip-data",
+			name: "backup selector requires data import",
+			args: []string{"--source-backup", "backup-1", "--skip-data", "--target-stack-id", "7"},
+			want: "--source-backup cannot be used with --skip-data",
 		},
 		{
 			name: "mapping",
@@ -1445,9 +1648,10 @@ func TestPrintPreviewExplainsBlockingNextStep(t *testing.T) {
 	text := output.String()
 	for _, expected := range []string{
 		"Next step:",
+		"Preview result: blocked",
 		"Fix the 2 blocking item(s) above",
 		"rerun this preview",
-		"cannot start until the plan has no blockers",
+		"This preview made no changes",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("blocked plan output does not contain %q:\n%s", expected, text)
@@ -1458,7 +1662,35 @@ func TestPrintPreviewExplainsBlockingNextStep(t *testing.T) {
 	}
 }
 
-func TestPrintBlockedApplyReviewSaysMigrationDidNotStart(t *testing.T) {
+func TestPrintPreviewCountsEnabledSkippedServicesAsWarnings(t *testing.T) {
+	cmd := newWodby1InstanceCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	plan := wodby1.Plan{
+		Source:  wodby1.PlanSource{Kind: "instance"},
+		Summary: wodby1.PlanSummary{ServiceWarnings: 2},
+		Review: []wodby1.ReviewItem{
+			{Severity: wodby1.SeverityServiceWarning, Subject: "service rsyslog", Message: "enabled but not migrated"},
+			{Severity: wodby1.SeverityServiceWarning, Subject: "service xhprof", Message: "enabled but not migrated"},
+		},
+	}
+	if err := printPreview(cmd, plan); err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	for _, expected := range []string{
+		"Enabled services not migrated (2):",
+		"No blockers found.",
+		"Review the 2 warning(s) above.",
+		"Adding --apply acknowledges the warnings above",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("service warning preview does not contain %q:\n%s", expected, text)
+		}
+	}
+}
+
+func TestRejectBlockedMigrationActionReturnsOneActionableError(t *testing.T) {
 	cmd := newWodby1InstanceCommand()
 	var output bytes.Buffer
 	cmd.SetOut(&output)
@@ -1467,16 +1699,14 @@ func TestPrintBlockedApplyReviewSaysMigrationDidNotStart(t *testing.T) {
 		Source:  wodby1.PlanSource{Kind: "instance"},
 		Summary: wodby1.PlanSummary{Blocking: 1},
 	}
-	if err := printBlockedApplyReview(cmd, plan); err != nil {
-		t.Fatal(err)
+	err := rejectBlockedMigrationAction(cmd, plan, "apply")
+	if err == nil || err.Error() != "cannot apply migration: resolve the 1 blocking review item(s) shown above" {
+		t.Fatalf("blocked apply error = %v", err)
 	}
 	text := output.String()
-	if !strings.Contains(text, "Migration not started") ||
-		!strings.Contains(text, "Resolve the 1 blocking item") {
-		t.Fatalf("blocked apply output is unclear:\n%s", text)
-	}
-	if strings.Contains(text, "Applying the migration plan") {
-		t.Fatalf("blocked apply claims that migration is starting:\n%s", text)
+	if strings.Contains(text, "Migration not started") ||
+		strings.Contains(text, "Applying the migration plan") {
+		t.Fatalf("blocked apply printed a duplicate status:\n%s", text)
 	}
 }
 
@@ -1543,6 +1773,7 @@ type migrationAPIFixture struct {
 	sourceKind         string
 	stackRevID         int
 	stackRevNumber     int
+	targetApp101Exists bool
 }
 
 func newMigrationAPIFixture(
@@ -1638,6 +1869,7 @@ func (f *migrationAPIFixture) handleSource(w http.ResponseWriter, r *http.Reques
 
 	w.Header().Set("Content-Type", "application/json")
 	if kind == "server" {
+		docroot, siteName := "web", "default"
 		_ = json.NewEncoder(w).Encode(wodby1.Export{
 			Schema:          wodby1.ExportSchemaV2,
 			GeneratedAt:     1234,
@@ -1645,14 +1877,14 @@ func (f *migrationAPIFixture) handleSource(w http.ResponseWriter, r *http.Reques
 			SecretsIncluded: true,
 			Apps: []wodby1.AppExport{
 				{
-					App: wodby1.App{UUID: "app-1", Name: "demo", Title: title, Type: "app", Status: "ok"},
+					App: wodby1.App{UUID: "app-1", Name: "demo", Title: title, Type: "app", Status: "ok", Docroot: &docroot, SiteName: &siteName},
 					Instances: []wodby1.Instance{{
 						UUID: "instance-1", Name: "prod", Title: "Production", Type: "prod", Status: "ok",
 						Stack: wodby1.Stack{Name: "drupal11", Version: "11"},
 					}},
 				},
 				{
-					App: wodby1.App{UUID: "app-2", Name: "second", Title: "Second", Type: "app", Status: "ok"},
+					App: wodby1.App{UUID: "app-2", Name: "second", Title: "Second", Type: "app", Status: "ok", Docroot: &docroot, SiteName: &siteName},
 					Instances: []wodby1.Instance{{
 						UUID: "instance-2", Name: "prod", Title: "Production", Type: "prod", Status: "ok",
 						Stack: wodby1.Stack{Name: "drupal11", Version: "11"},
@@ -1663,6 +1895,7 @@ func (f *migrationAPIFixture) handleSource(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if kind == "instance" {
+		docroot, siteName := "web", "default"
 		_ = json.NewEncoder(w).Encode(wodby1.Export{
 			Schema:          wodby1.ExportSchemaV2,
 			GeneratedAt:     1234,
@@ -1670,7 +1903,7 @@ func (f *migrationAPIFixture) handleSource(w http.ResponseWriter, r *http.Reques
 			SecretsIncluded: true,
 			Apps: []wodby1.AppExport{{
 				App: wodby1.App{
-					UUID: "app-1", Name: "demo", Title: title, Type: "app", Status: "ok",
+					UUID: "app-1", Name: "demo", Title: title, Type: "app", Status: "ok", Docroot: &docroot, SiteName: &siteName,
 				},
 				Instances: []wodby1.Instance{{
 					UUID: "instance-1", Name: "prod", Title: "Production", Type: "prod", Status: "ok",
@@ -1680,6 +1913,7 @@ func (f *migrationAPIFixture) handleSource(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
+	docroot, siteName := "web", "default"
 	_ = json.NewEncoder(w).Encode(wodby1.Export{
 		Schema:          wodby1.ExportSchemaV2,
 		GeneratedAt:     1234,
@@ -1687,7 +1921,7 @@ func (f *migrationAPIFixture) handleSource(w http.ResponseWriter, r *http.Reques
 		SecretsIncluded: true,
 		Apps: []wodby1.AppExport{{
 			App: wodby1.App{
-				UUID: "app-1", Name: "demo", Title: title, Type: "app", Status: "ok",
+				UUID: "app-1", Name: "demo", Title: title, Type: "app", Status: "ok", Docroot: &docroot, SiteName: &siteName,
 			},
 			Instances: []wodby1.Instance{{
 				UUID:   "instance-1",
@@ -1709,6 +1943,7 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 	}
 	stackRevID := f.stackRevID
 	stackRevNumber := f.stackRevNumber
+	targetApp101Exists := f.targetApp101Exists
 	f.mu.Unlock()
 
 	if r.Method != http.MethodGet {
@@ -1724,6 +1959,10 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 		},
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if r.URL.Path == "/v1/apps/101" && targetApp101Exists {
+		writeMigrationJSON(w, wodby1.TargetApp{ID: 101, Name: "demo", Title: "Demo", Status: "OK", OrgID: 11})
+		return
+	}
 	switch r.URL.Path {
 	case "/v1/apps":
 		writeMigrationJSON(w, []wodby1.TargetApp{})
@@ -1781,7 +2020,26 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 			ID: 72, Name: "drupal11", Number: 5, Version: "11", StackID: 7,
 		})
 	case "/v1/stack-revisions/71/services":
-		writeMigrationJSON(w, []wodby1.TargetStackService{})
+		writeMigrationJSON(w, []wodby1.TargetStackService{{
+			ID: 81, Name: "php", Title: "PHP", Type: "php", Main: true,
+			ServiceRevID: 91, ServiceRevName: "php", ServiceRevVersion: "8.3",
+			Settings: []wodby1.TargetStackServiceSetting{
+				{ID: 101, StackServiceID: 81, Name: "docroot", Value: "web"},
+				{ID: 102, StackServiceID: 81, Name: "sitedir", Value: "default"},
+			},
+		}})
+	case "/v1/service-revisions/91":
+		writeMigrationJSON(w, wodby1.TargetServiceRevision{
+			ID: 91, ServiceID: 92, Name: "php", Type: "php", Version: "8.3",
+		})
+	case "/v1/stack-services/81/env-vars":
+		writeMigrationJSON(w, []wodby1.TargetStackServiceEnvVar{})
+	case "/v1/stack-services/81/cron-schedules":
+		writeMigrationJSON(w, []wodby1.TargetStackServiceCronSchedule{})
+	case "/v1/stack-services/81/integrations":
+		writeMigrationJSON(w, []wodby1.TargetStackServiceIntegration{})
+	case "/v1/stack-services/81/links":
+		writeMigrationJSON(w, []wodby1.TargetStackServiceLink{})
 	default:
 		http.NotFound(w, r)
 	}
@@ -1849,6 +2107,12 @@ func (f *migrationAPIFixture) setSourceKind(kind string) {
 	f.sourceKind = kind
 }
 
+func (f *migrationAPIFixture) setTargetApp101Exists(exists bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.targetApp101Exists = exists
+}
+
 func setMigrationTargetConfig(t *testing.T, endpoint string, apiKey string, accessToken string) {
 	t.Helper()
 	previousEndpoint := viper.GetString("api_base_url")
@@ -1914,6 +2178,40 @@ func saveDefinitivelyRejectedState(
 	if err := wodby1.SaveMigrationState(path, state); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func saveIncompatibleAppliedPlan(
+	t *testing.T,
+	fixture *migrationAPIFixture,
+	targetAppID int,
+) (wodby1.Plan, string, string) {
+	t.Helper()
+	var preview bytes.Buffer
+	previewCmd := newWodby1AppCommand()
+	previewCmd.SilenceUsage = true
+	previewCmd.SetOut(&preview)
+	previewCmd.SetArgs(fixture.planArgs("", "json"))
+	if err := previewCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var plan wodby1.Plan
+	if err := json.Unmarshal(preview.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	planPath, statePath, err := artifactPaths("app", "app-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureArtifactDirectories(planPath, statePath); err != nil {
+		t.Fatal(err)
+	}
+	incompatible := plan
+	incompatible.Schema = "wodby1-migration-plan/v5"
+	if err := writePlanFile(planPath, incompatible); err != nil {
+		t.Fatal(err)
+	}
+	saveSuccessfulTargetState(t, statePath, migrationStateIdentity(plan), "instance-1", targetAppID, 201)
+	return plan, planPath, statePath
 }
 
 func saveSuccessfulTargetState(

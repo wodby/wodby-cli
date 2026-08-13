@@ -75,6 +75,11 @@ func serviceTargetNamesFromPrepared(prepared PreparedInstance) map[string]string
 // arbitrary strings: only known endpoint variables are changed.
 func migratedEnvironmentValue(source Service, variable EnvVar, serviceTargets map[string]string) string {
 	value := migratedEnvironmentReferences(variable.Value)
+	if strings.EqualFold(strings.TrimSpace(variable.Name), "GOTENBERG_ENDPOINT") {
+		if endpoint, ok := privateGotenbergEndpoint(serviceTargets); ok {
+			return endpoint
+		}
+	}
 	sourceHost, targetHost, mapped := mappedSMTPHost(source, serviceTargets)
 	if !mapped {
 		return value
@@ -89,6 +94,24 @@ func migratedEnvironmentValue(source Service, variable EnvVar, serviceTargets ma
 		}
 	}
 	return value
+}
+
+func privateGotenbergEndpoint(serviceTargets map[string]string) (string, bool) {
+	targetName, ok := mappedGotenbergTarget(serviceTargets)
+	if !ok {
+		return "", false
+	}
+	return "http://" + targetName + ":3000", true
+}
+
+func mappedGotenbergTarget(serviceTargets map[string]string) (string, bool) {
+	for _, sourceName := range []string{"gotenberg", "athenapdf"} {
+		targetName := strings.TrimSpace(serviceTargets[sourceName])
+		if targetName != "" {
+			return targetName, true
+		}
+	}
+	return "", false
 }
 
 func mappedSMTPHost(source Service, serviceTargets map[string]string) (string, string, bool) {

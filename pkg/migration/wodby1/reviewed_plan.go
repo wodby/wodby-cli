@@ -16,6 +16,24 @@ var (
 	ErrMigrationPlanInvalid  = errors.New("invalid migration plan")
 )
 
+// UnsupportedMigrationPlanSchemaError identifies a persisted plan created by
+// an incompatible CLI. Callers may use its metadata to offer a safe restart,
+// but must not use the plan to resume target mutations.
+type UnsupportedMigrationPlanSchemaError struct {
+	Actual     string
+	Supported  string
+	SourceKind string
+	SourceID   string
+}
+
+func (e *UnsupportedMigrationPlanSchemaError) Error() string {
+	return fmt.Sprintf("%s: unsupported schema %q (supported: %q)", ErrMigrationPlanInvalid, e.Actual, e.Supported)
+}
+
+func (e *UnsupportedMigrationPlanSchemaError) Unwrap() error {
+	return ErrMigrationPlanInvalid
+}
+
 // LoadReviewedPlan reads a previously reviewed plan from a regular 0600 file.
 // Unknown fields and trailing JSON are rejected so the approved hash always
 // describes the complete persisted authorization artifact.
@@ -54,6 +72,22 @@ func LoadReviewedPlan(path string) (Plan, error) {
 	if len(data) > maxMigrationPlanBytes {
 		return Plan{}, invalidPlanError("plan file exceeds maximum size")
 	}
+	var header struct {
+		Schema string `json:"schema"`
+		Source struct {
+			Kind string `json:"kind"`
+			ID   string `json:"id"`
+		} `json:"source"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return Plan{}, fmt.Errorf("%w: decode plan header: %v", ErrMigrationPlanInvalid, err)
+	}
+	if header.Schema != MigrationPlanSchema {
+		return Plan{}, &UnsupportedMigrationPlanSchemaError{
+			Actual: header.Schema, Supported: MigrationPlanSchema,
+			SourceKind: header.Source.Kind, SourceID: header.Source.ID,
+		}
+	}
 
 	var plan Plan
 	decoder := json.NewDecoder(bytes.NewReader(data))
@@ -78,7 +112,10 @@ func LoadReviewedPlan(path string) (Plan, error) {
 // of its resolved target identifiers are trusted.
 func (p Plan) ValidateReviewed() error {
 	if p.Schema != MigrationPlanSchema {
-		return invalidPlanError("unsupported schema")
+		return &UnsupportedMigrationPlanSchemaError{
+			Actual: p.Schema, Supported: MigrationPlanSchema,
+			SourceKind: p.Source.Kind, SourceID: p.Source.ID,
+		}
 	}
 	if !stateDigestPattern.MatchString(p.PlanHash) {
 		return invalidPlanError("plan hash must be a lowercase SHA-256 digest")

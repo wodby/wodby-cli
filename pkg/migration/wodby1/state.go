@@ -509,8 +509,8 @@ func (s *MigrationState) SetPhase(phase MigrationPhase) error {
 	return nil
 }
 
-// SetBackupDigest records the current backup snapshot independently of the
-// source configuration identity, allowing fresh backups to be used on resume.
+// SetBackupDigest records the selected backup snapshot independently of the
+// source configuration identity. Once apply starts, resume must keep it exact.
 func (s *MigrationState) SetBackupDigest(digest string) error {
 	if digest != "" && !stateDigestPattern.MatchString(digest) {
 		return invalidStateError("source backup digest must be a lowercase SHA-256 digest")

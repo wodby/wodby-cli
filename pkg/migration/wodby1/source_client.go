@@ -97,6 +97,10 @@ func NormalizeSourceToken(token string) (string, error) {
 }
 
 func (c *SourceClient) ExportApp(ctx context.Context, uuid string) (Export, error) {
+	return c.ExportAppWithBackups(ctx, uuid, nil)
+}
+
+func (c *SourceClient) ExportAppWithBackups(ctx context.Context, uuid string, backups map[string]string) (Export, error) {
 	if err := validateSourceUUID(uuid); err != nil {
 		return Export{}, err
 	}
@@ -105,12 +109,17 @@ func (c *SourceClient) ExportApp(ctx context.Context, uuid string) (Export, erro
 		"app",
 		uuid,
 		"/api/v4/migrations/v2/apps/"+url.PathEscape(uuid)+"/export",
+		sourceBackupQuery(backups),
 		defaultSourceTimeout,
 		maxSourceExportSize,
 	)
 }
 
 func (c *SourceClient) ExportInstance(ctx context.Context, uuid string) (Export, error) {
+	return c.ExportInstanceWithBackups(ctx, uuid, nil)
+}
+
+func (c *SourceClient) ExportInstanceWithBackups(ctx context.Context, uuid string, backups map[string]string) (Export, error) {
 	if err := validateSourceUUID(uuid); err != nil {
 		return Export{}, err
 	}
@@ -119,12 +128,17 @@ func (c *SourceClient) ExportInstance(ctx context.Context, uuid string) (Export,
 		"instance",
 		uuid,
 		"/api/v4/migrations/v2/instances/"+url.PathEscape(uuid)+"/export",
+		sourceBackupQuery(backups),
 		defaultSourceTimeout,
 		maxSourceExportSize,
 	)
 }
 
 func (c *SourceClient) ExportServer(ctx context.Context, uuid string) (Export, error) {
+	return c.ExportServerWithBackups(ctx, uuid, nil)
+}
+
+func (c *SourceClient) ExportServerWithBackups(ctx context.Context, uuid string, backups map[string]string) (Export, error) {
 	if err := validateSourceUUID(uuid); err != nil {
 		return Export{}, err
 	}
@@ -133,9 +147,18 @@ func (c *SourceClient) ExportServer(ctx context.Context, uuid string) (Export, e
 		"server",
 		uuid,
 		"/api/v4/migrations/v2/servers/"+url.PathEscape(uuid)+"/export",
+		sourceBackupQuery(backups),
 		defaultServerSourceTimeout,
 		maxServerSourceExportSize,
 	)
+}
+
+func sourceBackupQuery(backups map[string]string) url.Values {
+	query := url.Values{}
+	for instanceUUID, backupUUID := range backups {
+		query.Set("source_backup["+instanceUUID+"]", backupUUID)
+	}
+	return query
 }
 
 func validateSourceUUID(uuid string) error {
@@ -159,10 +182,11 @@ func (c *SourceClient) getExport(
 	kind string,
 	uuid string,
 	path string,
+	query url.Values,
 	timeout time.Duration,
 	maxSize int64,
 ) (Export, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.resolve(path, nil), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.resolve(path, query), nil)
 	if err != nil {
 		return Export{}, errors.WithStack(err)
 	}

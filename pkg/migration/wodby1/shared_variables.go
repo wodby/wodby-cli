@@ -146,7 +146,7 @@ func prepareSharedVariableIntegrations(prepared *PreparedMigration, plan *Plan) 
 			appNames = append(appNames, prepared.Apps[appIndex].App.App.Name)
 		}
 		findings = append(findings, ReviewItem{
-			Severity: SeverityConfirmation, Subject: "shared variable integration",
+			Severity: SeverityMigration, Subject: "shared variable integration",
 			Message: fmt.Sprintf("%d identical variable(s) on target service %q will move into one reusable custom variable integration shared by apps %s", len(group.variables), group.serviceName, strings.Join(appNames, ", ")),
 		})
 	}

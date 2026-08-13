@@ -45,6 +45,36 @@ func TestWithMappedUserHome(t *testing.T) {
 	})
 }
 
+func TestResolveRunCacheProfileNames(t *testing.T) {
+	t.Run("disables automatic caches for dind", func(t *testing.T) {
+		got, err := resolveRunCacheProfileNames(nil, false, "", "data-container", "wodby/node:24", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != nil {
+			t.Fatalf("resolveRunCacheProfileNames() = %#v, want nil", got)
+		}
+	})
+
+	t.Run("rejects explicit bind cache for dind", func(t *testing.T) {
+		_, err := resolveRunCacheProfileNames([]string{"npm"}, false, "", "data-container", "wodby/node:24", nil)
+		if err == nil {
+			t.Fatal("resolveRunCacheProfileNames() error = nil, want error")
+		}
+	})
+
+	t.Run("keeps automatic caches for bind mounted context", func(t *testing.T) {
+		got, err := resolveRunCacheProfileNames(nil, false, "", "", "wodby/node:24", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"npm"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("resolveRunCacheProfileNames() = %#v, want %#v", got, want)
+		}
+	})
+}
+
 func TestResolveCacheProfileNames(t *testing.T) {
 	tests := []struct {
 		name        string

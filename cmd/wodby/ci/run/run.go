@@ -112,10 +112,11 @@ var Cmd = &cobra.Command{
 			runConfig.Env = withMappedUserHome(runConfig.Env, explicitEnv)
 		}
 
-		cacheNames, err := resolveCacheProfileNames(
+		cacheNames, err := resolveRunCacheProfileNames(
 			opts.cache,
 			opts.noCache,
-			opts.user == "",
+			opts.user,
+			config.DataContainer,
 			image,
 			imageConfig.Labels,
 		)

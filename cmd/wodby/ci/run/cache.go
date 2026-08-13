@@ -88,6 +88,25 @@ func withMappedUserHome(env []string, explicitEnv map[string]struct{}) []string 
 	return append(env, "HOME=/tmp")
 }
 
+func resolveRunCacheProfileNames(explicit []string, disabled bool, explicitUser, dataContainer, image string, labels map[string]string) ([]string, error) {
+	names, err := resolveCacheProfileNames(
+		explicit,
+		disabled,
+		explicitUser == "" && dataContainer == "",
+		image,
+		labels,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if dataContainer != "" && len(names) > 0 {
+		return nil, errors.New("dependency cache bind mounts are not supported with Docker-in-Docker")
+	}
+
+	return names, nil
+}
+
 func resolveCacheProfileNames(explicit []string, disabled, autoAllowed bool, image string, labels map[string]string) ([]string, error) {
 	names := splitCacheProfileNames(explicit)
 	if disabled {

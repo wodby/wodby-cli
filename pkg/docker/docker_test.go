@@ -72,6 +72,42 @@ func TestBuildArgOptionsForwardsEmptyValuesFromEnvironment(t *testing.T) {
 	}
 }
 
+func TestBuildCommandUsesBuildxAndLoadsImage(t *testing.T) {
+	const dockerfile = "FROM scratch"
+	cmd := buildCommand(
+		dockerfile,
+		[]string{"registry.example.com/app:one", "registry.example.com/app:two"},
+		"/workspace",
+		map[string]string{
+			"TOKEN": "",
+			"APP":   "wodby",
+		},
+	)
+
+	wantArgs := []string{
+		"docker", "buildx", "build", "--load",
+		"-t", "registry.example.com/app:one",
+		"-t", "registry.example.com/app:two",
+		"--build-arg", "APP=wodby",
+		"--build-arg", "TOKEN",
+		"-f", "-", "/workspace",
+	}
+	if !reflect.DeepEqual(cmd.Args, wantArgs) {
+		t.Fatalf("build command args = %v, want %v", cmd.Args, wantArgs)
+	}
+	if cmd.Env != nil {
+		t.Fatalf("build command environment = %v, want inherited environment", cmd.Env)
+	}
+
+	gotDockerfile, err := io.ReadAll(cmd.Stdin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotDockerfile) != dockerfile {
+		t.Fatalf("build command stdin = %q, want %q", gotDockerfile, dockerfile)
+	}
+}
+
 func TestRedactWriterRedactsSecretsAcrossWriteBoundaries(t *testing.T) {
 	const secret = "supersecret"
 

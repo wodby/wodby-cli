@@ -48,23 +48,28 @@ func (c *Client) Build(dockerfile string, tags []string, context string, buildAr
 // BuildWithRedactions builds a Docker image while removing sensitive values
 // from both the displayed command and streamed Docker output.
 func (c *Client) BuildWithRedactions(dockerfile string, tags []string, context string, buildArgs map[string]string, redactions []string) error {
-	args := []string{"build"}
+	cmd := buildCommand(dockerfile, tags, context, buildArgs)
+	fmt.Printf("Building:\n %s\n", redactString(strings.Join(cmd.Args, " "), redactions))
+
+	return cmdStartVerboseRedacted(cmd, redactions)
+}
+
+// buildCommand explicitly uses Buildx and loads the result into the Docker
+// image store because the release command pushes the locally built tags.
+func buildCommand(dockerfile string, tags []string, context string, buildArgs map[string]string) *exec.Cmd {
+	args := []string{"buildx", "build", "--load"}
 
 	for _, tag := range tags {
 		args = append(args, "-t", tag)
 	}
 
-	args = append(args, "-f", "-", context)
-
 	args = append(args, buildArgOptions(buildArgs)...)
-
-	fmt.Printf("Building:\n docker %s\n", redactString(strings.Join(args, " "), redactions))
+	args = append(args, "-f", "-", context)
 
 	cmd := exec.Command("docker", args...)
 	cmd.Stdin = strings.NewReader(dockerfile)
-	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1")
 
-	return cmdStartVerboseRedacted(cmd, redactions)
+	return cmd
 }
 
 func buildArgOptions(buildArgs map[string]string) []string {

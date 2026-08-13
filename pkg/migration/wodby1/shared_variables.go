@@ -32,6 +32,9 @@ func prepareSharedVariableIntegrations(prepared *PreparedMigration, plan *Plan) 
 				continue
 			}
 			for _, variable := range configuration.EnvVars {
+				if variable.Name == wodby1LegacyEnvVarsMarker {
+					continue
+				}
 				key := sharedVariableIdentity(serviceName, variable)
 				observed[key] = append(observed[key], sharedVariableObservation{
 					appIndex: appIndex, appUUID: app.App.App.UUID, serviceName: serviceName, variable: variable,

@@ -2,13 +2,9 @@ package wodby1
 
 import "strings"
 
+const wodby1LegacyEnvVarsMarker = "WODBY_MIGRATIONS_ADD_LEGACY_WODBY1_ENV_VARS"
+
 var wodby1EnvironmentReferenceReplacements = []string{
-	"WODBY_INSTANCE_NAME", "WODBY_APP_INSTANCE_NAME",
-	"WODBY_INSTANCE_TYPE", "WODBY_ENV_TYPE",
-	"WODBY_ENVIRONMENT_NAME", "WODBY_ENV_NAME",
-	"WODBY_ENVIRONMENT_TYPE", "WODBY_ENV_TYPE",
-	"WODBY_HOST_PRIMARY", "WODBY_PRIMARY_HOST",
-	"WODBY_URL_PRIMARY", "WODBY_PRIMARY_URL",
 	"APP_BUILD_NUM", "WODBY_BUILD_NUMBER",
 }
 
@@ -22,16 +18,25 @@ var wodby1GeneratedEnvironmentNames = map[string]bool{
 	"WODBY_APP_DOCROOT":      true,
 	"WODBY_APP_NAME":         true,
 	"WODBY_APP_ROOT":         true,
+	"WODBY_APP_SUBSITE":      true,
+	"WODBY_APP_TYPE":         true,
 	"WODBY_APP_UUID":         true,
+	"WODBY_APP_VERSION":      true,
 	"WODBY_CONF":             true,
+	"WODBY_DB_HOST":          true,
+	"WODBY_DB_NAME":          true,
+	"WODBY_DB_PORT":          true,
+	"WODBY_DB_USERNAME":      true,
 	"WODBY_DIR_CONF":         true,
 	"WODBY_ENVIRONMENT_NAME": true,
 	"WODBY_ENVIRONMENT_TYPE": true,
+	"WODBY_HOME":             true,
 	"WODBY_HOST_PRIMARY":     true,
 	"WODBY_HOSTS":            true,
 	"WODBY_INSTANCE_NAME":    true,
 	"WODBY_INSTANCE_TYPE":    true,
 	"WODBY_INSTANCE_UUID":    true,
+	"WODBY_NAMESPACE":        true,
 	"WODBY_URL_PRIMARY":      true,
 }
 
@@ -44,6 +49,21 @@ func migratedEnvironmentReferences(value string) string {
 
 func isWodby1GeneratedEnvironmentName(name string) bool {
 	return wodby1GeneratedEnvironmentNames[strings.ToUpper(strings.TrimSpace(name))]
+}
+
+func isWodby2ReservedEnvironmentName(name string) bool {
+	name = strings.TrimSpace(name)
+	return name == "WODBY" || name == "WODBY2" || strings.HasPrefix(name, "WODBY_")
+}
+
+// sourceEnvVarBlockedByTargetReservation identifies customer-controlled Wodby
+// 1 variables that would otherwise be migrated but cannot be created in Wodby
+// 2. Known Wodby 1 generated variables remain target-owned and are handled by
+// the normal generated-variable filtering instead of being reported as
+// customer configuration.
+func sourceEnvVarBlockedByTargetReservation(properties map[string]interface{}, envVar EnvVar) bool {
+	return sourceEnvVarWouldOtherwiseMigrate(properties, envVar) &&
+		isWodby2ReservedEnvironmentName(envVar.Name)
 }
 
 func serviceTargetNamesFromPlans(plans []ServicePlan) map[string]string {

@@ -1527,6 +1527,44 @@ func TestBuildPlanMigratesPropertyDerivedPHPEnvironment(t *testing.T) {
 	}
 }
 
+func TestBuildPlanReportsCustomerWodbyNamespaceVariablesAsBlocking(t *testing.T) {
+	export := Export{
+		Schema: ExportSchemaV1,
+		App:    &App{UUID: "app-1", Name: "demo"},
+		Instances: []Instance{{
+			UUID: "instance-1", Name: "prod", Type: "prod",
+			Stack: Stack{Name: "drupal"},
+			Services: []Service{{
+				Name: "php", Enabled: true,
+				EnvVars: []EnvVar{
+					{Name: "APP_MODE", Value: "production", Enabled: true, Origin: "custom"},
+					{Name: "WODBY_CUSTOM", Value: "legacy", Enabled: true, Origin: "custom"},
+					{Name: "WODBY_STACK_CUSTOM", Value: "legacy", Enabled: true, Origin: "custom_stack"},
+					{Name: "WODBY_APP_NAME", Value: "generated", Enabled: true, Origin: "custom_stack"},
+					{Name: "WODBY_MANAGED_DEFAULT", Value: "default", Enabled: true, Origin: "default"},
+				},
+			}},
+		}},
+	}
+
+	plan, err := BuildPlan(export, PlanOptions{SourceKind: "app", SourceID: "app-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := plan.Apps[0].Instances[0].Services[0]
+	if service.EnvVars != 1 || plan.Summary.EnvVars != 1 {
+		t.Fatalf("only the non-reserved custom variable should be selected: %#v", service)
+	}
+	if plan.Summary.Blocking != 2 {
+		t.Fatalf("blocking count = %d, want 2: %#v", plan.Summary.Blocking, plan.Review)
+	}
+	for _, name := range []string{"WODBY_CUSTOM", "WODBY_STACK_CUSTOM"} {
+		if !hasReviewMessage(plan.Review, SeverityBlocking, name) {
+			t.Fatalf("missing blocker for %s: %#v", name, plan.Review)
+		}
+	}
+}
+
 func hasReviewMessage(items []ReviewItem, severity string, fragment string) bool {
 	for _, item := range items {
 		if item.Severity == severity && strings.Contains(item.Message, fragment) {

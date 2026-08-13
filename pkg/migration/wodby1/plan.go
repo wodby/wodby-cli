@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	MigrationPlanSchema = "wodby1-migration-plan/v12"
+	MigrationPlanSchema = "wodby1-migration-plan/v13"
 
 	SeverityBlocking       = "blocking"
 	SeverityMigration      = "migration"
@@ -1008,6 +1008,19 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 
 	reportedRedacted := map[string]bool{}
 	for _, envVar := range service.EnvVars {
+		if sourceEnvVarBlockedByTargetReservation(instance.Properties, envVar) {
+			plan.addReview(
+				SeverityBlocking,
+				app.Name,
+				instance.Name,
+				"service "+service.Name+" env var "+envVar.Name,
+				fmt.Sprintf(
+					"source custom environment variable %q uses the Wodby 2 reserved WODBY namespace and will not be migrated; rename it to a non-reserved name in Wodby 1, update every application and command reference, then rerun the migration",
+					envVar.Name,
+				),
+			)
+			continue
+		}
 		if !sourceEnvVarRequiresMigration(instance.Properties, envVar) {
 			continue
 		}
@@ -1178,6 +1191,11 @@ func addSourceStackCompatibilityReview(plan *Plan, app App, instance Instance, a
 }
 
 func sourceEnvVarRequiresMigration(properties map[string]interface{}, envVar EnvVar) bool {
+	return sourceEnvVarWouldOtherwiseMigrate(properties, envVar) &&
+		!isWodby2ReservedEnvironmentName(envVar.Name)
+}
+
+func sourceEnvVarWouldOtherwiseMigrate(properties map[string]interface{}, envVar EnvVar) bool {
 	if !envVar.Enabled {
 		return false
 	}

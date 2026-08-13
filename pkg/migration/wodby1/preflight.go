@@ -352,6 +352,13 @@ func (c *TargetClient) PreflightTarget(
 		return PreparedMigration{}, err
 	}
 	findings = append(findings, sharedVariableFindings...)
+	if preparedMigrationUsesLegacyWodby1EnvVars(prepared) {
+		findings = append(findings, ReviewItem{
+			Severity: SeverityConfirmation,
+			Subject:  "Wodby 1 environment compatibility",
+			Message:  wodby1LegacyEnvVarsMarker + " will be enabled on migrated stack services. Wodby 2 will add supported legacy Wodby 1 runtime variable aliases; remove the marker after application code and commands use the native Wodby 2 variables",
+		})
+	}
 	if len(prepared.Apps) == 1 {
 		prepared.App = prepared.Apps[0].App
 		prepared.Instances = prepared.Apps[0].Instances
@@ -364,6 +371,19 @@ func (c *TargetClient) PreflightTarget(
 		return PreparedMigration{}, err
 	}
 	return prepared, nil
+}
+
+func preparedMigrationUsesLegacyWodby1EnvVars(prepared PreparedMigration) bool {
+	for _, app := range prepared.Apps {
+		for _, service := range app.StackConfiguration.Services {
+			for _, variable := range service.EnvVars {
+				if variable.Name == wodby1LegacyEnvVarsMarker && strings.EqualFold(strings.TrimSpace(variable.Value), "true") {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func targetServiceCapacityFindings(

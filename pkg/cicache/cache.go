@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/pkg/errors"
+	"github.com/wodby/wodby-cli/pkg/cidata"
 )
 
 const (
@@ -42,10 +43,10 @@ func ImportDataContainer(container, workingDir, context string) error {
 		return err
 	}
 
-	if err := runDataContainerUtility(container, "rm", "-rf", path.Join(workingDir, DirectoryName)); err != nil {
+	if err := cidata.RunUtility(container, "rm", "-rf", path.Join(workingDir, DirectoryName)); err != nil {
 		return err
 	}
-	if err := runDataContainerUtility(container, "mkdir", "-p", ContainerRoot); err != nil {
+	if err := cidata.RunUtility(container, "mkdir", "-p", ContainerRoot); err != nil {
 		return err
 	}
 
@@ -67,7 +68,7 @@ func ImportDataContainer(container, workingDir, context string) error {
 		return errors.WithStack(err)
 	}
 
-	return runDataContainerUtility(container, "chmod", "-R", "0777", ContainerRoot)
+	return cidata.RunUtility(container, "chmod", "-R", "0777", ContainerRoot)
 }
 
 // PrepareDataContainerProfiles ensures a cache-enabled command can write its
@@ -83,10 +84,10 @@ func PrepareDataContainerProfiles(container string, profiles []string) error {
 	if len(args) == 2 {
 		return nil
 	}
-	if err := runDataContainerUtility(container, args...); err != nil {
+	if err := cidata.RunUtility(container, args...); err != nil {
 		return err
 	}
-	return runDataContainerUtility(container, "chmod", "-R", "0777", ContainerRoot)
+	return cidata.RunUtility(container, "chmod", "-R", "0777", ContainerRoot)
 }
 
 // ExportDataContainerProfiles copies cache contents back to the CI workspace
@@ -116,22 +117,5 @@ func ExportDataContainerProfiles(container, context string, profiles []string) e
 		}
 	}
 
-	return nil
-}
-
-func runDataContainerUtility(container string, args ...string) error {
-	command := []string{
-		"run",
-		"--rm",
-		fmt.Sprintf("--volumes-from=%s", container),
-		"--user=root",
-		"--entrypoint=",
-		"alpine",
-	}
-	command = append(command, args...)
-	output, err := exec.Command("docker", command...).CombinedOutput()
-	if err != nil {
-		return errors.Wrap(err, string(output))
-	}
 	return nil
 }

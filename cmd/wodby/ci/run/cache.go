@@ -92,6 +92,26 @@ func resolveRunCacheProfileNames(explicit []string, disabled bool, explicitUser,
 	return resolveCacheProfileNames(explicit, disabled, explicitUser == "", image, labels)
 }
 
+func cacheConfigurationIsExplicit(values []string) bool {
+	names := splitCacheProfileNames(values)
+	return len(names) > 1 || len(names) == 1 && names[0] != "auto" && names[0] != "none"
+}
+
+func warnAutomaticCache(stage string, err error) {
+	fmt.Fprintf(os.Stderr, "WARNING: skipping automatic cache %s: %v\n", stage, err)
+}
+
+func handleCacheFailure(stage string, strict bool, err error) error {
+	if err == nil {
+		return nil
+	}
+	if strict {
+		return err
+	}
+	warnAutomaticCache(stage, err)
+	return nil
+}
+
 func resolveCacheProfileNames(explicit []string, disabled, autoAllowed bool, image string, labels map[string]string) ([]string, error) {
 	names := splitCacheProfileNames(explicit)
 	if disabled {

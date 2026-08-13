@@ -48,7 +48,7 @@ jobs:
       run: |
         set -euo pipefail
 
-        WODBY_DOCKER_INTEGRATION=1 go test ./pkg/cicache -run TestDataContainerCacheIntegration
+        WODBY_DOCKER_INTEGRATION=1 go test ./pkg/cicache ./pkg/cidata ./pkg/docker
 
         test_home="${RUNNER_TEMP}/wodby-home"
         context="${RUNNER_TEMP}/wodby-context"
@@ -149,14 +149,6 @@ jobs:
       with:
         name: dist-${{ matrix.os }}-${{ matrix.arch }}
         path: dist
-    - name: Release AWS latest
-      uses: jakejarvis/s3-sync-action@v0.5.1
-      with:
-        args: --acl public-read --follow-symlinks --delete
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        DEST_DIR: wodby-cli/latest/${{ matrix.os }}/${{ matrix.arch }}
     - name: Release AWS tagged
       uses: jakejarvis/s3-sync-action@v0.5.1
       with:
@@ -233,4 +225,4 @@ jobs:
         push: true
         build-args: VERSION=${{ env.VERSION }}
         platforms: linux/amd64,linux/arm64
-        tags: wodby/wodby-cli:${{ env.VERSION }},wodby/wodby-cli:latest
+        tags: wodby/wodby-cli:${{ env.VERSION }}

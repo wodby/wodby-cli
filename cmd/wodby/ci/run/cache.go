@@ -80,14 +80,6 @@ func explicitEnvironmentNames(env []string, envFile string) (map[string]struct{}
 	return names, nil
 }
 
-func withMappedUserHome(env []string, explicitEnv map[string]struct{}) []string {
-	if _, ok := explicitEnv["HOME"]; ok {
-		return env
-	}
-
-	return append(env, "HOME=/tmp")
-}
-
 func resolveRunCacheProfileNames(explicit []string, disabled bool, explicitUser, image string, labels map[string]string) ([]string, error) {
 	return resolveCacheProfileNames(explicit, disabled, explicitUser == "", image, labels)
 }
@@ -239,6 +231,44 @@ func addCacheProfiles(config *docker.RunConfig, names []string, explicitEnv map[
 	}
 
 	return active, nil
+}
+
+// prepareNativeCacheOwnership makes host cache directories writable by the
+// image user without changing the checkout owner. This is needed on native CI
+// runners where the Docker daemon can change bind-mount ownership but the
+// unprivileged CLI process cannot.
+func prepareNativeCacheOwnership(client *docker.Client, image string, names []string, hostHome, cacheRoot, ownership string) error {
+	uid, _, numeric := numericIdentity(ownership)
+	if numeric && uid == 0 {
+		return nil
+	}
+
+	runConfig, args := nativeCacheOwnershipRun(image, names, hostHome, cacheRoot, ownership)
+	if len(runConfig.Volumes) == 0 {
+		return nil
+	}
+
+	return client.Run(args, runConfig)
+}
+
+func nativeCacheOwnershipRun(image string, names []string, hostHome, cacheRoot, ownership string) (docker.RunConfig, []string) {
+	runConfig := docker.RunConfig{
+		Image:           image,
+		User:            "root",
+		ClearEntrypoint: true,
+	}
+	args := []string{"chown", "-R", ownership}
+	for _, name := range names {
+		profile := cacheProfiles[name]
+		hostPath := filepath.Join(append([]string{hostHome}, profile.hostPath...)...)
+		if cacheRoot != "" {
+			hostPath = filepath.Join(cacheRoot, name)
+		}
+		runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", hostPath, profile.containerPath))
+		args = append(args, profile.containerPath)
+	}
+
+	return runConfig, args
 }
 
 func numericIdentity(user string) (int, int, bool) {

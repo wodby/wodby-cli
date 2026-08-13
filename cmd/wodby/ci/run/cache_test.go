@@ -27,19 +27,6 @@ func TestExplicitEnvironmentNames(t *testing.T) {
 	}
 }
 
-func TestWithMappedUserHome(t *testing.T) {
-	got := withMappedUserHome([]string{"CI=true"}, map[string]struct{}{})
-	if want := []string{"CI=true", "HOME=/tmp"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("withMappedUserHome() = %#v, want %#v", got, want)
-	}
-
-	env := []string{"HOME=/workspace/home"}
-	got = withMappedUserHome(env, map[string]struct{}{"HOME": {}})
-	if !reflect.DeepEqual(got, env) {
-		t.Fatalf("withMappedUserHome() = %#v, want %#v", got, env)
-	}
-}
-
 func TestResolveHostCacheStorage(t *testing.T) {
 	t.Run("uses conventional home paths for native runs", func(t *testing.T) {
 		home := t.TempDir()
@@ -226,5 +213,28 @@ func TestAddCacheProfilesUsesDataContainerVolume(t *testing.T) {
 	}
 	if len(config.Volumes) != 0 {
 		t.Fatalf("cache volumes = %#v, want none", config.Volumes)
+	}
+}
+
+func TestNativeCacheOwnershipRunUsesImageAsRoot(t *testing.T) {
+	home := t.TempDir()
+	config, args := nativeCacheOwnershipRun(
+		"wodby/drupal-php:8.3-4.82.4",
+		[]string{"composer"},
+		home,
+		"",
+		"1000:1000",
+	)
+
+	if config.Image != "wodby/drupal-php:8.3-4.82.4" || config.User != "root" || !config.ClearEntrypoint {
+		t.Fatalf("native cache ownership config = %#v", config)
+	}
+	wantVolumes := []string{filepath.Join(home, ".composer", "cache") + ":/tmp/wodby-cache/composer"}
+	if !reflect.DeepEqual(config.Volumes, wantVolumes) {
+		t.Fatalf("native cache ownership volumes = %#v, want %#v", config.Volumes, wantVolumes)
+	}
+	wantArgs := []string{"chown", "-R", "1000:1000", "/tmp/wodby-cache/composer"}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Fatalf("native cache ownership args = %#v, want %#v", args, wantArgs)
 	}
 }

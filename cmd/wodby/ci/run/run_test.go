@@ -2,45 +2,15 @@ package run
 
 import (
 	"testing"
-
-	"github.com/pkg/errors"
-	"github.com/wodby/wodby-cli/pkg/ciuser"
-	"github.com/wodby/wodby-cli/pkg/config"
 )
 
-func TestResolveRunUser(t *testing.T) {
-	t.Cleanup(func() {
-		resolveBindUser = ciuser.ResolveBindUser
-	})
-
-	t.Run("uses explicit user override", func(t *testing.T) {
-		got, err := resolveRunUser("root", &config.Config{})
-		if err != nil || got != "root" {
-			t.Fatalf("resolveRunUser() = %q, %v, want root", got, err)
-		}
-	})
-
-	t.Run("keeps image user for data container", func(t *testing.T) {
-		got, err := resolveRunUser("", &config.Config{DataContainer: "data"})
-		if err != nil || got != "" {
-			t.Fatalf("resolveRunUser() = %q, %v, want empty user", got, err)
-		}
-	})
-
-	t.Run("uses current uid gid for bind mounted contexts", func(t *testing.T) {
-		resolveBindUser = func(string) (string, error) { return "1001:121", nil }
-		got, err := resolveRunUser("", &config.Config{})
-		if err != nil || got != "1001:121" {
-			t.Fatalf("resolveRunUser() = %q, %v, want 1001:121", got, err)
-		}
-	})
-
-	t.Run("returns bind user lookup errors", func(t *testing.T) {
-		resolveBindUser = func(string) (string, error) { return "", errors.New("boom") }
-		if _, err := resolveRunUser("", &config.Config{}); err == nil {
-			t.Fatal("resolveRunUser() error = nil, want error")
-		}
-	})
+func TestRunUserOverride(t *testing.T) {
+	if got := runUserOverride(""); got != "" {
+		t.Fatalf("runUserOverride(\"\") = %q, want image default", got)
+	}
+	if got := runUserOverride("1001:1002"); got != "1001:1002" {
+		t.Fatalf("runUserOverride() = %q, want explicit identity", got)
+	}
 }
 
 func TestShouldClearImageEntrypoint(t *testing.T) {

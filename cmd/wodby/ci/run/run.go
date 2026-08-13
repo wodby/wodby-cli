@@ -29,7 +29,6 @@ type options struct {
 
 var opts options
 var v = viper.New()
-var resolveBindUser = ciuser.ResolveBindUser
 
 var Cmd = &cobra.Command{
 	Use:   "run",
@@ -114,20 +113,13 @@ var Cmd = &cobra.Command{
 				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, workingDir))
 			}
 
-			runConfig.User, err = resolveRunUser(opts.user, config)
-			if err != nil {
-				return err
-			}
+			runConfig.User = runUserOverride(opts.user)
 			runConfig.ClearEntrypoint = shouldClearImageEntrypoint(opts.entrypoint, runConfig.User)
 
 			explicitEnv, err := explicitEnvironmentNames(opts.env, opts.envFile)
 			if err != nil {
 				return err
 			}
-			if opts.user == "" && config.DataContainer == "" && runConfig.User != "" {
-				runConfig.Env = withMappedUserHome(runConfig.Env, explicitEnv)
-			}
-
 			strictCache := cacheConfigurationIsExplicit(opts.cache)
 			cacheNames, err := resolveRunCacheProfileNames(opts.cache, opts.noCache, opts.user, image, imageConfig.Labels)
 			if err != nil {
@@ -137,6 +129,19 @@ var Cmd = &cobra.Command{
 				cacheNames = nil
 			}
 			if len(cacheNames) > 0 {
+				cacheUser := runConfig.User
+				if cacheUser == "" && config.DataContainer == "" {
+					uid, gid, identityErr := dockerClient.ResolveImageUserIdentity(image, imageConfig.User)
+					if identityErr != nil {
+						if cacheErr := handleCacheFailure("user resolution", strictCache, identityErr); cacheErr != nil {
+							return cacheErr
+						}
+						cacheNames = nil
+					} else {
+						cacheUser = fmt.Sprintf("%d:%d", uid, gid)
+					}
+				}
+
 				cacheConfig := runConfig
 				cacheConfig.Env = append([]string(nil), runConfig.Env...)
 				cacheConfig.Volumes = append([]string(nil), runConfig.Volumes...)
@@ -151,8 +156,11 @@ var Cmd = &cobra.Command{
 						hostHome,
 						cacheRoot,
 						config.DataContainer != "",
-						runConfig.User,
+						cacheUser,
 					)
+				}
+				if cacheErr == nil && config.DataContainer == "" && len(cacheNames) > 0 && cacheUser != "" && !ciuser.CanChownDirectories() {
+					cacheErr = prepareNativeCacheOwnership(dockerClient, image, cacheNames, hostHome, cacheRoot, cacheUser)
 				}
 				if cacheErr == nil && config.DataContainer != "" && len(cacheNames) > 0 {
 					cacheErr = cicache.PrepareDataContainerProfiles(config.DataContainer, cacheNames)
@@ -189,16 +197,11 @@ var Cmd = &cobra.Command{
 	},
 }
 
-func resolveRunUser(explicitUser string, config *config.Config) (string, error) {
-	if explicitUser != "" {
-		return explicitUser, nil
-	}
-
-	if config.DataContainer != "" {
-		return "", nil
-	}
-
-	return resolveBindUser(config.Context)
+// runUserOverride returns only an explicitly requested Docker user. Wodby 1
+// managed checkouts are prepared for their image user during initialization,
+// so native and Docker-in-Docker commands must both preserve that image user.
+func runUserOverride(explicitUser string) string {
+	return explicitUser
 }
 
 func shouldClearImageEntrypoint(explicitEntrypoint string, user string) bool {
@@ -228,7 +231,7 @@ func init() {
 	Cmd.Flags().StringVarP(&opts.image, "image", "i", "", "Image")
 	Cmd.Flags().StringSliceVarP(&opts.volumes, "volume", "v", []string{}, "Volumes")
 	Cmd.Flags().StringSliceVarP(&opts.env, "env", "e", []string{}, "Environment variables")
-	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "User (defaults to the workspace uid:gid for bind-mounted contexts)")
+	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "User (defaults to the image user)")
 	Cmd.Flags().StringVar(&opts.envFile, "env-file", "", "Env file")
 	Cmd.Flags().StringVarP(&opts.path, "path", "p", "", "Working dir (relative path)")
 	Cmd.Flags().StringSliceVar(&opts.cache, "cache", []string{}, "Cache profiles to enable instead of auto-detection (npm, composer, bundler, uv)")

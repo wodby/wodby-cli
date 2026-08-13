@@ -29,6 +29,40 @@ func TestDataContainerWorkingDirContents(t *testing.T) {
 	}
 }
 
+func TestRenderDockerfileTemplateSupportsLegacyAndOwnershipVariables(t *testing.T) {
+	tests := []struct {
+		name        string
+		dockerfile  string
+		defaultUser string
+		want        string
+	}{
+		{
+			name:        "legacy default user",
+			dockerfile:  "COPY --chown={{.DefaultUser}}:{{.DefaultUser}} source target",
+			defaultUser: "wodby",
+			want:        "COPY --chown=wodby:wodby source target",
+		},
+		{
+			name:        "explicit user ownership",
+			dockerfile:  "COPY --chown={{.DefaultUserOwnership}} source target",
+			defaultUser: "wodby:www-data",
+			want:        "COPY --chown=wodby:www-data source target",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := renderDockerfileTemplate(tt.dockerfile, tt.defaultUser)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("renderDockerfileTemplate() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPrepareDataContainerContextRejectsPathNames(t *testing.T) {
 	for _, name := range []string{"", "../data", "nested/data"} {
 		if _, err := prepareDataContainerContext(name); err == nil {

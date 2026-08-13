@@ -203,19 +203,10 @@ var Cmd = &cobra.Command{
 				return err
 			}
 
-			t, err := template.New("Dockerfile").Parse(tpl)
+			dockerfile, err = renderDockerfileTemplate(tpl, defaultUser)
 			if err != nil {
 				return err
 			}
-
-			data := struct{ DefaultUserOwnership string }{DefaultUserOwnership: docker.ChownSpec(defaultUser)}
-			var tpl bytes.Buffer
-
-			if err := t.Execute(&tpl, data); err != nil {
-				return err
-			}
-
-			dockerfile = tpl.String()
 
 			// Allow specifying tags for custom stacks.
 			if opts.tag != "" {
@@ -259,6 +250,30 @@ var Cmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+// renderDockerfileTemplate keeps the legacy DefaultUser variable available to
+// custom Dockerfiles while exposing ownership that preserves explicit groups.
+func renderDockerfileTemplate(dockerfile string, defaultUser string) (string, error) {
+	t, err := template.New("Dockerfile").Parse(dockerfile)
+	if err != nil {
+		return "", err
+	}
+
+	data := struct {
+		DefaultUser          string
+		DefaultUserOwnership string
+	}{
+		DefaultUser:          defaultUser,
+		DefaultUserOwnership: docker.ChownSpec(defaultUser),
+	}
+	var rendered bytes.Buffer
+
+	if err := t.Execute(&rendered, data); err != nil {
+		return "", err
+	}
+
+	return rendered.String(), nil
 }
 
 func dataContainerContextPath(dataContainer string) string {

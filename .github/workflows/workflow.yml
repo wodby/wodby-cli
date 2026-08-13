@@ -60,21 +60,6 @@ jobs:
         native_image="wodby/drupal-php:8.3-4.82.4"
         image_uid="$(docker run --rm --entrypoint=id "${native_image}" -u)"
 
-        # shellcheck disable=SC2016 # Variables expand inside the container.
-        HOME="${test_home}" bin/wodby \
-          --ci-config-path "${config}" \
-          ci run \
-          --image "${native_image}" \
-          --env "EXPECTED_UID=${image_uid}" \
-          -- sh -eu -c '
-            test "$(id -u)" = "${EXPECTED_UID}"
-            test "${COMPOSER_CACHE_DIR}" = /tmp/wodby-cache/composer
-            printf cache-ok > /tmp/wodby-cache/composer/wodby-cache-test
-          '
-
-        test -f "${test_home}/.composer/cache/wodby-cache-test"
-        test "$(stat -c %u "${test_home}/.composer/cache/wodby-cache-test")" = "${image_uid}"
-
         git -C "${context}" init -q
         git -C "${context}" config user.name "Wodby CI"
         git -C "${context}" config user.email "ci@wodby.com"
@@ -89,11 +74,21 @@ jobs:
           "${native_image}" \
           chown -R wodby:wodby .
 
+        # shellcheck disable=SC2016 # Variables expand inside the container.
         HOME="${test_home}" bin/wodby \
           --ci-config-path "${config}" \
           ci run \
           --image "${native_image}" \
-          -- git status --short
+          --env "EXPECTED_UID=${image_uid}" \
+          -- sh -eu -c '
+            test "$(id -u)" = "${EXPECTED_UID}"
+            git status --short
+            test "${COMPOSER_CACHE_DIR}" = /tmp/wodby-cache/composer
+            printf cache-ok > /tmp/wodby-cache/composer/wodby-cache-test
+          '
+
+        test -f "${test_home}/.composer/cache/wodby-cache-test"
+        test "$(stat -c %u "${test_home}/.composer/cache/wodby-cache-test")" = "${image_uid}"
 
         data_container="wodby-ci-cache-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
         trap 'docker rm -fv "${data_container}" >/dev/null 2>&1 || true' EXIT

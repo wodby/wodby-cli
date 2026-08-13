@@ -103,6 +103,17 @@ var Cmd = &cobra.Command{
 		if err != nil {
 			return errors.WithStack(err)
 		}
+		// Keep the resolved workspace identity for native cache ownership even
+		// when Docker can safely use the image's equivalent default user.
+		cacheUser := runConfig.User
+		if opts.user == "" && config.DataContainer == "" && runConfig.User != "" {
+			imageUID, _, identityErr := dockerClient.ResolveImageUserIdentity(image, imageConfig.User)
+			if identityErr == nil {
+				users := usersForImage(runConfig.User, imageUID)
+				runConfig.User = users.docker
+				cacheUser = users.cache
+			}
+		}
 		runConfig.ClearEntrypoint = shouldClearImageEntrypoint(opts.entrypoint, runConfig.User)
 
 		explicitEnv, err := explicitEnvironmentNames(opts.env, opts.envFile)
@@ -142,7 +153,7 @@ var Cmd = &cobra.Command{
 					hostHome,
 					cacheRoot,
 					config.DataContainer != "",
-					runConfig.User,
+					cacheUser,
 				)
 			}
 			if cacheErr == nil && config.DataContainer != "" && len(cacheNames) > 0 {
@@ -216,6 +227,25 @@ func resolveRunUser(explicitUser string, config *types.Config) (string, error) {
 	}
 
 	return user, nil
+}
+
+type runUsers struct {
+	docker string
+	cache  string
+}
+
+// usersForImage avoids an unnecessary Docker user override when the
+// bind-mounted workspace owner already has the image user's UID. Cache
+// directories still use the resolved workspace identity because they are
+// created on the host and may need ownership preparation there.
+func usersForImage(workspaceUser string, imageUID uint32) runUsers {
+	users := runUsers{docker: workspaceUser, cache: workspaceUser}
+	uid, _, ok := numericIdentity(workspaceUser)
+	if ok && uid >= 0 && uint32(uid) == imageUID {
+		users.docker = ""
+	}
+
+	return users
 }
 
 func shouldClearImageEntrypoint(explicitEntrypoint string, user string) bool {

@@ -33,7 +33,7 @@ func TestResolveRunUser(t *testing.T) {
 		}
 	})
 
-	t.Run("always uses uid 1000 for bind mounted contexts", func(t *testing.T) {
+	t.Run("resolves uid 1000 for bind mounted contexts", func(t *testing.T) {
 		currentHostUser = func() (string, error) {
 			return "1000:1000", nil
 		}
@@ -106,6 +106,52 @@ func TestResolveRunUser(t *testing.T) {
 			t.Fatal("resolveRunUser() error = nil, want error")
 		}
 	})
+}
+
+func TestUsersForImage(t *testing.T) {
+	tests := []struct {
+		name          string
+		workspaceUser string
+		imageUID      uint32
+		wantDocker    string
+		wantCache     string
+	}{
+		{
+			name:          "matching identity preserves image user",
+			workspaceUser: "1000:1000",
+			imageUID:      1000,
+			wantCache:     "1000:1000",
+		},
+		{
+			name:          "matching uid ignores group difference",
+			workspaceUser: "1000:121",
+			imageUID:      1000,
+			wantCache:     "1000:121",
+		},
+		{
+			name:          "different uid maps workspace user",
+			workspaceUser: "1001:121",
+			imageUID:      1000,
+			wantDocker:    "1001:121",
+			wantCache:     "1001:121",
+		},
+		{
+			name:          "invalid workspace identity remains explicit",
+			workspaceUser: "wodby",
+			imageUID:      1000,
+			wantDocker:    "wodby",
+			wantCache:     "wodby",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := usersForImage(tt.workspaceUser, tt.imageUID)
+			if got.docker != tt.wantDocker || got.cache != tt.wantCache {
+				t.Fatalf("usersForImage(%q, %d) = docker:%q cache:%q, want docker:%q cache:%q", tt.workspaceUser, tt.imageUID, got.docker, got.cache, tt.wantDocker, tt.wantCache)
+			}
+		})
+	}
 }
 
 func TestShouldClearImageEntrypoint(t *testing.T) {

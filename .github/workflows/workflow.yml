@@ -244,3 +244,16 @@ jobs:
         build-args: VERSION=${{ env.VERSION }}
         platforms: linux/amd64,linux/arm64
         tags: wodby/wodby-cli:${{ env.VERSION }},wodby/wodby-cli:latest
+    - name: Verify Wodby 1 image channels
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        set -euo pipefail
+
+        tagged_image="wodby/wodby-cli:${VERSION}"
+        latest_image="wodby/wodby-cli:latest"
+        tagged_manifest="$(docker buildx imagetools inspect --raw "${tagged_image}" | sha256sum | cut -d ' ' -f 1)"
+        latest_manifest="$(docker buildx imagetools inspect --raw "${latest_image}" | sha256sum | cut -d ' ' -f 1)"
+
+        test "${tagged_manifest}" = "${latest_manifest}"
+        test "$(docker run --rm --entrypoint wodby "${tagged_image}" version)" = "${VERSION}"
+        test "$(docker run --rm --entrypoint wodby "${latest_image}" version)" = "${VERSION}"

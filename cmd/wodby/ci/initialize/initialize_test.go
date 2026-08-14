@@ -35,6 +35,10 @@ func TestPermissionFixDecision(t *testing.T) {
 		{name: "data container is prepared", hasDataContainer: true, want: true},
 		{name: "managed CircleCI checkout is prepared", provider: types.CircleCI, want: true},
 		{name: "managed GitHub checkout is prepared", provider: types.GitHubActions, want: true},
+		{name: "managed GitLab checkout is prepared", provider: types.GitLab, want: true},
+		{name: "managed Bitbucket checkout is prepared", provider: types.BitbucketPipelines, want: true},
+		{name: "managed Jenkins checkout is prepared", provider: types.Jenkins, want: true},
+		{name: "managed Travis checkout is prepared", provider: types.TravisCI, want: true},
 	}
 
 	for _, tt := range tests {
@@ -54,17 +58,29 @@ func TestManagedInitRunConfigPreservesImageContract(t *testing.T) {
 	tests := []struct {
 		name          string
 		dataContainer string
+		environment   map[string]interface{}
 		wantVolumes   []string
 		wantFrom      []string
+		wantEnv       []string
 	}{
 		{
 			name:        "native bind mount",
+			environment: map[string]interface{}{"DRUPAL_SITE": "default"},
 			wantVolumes: []string{"/workspace:/var/www/html"},
+			wantEnv:     []string{"DRUPAL_SITE=default"},
 		},
 		{
 			name:          "Docker-in-Docker data volume",
 			dataContainer: "wodby-data",
+			environment:   map[string]interface{}{"DRUPAL_SITE": "default"},
 			wantFrom:      []string{"wodby-data"},
+			wantEnv:       []string{"DRUPAL_SITE=default"},
+		},
+		{
+			name:        "explicit home is preserved",
+			environment: map[string]interface{}{"HOME": "/custom-home"},
+			wantVolumes: []string{"/workspace:/var/www/html"},
+			wantEnv:     []string{"HOME=/custom-home"},
 		},
 	}
 
@@ -75,7 +91,7 @@ func TestManagedInitRunConfigPreservesImageContract(t *testing.T) {
 				"/var/www/html",
 				"/workspace",
 				tt.dataContainer,
-				map[string]interface{}{"DRUPAL_SITE": "default"},
+				tt.environment,
 			)
 			if config.User != "" {
 				t.Fatalf("managed initializer user = %q, want image default", config.User)
@@ -89,8 +105,8 @@ func TestManagedInitRunConfigPreservesImageContract(t *testing.T) {
 			if !reflect.DeepEqual(config.VolumesFrom, tt.wantFrom) {
 				t.Fatalf("managed initializer volumes-from = %#v, want %#v", config.VolumesFrom, tt.wantFrom)
 			}
-			if want := []string{"DRUPAL_SITE=default"}; !reflect.DeepEqual(config.Env, want) {
-				t.Fatalf("managed initializer env = %#v, want %#v", config.Env, want)
+			if !reflect.DeepEqual(config.Env, tt.wantEnv) {
+				t.Fatalf("managed initializer env = %#v, want %#v", config.Env, tt.wantEnv)
 			}
 		})
 	}

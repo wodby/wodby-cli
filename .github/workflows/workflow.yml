@@ -243,4 +243,4 @@ jobs:
         push: true
         build-args: VERSION=${{ env.VERSION }}
         platforms: linux/amd64,linux/arm64
-        tags: wodby/wodby-cli:${{ env.VERSION }}
+        tags: wodby/wodby-cli:${{ env.VERSION }},wodby/wodby-cli:latest

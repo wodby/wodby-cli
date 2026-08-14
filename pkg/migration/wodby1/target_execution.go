@@ -386,6 +386,56 @@ func (c *TargetClient) SetStackServiceLink(ctx context.Context, stackServiceID i
 	return nil
 }
 
+func (c *TargetClient) ListStackEnvVars(ctx context.Context, stackRevID int) ([]TargetStackEnvVar, error) {
+	if err := targetRequirePositiveID("stack revision", stackRevID); err != nil {
+		return nil, err
+	}
+	items := []TargetStackEnvVar{}
+	if err := c.client.Get(ctx, "/stack-revisions/"+strconv.Itoa(stackRevID)+"/env-vars", nil, &items); err != nil {
+		return nil, errors.Wrap(err, "list target Wodby 2 stack-wide environment variables")
+	}
+	for _, item := range items {
+		if err := validateTargetStackEnvVar(item); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
+}
+
+func (c *TargetClient) CreateStackEnvVar(ctx context.Context, stackID int, input TargetCreateStackEnvVarInput) (TargetStackEnvVar, error) {
+	if err := targetRequirePositiveID("stack", stackID); err != nil {
+		return TargetStackEnvVar{}, err
+	}
+	if strings.TrimSpace(input.Name) == "" {
+		return TargetStackEnvVar{}, errors.New("target stack-wide environment variable name is required")
+	}
+	var item TargetStackEnvVar
+	if err := c.client.Post(ctx, "/stacks/"+strconv.Itoa(stackID)+"/env-vars", nil, input, &item); err != nil {
+		return TargetStackEnvVar{}, errors.Wrap(err, "create target Wodby 2 stack-wide environment variable")
+	}
+	if err := validateTargetStackEnvVar(item); err != nil {
+		return TargetStackEnvVar{}, err
+	}
+	if item.Name != input.Name || !sameOptionalString(item.EnvType, input.EnvType) {
+		return TargetStackEnvVar{}, errors.New("created target stack-wide environment variable identity does not match the request")
+	}
+	return item, nil
+}
+
+func (c *TargetClient) UpdateStackEnvVar(ctx context.Context, envVarID int, input TargetUpdateStackEnvVarInput) (TargetStackEnvVar, error) {
+	if err := targetRequirePositiveID("stack-wide environment variable", envVarID); err != nil {
+		return TargetStackEnvVar{}, err
+	}
+	var item TargetStackEnvVar
+	if err := c.client.Put(ctx, "/stack-env-vars/"+strconv.Itoa(envVarID), nil, input, &item); err != nil {
+		return TargetStackEnvVar{}, errors.Wrap(err, "update target Wodby 2 stack-wide environment variable")
+	}
+	if err := validateTargetStackEnvVar(item); err != nil {
+		return TargetStackEnvVar{}, err
+	}
+	return item, nil
+}
+
 func (c *TargetClient) ListStackServiceEnvVars(ctx context.Context, stackServiceID int) ([]TargetStackServiceEnvVar, error) {
 	if err := targetRequirePositiveID("stack service", stackServiceID); err != nil {
 		return nil, err
@@ -587,6 +637,26 @@ type TargetStackServiceEnvVar struct {
 	EnvType        *string `json:"envType,omitempty"`
 }
 
+type TargetStackEnvVar struct {
+	ID            int     `json:"id"`
+	Name          string  `json:"name"`
+	Value         *string `json:"value,omitempty"`
+	ValueSecretID *int    `json:"valueSecretId,omitempty"`
+	EnvType       *string `json:"envType,omitempty"`
+}
+
+type TargetCreateStackEnvVarInput struct {
+	Name    string  `json:"name"`
+	Value   string  `json:"value"`
+	Secret  bool    `json:"secret"`
+	EnvType *string `json:"envType,omitempty"`
+}
+
+type TargetUpdateStackEnvVarInput struct {
+	Value  string `json:"value"`
+	Secret bool   `json:"secret"`
+}
+
 type TargetCreateStackServiceEnvVarInput struct {
 	Workload  *string `json:"workload,omitempty"`
 	Container *string `json:"container,omitempty"`
@@ -706,14 +776,16 @@ type targetRemoteGitRepoFilePresence struct {
 }
 
 type TargetApp struct {
-	ID         int       `json:"id"`
-	Name       string    `json:"name"`
-	Title      string    `json:"title"`
-	Status     string    `json:"status"`
-	ClusterApp bool      `json:"clusterApp"`
-	OrgID      int       `json:"orgId"`
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
+	ID             int       `json:"id"`
+	Name           string    `json:"name"`
+	Title          string    `json:"title"`
+	Status         string    `json:"status"`
+	ClusterApp     bool      `json:"clusterApp"`
+	OrgID          int       `json:"orgId"`
+	OwnershipScope string    `json:"ownershipScope"`
+	OwnerProjectID *int      `json:"ownerProjectId,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 type TargetAppInstance struct {
@@ -1655,6 +1727,40 @@ func (c *TargetClient) FindAppExact(ctx context.Context, orgID int, name string)
 	default:
 		return TargetApp{}, false, &TargetAmbiguousMatchError{Resource: "app", Name: name, Count: len(matches)}
 	}
+}
+
+// ResolveTargetApp resolves an explicit positive ID or exact app name inside
+// the selected organization. Migration never adopts an app from a name
+// collision unless the customer supplied this selector.
+func (c *TargetClient) ResolveTargetApp(ctx context.Context, orgID int, selector string) (TargetApp, error) {
+	if err := targetRequirePositiveID("organization", orgID); err != nil {
+		return TargetApp{}, err
+	}
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return TargetApp{}, errors.New("target app selector is required")
+	}
+	if id, err := strconv.Atoi(selector); err == nil {
+		if id <= 0 {
+			return TargetApp{}, errors.Errorf("target app selector %q must be a positive ID or exact name", selector)
+		}
+		item, found, err := c.FindAppByID(ctx, id)
+		if err != nil {
+			return TargetApp{}, err
+		}
+		if !found || item.OrgID != orgID {
+			return TargetApp{}, errors.Errorf("target app selector %q was not found in organization ID %d", selector, orgID)
+		}
+		return item, nil
+	}
+	item, found, err := c.FindAppExact(ctx, orgID, selector)
+	if err != nil {
+		return TargetApp{}, err
+	}
+	if !found {
+		return TargetApp{}, errors.Errorf("target app selector %q was not found in organization ID %d", selector, orgID)
+	}
+	return item, nil
 }
 
 func (c *TargetClient) CreateAppInstance(ctx context.Context, input TargetCreateAppInstanceInput) (TargetAppInstance, error) {
@@ -2601,6 +2707,16 @@ func validateTargetStackServiceEnvVar(item TargetStackServiceEnvVar, stackServic
 		return errors.New("target stack environment variable returned an empty name")
 	}
 	return targetValidateOptionalPositiveID("stack environment variable secret", item.ValueSecretID)
+}
+
+func validateTargetStackEnvVar(item TargetStackEnvVar) error {
+	if err := targetRequirePositiveID("stack-wide environment variable", item.ID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(item.Name) == "" {
+		return errors.New("target stack-wide environment variable returned an empty name")
+	}
+	return targetValidateOptionalPositiveID("stack-wide environment variable secret", item.ValueSecretID)
 }
 
 func validateTargetStackServiceCronSchedule(item TargetStackServiceCronSchedule, stackServiceID int) error {

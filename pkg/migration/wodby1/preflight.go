@@ -26,6 +26,8 @@ type TargetPreflightOptions struct {
 	AllowStateBackedAppRecovery bool
 	AllowedTargetAppIDs         map[string]int
 	StateBackedAppRecovery      map[string]bool
+	AllowedTargetInstanceIDs    map[string]int
+	StateBackedInstanceRecovery map[string]bool
 	AddMissingServices          bool
 	Progress                    func(TargetPreflightProgress)
 }
@@ -103,6 +105,7 @@ type PreparedInstance struct {
 // the target stack before any app instance is created. Service state and build
 // refs remain instance-level because Wodby 2 models them on app services.
 type PreparedStackConfiguration struct {
+	EnvVars  []PreparedStackEnvVar
 	Services map[string]PreparedStackServiceConfiguration
 }
 
@@ -289,9 +292,16 @@ func (c *TargetClient) PreflightTarget(
 		if appPlan == nil {
 			return PreparedMigration{}, errors.Errorf("migration plan is missing source app %q", appExport.App.UUID)
 		}
-		existingApp, appFound, err := c.FindAppExact(ctx, plan.Target.OrgID, appExport.App.Name)
+		var existingApp TargetApp
+		var appFound bool
+		var err error
+		if plan.Target.AppID > 0 {
+			existingApp, appFound, err = c.FindAppByID(ctx, plan.Target.AppID)
+		} else {
+			existingApp, appFound, err = c.FindAppExact(ctx, plan.Target.OrgID, appExport.App.Name)
+		}
 		if err != nil {
-			return PreparedMigration{}, errors.Wrap(err, "check target app name availability")
+			return PreparedMigration{}, errors.Wrap(err, "check target app availability")
 		}
 		allowedTargetAppID := opts.AllowedTargetAppID
 		allowRecovery := opts.AllowStateBackedAppRecovery
@@ -299,7 +309,41 @@ func (c *TargetClient) PreflightTarget(
 			allowedTargetAppID = opts.AllowedTargetAppIDs[appExport.App.UUID]
 			allowRecovery = opts.StateBackedAppRecovery[appExport.App.UUID]
 		}
-		if appFound && existingApp.ID != allowedTargetAppID && !allowRecovery {
+		if plan.Target.AppID > 0 {
+			if !appFound || existingApp.ID != plan.Target.AppID || existingApp.OrgID != plan.Target.OrgID || existingApp.Name != plan.Target.AppName {
+				findings = append(findings, ReviewItem{
+					Severity: SeverityBlocking, App: appExport.App.Name, Subject: "target app",
+					Message: "the explicitly selected Wodby 2 target app no longer matches the reviewed organization and app identity",
+				})
+			} else {
+				targetInstances, listErr := c.ListAppInstances(ctx, plan.Target.OrgID, existingApp.ID)
+				if listErr != nil {
+					return PreparedMigration{}, errors.Wrap(listErr, "inspect selected target app instances")
+				}
+				for _, sourceInstance := range appExport.Instances {
+					for _, targetInstance := range targetInstances {
+						if targetInstance.Name != sourceInstance.Name {
+							continue
+						}
+						if opts.AllowedTargetInstanceIDs[sourceInstance.UUID] == targetInstance.ID {
+							continue
+						}
+						if opts.StateBackedInstanceRecovery[sourceInstance.UUID] {
+							continue
+						}
+						findings = append(findings, ReviewItem{
+							Severity: SeverityBlocking, App: appExport.App.Name, Instance: sourceInstance.Name,
+							Subject: "target instance name",
+							Message: fmt.Sprintf("selected target app %q (ID %d) already contains instance %q (ID %d); the migration will not overwrite or adopt it", existingApp.Name, existingApp.ID, targetInstance.Name, targetInstance.ID),
+						})
+					}
+				}
+				findings = append(findings, ReviewItem{
+					Severity: SeverityMigration, App: appExport.App.Name, Subject: "target app",
+					Message: fmt.Sprintf("existing Wodby 2 app %q (ID %d) will be reused; only the planned new app instance will be created", existingApp.Name, existingApp.ID),
+				})
+			}
+		} else if appFound && existingApp.ID != allowedTargetAppID && !allowRecovery {
 			instanceNames := make([]string, 0, len(appExport.Instances))
 			for _, instance := range appExport.Instances {
 				instanceNames = append(instanceNames, fmt.Sprintf("%q", instance.Name))
@@ -393,7 +437,7 @@ func (c *TargetClient) PreflightTarget(
 				Severity: SeverityConfirmation,
 				App:      appExport.App.Name,
 				Subject:  "existing target stack configuration",
-				Message:  "the explicitly selected target stack will receive a new published revision containing migrated replicas, resources, versions, variables, settings, schedules, and service links; existing app instances are not upgraded automatically",
+				Message:  "the selected existing target stack will receive a new published revision containing migrated replicas, resources, versions, variables, settings, schedules, and service links; existing app instances remain pinned to their current revisions and are not changed automatically",
 			})
 		}
 		prepared.Apps = append(prepared.Apps, preparedApp)
@@ -410,7 +454,7 @@ func (c *TargetClient) PreflightTarget(
 		findings = append(findings, ReviewItem{
 			Severity: SeverityConfirmation,
 			Subject:  "Wodby 1 environment compatibility",
-			Message:  wodby1LegacyEnvVarsMarker + " will be enabled on migrated stack services. Wodby 2 will add supported legacy Wodby 1 runtime variable aliases; remove the marker after application code and commands use the native Wodby 2 variables",
+			Message:  wodby1LegacyEnvVarsMarker + " will be enabled once at the migrated stack level. Wodby 2 will add supported legacy Wodby 1 runtime variable aliases to all app services; remove the marker after application code and commands use the native Wodby 2 variables",
 		})
 	}
 	if len(prepared.Apps) == 1 {
@@ -435,6 +479,11 @@ func reportTargetPreflightProgress(progress func(TargetPreflightProgress), event
 
 func preparedMigrationUsesLegacyWodby1EnvVars(prepared PreparedMigration) bool {
 	for _, app := range prepared.Apps {
+		for _, variable := range app.StackConfiguration.EnvVars {
+			if variable.Name == wodby1LegacyEnvVarsMarker && strings.EqualFold(strings.TrimSpace(variable.Value), "true") {
+				return true
+			}
+		}
 		for _, service := range app.StackConfiguration.Services {
 			for _, variable := range service.EnvVars {
 				if variable.Name == wodby1LegacyEnvVarsMarker && strings.EqualFold(strings.TrimSpace(variable.Value), "true") {

@@ -1540,6 +1540,76 @@ func TestApplyChecksDataReadinessBeforeTargetRequests(t *testing.T) {
 	}
 }
 
+func TestEnsureAppAndInstancesReusesExplicitTargetApp(t *testing.T) {
+	requests := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/apps/101":
+			writeTargetExecutionJSON(t, w, TargetApp{ID: 101, Name: "destination", Status: "OK", OrgID: 1})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-instances":
+			writeTargetExecutionJSON(t, w, []TargetAppInstance{})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/app-instances":
+			body := decodeTargetExecutionObject(t, r)
+			assertTargetExecutionNumber(t, body, "appId", 101)
+			assertTargetExecutionNumber(t, body, "stackRevId", 12)
+			writeTargetExecutionJSON(t, w, TargetAppInstance{
+				ID: 201, Name: "prod", AppID: 101, ClusterID: 3, EnvID: 4,
+				StackID: 5, StackRevID: 12,
+			})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client := mustTargetExecutionClient(t, server.URL)
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	identity := MigrationStateIdentity{
+		Source: MigrationStateSourceIdentity{
+			Kind: "instance", ID: "instance-1", ConfigDigest: strings.Repeat("a", 64),
+		},
+		PlanHash: strings.Repeat("b", 64),
+		Target: MigrationStateTarget{
+			OrgID: 1, ClusterID: 3, AppID: 101, ExistingApp: true,
+		},
+	}
+	state, _, err := LoadOrInitializeMigrationState(statePath, identity, []string{"instance-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := NewMigrationExecutor(client, MigrationExecutorOptions{StatePath: statePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := Plan{
+		Target: PlanTarget{OrgID: 1, ClusterID: 3, AppID: 101, AppName: "destination"},
+		Apps: []AppPlan{{Instances: []InstancePlan{{
+			SourceUUID: "instance-1", Name: "prod", TargetEnvID: 4,
+			Stack: StackPlan{TargetID: 5, TargetRevID: 12},
+		}}}},
+	}
+	prepared := PreparedMigration{
+		App: AppExport{App: App{UUID: "app-1", Name: "source"}},
+		Instances: []PreparedInstance{{
+			Source: Instance{UUID: "instance-1", Name: "prod", Title: "Production"},
+			Stack:  TargetStack{ID: 5, RevID: 12},
+		}},
+	}
+	app, instances, err := executor.ensureAppAndInstances(context.Background(), state, plan, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app.ID != 101 || instances["instance-1"].ID != 201 || state.App.TargetID != 101 {
+		t.Fatalf("app = %#v, instances = %#v, state app = %#v", app, instances, state.App)
+	}
+	for _, request := range requests {
+		if request == "POST /v1/apps" {
+			t.Fatalf("existing-app migration created a new app: %#v", requests)
+		}
+	}
+}
+
 func TestWaitAppInstanceOKWaitsForImportFinalization(t *testing.T) {
 	statuses := []string{"IMPORTING", "DEPLOYING", "OK"}
 	requests := 0

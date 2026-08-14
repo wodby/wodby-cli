@@ -574,6 +574,36 @@ func TestMigrationStateRejectsStaleWriter(t *testing.T) {
 	}
 }
 
+func TestExistingTargetAppStateRestartSafety(t *testing.T) {
+	identity := testMigrationStateIdentity()
+	identity.Source.Kind = "instance"
+	identity.Source.ID = "instance-a"
+	identity.Target.AppID = 101
+	identity.Target.ExistingApp = true
+	state, err := NewMigrationState(identity, []string{"instance-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.CanRestartSafely() {
+		t.Fatal("unmodified existing-app state should be restartable")
+	}
+	if err := state.SetAppTarget(101, MigrationResourceReady); err != nil {
+		t.Fatal(err)
+	}
+	if !state.CanRestartSafely() {
+		t.Fatal("binding the selected existing app should remain restartable")
+	}
+	if err := state.MarkInstanceOperationIntent("instance-a", "create"); err != nil {
+		t.Fatal(err)
+	}
+	if state.CanRestartSafely() {
+		t.Fatal("state must not be restartable after an instance mutation begins")
+	}
+	if err := RemoveMigrationStateAfterTargetDeletion("unused", identity, 101); !errors.Is(err, ErrMigrationStateInvalid) {
+		t.Fatalf("existing app deletion cleanup error = %v", err)
+	}
+}
+
 func mustNewMigrationState(t *testing.T) *MigrationState {
 	t.Helper()
 	state, err := NewMigrationState(

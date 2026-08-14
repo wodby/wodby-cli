@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	MigrationPlanSchema = "wodby1-migration-plan/v14"
+	MigrationPlanSchema = "wodby1-migration-plan/v15"
 
 	SeverityBlocking       = "blocking"
 	SeverityMigration      = "migration"
@@ -32,6 +32,7 @@ type PlanOptions struct {
 	TargetOrgOwnerOrAdminVerified bool
 	TargetScope                   *TargetScopeDiscovery
 	TargetEnvs                    map[string]TargetEnv
+	TargetApp                     *TargetApp
 	TargetStackID                 int
 	TargetStackMap                map[string]string
 	TargetServiceMap              map[string]string
@@ -89,6 +90,9 @@ type PlanTarget struct {
 	ClusterID               int                        `json:"clusterId,omitempty"`
 	ClusterName             string                     `json:"clusterName,omitempty"`
 	ClusterStatus           string                     `json:"clusterStatus,omitempty"`
+	AppID                   int                        `json:"appId,omitempty"`
+	AppName                 string                     `json:"appName,omitempty"`
+	AppTitle                string                     `json:"appTitle,omitempty"`
 	CIIntegrationID         int                        `json:"ciIntegrationId"`
 	OrgOwnerOrAdminVerified bool                       `json:"orgOwnerOrAdminVerified"`
 	DiscoveryVerified       bool                       `json:"discoveryVerified"`
@@ -379,6 +383,17 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 			plan.addReview(SeverityBlocking, "", "", "target cluster status", "target discovery did not return cluster status")
 		} else if clusterStatus != "OK" {
 			plan.addReview(SeverityBlocking, "", "", "target cluster status", fmt.Sprintf("selected target cluster status %q cannot accept a migration", opts.TargetScope.Cluster.Status))
+		}
+	}
+	if opts.TargetApp != nil {
+		plan.Target.AppID = opts.TargetApp.ID
+		plan.Target.AppName = opts.TargetApp.Name
+		plan.Target.AppTitle = opts.TargetApp.Title
+		if opts.SourceKind != "instance" {
+			plan.addReview(SeverityBlocking, "", "", "target app", "an existing target app can be selected only for a one-instance migration")
+		}
+		if opts.TargetApp.ID <= 0 || opts.TargetApp.OrgID != plan.Target.OrgID || strings.TrimSpace(opts.TargetApp.Name) == "" {
+			plan.addReview(SeverityBlocking, "", "", "target app", "the selected Wodby 2 app does not belong to the resolved target organization")
 		}
 	}
 

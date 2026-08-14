@@ -18,7 +18,7 @@ const (
 	// MigrationStateSchema identifies the on-disk resumable migration state
 	// format. State files intentionally contain no migration payloads, secrets,
 	// or import source URLs.
-	MigrationStateSchema = "wodby1-migration-state/v1"
+	MigrationStateSchema = "wodby1-migration-state/v2"
 
 	maxMigrationStateBytes = 4 << 20
 	migrationStateFileMode = 0600
@@ -99,9 +99,11 @@ type MigrationStateSource struct {
 }
 
 type MigrationStateTarget struct {
-	OrgID     int `json:"orgId"`
-	ProjectID int `json:"projectId,omitempty"`
-	ClusterID int `json:"clusterId"`
+	OrgID       int  `json:"orgId"`
+	ProjectID   int  `json:"projectId,omitempty"`
+	ClusterID   int  `json:"clusterId"`
+	AppID       int  `json:"appId,omitempty"`
+	ExistingApp bool `json:"existingApp,omitempty"`
 }
 
 // MigrationState is the complete, non-sensitive resume record. Instances are
@@ -240,7 +242,13 @@ func (s *MigrationState) CanRestartSafely() bool {
 	if s.Phase != MigrationPhasePlan && s.Phase != MigrationPhasePrepare {
 		return false
 	}
-	if !restartableMigrationResource(s.App) {
+	if s.Target.ExistingApp {
+		unbound := s.App.TargetID == 0 && s.App.Status == MigrationResourcePending
+		bound := s.App.TargetID == s.Target.AppID && s.App.Status == MigrationResourceReady
+		if (!unbound && !bound) || len(s.App.Operations) != 0 {
+			return false
+		}
+	} else if !restartableMigrationResource(s.App) {
 		return false
 	}
 	for _, instance := range s.Instances {
@@ -267,6 +275,9 @@ func RemoveRestartableMigrationState(path string, expected MigrationStateIdentit
 func RemoveMigrationStateAfterTargetDeletion(path string, expected MigrationStateIdentity, targetAppID int) error {
 	if targetAppID <= 0 {
 		return invalidStateError("deleted target app ID must be positive")
+	}
+	if expected.Target.ExistingApp {
+		return invalidStateError("an existing target app must never be treated as a migration-created deletion target")
 	}
 	return removeMigrationState(path, expected, targetAppID)
 }
@@ -850,6 +861,9 @@ func (i MigrationStateIdentity) validate() error {
 	}
 	if i.Target.OrgID <= 0 || i.Target.ProjectID < 0 || i.Target.ClusterID <= 0 {
 		return invalidStateError("target org and cluster IDs must be positive and project ID cannot be negative")
+	}
+	if i.Target.AppID < 0 || i.Target.ExistingApp != (i.Target.AppID > 0) {
+		return invalidStateError("existing target app identity must contain a positive app ID")
 	}
 	return nil
 }

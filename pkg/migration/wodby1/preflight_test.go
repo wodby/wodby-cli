@@ -93,21 +93,13 @@ func TestPreflightTargetResolvesOfficialStackServicesAndRehashesPlan(t *testing.
 	if !hasReviewMessage(plan.Review, SeverityMigration, `Wodby CI will be used by default; pipeline ".wodby/pipeline.yml" was found in repository "acme/example" at Git branch "main"`) {
 		t.Fatalf("successful Wodby CI pipeline validation is not disclosed: %#v", plan.Review)
 	}
-	if !hasReviewMessage(plan.Review, SeverityConfirmation, wodby1LegacyEnvVarsMarker+" will be enabled on migrated stack services") {
+	if !hasReviewMessage(plan.Review, SeverityConfirmation, wodby1LegacyEnvVarsMarker+" will be enabled once at the migrated stack level") {
 		t.Fatalf("legacy Wodby 1 environment compatibility warning is not disclosed: %#v", plan.Review)
 	}
-	for serviceName, configuration := range prepared.StackConfiguration.Services {
-		found := false
-		for _, variable := range configuration.EnvVars {
-			if variable.Name == wodby1LegacyEnvVarsMarker && variable.Value == "true" && variable.EnvType == nil {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("prepared stack service %q is missing the legacy compatibility marker: %#v", serviceName, configuration.EnvVars)
-		}
+	if len(prepared.StackConfiguration.EnvVars) != 1 {
+		t.Fatalf("prepared stack-wide compatibility vars = %#v", prepared.StackConfiguration.EnvVars)
 	}
+	assertPreparedStackEnvVar(t, prepared.StackConfiguration.EnvVars, wodby1LegacyEnvVarsMarker, "true", nil)
 	for _, item := range plan.Review {
 		if item.Subject == "new target stack" {
 			t.Fatalf("explicit target stack produced a catalog creation warning: %#v", item)

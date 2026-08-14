@@ -40,6 +40,7 @@ type options struct {
 
 	targetProject    string
 	targetCluster    string
+	targetApp        string
 	targetEnvMap     []string
 	targetStackID    int
 	targetStackMap   []string
@@ -133,7 +134,9 @@ and rerun the same command with --verify to validate the completed migration.
 
 The migration exports only the selected
 instance and its parent app metadata, then creates a new Wodby 2 app containing
-that instance. By default it imports the newest successful backup file for each
+that instance. Pass --target-app to add it to an existing Wodby 2 app instead;
+the CLI infers the app's shared stack when unambiguous and never adopts or
+overwrites an existing app instance. By default it imports the newest successful backup file for each
 required component shown in the preview. Use --source-backup BACKUP_UUID to pin
 all components to a different complete snapshot, or
 --skip-data to omit data. Changes made after the selected backup completed are
@@ -145,6 +148,7 @@ no target mutation occurred.`,
   export WODBY_API_KEY=...
 
   wodby migrate wodby1 instance INSTANCE_UUID --target-cluster CLUSTER [target and mapping options]
+  wodby migrate wodby1 instance INSTANCE_UUID --target-app APP --target-cluster CLUSTER [target and mapping options]
   wodby migrate wodby1 instance INSTANCE_UUID --target-cluster CLUSTER [same options] --apply
   wodby migrate wodby1 instance INSTANCE_UUID --target-cluster CLUSTER [same options] --verify`,
 		Args: cobra.ExactArgs(1),
@@ -153,6 +157,7 @@ no target mutation occurred.`,
 		},
 	}
 	bindFlags(cmd, opts)
+	cmd.Flags().StringVar(&opts.targetApp, "target-app", "", "Existing Wodby 2 app ID or exact name to receive this instance")
 	cmd.Flags().Lookup("source-backup").Usage = "Select a successful Wodby 1 BACKUP_UUID for this instance"
 	return cmd
 }
@@ -485,6 +490,9 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 		return err
 	}
 	if restartStateWithMutations != nil {
+		if restartStateWithMutations.Target.ExistingApp {
+			return unsafeExistingAppRestartError(restartStateWithMutations, statePath)
+		}
 		if restartStateWithMutations.App.TargetID <= 0 {
 			return unsafeSingleRestartError(restartStateWithMutations, statePath)
 		}
@@ -523,6 +531,12 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 			return errors.Wrap(err, "verify saved target app before resume")
 		}
 		if !found {
+			if resumeState.Target.ExistingApp {
+				return errors.Errorf(
+					"selected target app ID %d no longer exists, so this migration cannot continue; start a new preview with a different --target-app selector",
+					resumeState.Target.AppID,
+				)
+			}
 			return errors.Errorf(
 				"saved target app ID %d no longer exists, so the saved migration plan cannot continue\nNext step: rerun the same command with --apply --restart to start from scratch",
 				resumeState.App.TargetID,
@@ -533,6 +547,69 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 		}
 	}
 	preparation.CompleteStep(fmt.Sprintf("Target %s / %s is ready.", scope.Org.Name, scope.Cluster.Name))
+
+	var targetApp *wodby1.TargetApp
+	targetStackID := opts.targetStackID
+	if selector := strings.TrimSpace(opts.targetApp); selector != "" {
+		preparation.StartStep("Resolve existing Wodby 2 target app and stack")
+		if sourceKind != "instance" {
+			return errors.New("--target-app can be used only with migrate wodby1 instance")
+		}
+		resolvedApp, err := targetClient.ResolveTargetApp(cmd.Context(), scope.Org.ID, selector)
+		if err != nil {
+			return err
+		}
+		if resolvedApp.ClusterApp {
+			return errors.Errorf("target app %q (ID %d) is a cluster infrastructure app and cannot receive a migrated customer instance", resolvedApp.Name, resolvedApp.ID)
+		}
+		status := strings.ToUpper(strings.TrimSpace(resolvedApp.Status))
+		if status != "OK" {
+			return errors.Errorf("target app %q (ID %d) has status %q and cannot receive a migrated instance", resolvedApp.Name, resolvedApp.ID, resolvedApp.Status)
+		}
+		switch strings.ToLower(strings.TrimSpace(resolvedApp.OwnershipScope)) {
+		case wodby1.TargetOwnershipScopeOrg:
+			if scope.Project.ID > 0 {
+				return errors.Errorf("target app %q (ID %d) is organization-owned, but the selected cluster is owned by project %q (ID %d); select an organization-owned cluster", resolvedApp.Name, resolvedApp.ID, scope.Project.Name, scope.Project.ID)
+			}
+		case wodby1.TargetOwnershipScopeProject:
+			if resolvedApp.OwnerProjectID == nil || *resolvedApp.OwnerProjectID <= 0 {
+				return errors.Errorf("target app %q (ID %d) did not return a valid owner project", resolvedApp.Name, resolvedApp.ID)
+			}
+			if scope.Project.ID == 0 {
+				project, err := targetClient.GetProject(cmd.Context(), *resolvedApp.OwnerProjectID)
+				if err != nil {
+					return errors.Wrap(err, "resolve selected target app owner project")
+				}
+				if project.OrgID != scope.Org.ID {
+					return errors.Errorf("target app %q (ID %d) owner project belongs to organization ID %d, expected %d", resolvedApp.Name, resolvedApp.ID, project.OrgID, scope.Org.ID)
+				}
+				scope.Project = project
+			} else if scope.Project.ID != *resolvedApp.OwnerProjectID {
+				return errors.Errorf("target app %q (ID %d) belongs to project ID %d, but the selected cluster belongs to project ID %d; select a cluster owned by the app's project", resolvedApp.Name, resolvedApp.ID, *resolvedApp.OwnerProjectID, scope.Project.ID)
+			}
+		default:
+			return errors.Errorf("target app %q (ID %d) did not return an ownership scope; update the Wodby 2 backend before using --target-app", resolvedApp.Name, resolvedApp.ID)
+		}
+		instances, err := targetClient.ListAppInstances(cmd.Context(), scope.Org.ID, resolvedApp.ID)
+		if err != nil {
+			return err
+		}
+		if targetStackID == 0 {
+			stackIDs := targetAppStackIDs(instances)
+			switch len(stackIDs) {
+			case 0:
+				return errors.Errorf("target app %q (ID %d) has no app instances from which to infer a stack; provide --target-stack-id", resolvedApp.Name, resolvedApp.ID)
+			case 1:
+				targetStackID = stackIDs[0]
+			default:
+				return errors.Errorf("target app %q (ID %d) uses multiple stacks (%s); provide --target-stack-id with one of these stack IDs", resolvedApp.Name, resolvedApp.ID, joinIntValues(stackIDs))
+			}
+		} else if stackIDs := targetAppStackIDs(instances); len(stackIDs) != 0 && !containsInt(stackIDs, targetStackID) {
+			return errors.Errorf("--target-stack-id %d is not used by target app %q (ID %d); choose one of %s", targetStackID, resolvedApp.Name, resolvedApp.ID, joinIntValues(stackIDs))
+		}
+		targetApp = &resolvedApp
+		preparation.CompleteStep(fmt.Sprintf("Existing target app %s (ID %d) will receive the new instance using stack ID %d.", resolvedApp.Name, resolvedApp.ID, targetStackID))
+	}
 
 	// The customer command transfers required credentials in memory. Wodby 1
 	// independently authorizes this export using the source organization role.
@@ -611,7 +688,8 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 		TargetOrgOwnerOrAdminVerified: true,
 		TargetScope:                   &scope,
 		TargetEnvs:                    targetEnvs,
-		TargetStackID:                 opts.targetStackID,
+		TargetStackID:                 targetStackID,
+		TargetApp:                     targetApp,
 		TargetStackMap:                stackMap,
 		TargetServiceMap:              serviceMap,
 		TargetVersionMap:              versionMap,
@@ -646,6 +724,8 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 		CodeService:                 opts.targetCodeService,
 		AllowedTargetAppID:          allowedTargetAppID,
 		AllowStateBackedAppRecovery: allowTargetAppRecovery,
+		AllowedTargetInstanceIDs:    stateTargetInstanceIDs(resumeState),
+		StateBackedInstanceRecovery: stateTargetInstanceRecovery(resumeState),
 		AddMissingServices:          opts.addMissingServices,
 		Progress:                    preparation.TargetPreflight,
 	})
@@ -1418,6 +1498,38 @@ func validateOptions(opts *options) error {
 	return nil
 }
 
+func targetAppStackIDs(instances []wodby1.TargetAppInstance) []int {
+	seen := map[int]bool{}
+	for _, instance := range instances {
+		if instance.StackID > 0 {
+			seen[instance.StackID] = true
+		}
+	}
+	result := make([]int, 0, len(seen))
+	for id := range seen {
+		result = append(result, id)
+	}
+	sort.Ints(result)
+	return result
+}
+
+func containsInt(values []int, expected int) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func joinIntValues(values []int) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, strconv.Itoa(value))
+	}
+	return strings.Join(parts, ", ")
+}
+
 func parseMapping(values []string, flag string) (map[string]string, error) {
 	result := map[string]string{}
 	for _, value := range values {
@@ -1892,9 +2004,11 @@ func migrationStateIdentity(plan wodby1.Plan) wodby1.MigrationStateIdentity {
 		},
 		PlanHash: plan.PlanHash,
 		Target: wodby1.MigrationStateTarget{
-			OrgID:     plan.Target.OrgID,
-			ProjectID: plan.Target.ProjectID,
-			ClusterID: plan.Target.ClusterID,
+			OrgID:       plan.Target.OrgID,
+			ProjectID:   plan.Target.ProjectID,
+			ClusterID:   plan.Target.ClusterID,
+			AppID:       plan.Target.AppID,
+			ExistingApp: plan.Target.AppID > 0,
 		},
 	}
 }
@@ -1919,10 +2033,20 @@ func incompatiblePlanRestartError(
 		}
 	}
 	targetIDs := make([]string, 0, len(states))
+	existingTargetIDs := make([]string, 0, len(states))
 	for _, state := range states {
 		if state != nil && state.App.TargetID > 0 {
-			targetIDs = append(targetIDs, strconv.Itoa(state.App.TargetID))
+			if state.Target.ExistingApp {
+				existingTargetIDs = append(existingTargetIDs, strconv.Itoa(state.Target.AppID))
+			} else {
+				targetIDs = append(targetIDs, strconv.Itoa(state.App.TargetID))
+			}
 		}
+	}
+	if len(existingTargetIDs) != 0 {
+		fmt.Fprintf(&message, "\nExisting target app ID(s): %s", strings.Join(existingTargetIDs, ", "))
+		fmt.Fprintf(&message, "\nThe CLI will not delete or discard state containing changes to an existing app. Continue with the CLI version that created this migration state.")
+		return errors.New(message.String())
 	}
 	if len(targetIDs) == 0 {
 		fmt.Fprintf(&message, "\nNext step: rerun the same command with --apply --restart. The CLI will replace the obsolete plan and state files.")
@@ -1949,6 +2073,16 @@ func incompatibleTargetAppExistsError(
 	statePath string,
 	state *wodby1.MigrationState,
 ) error {
+	if state.Target.ExistingApp {
+		return errors.Errorf(
+			"the saved migration uses incompatible plan schema %s (supported: %s) and records changes while adding an instance to existing target app ID %d\nPlan: %s\nState: %s\nThe CLI will not ask you to delete an existing app; continue with the CLI version that created this migration state",
+			plan.Actual,
+			plan.Supported,
+			state.Target.AppID,
+			planPath,
+			statePath,
+		)
+	}
 	return errors.Errorf(
 		"the saved migration uses incompatible plan schema %s (supported: %s) and cannot be resumed\nPlan: %s\nState: %s\nTarget app ID %d still exists. Delete it, then rerun the same command with --apply --restart; the CLI will replace the obsolete plan and state files",
 		plan.Actual,
@@ -1976,6 +2110,14 @@ func unsafeSingleRestartError(state *wodby1.MigrationState, statePath string) er
 	)
 }
 
+func unsafeExistingAppRestartError(state *wodby1.MigrationState, statePath string) error {
+	return errors.Errorf(
+		"cannot restart this migration from scratch because state %s records changes made while adding an instance to existing target app ID %d; the CLI will never ask you to delete an existing app. Continue without --restart to reuse completed work",
+		statePath,
+		state.Target.AppID,
+	)
+}
+
 func stateBackedTargetAppState(state *wodby1.MigrationState) (targetID int, allowRecovery bool) {
 	if state.App.TargetID > 0 {
 		return state.App.TargetID, false
@@ -1992,6 +2134,36 @@ func stateBackedTargetAppState(state *wodby1.MigrationState) (targetID int, allo
 	default:
 		return 0, false
 	}
+}
+
+func stateTargetInstanceIDs(state *wodby1.MigrationState) map[string]int {
+	if state == nil {
+		return nil
+	}
+	result := map[string]int{}
+	for sourceID, instance := range state.Instances {
+		if instance != nil && instance.TargetID > 0 {
+			result[sourceID] = instance.TargetID
+		}
+	}
+	return result
+}
+
+func stateTargetInstanceRecovery(state *wodby1.MigrationState) map[string]bool {
+	if state == nil {
+		return nil
+	}
+	result := map[string]bool{}
+	for sourceID, instance := range state.Instances {
+		if instance == nil || instance.TargetID > 0 {
+			continue
+		}
+		operation, exists := instance.Operations["create"]
+		if exists && (operation.Status == wodby1.MigrationOperationIntent || operation.Status == wodby1.MigrationOperationAmbiguous) {
+			result[sourceID] = true
+		}
+	}
+	return result
 }
 
 func printPreview(cmd *cobra.Command, plan wodby1.Plan, prepared ...wodby1.PreparedMigration) error {

@@ -160,7 +160,7 @@ func prepareStackConfiguration(app *PreparedAppMigration) (PreparedStackConfigur
 	findings = append(findings, appSettingFindings...)
 	gotenbergFindings := prepareGotenbergEndpoint(*app, &configuration)
 	findings = append(findings, gotenbergFindings...)
-	addLegacyWodby1CompatibilityMarker(&configuration, inspections)
+	addLegacyWodby1CompatibilityMarker(&configuration)
 	return configuration, findings, nil
 }
 
@@ -182,32 +182,14 @@ func applyInstanceServiceConfiguration(
 	}
 }
 
-func addLegacyWodby1CompatibilityMarker(configuration *PreparedStackConfiguration, inspections map[string]TargetStackServiceInspection) {
+func addLegacyWodby1CompatibilityMarker(configuration *PreparedStackConfiguration) {
 	if configuration == nil {
 		return
 	}
-	for name, service := range configuration.Services {
-		if isTargetServiceDerivative(inspections[name]) {
-			continue
-		}
-		found := false
-		for index := range service.EnvVars {
-			if service.EnvVars[index].Name == wodby1LegacyEnvVarsMarker && service.EnvVars[index].EnvType == nil {
-				service.EnvVars[index].Value = "true"
-				service.EnvVars[index].Secret = false
-				found = true
-				break
-			}
-		}
-		if !found {
-			service.EnvVars = append(service.EnvVars, PreparedStackEnvVar{
-				Name:  wodby1LegacyEnvVarsMarker,
-				Value: "true",
-			})
-		}
-		sortPreparedStackServiceConfiguration(&service)
-		configuration.Services[name] = service
-	}
+	configuration.EnvVars = []PreparedStackEnvVar{{
+		Name:  wodby1LegacyEnvVarsMarker,
+		Value: "true",
+	}}
 }
 
 // prepareGotenbergEndpoint gives managed Drupal and WordPress application code
@@ -847,6 +829,9 @@ func optionalStringValue(value *string) string {
 }
 
 func stackConfigurationHasChanges(configuration PreparedStackConfiguration) bool {
+	if len(configuration.EnvVars) != 0 {
+		return true
+	}
 	for _, service := range configuration.Services {
 		if preparedStackServiceConfigurationHasChanges(service) {
 			return true

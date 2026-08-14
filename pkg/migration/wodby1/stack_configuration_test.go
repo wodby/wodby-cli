@@ -22,10 +22,13 @@ func TestPrepareStackConfigurationScopesEnvironmentValues(t *testing.T) {
 		t.Fatalf("unexpected findings: %#v", findings)
 	}
 	variables := configuration.Services["php"].EnvVars
-	if len(variables) != 4 {
-		t.Fatalf("env vars = %#v, want three source variables and the compatibility marker", variables)
+	if len(variables) != 3 {
+		t.Fatalf("service env vars = %#v, want three source variables", variables)
 	}
-	assertPreparedStackEnvVar(t, variables, wodby1LegacyEnvVarsMarker, "true", nil)
+	if len(configuration.EnvVars) != 1 {
+		t.Fatalf("stack-wide env vars = %#v, want the compatibility marker", configuration.EnvVars)
+	}
+	assertPreparedStackEnvVar(t, configuration.EnvVars, wodby1LegacyEnvVarsMarker, "true", nil)
 	assertPreparedStackEnvVar(t, variables, "SHARED", "shared", nil)
 	prod := "PROD"
 	dev := "DEV"

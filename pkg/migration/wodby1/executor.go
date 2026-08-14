@@ -1016,11 +1016,17 @@ func (e *MigrationExecutor) Verify(
 		}
 		e.reportProgress("Verified target stack %q configuration (revision ID %d).", prepared.Instances[0].Stack.Name, prepared.Instances[0].Stack.RevID)
 	}
-	app, found, err := e.target.FindAppExact(ctx, plan.Target.OrgID, prepared.App.App.Name)
+	var app TargetApp
+	var found bool
+	if plan.Target.AppID > 0 {
+		app, found, err = e.target.FindAppByID(ctx, plan.Target.AppID)
+	} else {
+		app, found, err = e.target.FindAppExact(ctx, plan.Target.OrgID, prepared.App.App.Name)
+	}
 	if err != nil {
 		return MigrationPhaseResult{}, errors.Wrap(err, "verify target app")
 	}
-	if !found || app.ID != state.App.TargetID {
+	if !found || app.ID != state.App.TargetID || (plan.Target.AppID > 0 && app.Name != plan.Target.AppName) {
 		return MigrationPhaseResult{}, errors.New("target app no longer matches migration state")
 	}
 	e.reportProgress("Verified target app %q (ID %d).", app.Name, app.ID)
@@ -1137,9 +1143,11 @@ func (e *MigrationExecutor) loadState(
 		},
 		PlanHash: plan.PlanHash,
 		Target: MigrationStateTarget{
-			OrgID:     plan.Target.OrgID,
-			ProjectID: plan.Target.ProjectID,
-			ClusterID: plan.Target.ClusterID,
+			OrgID:       plan.Target.OrgID,
+			ProjectID:   plan.Target.ProjectID,
+			ClusterID:   plan.Target.ClusterID,
+			AppID:       plan.Target.AppID,
+			ExistingApp: plan.Target.AppID > 0,
 		},
 	}
 	return LoadOrInitializeMigrationState(e.statePath, identity, sourceIDs)
@@ -1264,6 +1272,39 @@ func (e *MigrationExecutor) ensureAppAndInstances(
 	plan Plan,
 	prepared PreparedMigration,
 ) (TargetApp, map[string]TargetAppInstance, error) {
+	if plan.Target.AppID > 0 {
+		app, found, err := e.target.FindAppByID(ctx, plan.Target.AppID)
+		if err != nil {
+			return TargetApp{}, nil, errors.Wrap(err, "look up selected target app")
+		}
+		if !found || app.OrgID != plan.Target.OrgID || app.Name != plan.Target.AppName {
+			return TargetApp{}, nil, errors.New("selected target app no longer matches the approved migration")
+		}
+		if state.App.TargetID == 0 {
+			if err := state.SetAppTarget(app.ID, MigrationResourceReady); err != nil {
+				return TargetApp{}, nil, err
+			}
+			if err := SaveMigrationState(e.statePath, state); err != nil {
+				return TargetApp{}, nil, err
+			}
+		} else if state.App.TargetID != app.ID {
+			return TargetApp{}, nil, errors.New("selected target app no longer matches migration state")
+		}
+		e.reportProgress("Using existing target app %q (ID %d); existing instances will not be changed.", app.Name, app.ID)
+		result := make(map[string]TargetAppInstance, len(prepared.Instances))
+		for _, item := range prepared.Instances {
+			itemPlan := planInstance(plan, item.Source.UUID)
+			if itemPlan == nil {
+				return TargetApp{}, nil, errors.New("migration plan is missing a source instance")
+			}
+			instance, err := e.ensureInstance(ctx, state, plan, app, item, *itemPlan)
+			if err != nil {
+				return TargetApp{}, nil, err
+			}
+			result[item.Source.UUID] = instance
+		}
+		return app, result, nil
+	}
 	initial := prepared.Instances[0]
 	initialPlan := planInstance(plan, initial.Source.UUID)
 	if initialPlan == nil {
@@ -1503,14 +1544,13 @@ func (e *MigrationExecutor) ensureInstance(
 	if resource == nil {
 		return TargetAppInstance{}, errors.New("migration state is missing a source instance")
 	}
-	foundInstance, found, err := e.target.FindAppInstanceExact(
-		ctx,
-		plan.Target.OrgID,
-		app.Name,
-		prepared.Source.Name,
-	)
+	targetInstances, err := e.target.ListAppInstances(ctx, plan.Target.OrgID, app.ID)
 	if err != nil {
 		return TargetAppInstance{}, errors.Wrap(err, "look up target app instance")
+	}
+	foundInstance, found, err := findTargetAppInstanceExact(targetInstances, app.Name, prepared.Source.Name)
+	if err != nil {
+		return TargetAppInstance{}, err
 	}
 	if resource.TargetID > 0 {
 		if !found || foundInstance.ID != resource.TargetID {
@@ -1603,6 +1643,27 @@ func (e *MigrationExecutor) ensureInstance(
 	}
 	e.reportProgress("Target instance %q created (ID %d).", created.Name, created.ID)
 	return created, nil
+}
+
+func findTargetAppInstanceExact(items []TargetAppInstance, appName, instanceName string) (TargetAppInstance, bool, error) {
+	matches := make([]TargetAppInstance, 0, 1)
+	for _, item := range items {
+		if item.Name == instanceName {
+			matches = append(matches, item)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return TargetAppInstance{}, false, nil
+	case 1:
+		return matches[0], true, nil
+	default:
+		return TargetAppInstance{}, false, &TargetAmbiguousMatchError{
+			Resource: "app instance",
+			Name:     appName + "/" + instanceName,
+			Count:    len(matches),
+		}
+	}
 }
 
 func (e *MigrationExecutor) findExpectedInstance(

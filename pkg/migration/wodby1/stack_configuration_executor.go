@@ -189,6 +189,9 @@ func (e *MigrationExecutor) ensureTargetStackConfiguration(
 		return PreparedMigration{}, err
 	}
 	e.reportProgress("Step: configure target stack %q (ID %d) before creating app instances.", current.Name, current.ID)
+	if err := e.ensureStackEnvVars(ctx, state, current.ID, revisionID, prepared.StackConfiguration.EnvVars); err != nil {
+		return PreparedMigration{}, err
+	}
 	names := sortedPreparedStackServiceNames(prepared.StackConfiguration)
 	for _, name := range names {
 		inspection, ok := byName[name]
@@ -468,6 +471,55 @@ func (e *MigrationExecutor) ensureStackServiceEnvVars(ctx context.Context, state
 	return nil
 }
 
+func (e *MigrationExecutor) ensureStackEnvVars(ctx context.Context, state *MigrationState, stackID, stackRevID int, desired []PreparedStackEnvVar) error {
+	if len(desired) == 0 {
+		return nil
+	}
+	current, err := e.target.ListStackEnvVars(ctx, stackRevID)
+	if err != nil {
+		return err
+	}
+	for _, variable := range desired {
+		matches := matchingRootStackEnvVars(current, variable.Name, variable.EnvType)
+		if len(matches) > 1 {
+			return &TargetAmbiguousMatchError{Resource: "stack-wide environment variable", Name: variable.Name, Count: len(matches)}
+		}
+		operation := operationKey("stack_global_env", variable.Name, optionalStringValue(variable.EnvType))
+		matchesValue := len(matches) == 1 && rootStackEnvVarMatches(matches[0], variable)
+		if variable.Secret && !operationSucceeded(&state.App, operation) {
+			matchesValue = false
+		}
+		run, err := e.beginStackConfigurationMutation(state, operation, matchesValue, stackID)
+		if err != nil || !run {
+			return err
+		}
+		if len(matches) == 1 {
+			e.reportProgress("  Updating stack-wide environment variable %q%s...", variable.Name, stackEnvScopeLabel(variable.EnvType))
+			updated, updateErr := e.target.UpdateStackEnvVar(ctx, matches[0].ID, TargetUpdateStackEnvVarInput{Value: variable.Value, Secret: variable.Secret})
+			if updateErr != nil {
+				return e.recordStackConfigurationMutationError(state, operation, "stack-wide environment variable update", updateErr)
+			}
+			current = replaceRootStackEnvVar(current, matches[0].ID, updated)
+			if err := e.completeStackConfigurationMutation(state, operation, updated.ID); err != nil {
+				return err
+			}
+			continue
+		}
+		e.reportProgress("  Creating stack-wide environment variable %q%s...", variable.Name, stackEnvScopeLabel(variable.EnvType))
+		created, createErr := e.target.CreateStackEnvVar(ctx, stackID, TargetCreateStackEnvVarInput{
+			Name: variable.Name, Value: variable.Value, Secret: variable.Secret, EnvType: variable.EnvType,
+		})
+		if createErr != nil {
+			return e.recordStackConfigurationMutationError(state, operation, "stack-wide environment variable creation", createErr)
+		}
+		current = append(current, created)
+		if err := e.completeStackConfigurationMutation(state, operation, created.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (e *MigrationExecutor) ensureStackServiceCronSchedules(ctx context.Context, state *MigrationState, service TargetStackService, desired []PreparedStackCronSchedule) error {
 	current, err := e.target.ListStackServiceCronSchedules(ctx, service.ID)
 	if err != nil {
@@ -602,6 +654,16 @@ func (e *MigrationExecutor) recordStackConfigurationMutationError(state *Migrati
 }
 
 func (e *MigrationExecutor) targetStackConfigurationMatches(ctx context.Context, revisionID int, desired PreparedStackConfiguration) (bool, error) {
+	stackEnvVars, err := e.target.ListStackEnvVars(ctx, revisionID)
+	if err != nil {
+		return false, err
+	}
+	for _, variable := range desired.EnvVars {
+		matches := matchingRootStackEnvVars(stackEnvVars, variable.Name, variable.EnvType)
+		if len(matches) != 1 || !rootStackEnvVarMatches(matches[0], variable) {
+			return false, nil
+		}
+	}
 	inspections, err := e.target.InspectStackRevision(ctx, revisionID)
 	if err != nil {
 		return false, err
@@ -772,6 +834,36 @@ func matchingStackEnvVars(items []TargetStackServiceEnvVar, name string, envType
 		}
 	}
 	return result
+}
+
+func matchingRootStackEnvVars(items []TargetStackEnvVar, name string, envType *string) []TargetStackEnvVar {
+	result := []TargetStackEnvVar{}
+	for _, item := range items {
+		if item.Name == name && sameOptionalString(item.EnvType, envType) {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func rootStackEnvVarMatches(actual TargetStackEnvVar, desired PreparedStackEnvVar) bool {
+	if actual.Name != desired.Name || !sameOptionalString(actual.EnvType, desired.EnvType) {
+		return false
+	}
+	if desired.Secret {
+		return actual.ValueSecretID != nil
+	}
+	return actual.ValueSecretID == nil && actual.Value != nil && *actual.Value == desired.Value
+}
+
+func replaceRootStackEnvVar(items []TargetStackEnvVar, id int, replacement TargetStackEnvVar) []TargetStackEnvVar {
+	for index := range items {
+		if items[index].ID == id {
+			items[index] = replacement
+			return items
+		}
+	}
+	return append(items, replacement)
 }
 
 func stackEnvVarMatches(actual TargetStackServiceEnvVar, desired PreparedStackEnvVar) bool {

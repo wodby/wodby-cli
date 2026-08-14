@@ -222,15 +222,24 @@ func TestWodby1MigrationExclusionFlagsMatchCommandScope(t *testing.T) {
 	if instance.Flags().Lookup("exclude-app") != nil || instance.Flags().Lookup("exclude-instance") != nil {
 		t.Fatal("instance migration must not expose exclusion flags")
 	}
+	if instance.Flags().Lookup("target-app") == nil {
+		t.Fatal("instance migration must expose --target-app")
+	}
 
 	app := newWodby1AppCommand()
 	if app.Flags().Lookup("exclude-app") != nil || app.Flags().Lookup("exclude-instance") == nil {
 		t.Fatal("app migration must expose only --exclude-instance")
 	}
+	if app.Flags().Lookup("target-app") != nil {
+		t.Fatal("app migration must not expose --target-app")
+	}
 
 	server := newWodby1ServerCommand()
 	if server.Flags().Lookup("exclude-app") == nil || server.Flags().Lookup("exclude-instance") == nil {
 		t.Fatal("server migration must expose app and instance exclusions")
+	}
+	if server.Flags().Lookup("target-app") != nil {
+		t.Fatal("server migration must not expose --target-app")
 	}
 }
 
@@ -238,6 +247,42 @@ func TestWodby1MigrationExposesUnsupportedDrupalOverride(t *testing.T) {
 	flag := newWodby1AppCommand().Flags().Lookup("allow-unsupported-drupal")
 	if flag == nil || !strings.Contains(flag.Usage, "Drupal 10 or newer") {
 		t.Fatalf("--allow-unsupported-drupal flag = %#v", flag)
+	}
+}
+
+func TestStateTargetInstanceRecoveryAllowsOnlyAmbiguousCreate(t *testing.T) {
+	state := &wodby1.MigrationState{Instances: map[string]*wodby1.MigrationResourceState{
+		"recoverable": {
+			Status: wodby1.MigrationResourceCreating,
+			Operations: map[string]wodby1.MigrationOperationState{
+				"create": {Status: wodby1.MigrationOperationAmbiguous},
+			},
+		},
+		"known": {
+			TargetID: 201, Status: wodby1.MigrationResourceReady,
+			Operations: map[string]wodby1.MigrationOperationState{
+				"create": {Status: wodby1.MigrationOperationSucceeded},
+			},
+		},
+		"failed": {
+			Status: wodby1.MigrationResourceFailed,
+			Operations: map[string]wodby1.MigrationOperationState{
+				"create": {Status: wodby1.MigrationOperationFailed},
+			},
+		},
+	}}
+	got := stateTargetInstanceRecovery(state)
+	if len(got) != 1 || !got["recoverable"] {
+		t.Fatalf("recovery = %#v", got)
+	}
+}
+
+func TestTargetAppStackIDsAreUniqueAndSorted(t *testing.T) {
+	got := targetAppStackIDs([]wodby1.TargetAppInstance{
+		{StackID: 9}, {StackID: 3}, {StackID: 9}, {StackID: 0},
+	})
+	if len(got) != 2 || got[0] != 3 || got[1] != 9 {
+		t.Fatalf("stack IDs = %#v", got)
 	}
 }
 
@@ -356,6 +401,64 @@ func TestWodby1InstanceCommandPlansOnlyRequestedInstance(t *testing.T) {
 	if got := fixture.sourceRequestPaths(); len(got) != 1 ||
 		got[0] != "GET /api/v4/migrations/v2/instances/instance-1/export" {
 		t.Fatalf("source requests = %#v", got)
+	}
+}
+
+func TestWodby1InstanceCommandCanTargetExistingAppAndInferStack(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "owner", "ok", false)
+	defer fixture.Close()
+	fixture.setSourceKind("instance")
+	fixture.setTargetApp101Exists(true)
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+
+	var output bytes.Buffer
+	cmd := newWodby1InstanceCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&output)
+	args := fixture.organizationPlanArgs("", "json")
+	args[0] = "instance-1"
+	args = removeMigrationFlag(args, "--target-stack-id")
+	args = append(args, "--target-app", "101")
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	var plan wodby1.Plan
+	if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.Target.AppID != 101 || plan.Target.AppName != "destination" ||
+		len(plan.Apps) != 1 || len(plan.Apps[0].Instances) != 1 ||
+		plan.Apps[0].Instances[0].Stack.TargetID != 7 || plan.Apps[0].Instances[0].Stack.CreateTarget {
+		t.Fatalf("existing-app plan = %#v", plan)
+	}
+	if fixture.mutationCount() != 0 {
+		t.Fatalf("preview made %d target mutation(s)", fixture.mutationCount())
+	}
+}
+
+func TestWodby1InstanceCommandBlocksExistingTargetInstanceName(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "owner", "ok", false)
+	defer fixture.Close()
+	fixture.setSourceKind("instance")
+	fixture.setTargetApp101Exists(true)
+	fixture.setTargetApp101InstanceName("prod")
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+
+	var output bytes.Buffer
+	cmd := newWodby1InstanceCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&output)
+	args := removeMigrationFlag(fixture.instancePlanArgs("", "text"), "--target-stack-id")
+	args = append(args, "--target-app", "101")
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "already contains instance") ||
+		!strings.Contains(output.String(), "will not overwrite or adopt it") {
+		t.Fatalf("missing target instance collision blocker:\n%s", output.String())
 	}
 }
 
@@ -1820,16 +1923,17 @@ type migrationAPIFixture struct {
 	source *httptest.Server
 	target *httptest.Server
 
-	mu                 sync.Mutex
-	sourceRequests     []string
-	targetRequests     []string
-	sourceRequestToken string
-	mutations          int
-	sourceTitle        string
-	sourceKind         string
-	stackRevID         int
-	stackRevNumber     int
-	targetApp101Exists bool
+	mu                       sync.Mutex
+	sourceRequests           []string
+	targetRequests           []string
+	sourceRequestToken       string
+	mutations                int
+	sourceTitle              string
+	sourceKind               string
+	stackRevID               int
+	stackRevNumber           int
+	targetApp101Exists       bool
+	targetApp101InstanceName string
 }
 
 func newMigrationAPIFixture(
@@ -2000,6 +2104,7 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 	stackRevID := f.stackRevID
 	stackRevNumber := f.stackRevNumber
 	targetApp101Exists := f.targetApp101Exists
+	targetApp101InstanceName := f.targetApp101InstanceName
 	f.mu.Unlock()
 
 	if r.Method != http.MethodGet {
@@ -2016,12 +2121,28 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if r.URL.Path == "/v1/apps/101" && targetApp101Exists {
-		writeMigrationJSON(w, wodby1.TargetApp{ID: 101, Name: "demo", Title: "Demo", Status: "OK", OrgID: 11})
+		projectID := 22
+		writeMigrationJSON(w, wodby1.TargetApp{
+			ID: 101, Name: "destination", Title: "Destination", Status: "OK", OrgID: 11,
+			OwnershipScope: wodby1.TargetOwnershipScopeProject, OwnerProjectID: &projectID,
+		})
 		return
 	}
 	switch r.URL.Path {
 	case "/v1/apps":
 		writeMigrationJSON(w, []wodby1.TargetApp{})
+	case "/v1/app-instances":
+		if !targetApp101Exists || r.URL.Query().Get("orgId") != "11" || r.URL.Query().Get("appId") != "101" {
+			http.Error(w, "invalid app instance query", http.StatusBadRequest)
+			return
+		}
+		if targetApp101InstanceName == "" {
+			targetApp101InstanceName = "stage"
+		}
+		writeMigrationJSON(w, []wodby1.TargetAppInstance{{
+			ID: 102, Name: targetApp101InstanceName, AppID: 101, ClusterID: 33,
+			EnvID: 44, StackID: 7, StackRevID: stackRevID,
+		}})
 	case "/v1/orgs":
 		writeMigrationJSON(w, []wodby1.TargetOrg{migrationTargetOrgFixture()})
 	case "/v1/orgs/11":
@@ -2080,6 +2201,11 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 			ID: 81, Name: "php", Title: "PHP", Type: "php", Main: true,
 			ServiceRevID: 91, ServiceRevName: "php", ServiceRevVersion: "8.3",
 		}})
+	case "/v1/stack-revisions/71/env-vars", "/v1/stack-revisions/72/env-vars":
+		value := "true"
+		writeMigrationJSON(w, []wodby1.TargetStackEnvVar{{
+			ID: 93, Name: "WODBY_MIGRATIONS_ADD_LEGACY_WODBY1_ENV_VARS", Value: &value,
+		}})
 	case "/v1/service-revisions/91":
 		writeMigrationJSON(w, wodby1.TargetServiceRevision{
 			ID: 91, ServiceID: 92, Name: "php", Type: "php", Version: "8.3",
@@ -2089,11 +2215,7 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 			}},
 		})
 	case "/v1/stack-services/81/env-vars":
-		value := "true"
-		writeMigrationJSON(w, []wodby1.TargetStackServiceEnvVar{{
-			ID: 93, StackServiceID: 81,
-			Name: "WODBY_MIGRATIONS_ADD_LEGACY_WODBY1_ENV_VARS", Value: &value,
-		}})
+		writeMigrationJSON(w, []wodby1.TargetStackServiceEnvVar{})
 	case "/v1/stack-services/81/cron-schedules":
 		writeMigrationJSON(w, []wodby1.TargetStackServiceCronSchedule{})
 	case "/v1/stack-services/81/integrations":
@@ -2171,6 +2293,12 @@ func (f *migrationAPIFixture) setTargetApp101Exists(exists bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.targetApp101Exists = exists
+}
+
+func (f *migrationAPIFixture) setTargetApp101InstanceName(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.targetApp101InstanceName = name
 }
 
 func setMigrationTargetConfig(t *testing.T, endpoint string, apiKey string, accessToken string) {

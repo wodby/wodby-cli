@@ -193,6 +193,53 @@ func TestTargetClientChecksRemoteGitRepoFileAtExactRef(t *testing.T) {
 	}
 }
 
+func TestTargetClientManagesStackWideEnvironmentVariables(t *testing.T) {
+	value := "true"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/stack-revisions/71/env-vars":
+			writeTargetExecutionJSON(t, w, []TargetStackEnvVar{{ID: 91, Name: "EXISTING", Value: &value}})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/stacks/7/env-vars":
+			var input TargetCreateStackEnvVarInput
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatal(err)
+			}
+			if input.Name != "WODBY_MIGRATIONS_ADD_LEGACY_WODBY1_ENV_VARS" || input.Value != "true" || input.Secret || input.EnvType != nil {
+				t.Fatalf("create input = %#v", input)
+			}
+			writeTargetExecutionJSON(t, w, TargetStackEnvVar{ID: 92, Name: input.Name, Value: &value})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/stack-env-vars/92":
+			var input TargetUpdateStackEnvVarInput
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatal(err)
+			}
+			if input.Value != "true" || input.Secret {
+				t.Fatalf("update input = %#v", input)
+			}
+			writeTargetExecutionJSON(t, w, TargetStackEnvVar{ID: 92, Name: "WODBY_MIGRATIONS_ADD_LEGACY_WODBY1_ENV_VARS", Value: &value})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := mustTargetExecutionClient(t, server.URL)
+	variables, err := client.ListStackEnvVars(context.Background(), 71)
+	if err != nil || len(variables) != 1 || variables[0].Name != "EXISTING" {
+		t.Fatalf("variables = %#v, err = %v", variables, err)
+	}
+	created, err := client.CreateStackEnvVar(context.Background(), 7, TargetCreateStackEnvVarInput{
+		Name: "WODBY_MIGRATIONS_ADD_LEGACY_WODBY1_ENV_VARS", Value: "true",
+	})
+	if err != nil || created.ID != 92 {
+		t.Fatalf("created = %#v, err = %v", created, err)
+	}
+	updated, err := client.UpdateStackEnvVar(context.Background(), created.ID, TargetUpdateStackEnvVarInput{Value: "true"})
+	if err != nil || updated.ID != created.ID {
+		t.Fatalf("updated = %#v, err = %v", updated, err)
+	}
+}
+
 func TestTargetClientFindsAndAttachesMatchingCustomCertificate(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -451,6 +498,37 @@ func TestTargetClientFindAppExactRejectsAmbiguousResponse(t *testing.T) {
 	var ambiguous *TargetAmbiguousMatchError
 	if !errors.As(err, &ambiguous) || ambiguous.Resource != "app" {
 		t.Fatalf("err = %#v", err)
+	}
+}
+
+func TestTargetClientResolvesExplicitTargetApp(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apps/20":
+			writeTargetExecutionJSON(t, w, TargetApp{ID: 20, Name: "destination", OrgID: 8})
+		case "/v1/apps":
+			if r.URL.Query().Get("orgId") != "8" {
+				t.Fatalf("apps query = %q", r.URL.RawQuery)
+			}
+			writeTargetExecutionJSON(t, w, []TargetApp{{ID: 20, Name: "destination", OrgID: 8}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := mustTargetExecutionClient(t, server.URL)
+	for _, selector := range []string{"20", "destination"} {
+		app, err := client.ResolveTargetApp(context.Background(), 8, selector)
+		if err != nil {
+			t.Fatalf("resolve %q: %v", selector, err)
+		}
+		if app.ID != 20 || app.Name != "destination" {
+			t.Fatalf("resolve %q = %#v", selector, app)
+		}
+	}
+	if _, err := client.ResolveTargetApp(context.Background(), 9, "20"); err == nil || !strings.Contains(err.Error(), "not found in organization") {
+		t.Fatalf("cross-org resolution error = %v", err)
 	}
 }
 

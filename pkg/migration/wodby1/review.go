@@ -38,10 +38,14 @@ func PrintReview(w io.Writer, plan Plan, prepared ...PreparedMigration) {
 	}
 
 	for appIndex, app := range plan.Apps {
+		targetAppName := app.Name
+		if plan.Target.AppID > 0 {
+			targetAppName = plan.Target.AppName
+		}
 		fmt.Fprintf(
 			w,
 			"\n%s\n",
-			migrationColor(w, ansiBold+ansiCyan, fmt.Sprintf("App %d/%d: %s → %s", appIndex+1, len(plan.Apps), firstNonEmpty(app.Title, app.Name), app.Name)),
+			migrationColor(w, ansiBold+ansiCyan, fmt.Sprintf("App %d/%d: %s → %s", appIndex+1, len(plan.Apps), firstNonEmpty(app.Title, app.Name), targetAppName)),
 		)
 
 		preparedApp, hasPreparedApp := preparedMigrationForReview(prepared, app.SourceUUID)
@@ -891,6 +895,12 @@ func reviewOverviewRows(plan Plan) [][]string {
 		"Target organization",
 		firstNonEmpty(plan.Target.OrgName, plan.Target.Org),
 	})
+	if plan.Target.AppID > 0 {
+		rows = append(rows, []string{
+			"Target app",
+			fmt.Sprintf("%s (existing, ID %d)", firstNonEmpty(plan.Target.AppTitle, plan.Target.AppName), plan.Target.AppID),
+		})
+	}
 	if plan.Target.ProjectID > 0 || strings.TrimSpace(plan.Target.Project) != "" {
 		project := firstNonEmpty(plan.Target.ProjectName, plan.Target.Project)
 		if plan.Target.ProjectID > 0 && strings.TrimSpace(plan.Target.Project) == "" {

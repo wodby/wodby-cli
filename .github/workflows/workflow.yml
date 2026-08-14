@@ -113,6 +113,7 @@ jobs:
           ci run \
           --image wodby/node:24 \
           -- sh -eu -c '
+            test "$(id -un)" = node
             test "$(npm config get cache)" = /tmp/wodby-cache/npm
             printf dind-cache-ok > /tmp/wodby-cache/npm/wodby-dind-cache-test
           '
@@ -274,3 +275,21 @@ jobs:
         platforms: linux/amd64,linux/arm64
         labels: ${{ steps.meta.outputs.labels }}
         tags: ${{ steps.meta.outputs.tags }}
+    - name: Verify Wodby 2 image channels
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        set -euo pipefail
+
+        tagged_image="wodby/wodby-cli:${VERSION}"
+        series_image="wodby/wodby-cli:2.0"
+        latest_image="wodby/wodby-cli:latest"
+        tagged_manifest="$(docker buildx imagetools inspect --raw "${tagged_image}" | sha256sum | cut -d ' ' -f 1)"
+        series_manifest="$(docker buildx imagetools inspect --raw "${series_image}" | sha256sum | cut -d ' ' -f 1)"
+
+        test "${tagged_manifest}" = "${series_manifest}"
+        test "$(docker run --rm --entrypoint wodby "${tagged_image}" version)" = "${VERSION}"
+        test "$(docker run --rm --entrypoint wodby "${series_image}" version)" = "${VERSION}"
+        case "$(docker run --rm --entrypoint wodby "${latest_image}" version)" in
+          1.*) ;;
+          *) echo "${latest_image} must remain on Wodby 1" >&2; exit 1 ;;
+        esac

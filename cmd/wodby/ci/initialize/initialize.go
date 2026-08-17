@@ -19,6 +19,7 @@ import (
 	"github.com/wodby/wodby-cli/pkg/api"
 	"github.com/wodby/wodby-cli/pkg/cicache"
 	"github.com/wodby/wodby-cli/pkg/cidata"
+	"github.com/wodby/wodby-cli/pkg/ciuser"
 	"github.com/wodby/wodby-cli/pkg/config"
 	"github.com/wodby/wodby-cli/pkg/docker"
 	"github.com/wodby/wodby-cli/pkg/types"
@@ -67,7 +68,7 @@ var Cmd = &cobra.Command{
 
 		return nil
 	},
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 		var logger *log.Logger
 
 		if viper.GetBool("verbose") == true {
@@ -209,6 +210,7 @@ var Cmd = &cobra.Command{
 			config.DataContainer != "",
 			config.BuildConfig.Custom,
 			config.Metadata.Provider,
+			config.BuildConfig.Init != nil,
 		)
 		if shouldFixPermissions {
 			fmt.Printf("Fixing codebase permissions: %s...\n", permissionFixReason)
@@ -232,26 +234,48 @@ var Cmd = &cobra.Command{
 					}
 					fmt.Println("DONE")
 				}
-			} else if defaultUser != "root" {
-				runConfig := docker.RunConfig{
-					Image:           defaultService.Image,
-					User:            "root",
-					WorkDir:         config.WorkingDir,
-					ClearEntrypoint: true,
-				}
-
-				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, config.WorkingDir))
-
-				args := []string{"chown", "-R", docker.ChownSpec(defaultUser), "."}
-				err := dockerClient.Run(args, runConfig)
-
-				if err != nil {
-					return err
-				}
-
-				fmt.Println("DONE")
 			} else {
-				fmt.Println("Default user of the default service is root, skipping permissions fix")
+				temporaryOwnership := !opts.fixPermissions
+				originalOwnership := ""
+				if temporaryOwnership {
+					originalOwnership, err = ciuser.WorkspaceOwner(config.Context)
+					if err != nil {
+						return err
+					}
+					if originalOwnership != "" {
+						defer func() {
+							fmt.Printf("Restoring codebase ownership to %s...\n", originalOwnership)
+							restoreErr := fixBindOwnership(
+								dockerClient,
+								defaultService.Image,
+								config.WorkingDir,
+								config.Context,
+								originalOwnership,
+							)
+							runErr = combineOwnershipRestoreError(runErr, restoreErr)
+							if restoreErr == nil {
+								fmt.Println("DONE")
+							}
+						}()
+					}
+				}
+
+				if temporaryOwnership && originalOwnership == "" {
+					fmt.Println("Numeric checkout ownership is unavailable, skipping permissions fix")
+				} else if defaultUser != "" && defaultUser != "root" {
+					if err := fixBindOwnership(
+						dockerClient,
+						defaultService.Image,
+						config.WorkingDir,
+						config.Context,
+						docker.ChownSpec(defaultUser),
+					); err != nil {
+						return err
+					}
+					fmt.Println("DONE")
+				} else {
+					fmt.Println("Default user of the default service is root, skipping permissions fix")
+				}
 			}
 		} else {
 			fmt.Printf("Skipping codebase permissions fix: %s\n", permissionFixReason)
@@ -298,18 +322,45 @@ func init() {
 	Cmd.Flags().StringVarP(&opts.provider, "provider", "p", "", "Override detected build provider name")
 }
 
-func permissionFixDecision(explicit, hasDataContainer, customStack bool, provider string) (bool, string) {
+func permissionFixDecision(explicit, hasDataContainer, customStack bool, provider string, hasInit bool) (bool, string) {
 	if explicit {
 		return true, "requested explicitly with --fix-permissions"
 	}
 	if hasDataContainer {
 		return true, "preparing the Docker-in-Docker data volume"
 	}
-	if !customStack && provider != "" && provider != "Unknown" {
+	if hasInit && !customStack && provider != "" && provider != "Unknown" {
 		return true, fmt.Sprintf("preparing a managed stack checkout for %s", provider)
 	}
 
 	return false, "checkout ownership does not require automatic preparation"
+}
+
+// fixBindOwnership changes checkout ownership through the application image so
+// both non-root host CLIs and containerized root CLIs can restore a bind mount.
+func fixBindOwnership(client *docker.Client, image, workingDir, context, ownership string) error {
+	runConfig, args := bindOwnershipRun(image, workingDir, context, ownership)
+	return client.Run(args, runConfig)
+}
+
+func bindOwnershipRun(image, workingDir, context, ownership string) (docker.RunConfig, []string) {
+	return docker.RunConfig{
+		Image:           image,
+		User:            "root",
+		WorkDir:         workingDir,
+		ClearEntrypoint: true,
+		Volumes:         []string{fmt.Sprintf("%s:%s", context, workingDir)},
+	}, []string{"chown", "-R", ownership, "."}
+}
+
+func combineOwnershipRestoreError(runErr, restoreErr error) error {
+	if restoreErr == nil {
+		return runErr
+	}
+	if runErr != nil {
+		return errors.Wrapf(runErr, "failed to restore native checkout ownership: %v", restoreErr)
+	}
+	return errors.Wrap(restoreErr, "failed to restore native checkout ownership")
 }
 
 // managedInitRunConfig preserves the image's default user and entrypoint.

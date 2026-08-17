@@ -80,6 +80,14 @@ func explicitEnvironmentNames(env []string, envFile string) (map[string]struct{}
 	return names, nil
 }
 
+func withMappedUserHome(env []string, explicitEnv map[string]struct{}) []string {
+	if _, ok := explicitEnv["HOME"]; ok {
+		return env
+	}
+
+	return append(env, "HOME=/tmp")
+}
+
 func resolveRunCacheProfileNames(explicit []string, disabled bool, explicitUser, image string, labels map[string]string) ([]string, error) {
 	return resolveCacheProfileNames(explicit, disabled, explicitUser == "", image, labels)
 }

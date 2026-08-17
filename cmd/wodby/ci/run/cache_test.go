@@ -27,6 +27,15 @@ func TestExplicitEnvironmentNames(t *testing.T) {
 	}
 }
 
+func TestWithMappedUserHome(t *testing.T) {
+	if got := withMappedUserHome([]string{"CI=true"}, map[string]struct{}{}); !reflect.DeepEqual(got, []string{"CI=true", "HOME=/tmp"}) {
+		t.Fatalf("withMappedUserHome() = %#v, want HOME fallback", got)
+	}
+	if got := withMappedUserHome([]string{"HOME=/custom"}, map[string]struct{}{"HOME": {}}); !reflect.DeepEqual(got, []string{"HOME=/custom"}) {
+		t.Fatalf("withMappedUserHome() = %#v, want explicit HOME", got)
+	}
+}
+
 func TestResolveHostCacheStorage(t *testing.T) {
 	t.Run("uses conventional home paths for native runs", func(t *testing.T) {
 		home := t.TempDir()

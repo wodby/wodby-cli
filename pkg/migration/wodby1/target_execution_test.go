@@ -204,7 +204,7 @@ func TestTargetClientManagesStackWideEnvironmentVariables(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 				t.Fatal(err)
 			}
-			if input.Name != "WODBY_MIGRATIONS_ADD_LEGACY_WODBY1_ENV_VARS" || input.Value != "true" || input.Secret || input.EnvType != nil {
+			if input.Name != "WODBY2_MIGRATIONS_ADD_LEGACY_WODBY1_ENV_VARS" || input.Value != "true" || input.Secret || input.EnvType != nil {
 				t.Fatalf("create input = %#v", input)
 			}
 			writeTargetExecutionJSON(t, w, TargetStackEnvVar{ID: 92, Name: input.Name, Value: &value})
@@ -216,7 +216,7 @@ func TestTargetClientManagesStackWideEnvironmentVariables(t *testing.T) {
 			if input.Value != "true" || input.Secret {
 				t.Fatalf("update input = %#v", input)
 			}
-			writeTargetExecutionJSON(t, w, TargetStackEnvVar{ID: 92, Name: "WODBY_MIGRATIONS_ADD_LEGACY_WODBY1_ENV_VARS", Value: &value})
+			writeTargetExecutionJSON(t, w, TargetStackEnvVar{ID: 92, Name: "WODBY2_MIGRATIONS_ADD_LEGACY_WODBY1_ENV_VARS", Value: &value})
 		default:
 			http.NotFound(w, r)
 		}
@@ -229,7 +229,7 @@ func TestTargetClientManagesStackWideEnvironmentVariables(t *testing.T) {
 		t.Fatalf("variables = %#v, err = %v", variables, err)
 	}
 	created, err := client.CreateStackEnvVar(context.Background(), 7, TargetCreateStackEnvVarInput{
-		Name: "WODBY_MIGRATIONS_ADD_LEGACY_WODBY1_ENV_VARS", Value: "true",
+		Name: "WODBY2_MIGRATIONS_ADD_LEGACY_WODBY1_ENV_VARS", Value: "true",
 	})
 	if err != nil || created.ID != 92 {
 		t.Fatalf("created = %#v, err = %v", created, err)

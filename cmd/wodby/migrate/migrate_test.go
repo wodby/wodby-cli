@@ -2204,7 +2204,7 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 	case "/v1/stack-revisions/71/env-vars", "/v1/stack-revisions/72/env-vars":
 		value := "true"
 		writeMigrationJSON(w, []wodby1.TargetStackEnvVar{{
-			ID: 93, Name: "WODBY_MIGRATIONS_ADD_LEGACY_WODBY1_ENV_VARS", Value: &value,
+			ID: 93, Name: "WODBY2_MIGRATIONS_ADD_LEGACY_WODBY1_ENV_VARS", Value: &value,
 		}})
 	case "/v1/service-revisions/91":
 		writeMigrationJSON(w, wodby1.TargetServiceRevision{

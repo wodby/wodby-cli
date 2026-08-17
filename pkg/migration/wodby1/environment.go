@@ -2,7 +2,7 @@ package wodby1
 
 import "strings"
 
-const wodby1LegacyEnvVarsMarker = "WODBY_MIGRATIONS_ADD_LEGACY_WODBY1_ENV_VARS"
+const wodby1LegacyEnvVarsMarker = "WODBY2_MIGRATIONS_ADD_LEGACY_WODBY1_ENV_VARS"
 
 var wodby1EnvironmentReferenceReplacements = []string{
 	"APP_BUILD_NUM", "WODBY_BUILD_NUMBER",

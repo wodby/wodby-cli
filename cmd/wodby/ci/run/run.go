@@ -113,12 +113,29 @@ var Cmd = &cobra.Command{
 				runConfig.Volumes = append(runConfig.Volumes, fmt.Sprintf("%s:%s", config.Context, workingDir))
 			}
 
-			runConfig.User = runUserOverride(opts.user)
+			runConfig.User, err = resolveRunUser(opts.user, config)
+			if err != nil {
+				return err
+			}
+			// Keep the workspace identity for native cache ownership even when
+			// Docker can safely use the image's equivalent default user.
+			cacheUser := runConfig.User
+			if opts.user == "" && config.DataContainer == "" && runConfig.User != "" {
+				imageUID, _, identityErr := dockerClient.ResolveImageUserIdentity(image, imageConfig.User)
+				if identityErr == nil {
+					users := usersForImage(runConfig.User, imageUID)
+					runConfig.User = users.docker
+					cacheUser = users.cache
+				}
+			}
 			runConfig.ClearEntrypoint = shouldClearImageEntrypoint(opts.entrypoint, runConfig.User)
 
 			explicitEnv, err := explicitEnvironmentNames(opts.env, opts.envFile)
 			if err != nil {
 				return err
+			}
+			if opts.user == "" && config.DataContainer == "" && runConfig.User != "" {
+				runConfig.Env = withMappedUserHome(runConfig.Env, explicitEnv)
 			}
 			strictCache := cacheConfigurationIsExplicit(opts.cache)
 			cacheNames, err := resolveRunCacheProfileNames(opts.cache, opts.noCache, opts.user, image, imageConfig.Labels)
@@ -129,19 +146,6 @@ var Cmd = &cobra.Command{
 				cacheNames = nil
 			}
 			if len(cacheNames) > 0 {
-				cacheUser := runConfig.User
-				if cacheUser == "" && config.DataContainer == "" {
-					uid, gid, identityErr := dockerClient.ResolveImageUserIdentity(image, imageConfig.User)
-					if identityErr != nil {
-						if cacheErr := handleCacheFailure("user resolution", strictCache, identityErr); cacheErr != nil {
-							return cacheErr
-						}
-						cacheNames = nil
-					} else {
-						cacheUser = fmt.Sprintf("%d:%d", uid, gid)
-					}
-				}
-
 				cacheConfig := runConfig
 				cacheConfig.Env = append([]string(nil), runConfig.Env...)
 				cacheConfig.Volumes = append([]string(nil), runConfig.Volumes...)
@@ -159,7 +163,7 @@ var Cmd = &cobra.Command{
 						cacheUser,
 					)
 				}
-				if cacheErr == nil && config.DataContainer == "" && len(cacheNames) > 0 && cacheUser != "" && !ciuser.CanChownDirectories() {
+				if cacheErr == nil && config.DataContainer == "" && len(cacheNames) > 0 && opts.user != "" && cacheUser != "" && !ciuser.CanChownDirectories() {
 					cacheErr = prepareNativeCacheOwnership(dockerClient, image, cacheNames, hostHome, cacheRoot, cacheUser)
 				}
 				if cacheErr == nil && config.DataContainer != "" && len(cacheNames) > 0 {
@@ -197,11 +201,35 @@ var Cmd = &cobra.Command{
 	},
 }
 
-// runUserOverride returns only an explicitly requested Docker user. Wodby 1
-// managed checkouts are prepared for their image user during initialization,
-// so native and Docker-in-Docker commands must both preserve that image user.
-func runUserOverride(explicitUser string) string {
-	return explicitUser
+func resolveRunUser(explicitUser string, config *config.Config) (string, error) {
+	if explicitUser != "" {
+		return explicitUser, nil
+	}
+
+	if config.DataContainer != "" {
+		return "", nil
+	}
+
+	return ciuser.ResolveBindUser(config.Context)
+}
+
+type runUsers struct {
+	docker string
+	cache  string
+}
+
+// usersForImage avoids an unnecessary Docker user override when the
+// bind-mounted workspace owner already has the image user's UID. Cache
+// directories still use the complete workspace identity because they are
+// created on the host.
+func usersForImage(workspaceUser string, imageUID uint32) runUsers {
+	users := runUsers{docker: workspaceUser, cache: workspaceUser}
+	uid, _, ok := numericIdentity(workspaceUser)
+	if ok && uid >= 0 && uint32(uid) == imageUID {
+		users.docker = ""
+	}
+
+	return users
 }
 
 func shouldClearImageEntrypoint(explicitEntrypoint string, user string) bool {
@@ -231,7 +259,7 @@ func init() {
 	Cmd.Flags().StringVarP(&opts.image, "image", "i", "", "Image")
 	Cmd.Flags().StringSliceVarP(&opts.volumes, "volume", "v", []string{}, "Volumes")
 	Cmd.Flags().StringSliceVarP(&opts.env, "env", "e", []string{}, "Environment variables")
-	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "User (defaults to the image user)")
+	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "User (defaults to the workspace uid:gid for bind-mounted contexts)")
 	Cmd.Flags().StringVar(&opts.envFile, "env-file", "", "Env file")
 	Cmd.Flags().StringVarP(&opts.path, "path", "p", "", "Working dir (relative path)")
 	Cmd.Flags().StringSliceVar(&opts.cache, "cache", []string{}, "Cache profiles to enable instead of auto-detection (npm, composer, bundler, uv)")

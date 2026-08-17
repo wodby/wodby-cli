@@ -1,6 +1,7 @@
 package initialize
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 
@@ -27,23 +28,25 @@ func TestPermissionFixDecision(t *testing.T) {
 		hasDataContainer bool
 		customStack      bool
 		provider         string
+		hasInit          bool
 		want             bool
 	}{
 		{name: "unknown managed bind mount is unchanged", provider: "Unknown"},
-		{name: "custom stack in known CI is unchanged", customStack: true, provider: types.CircleCI},
+		{name: "managed checkout without init is unchanged", provider: types.GitHubActions},
+		{name: "custom stack in known CI is unchanged", customStack: true, provider: types.CircleCI, hasInit: true},
 		{name: "explicit bind permission fix", explicit: true, want: true},
 		{name: "data container is prepared", hasDataContainer: true, want: true},
-		{name: "managed CircleCI checkout is prepared", provider: types.CircleCI, want: true},
-		{name: "managed GitHub checkout is prepared", provider: types.GitHubActions, want: true},
-		{name: "managed GitLab checkout is prepared", provider: types.GitLab, want: true},
-		{name: "managed Bitbucket checkout is prepared", provider: types.BitbucketPipelines, want: true},
-		{name: "managed Jenkins checkout is prepared", provider: types.Jenkins, want: true},
-		{name: "managed Travis checkout is prepared", provider: types.TravisCI, want: true},
+		{name: "managed CircleCI checkout is prepared", provider: types.CircleCI, hasInit: true, want: true},
+		{name: "managed GitHub checkout is prepared", provider: types.GitHubActions, hasInit: true, want: true},
+		{name: "managed GitLab checkout is prepared", provider: types.GitLab, hasInit: true, want: true},
+		{name: "managed Bitbucket checkout is prepared", provider: types.BitbucketPipelines, hasInit: true, want: true},
+		{name: "managed Jenkins checkout is prepared", provider: types.Jenkins, hasInit: true, want: true},
+		{name: "managed Travis checkout is prepared", provider: types.TravisCI, hasInit: true, want: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, reason := permissionFixDecision(tt.explicit, tt.hasDataContainer, tt.customStack, tt.provider)
+			got, reason := permissionFixDecision(tt.explicit, tt.hasDataContainer, tt.customStack, tt.provider, tt.hasInit)
 			if got != tt.want {
 				t.Fatalf("permissionFixDecision() = %t (%s), want %t", got, reason, tt.want)
 			}
@@ -51,6 +54,40 @@ func TestPermissionFixDecision(t *testing.T) {
 				t.Fatal("permissionFixDecision() returned an empty reason")
 			}
 		})
+	}
+}
+
+func TestBindOwnershipRunUsesImageAsRoot(t *testing.T) {
+	config, args := bindOwnershipRun(
+		"wodby/drupal-php:8.4-4.82.4",
+		"/var/www/html",
+		"/workspace",
+		"1001:121",
+	)
+
+	if config.Image != "wodby/drupal-php:8.4-4.82.4" || config.User != "root" || !config.ClearEntrypoint {
+		t.Fatalf("bind ownership config = %#v", config)
+	}
+	if want := []string{"/workspace:/var/www/html"}; !reflect.DeepEqual(config.Volumes, want) {
+		t.Fatalf("bind ownership volumes = %#v, want %#v", config.Volumes, want)
+	}
+	if want := []string{"chown", "-R", "1001:121", "."}; !reflect.DeepEqual(args, want) {
+		t.Fatalf("bind ownership args = %#v, want %#v", args, want)
+	}
+}
+
+func TestCombineOwnershipRestoreError(t *testing.T) {
+	initErr := errors.New("init failed")
+	restoreErr := errors.New("restore failed")
+
+	if got := combineOwnershipRestoreError(initErr, nil); !errors.Is(got, initErr) {
+		t.Fatalf("successful restore changed init error: %v", got)
+	}
+	if got := combineOwnershipRestoreError(nil, restoreErr); !errors.Is(got, restoreErr) {
+		t.Fatalf("restore error = %v, want restore failure", got)
+	}
+	if got := combineOwnershipRestoreError(initErr, restoreErr); !errors.Is(got, initErr) || got.Error() == initErr.Error() {
+		t.Fatalf("combined error = %v, want wrapped init and restore failures", got)
 	}
 }
 

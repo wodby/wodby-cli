@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 	"github.com/wodby/wodby-cli/pkg/migration/wodby1"
 )
@@ -2521,5 +2522,26 @@ func TestPausedMigrationJSONExposesTheAppServiceToBuild(t *testing.T) {
 	if decoded.Actions[0].TargetServiceID != 4200 ||
 		decoded.Actions[0].CIProvider != "GitHub Actions" {
 		t.Fatalf("action = %#v", decoded.Actions[0])
+	}
+}
+
+// A server migration that only paused must exit like a paused single-app run,
+// not like a failure, or automation cannot tell "wait and resume" from "page
+// someone".
+func TestServerScopePausedResultKeepsThePausedStatus(t *testing.T) {
+	paused := pausedTestError()
+	wrapped := errors.Wrapf(
+		&wodby1.MigrationPausedError{Actions: paused.Actions},
+		"server migration is paused on %d instance(s) waiting for their first Custom CI build;"+
+			" follow the steps above, then rerun the same command to resume",
+		len(paused.Actions),
+	)
+
+	got, ok := wodby1.AsMigrationPaused(wrapped)
+	if !ok || len(got.Actions) != 1 || got.Actions[0].TargetServiceID != 4200 {
+		t.Fatalf("AsMigrationPaused() = %#v, %v", got, ok)
+	}
+	if !strings.Contains(wrapped.Error(), "rerun the same command to resume") {
+		t.Fatalf("wrapped message lost its guidance: %v", wrapped)
 	}
 }

@@ -1386,7 +1386,7 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 	}
 	results := make([]serverAppMigrationOutput, 0, len(executions))
 	failedApps := 0
-	pausedApps := 0
+	pausedActions := []*wodby1.ExternalActionRequiredError{}
 	serverAction := "verification"
 	if opts.apply {
 		serverAction = "migration"
@@ -1407,7 +1407,7 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 			// A paused app is waiting on its own CI pipeline, not broken, so it
 			// must not be reported or counted as a failed app.
 			if paused, ok := wodby1.AsMigrationPaused(err); ok {
-				pausedApps++
+				pausedActions = append(pausedActions, paused.Actions...)
 				results = append(results, serverAppMigrationOutput{
 					SourceAppUUID: execution.sourceAppUUID,
 					Name:          execution.name,
@@ -1460,11 +1460,15 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 	if failedApps != 0 {
 		return errors.Errorf("server migration completed with %d failed app(s); inspect the result above and rerun the same command to resume", failedApps)
 	}
-	if pausedApps != 0 {
+	if len(pausedActions) != 0 {
 		cmd.SilenceUsage = true
-		return errors.Errorf(
-			"server migration is paused on %d app(s) waiting for their first Custom CI build; follow the steps above, then rerun the same command to resume",
-			pausedApps,
+		// Wrap rather than replace, so this exits with the paused status like a
+		// single-app run does instead of looking like a failure to automation.
+		return errors.Wrapf(
+			&wodby1.MigrationPausedError{Actions: pausedActions},
+			"server migration is paused on %d instance(s) waiting for their first Custom CI build;"+
+				" follow the steps above, then rerun the same command to resume",
+			len(pausedActions),
 		)
 	}
 	return nil

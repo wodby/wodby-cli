@@ -111,10 +111,10 @@ type PreparedExternalCI struct {
 	// reported nothing recognizable.
 	ProviderKey   string
 	ProviderLabel string
-	// ProviderHasExample reports whether wodby/wodby-ci 2.0 actually ships a
-	// pipeline for this provider. Wodby 1 recognizes providers that Wodby 2 has
-	// no example for, and those operators must adapt a different one.
-	ProviderHasExample bool
+	// ProviderSupported reports whether Wodby 2 has a CI provider for it.
+	// Wodby 1 recognizes providers Wodby 2 does not support, and those
+	// operators must adapt one of the supported examples instead.
+	ProviderSupported bool
 	// ExampleURL is the closest wodby/wodby-ci 2.0 page for this app.
 	ExampleURL string
 }

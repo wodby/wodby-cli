@@ -9,14 +9,14 @@ import (
 
 func TestExternalActionNextStepsExplainThePipelineWork(t *testing.T) {
 	blocked := &ExternalActionRequiredError{
-		Instance:           "prod",
-		TargetInstanceID:   4100,
-		ServiceName:        "php",
-		TargetServiceID:    4200,
-		ProviderKey:        "github",
-		ProviderLabel:      "GitHub Actions",
-		ProviderHasExample: true,
-		ExampleURL:         "https://github.com/wodby/wodby-ci/blob/2.0/drupal/github-actions/wodby.yml",
+		Instance:          "prod",
+		TargetInstanceID:  4100,
+		ServiceName:       "php",
+		TargetServiceID:   4200,
+		ProviderKey:       "github",
+		ProviderLabel:     "GitHub Actions",
+		ProviderSupported: true,
+		ExampleURL:        "https://github.com/wodby/wodby-ci/blob/2.0/drupal/github-actions/wodby.yml",
 	}
 	steps := blocked.NextSteps()
 	for _, want := range []string{
@@ -111,11 +111,10 @@ func TestWodbyCIExampleURLPrefersTheMostSpecificPage(t *testing.T) {
 	}
 }
 
-// Wodby CI 1.0 shipped Bitbucket and Travis examples and Wodby 1 autodetects
-// Jenkins, but wodby/wodby-ci 2.0 covers GitHub Actions, GitLab CI, and
-// CircleCI only. Linking a stack page as "the example closest to this app"
-// would send those operators looking for a file that does not exist.
-func TestExternalActionAdmitsWhenWodby2HasNoExampleForTheProvider(t *testing.T) {
+// Wodby 2 has CI providers for GitHub, GitLab, and CircleCI only. Bitbucket
+// Pipelines, Travis CI, and Jenkins are recognized on the Wodby 1 side but
+// migrate as Custom CI, so the steps must not imply otherwise.
+func TestExternalActionAdmitsWhenWodby2DoesNotSupportTheProvider(t *testing.T) {
 	for _, test := range []struct{ key, label string }{
 		{"travisci", "Travis CI"},
 		{"bitbucket-pipelines", "Bitbucket Pipelines"},
@@ -128,9 +127,9 @@ func TestExternalActionAdmitsWhenWodby2HasNoExampleForTheProvider(t *testing.T) 
 				ExampleURL: "https://github.com/wodby/wodby-ci/tree/2.0/drupal",
 			}).NextSteps()
 
-			if !strings.Contains(steps, "Wodby 2 ships no "+test.label+" example") ||
+			if !strings.Contains(steps, "Wodby 2 does not support "+test.label) ||
 				!strings.Contains(steps, wodby2CIProviderLabels) {
-				t.Fatalf("missing provider example must be stated plainly:\n%s", steps)
+				t.Fatalf("unsupported provider must be stated plainly:\n%s", steps)
 			}
 			// Without the override the build is recorded as "unknown".
 			if !strings.Contains(steps, "wodby ci init --provider "+test.key) {
@@ -146,7 +145,7 @@ func TestExternalActionAdmitsWhenWodby2HasNoExampleForTheProvider(t *testing.T) 
 func TestEveryWodby1AutodetectedProviderIsRecognized(t *testing.T) {
 	for _, test := range []struct {
 		stored, provider, label string
-		wantExample             bool
+		wantExample             bool // Wodby 2 has this provider
 	}{
 		{"github", "github", "GitHub Actions", true},
 		{"gitlab", "gitlab", "GitLab CI", true},
@@ -162,6 +161,10 @@ func TestEveryWodby1AutodetectedProviderIsRecognized(t *testing.T) {
 			}
 			if (examplePath != "") != test.wantExample {
 				t.Fatalf("%q example path = %q, want present = %v", test.stored, examplePath, test.wantExample)
+			}
+			// Example coverage and Wodby 2 provider support are the same set.
+			if wodby2SupportsCIProvider(provider) != test.wantExample {
+				t.Fatalf("%q support = %v, want %v", test.stored, !test.wantExample, test.wantExample)
 			}
 		})
 	}

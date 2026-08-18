@@ -150,7 +150,7 @@ func (c *TargetClient) prepareCIIntegration(ctx context.Context, app *PreparedAp
 	integrationMessage := "instances without a usable linked Git repository, or already using external deployment, will use a create-or-reuse Custom CI integration; linked Git deployments continue to use built-in Wodby CI unless --target-ci-integration-id overrides the app"
 	namePrefix := "ci"
 	title := "CI for " + firstNonEmpty(app.App.App.Title, app.App.App.Name)
-	if sourceProvider != "" {
+	if sourceProvider != "" && wodby2SupportsCIProvider(sourceProvider) {
 		namePrefix = "ci-" + sourceProvider
 		title = sourceProviderLabel + " for " + firstNonEmpty(app.App.App.Title, app.App.App.Name)
 		integrationMessage += "; the integration will be named after " + sourceProviderLabel +
@@ -204,10 +204,10 @@ func prepareExternalCIGuidance(app App, instance Instance) *PreparedExternalCI {
 		stringProperty(instance.Properties, "ci_provider"),
 	)
 	return &PreparedExternalCI{
-		ProviderKey:        provider,
-		ProviderLabel:      label,
-		ProviderHasExample: examplePath != "",
-		ExampleURL:         wodbyCIExampleURL(wodbyCIExampleStack(app, instance), examplePath),
+		ProviderKey:       provider,
+		ProviderLabel:     label,
+		ProviderSupported: wodby2SupportsCIProvider(provider),
+		ExampleURL:        wodbyCIExampleURL(wodbyCIExampleStack(app, instance), examplePath),
 	}
 }
 
@@ -221,18 +221,35 @@ func externalCIConfigurationFindings(app PreparedAppMigration) []ReviewItem {
 		provider, providerLabel, providerPath := normalizedWodby1CIProvider(reportedProvider)
 		link := wodbyCIExampleURL(wodbyCIExampleStack(app.App.App, instance.Source), providerPath)
 
-		message := "Wodby 1 uses third-party CI, but its current deployed build does not identify a supported CI provider"
-		if provider != "" {
-			message = fmt.Sprintf("Wodby 1's current deployed build identifies %s", providerLabel)
-		} else if reportedProvider != "" {
-			message = fmt.Sprintf("Wodby 1's current deployed build reports CI provider %q, but no provider-specific Wodby 2 example is available", reportedProvider)
+		var message string
+		switch {
+		case wodby2SupportsCIProvider(provider):
+			// Wodby 2 has this provider, but its API token is not in the Wodby 1
+			// export and cannot be recreated, so the customer has to bring one.
+			message = fmt.Sprintf(
+				"Wodby 1 uses %s, which Wodby 2 supports. Its API token cannot be migrated:"+
+					" create a %s integration in Wodby 2 and pass --target-ci-integration-id,"+
+					" otherwise Custom CI is used.",
+				providerLabel, providerLabel,
+			)
+		case provider != "":
+			message = fmt.Sprintf(
+				"Wodby 1 uses %s, which Wodby 2 does not support; Custom CI is used."+
+					" Adapt one of %s and run `wodby ci init --provider %s`.",
+				providerLabel, wodby2CIProviderLabels, provider,
+			)
+		case reportedProvider != "":
+			message = fmt.Sprintf(
+				"Wodby 1 reports CI provider %q, which Wodby 2 does not support; Custom CI is used."+
+					" Adapt one of %s.",
+				reportedProvider, wodby2CIProviderLabels,
+			)
+		default:
+			message = "Wodby 1 uses third-party CI but its last successful build reports no provider;" +
+				" Custom CI is used."
 		}
-		message += "; Wodby CLI usage for third-party CI changed in Wodby 2. Update the pipeline to use Wodby CLI 2.x with WODBY_API_KEY and WODBY_APP_SERVICE_ID."
-		if provider != "" && providerPath == "" {
-			message += " Wodby 2 ships no " + providerLabel + " example and Wodby CLI 2.x does not autodetect it;" +
-				" adapt one of " + wodby2CIProviderLabels + " and pass `wodby ci init --provider " + provider + "`."
-		}
-		message += " Start from " + link
+		message += " Update the pipeline to Wodby CLI 2.x with WODBY_API_KEY and WODBY_APP_SERVICE_ID: " + link
+
 		findings = append(findings, ReviewItem{
 			Severity: SeverityServiceWarning,
 			App:      app.App.App.Name,
@@ -278,10 +295,24 @@ func normalizedWodby1CIProvider(value string) (provider, label, examplePath stri
 	}
 }
 
-// wodby2CIProviderLabels lists the providers Wodby 2 ships examples for, and
-// that Wodby CLI 2.x autodetects. A migrated pipeline on any other provider has
-// to adapt one of these and pass `wodby ci init --provider`.
+// wodby2CIProviderLabels lists the providers Wodby 2 has a CI provider for.
+// They are also the only ones it ships examples for and that Wodby CLI 2.x
+// autodetects. A pipeline on anything else migrates as Custom CI, adapts one of
+// these examples, and passes `wodby ci init --provider`.
 const wodby2CIProviderLabels = "GitHub Actions, GitLab CI, or CircleCI"
+
+// wodby2SupportsCIProvider reports whether Wodby 2 has a real CI provider for a
+// Wodby 1 provider key. Bitbucket Pipelines, Travis CI, and Jenkins are
+// recognized on the Wodby 1 side but have no Wodby 2 counterpart, so they
+// migrate as Custom CI like an unidentified provider does.
+func wodby2SupportsCIProvider(provider string) bool {
+	switch provider {
+	case "github", "gitlab", "circleci":
+		return true
+	default:
+		return false
+	}
+}
 
 func wodbyCIExampleStack(app App, instance Instance) string {
 	candidates := []string{app.Type, instance.Stack.Type, instance.Stack.Name, instance.Stack.AncestorName}

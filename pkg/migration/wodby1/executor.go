@@ -3138,7 +3138,7 @@ func (e *MigrationExecutor) ensureExternalCIBuild(
 	if prepared.ExternalCI != nil {
 		blocked.ProviderKey = prepared.ExternalCI.ProviderKey
 		blocked.ProviderLabel = prepared.ExternalCI.ProviderLabel
-		blocked.ProviderHasExample = prepared.ExternalCI.ProviderHasExample
+		blocked.ProviderSupported = prepared.ExternalCI.ProviderSupported
 		blocked.ExampleURL = prepared.ExternalCI.ExampleURL
 	}
 	// Only a linked repository pins the ref, and Custom CI instances usually

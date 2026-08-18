@@ -30,10 +30,10 @@ type ExternalActionRequiredError struct {
 	// recognize.
 	ProviderKey   string
 	ProviderLabel string
-	// ProviderHasExample reports whether Wodby 2 ships a pipeline example for
-	// that provider. Wodby CI 1.0 covered Bitbucket and Travis, and Wodby 1
-	// autodetects Jenkins, none of which Wodby 2 has an example for.
-	ProviderHasExample bool
+	// ProviderSupported reports whether Wodby 2 has a CI provider for it.
+	// Wodby 1 recognizes Bitbucket Pipelines, Travis CI, and Jenkins, none of
+	// which Wodby 2 supports; those migrate as Custom CI.
+	ProviderSupported bool
 	// ExampleURL points at the closest wodby/wodby-ci example for this app.
 	ExampleURL string
 	// GitRef is set only when the reviewed build source pins a ref, which
@@ -73,14 +73,14 @@ func (e *ExternalActionRequiredError) NextSteps() string {
 
 	b.WriteString("Next steps\n")
 	switch {
-	case provider != "" && e.ProviderHasExample:
+	case provider != "" && e.ProviderSupported:
 		fmt.Fprintf(&b, "  1. Update your %s configuration to Wodby CLI 2.x, starting\n", provider)
 		fmt.Fprintf(&b, "     from the Wodby CI example closest to this app:\n       %s\n", example)
 	case provider != "":
-		// Wodby 1 recognizes providers Wodby 2 has no example for. Saying so is
-		// better than linking a page that holds nothing for this pipeline.
+		// Wodby 1 recognizes providers Wodby 2 has no counterpart for. Saying so
+		// beats linking a page that holds nothing for this pipeline.
 		fmt.Fprintf(&b, "  1. Update your %s configuration to Wodby CLI 2.x.\n", provider)
-		fmt.Fprintf(&b, "     Wodby 2 ships no %s example; adapt one of\n", provider)
+		fmt.Fprintf(&b, "     Wodby 2 does not support %s; adapt one of\n", provider)
 		fmt.Fprintf(&b, "     %s:\n       %s\n", wodby2CIProviderLabels, example)
 	default:
 		b.WriteString("  1. Update your CI pipeline to Wodby CLI 2.x, starting from the\n")
@@ -90,9 +90,9 @@ func (e *ExternalActionRequiredError) NextSteps() string {
 	b.WriteString("  2. Give the pipeline these values:\n")
 	b.WriteString("       WODBY_API_KEY         your Wodby 2 API key (store it as a secret)\n")
 	fmt.Fprintf(&b, "       WODBY_APP_SERVICE_ID  %d\n", e.TargetServiceID)
-	if provider != "" && !e.ProviderHasExample {
-		// Wodby CLI 2.x autodetects only the three providers it has examples
-		// for; everything else records the build as "unknown" without this.
+	if provider != "" && !e.ProviderSupported {
+		// Wodby CLI 2.x autodetects only the providers Wodby 2 supports;
+		// everything else records the build as "unknown" without this.
 		fmt.Fprintf(&b, "     Wodby CLI 2.x does not autodetect %s, so run\n", provider)
 		fmt.Fprintf(&b, "     `wodby ci init --provider %s`.\n", e.ProviderKey)
 	}

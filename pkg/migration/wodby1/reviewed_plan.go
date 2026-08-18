@@ -219,6 +219,47 @@ func PinReviewedTargets(current *Plan, reviewed Plan) error {
 	return nil
 }
 
+// RestoreReviewedPlanForResume verifies that a freshly rebuilt plan still
+// describes the same executable migration, then restores the exact reviewed
+// artifact. Review wording, summary counts and presentation status may evolve
+// between CLI builds, but they must not strand a migration that already made
+// target changes. The reviewed plan remains authoritative for execution.
+func RestoreReviewedPlanForResume(current *Plan, reviewed Plan) error {
+	if current == nil {
+		return invalidPlanError("current plan is required")
+	}
+	if err := reviewed.ValidateReviewed(); err != nil {
+		return err
+	}
+	currentDigest, err := current.resumeExecutionDigest()
+	if err != nil {
+		return err
+	}
+	reviewedDigest, err := reviewed.resumeExecutionDigest()
+	if err != nil {
+		return err
+	}
+	if currentDigest != reviewedDigest {
+		return currentPlanDriftError("executable migration actions changed")
+	}
+	restored, err := cloneMigrationPlan(reviewed)
+	if err != nil {
+		return err
+	}
+	*current = restored
+	return nil
+}
+
+func (p Plan) resumeExecutionDigest() (string, error) {
+	// Review items, their derived counts and their display status are approval
+	// presentation. PinReviewedTargets and the remaining plan fields bind the
+	// source configuration, customer choices and immutable target mappings.
+	p.Review = nil
+	p.Summary = PlanSummary{}
+	p.Status = ""
+	return p.contentDigest()
+}
+
 func pinReviewedApp(current *AppPlan, reviewed AppPlan) error {
 	if current == nil {
 		return invalidPlanError("current app plan is required")

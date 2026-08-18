@@ -2455,3 +2455,71 @@ func removeMigrationFlag(args []string, flag string) []string {
 	}
 	return result
 }
+
+func pausedTestError() *wodby1.MigrationPausedError {
+	return &wodby1.MigrationPausedError{Actions: []*wodby1.ExternalActionRequiredError{{
+		Instance:         "prod",
+		TargetInstanceID: 4100,
+		ServiceName:      "php",
+		TargetServiceID:  4200,
+		ProviderLabel:    "GitHub Actions",
+		ExampleURL:       "https://github.com/wodby/wodby-ci/blob/2.0/drupal/github-actions/wodby.yml",
+	}}}
+}
+
+func TestPausedMigrationPrintsNextStepsInsteadOfAFailure(t *testing.T) {
+	cmd := newWodby1InstanceCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	paused := pausedTestError()
+
+	err := printMigrationPaused(cmd, paused, "/tmp/plan.json", "/tmp/state.json")
+	if got, ok := wodby1.AsMigrationPaused(err); !ok || got != paused {
+		t.Fatalf("paused runs must still return a non-zero paused error, got %v", err)
+	}
+	text := output.String()
+	for _, want := range []string{
+		"Migration paused",
+		"https://github.com/wodby/wodby-ci/blob/2.0/drupal/github-actions/wodby.yml",
+		"https://github.com/wodby/wodby-ci/tree/2.0",
+		"WODBY_APP_SERVICE_ID  4200",
+		"wodby ci deploy",
+		"/tmp/state.json",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("paused output missing %q:\n%s", want, text)
+		}
+	}
+	for _, unwanted := range []string{"failed during", "inspect the target", "migration apply stopped"} {
+		if strings.Contains(strings.ToLower(text), unwanted) {
+			t.Fatalf("a paused migration must not be framed as a failure (%q):\n%s", unwanted, text)
+		}
+	}
+	// The steps are already printed; cobra must not append usage or a duplicate.
+	if !cmd.SilenceUsage || !cmd.SilenceErrors {
+		t.Fatal("paused output must suppress cobra's usage and error echo")
+	}
+}
+
+func TestPausedMigrationJSONExposesTheAppServiceToBuild(t *testing.T) {
+	cmd := newWodby1InstanceCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	if err := cmd.Flags().Set("output", "json"); err != nil {
+		t.Skipf("json output flag unavailable: %v", err)
+	}
+
+	_ = printMigrationPaused(cmd, pausedTestError(), "/tmp/plan.json", "/tmp/state.json")
+
+	var decoded migrationPausedOutput
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+		t.Fatalf("json output = %q: %v", output.String(), err)
+	}
+	if decoded.Status != pausedMigrationStatus || len(decoded.Actions) != 1 {
+		t.Fatalf("decoded = %#v", decoded)
+	}
+	if decoded.Actions[0].TargetServiceID != 4200 ||
+		decoded.Actions[0].CIProvider != "GitHub Actions" {
+		t.Fatalf("action = %#v", decoded.Actions[0])
+	}
+}

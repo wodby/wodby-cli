@@ -642,3 +642,40 @@ func writeMigrationStateFixture(t *testing.T, path string, state *MigrationState
 		t.Fatal(err)
 	}
 }
+
+func TestAwaitingExternalStatusIsDistinctFromFailure(t *testing.T) {
+	state, _ := newExecutorTestState(t)
+	if err := state.SetStatus(MigrationStatusAwaitingExternal); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Validate(); err != nil {
+		t.Fatalf("a paused migration must be a valid state: %v", err)
+	}
+	if state.Status == MigrationStatusFailed {
+		t.Fatal("a pause must not be recorded as a failure")
+	}
+	// Resuming an operation clears the pause the same way it clears a failure.
+	if err := state.MarkInstanceOperationIntent("instance-1", "prepare_deploy"); err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != MigrationStatusRunning {
+		t.Fatalf("status after resuming = %q", state.Status)
+	}
+}
+
+func TestAwaitingExternalStateSurvivesReload(t *testing.T) {
+	state, path := newExecutorTestState(t)
+	if err := state.SetStatus(MigrationStatusAwaitingExternal); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveMigrationState(path, state); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, _, err := LoadOrInitializeMigrationState(path, state.Identity(), []string{"instance-1"})
+	if err != nil {
+		t.Fatalf("a paused state must reload for the resuming run: %v", err)
+	}
+	if reloaded.Status != MigrationStatusAwaitingExternal {
+		t.Fatalf("reloaded status = %q", reloaded.Status)
+	}
+}

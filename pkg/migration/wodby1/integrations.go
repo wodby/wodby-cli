@@ -133,6 +133,7 @@ func (c *TargetClient) prepareCIIntegration(ctx context.Context, app *PreparedAp
 			app.Instances[index].CIIntegrationKey = "ci"
 			app.Instances[index].UsesWodbyCI = false
 			app.Instances[index].ExternalCIOnly = true
+			app.Instances[index].ExternalCI = prepareExternalCIGuidance(app.App.App, app.Instances[index].Source)
 		}
 	}
 	if !usesCustomCI {
@@ -142,18 +143,70 @@ func (c *TargetClient) prepareCIIntegration(ctx context.Context, app *PreparedAp
 	if err != nil {
 		return nil, nil, err
 	}
+	// Wodby 2 always backs these with the custom-ci provider, but naming the
+	// integration after the CI provider from Wodby 1's last successful build
+	// keeps it recognizable in a target org that holds several of them.
+	sourceProvider, sourceProviderLabel := commonWodby1CIProvider(*app)
+	integrationMessage := "instances without a usable linked Git repository, or already using external deployment, will use a create-or-reuse Custom CI integration; linked Git deployments continue to use built-in Wodby CI unless --target-ci-integration-id overrides the app"
+	namePrefix := "ci"
+	title := "CI for " + firstNonEmpty(app.App.App.Title, app.App.App.Name)
+	if sourceProvider != "" {
+		namePrefix = "ci-" + sourceProvider
+		title = sourceProviderLabel + " for " + firstNonEmpty(app.App.App.Title, app.App.App.Name)
+		integrationMessage += "; the integration will be named after " + sourceProviderLabel +
+			", the CI provider reported by Wodby 1's last successful build"
+	}
 	findings := append(configurationFindings, ReviewItem{
 		Severity: SeverityMigration, App: app.App.App.Name, Subject: "CI integration",
-		Message: "instances without a usable linked Git repository, or already using external deployment, will use a create-or-reuse Custom CI integration; linked Git deployments continue to use built-in Wodby CI unless --target-ci-integration-id overrides the app",
+		Message: integrationMessage,
 	}, ReviewItem{
 		Severity: SeverityManual, App: app.App.App.Name, Subject: "Custom CI bootstrap build",
 		Message: "after the migration creates and configures the target app, run its third-party CI pipeline once, then rerun the same --apply command; the migration will adopt the completed build and continue deployment and data import",
 	})
 	return &PreparedIntegration{
 		Key: "ci", ProviderName: provider.Name, ProviderID: provider.ID, ProviderRevID: provider.RevID,
-		Name:  migrationResourceName("ci", app.App.App.Name, app.App.App.UUID),
-		Title: "CI for " + firstNonEmpty(app.App.App.Title, app.App.App.Name), Kind: "ci",
+		Name:  migrationResourceName(namePrefix, app.App.App.Name, app.App.App.UUID),
+		Title: title, Kind: "ci",
 	}, findings, nil
+}
+
+// commonWodby1CIProvider resolves the single CI provider shared by every
+// external-CI instance of the app. Instances that report nothing recognizable
+// do not veto a provider the others agree on, but a genuine disagreement falls
+// back to generic naming rather than picking an arbitrary winner.
+func commonWodby1CIProvider(app PreparedAppMigration) (provider, label string) {
+	for _, instance := range app.Instances {
+		if !instance.ExternalCIOnly {
+			continue
+		}
+		current, currentLabel, _ := normalizedWodby1CIProvider(
+			stringProperty(instance.Source.Properties, "ci_provider"),
+		)
+		if current == "" {
+			continue
+		}
+		if provider == "" {
+			provider, label = current, currentLabel
+			continue
+		}
+		if provider != current {
+			return "", ""
+		}
+	}
+	return provider, label
+}
+
+// prepareExternalCIGuidance resolves, at plan time, everything the executor
+// needs to explain the manual bootstrap build. The source app and instance are
+// both in scope here and are not threaded into the executor.
+func prepareExternalCIGuidance(app App, instance Instance) *PreparedExternalCI {
+	_, label, examplePath := normalizedWodby1CIProvider(
+		stringProperty(instance.Properties, "ci_provider"),
+	)
+	return &PreparedExternalCI{
+		ProviderLabel: label,
+		ExampleURL:    wodbyCIExampleURL(wodbyCIExampleStack(app, instance), examplePath),
+	}
 }
 
 func externalCIConfigurationFindings(app PreparedAppMigration) []ReviewItem {
@@ -164,14 +217,7 @@ func externalCIConfigurationFindings(app PreparedAppMigration) []ReviewItem {
 		}
 		reportedProvider := strings.TrimSpace(stringProperty(instance.Source.Properties, "ci_provider"))
 		provider, providerLabel, providerPath := normalizedWodby1CIProvider(reportedProvider)
-		stack := wodbyCIExampleStack(app.App.App, instance.Source)
-		link := "https://github.com/wodby/wodby-ci/tree/2.0"
-		if stack != "" {
-			link += "/" + stack
-		}
-		if stack != "" && providerPath != "" {
-			link = "https://github.com/wodby/wodby-ci/blob/2.0/" + stack + "/" + providerPath
-		}
+		link := wodbyCIExampleURL(wodbyCIExampleStack(app.App.App, instance.Source), providerPath)
 
 		message := "Wodby 1 uses third-party CI, but its current deployed build does not identify a supported CI provider"
 		if provider != "" {

@@ -824,6 +824,9 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 	}
 	if err != nil {
 		if opts.apply {
+			if paused, ok := wodby1.AsMigrationPaused(err); ok {
+				return printMigrationPaused(cmd, paused, planPath, statePath)
+			}
 			return errors.Wrapf(
 				err,
 				"migration apply stopped; inspect the target and resume with the same --apply command (state: %s)",
@@ -1383,6 +1386,7 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 	}
 	results := make([]serverAppMigrationOutput, 0, len(executions))
 	failedApps := 0
+	pausedApps := 0
 	serverAction := "verification"
 	if opts.apply {
 		serverAction = "migration"
@@ -1400,6 +1404,25 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 			_, err = execution.executor.Verify(cmd.Context(), execution.export, execution.plan, execution.prepared, scope.Cluster)
 		}
 		if err != nil {
+			// A paused app is waiting on its own CI pipeline, not broken, so it
+			// must not be reported or counted as a failed app.
+			if paused, ok := wodby1.AsMigrationPaused(err); ok {
+				pausedApps++
+				results = append(results, serverAppMigrationOutput{
+					SourceAppUUID: execution.sourceAppUUID,
+					Name:          execution.name,
+					StateFile:     execution.statePath,
+					Status:        pausedMigrationStatus,
+					Error:         paused.Error(),
+				})
+				fmt.Fprintf(
+					progressWriter,
+					"%s\n%s",
+					cliColor(progressWriter, cliColorOrange, fmt.Sprintf("App %d/%d paused: %s. Continuing with the next app.", executionIndex+1, len(executions), execution.name)),
+					paused.NextSteps(),
+				)
+				continue
+			}
 			failedApps++
 			results = append(results, serverAppMigrationOutput{
 				SourceAppUUID: execution.sourceAppUUID,
@@ -1436,6 +1459,13 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 	}
 	if failedApps != 0 {
 		return errors.Errorf("server migration completed with %d failed app(s); inspect the result above and rerun the same command to resume", failedApps)
+	}
+	if pausedApps != 0 {
+		cmd.SilenceUsage = true
+		return errors.Errorf(
+			"server migration is paused on %d app(s) waiting for their first Custom CI build; follow the steps above, then rerun the same command to resume",
+			pausedApps,
+		)
 	}
 	return nil
 }
@@ -2461,6 +2491,84 @@ func printMigrationResult(
 	}
 	return nil
 }
+
+// pausedActionOutput is the machine-readable form of one pending external
+// action, so automation can pick the app service to build without scraping
+// the human-facing text.
+type pausedActionOutput struct {
+	Instance         string `json:"instance"`
+	TargetInstanceID int    `json:"targetAppInstanceId"`
+	Service          string `json:"service"`
+	TargetServiceID  int    `json:"targetAppServiceId"`
+	CIProvider       string `json:"ciProvider,omitempty"`
+	ExampleURL       string `json:"exampleUrl,omitempty"`
+	GitRef           string `json:"gitRef,omitempty"`
+}
+
+type migrationPausedOutput struct {
+	Action    string               `json:"action"`
+	PlanFile  string               `json:"planFile"`
+	StateFile string               `json:"stateFile"`
+	Status    string               `json:"status"`
+	Reason    string               `json:"reason"`
+	Actions   []pausedActionOutput `json:"pendingExternalActions"`
+}
+
+// printMigrationPaused reports a migration that stopped on a required external
+// action. This is not a failure: the target is intact and the same --apply
+// command resumes it, so the output explains what to run instead of asking the
+// operator to inspect a healthy target. The error is still returned so the exit
+// status stays non-zero for scripted callers.
+func printMigrationPaused(
+	cmd *cobra.Command,
+	paused *wodby1.MigrationPausedError,
+	planPath string,
+	statePath string,
+) error {
+	// The run already printed everything an operator needs; cobra should not
+	// append usage or a duplicate error line on top of it.
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+
+	if planOutputJSON(cmd) {
+		output := migrationPausedOutput{
+			Action:    "apply",
+			PlanFile:  planPath,
+			StateFile: statePath,
+			Status:    pausedMigrationStatus,
+			Reason:    paused.Error(),
+			Actions:   make([]pausedActionOutput, 0, len(paused.Actions)),
+		}
+		for _, action := range paused.Actions {
+			output.Actions = append(output.Actions, pausedActionOutput{
+				Instance:         action.Instance,
+				TargetInstanceID: action.TargetInstanceID,
+				Service:          action.ServiceName,
+				TargetServiceID:  action.TargetServiceID,
+				CIProvider:       action.ProviderLabel,
+				ExampleURL:       action.ExampleURL,
+				GitRef:           action.GitRef,
+			})
+		}
+		encoder := json.NewEncoder(cmd.OutOrStdout())
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(output); err != nil {
+			return errors.WithStack(err)
+		}
+		return paused
+	}
+
+	w := cmd.OutOrStdout()
+	fmt.Fprintln(w, cliColor(w, cliColorBold+cliColorOrange, "\nMigration paused: action required outside Wodby"))
+	fmt.Fprintln(w)
+	fmt.Fprint(w, paused.NextSteps())
+	fmt.Fprintf(w, "\nTemporary plan file: %s\n", planPath)
+	fmt.Fprintf(w, "Temporary resume-state file: %s\n", statePath)
+	fmt.Fprintln(w, "Keep both files; they are how the rerun resumes instead of starting over.")
+	return paused
+}
+
+const pausedMigrationStatus = "paused; awaiting external CI build"
 
 func publicMigrationStatus(apply bool) string {
 	if apply {

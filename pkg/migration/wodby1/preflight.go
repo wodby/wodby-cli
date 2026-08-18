@@ -98,7 +98,19 @@ type PreparedInstance struct {
 	CIIntegrationID      int
 	UsesWodbyCI          bool
 	ExternalCIOnly       bool
+	ExternalCI           *PreparedExternalCI
 	ServiceLinks         []PreparedAppServiceLink
+}
+
+// PreparedExternalCI carries the third-party CI facts resolved while planning
+// so the executor can explain the manual bootstrap build without re-deriving
+// them from the source export.
+type PreparedExternalCI struct {
+	// ProviderLabel is the CI provider from Wodby 1's last successful build,
+	// empty when Wodby 1 reported none that maps to a Wodby 2 example.
+	ProviderLabel string
+	// ExampleURL is the closest wodby/wodby-ci 2.0 example for this app.
+	ExampleURL string
 }
 
 // PreparedStackConfiguration is the application-wide configuration applied to

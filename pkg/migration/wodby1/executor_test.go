@@ -1906,3 +1906,53 @@ func newExecutorTestState(t *testing.T) (*MigrationState, string) {
 	}
 	return state, path
 }
+
+func TestEnsureExternalCIBuildPausesWithPipelineInstructions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/app-builds" {
+			http.NotFound(w, r)
+			return
+		}
+		writeTargetExecutionJSON(t, w, TargetAppBuildsResponse{Items: []TargetAppBuild{}, TotalCount: 0})
+	}))
+	defer server.Close()
+	client := mustTargetExecutionClient(t, server.URL)
+	state, statePath := newExecutorTestState(t)
+	executor, err := NewMigrationExecutor(client, MigrationExecutorOptions{StatePath: statePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := PreparedInstance{
+		Source:         Instance{UUID: "instance-1", Name: "prod"},
+		ExternalCIOnly: true,
+		BuildSource:    &PreparedBuildSource{ServiceName: "php"},
+		ExternalCI: &PreparedExternalCI{
+			ProviderLabel: "GitHub Actions",
+			ExampleURL:    "https://github.com/wodby/wodby-ci/blob/2.0/drupal/github-actions/wodby.yml",
+		},
+	}
+
+	_, err = executor.ensureExternalCIBuild(
+		context.Background(), state, prepared, "instance-1", 900, 901, TargetBuildSourceInput{},
+	)
+	blocked, ok := AsExternalActionRequired(err)
+	if !ok {
+		t.Fatalf("missing build must pause the migration, got %v", err)
+	}
+	if blocked.Instance != "prod" || blocked.TargetInstanceID != 900 ||
+		blocked.ServiceName != "php" || blocked.TargetServiceID != 901 {
+		t.Fatalf("blocked = %#v", blocked)
+	}
+	if blocked.ProviderLabel != "GitHub Actions" ||
+		!strings.Contains(blocked.NextSteps(), "github-actions/wodby.yml") {
+		t.Fatalf("pause must carry the pipeline guidance: %#v", blocked)
+	}
+	// An unlinked Custom CI service matches on any ref, so none is named.
+	if blocked.GitRef != "" {
+		t.Fatalf("unpinned build source reported ref %q", blocked.GitRef)
+	}
+	// A pause is not a failed operation.
+	if len(state.Instances["instance-1"].Operations) != 0 {
+		t.Fatalf("pause recorded operations: %#v", state.Instances["instance-1"].Operations)
+	}
+}

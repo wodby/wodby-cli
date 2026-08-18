@@ -153,6 +153,36 @@ func (c *TargetClient) ResolvePublicStackExact(ctx context.Context, name string)
 	}
 }
 
+// TargetUpdateStackInput renames a stack. Wodby 2 requires both the machine
+// name and the title, and rejects a name already taken in the organization.
+type TargetUpdateStackInput struct {
+	Name  string `json:"name"`
+	Title string `json:"title"`
+}
+
+// UpdateStack renames a stack the migration created. The duplicate endpoint
+// takes no name, so this is how a generated stack gets one that identifies the
+// app it belongs to.
+func (c *TargetClient) UpdateStack(ctx context.Context, stackID int, input TargetUpdateStackInput) (TargetStack, error) {
+	if err := targetRequirePositiveID("stack", stackID); err != nil {
+		return TargetStack{}, err
+	}
+	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Title) == "" {
+		return TargetStack{}, errors.New("target stack name and title are required")
+	}
+	var item TargetStack
+	if err := c.client.Put(ctx, "/stacks/"+strconv.Itoa(stackID), nil, input, &item); err != nil {
+		return TargetStack{}, errors.Wrap(err, "rename generated Wodby 2 stack")
+	}
+	if err := validateTargetStack(item); err != nil {
+		return TargetStack{}, err
+	}
+	if item.ID != stackID {
+		return TargetStack{}, errors.New("renamed target stack identity changed")
+	}
+	return item, nil
+}
+
 func (c *TargetClient) DuplicateStack(ctx context.Context, stackID int, input TargetDuplicateStackInput) (TargetStack, error) {
 	if err := targetRequirePositiveID("catalog stack", stackID); err != nil {
 		return TargetStack{}, err

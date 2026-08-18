@@ -393,6 +393,7 @@ func (e *MigrationExecutor) ensureGeneratedTargetStack(
 			return PreparedMigration{}, err
 		}
 		e.reportProgress("Resuming generated target stack %q (ID %d, revision ID %d) from migration state.", generated.Name, generated.ID, generated.RevID)
+		generated = e.nameGeneratedStackAfterApp(ctx, prepared, blueprint, generated)
 		return e.bindGeneratedStack(ctx, prepared, generated)
 	}
 
@@ -473,7 +474,65 @@ func (e *MigrationExecutor) ensureGeneratedTargetStack(
 		return PreparedMigration{}, err
 	}
 	e.reportProgress("Generated target stack %q created (ID %d, revision ID %d); every app instance will use it.", generated.Name, generated.ID, generated.RevID)
+	generated = e.nameGeneratedStackAfterApp(ctx, prepared, blueprint, generated)
 	return e.bindGeneratedStack(ctx, prepared, generated)
+}
+
+// nameGeneratedStackAfterApp renames the duplicated stack from the catalog name
+// it inherits ("drupal11", "drupal11-2", ...) to one that says which app owns
+// it. The duplicate endpoint accepts no name, so this is a second call.
+//
+// A failure here is reported and skipped rather than failing the migration: the
+// stack is already created and fully usable, and its name carries no behavior.
+// Older Wodby 2 deployments without the rename route simply keep the catalog
+// name.
+func (e *MigrationExecutor) nameGeneratedStackAfterApp(
+	ctx context.Context,
+	prepared PreparedMigration,
+	blueprint TargetStack,
+	generated TargetStack,
+) TargetStack {
+	desired := generatedStackNaming(blueprint, prepared.App.App)
+	if desired.Name == "" || (desired.Name == generated.Name && desired.Title == generated.Title) {
+		return generated
+	}
+	renamed, err := e.target.UpdateStack(ctx, generated.ID, desired)
+	if err != nil {
+		e.reportProgress(
+			"Could not name the generated stack %q: %v. Keeping %q; the migration is unaffected.",
+			desired.Title, err, generated.Name,
+		)
+		return generated
+	}
+	e.reportProgress("Generated target stack named %q.", renamed.Title)
+	return renamed
+}
+
+// generatedStackNaming builds "[Stack] for [App]" from the catalog stack the
+// migration duplicated and the source app it belongs to, so a target
+// organization holding several migrated apps stays readable.
+func generatedStackNaming(blueprint TargetStack, app App) TargetUpdateStackInput {
+	// firstNonEmpty is a review-table helper that yields "-" when everything is
+	// blank, which must never reach a resource name.
+	stackLabel := firstNonBlankOf(blueprint.Title, blueprint.Name)
+	appLabel := firstNonBlankOf(app.Title, app.Name)
+	stackSlug := firstNonBlankOf(blueprint.Name, blueprint.Title)
+	if stackLabel == "" || appLabel == "" || stackSlug == "" || strings.TrimSpace(app.UUID) == "" {
+		return TargetUpdateStackInput{}
+	}
+	return TargetUpdateStackInput{
+		Name:  migrationResourceName(stackSlug, app.Name, app.UUID),
+		Title: stackLabel + " for " + appLabel,
+	}
+}
+
+func firstNonBlankOf(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func generatedStackBlueprint(plan Plan, prepared PreparedMigration) (TargetStack, bool, error) {

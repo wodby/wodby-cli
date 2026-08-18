@@ -37,17 +37,34 @@ func TestCreatedWithinOperationUsesTimestampBoundary(t *testing.T) {
 func TestEnsureGeneratedTargetStackDuplicatesOnceAndResumes(t *testing.T) {
 	originRevisionID := 71
 	duplicateRequests := 0
+	renameRequests := 0
+	// The duplicate endpoint takes no name, so the stack starts with the one it
+	// inherits and the migration renames it. Model that: later reads see the
+	// new name, which is what makes the rename skippable on resume.
+	stackName := "acme/drupal11"
+	stackTitle := "Drupal 11"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/stacks/7/actions/duplicate":
 			duplicateRequests++
 			writeTargetExecutionJSON(t, w, TargetStack{
-				ID: 17, Name: "acme/drupal11", Status: "OK", RevID: 171, OrgID: 1,
+				ID: 17, Name: stackName, Title: stackTitle, Status: "OK", RevID: 171, OrgID: 1,
+				OriginStackRevID: &originRevisionID, CreatedAt: time.Now().UTC(),
+			})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/stacks/17":
+			renameRequests++
+			var input TargetUpdateStackInput
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatalf("rename request body: %v", err)
+			}
+			stackName, stackTitle = input.Name, input.Title
+			writeTargetExecutionJSON(t, w, TargetStack{
+				ID: 17, Name: stackName, Title: stackTitle, Status: "OK", RevID: 171, OrgID: 1,
 				OriginStackRevID: &originRevisionID, CreatedAt: time.Now().UTC(),
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/stacks/17":
 			writeTargetExecutionJSON(t, w, TargetStack{
-				ID: 17, Name: "acme/drupal11", Status: "OK", RevID: 171, OrgID: 1,
+				ID: 17, Name: stackName, Title: stackTitle, Status: "OK", RevID: 171, OrgID: 1,
 				OriginStackRevID: &originRevisionID, CreatedAt: time.Now().UTC(),
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/stack-revisions/171":
@@ -83,11 +100,11 @@ func TestEnsureGeneratedTargetStackDuplicatesOnceAndResumes(t *testing.T) {
 		ServiceRevision: TargetServiceRevision{ID: 101, ServiceID: 201, Name: "php"},
 	}
 	prepared := PreparedMigration{
-		App: AppExport{App: App{UUID: "app-1", Name: "demo"}},
+		App: AppExport{App: App{UUID: "app-1", Name: "demo", Title: "Demo"}},
 		Instances: []PreparedInstance{{
 			Source: Instance{UUID: "instance-1", Name: "prod"},
 			Stack: TargetStack{
-				ID: 7, Name: "drupal11", Status: "OK", Public: true, RevID: 71, OrgID: 9,
+				ID: 7, Name: "drupal11", Title: "Drupal 11", Status: "OK", Public: true, RevID: 71, OrgID: 9,
 			},
 			StackServices:     []TargetStackServiceInspection{inspection},
 			Services:          map[string]PreparedService{},
@@ -109,6 +126,13 @@ func TestEnsureGeneratedTargetStackDuplicatesOnceAndResumes(t *testing.T) {
 	}
 	if _, err := executor.ensureGeneratedTargetStack(context.Background(), state, plan, prepared); err != nil {
 		t.Fatal(err)
+	}
+	// The rename is idempotent by comparison, so resuming must not repeat it.
+	if renameRequests != 1 {
+		t.Fatalf("rename requests = %d, want 1", renameRequests)
+	}
+	if stackTitle != "Drupal 11 for Demo" {
+		t.Fatalf("generated stack title = %q", stackTitle)
 	}
 	if duplicateRequests != 1 {
 		t.Fatalf("duplicate requests = %d, want 1", duplicateRequests)
@@ -1954,5 +1978,65 @@ func TestEnsureExternalCIBuildPausesWithPipelineInstructions(t *testing.T) {
 	// A pause is not a failed operation.
 	if len(state.Instances["instance-1"].Operations) != 0 {
 		t.Fatalf("pause recorded operations: %#v", state.Instances["instance-1"].Operations)
+	}
+}
+
+func TestGeneratedStackNamingCombinesStackAndApp(t *testing.T) {
+	naming := generatedStackNaming(
+		TargetStack{Name: "drupal11", Title: "Drupal 11"},
+		App{UUID: "app-1", Name: "example-app", Title: "This Wodby 1 app"},
+	)
+	if naming.Title != "Drupal 11 for This Wodby 1 app" {
+		t.Fatalf("title = %q", naming.Title)
+	}
+	// The machine name stays slug-safe, bounded, and unique per source app.
+	if !strings.HasPrefix(naming.Name, "drupal11-example-app-") || len(naming.Name) > 50 {
+		t.Fatalf("name = %q", naming.Name)
+	}
+	other := generatedStackNaming(
+		TargetStack{Name: "drupal11", Title: "Drupal 11"},
+		App{UUID: "app-2", Name: "example-app", Title: "This Wodby 1 app"},
+	)
+	if naming.Name == other.Name {
+		t.Fatal("two source apps must not generate the same target stack name")
+	}
+}
+
+func TestGeneratedStackNamingFallsBackToMachineNames(t *testing.T) {
+	naming := generatedStackNaming(
+		TargetStack{Name: "drupal11"},
+		App{UUID: "app-1", Name: "example-app"},
+	)
+	if naming.Title != "drupal11 for example-app" {
+		t.Fatalf("title = %q", naming.Title)
+	}
+	// Nothing to name after means no rename attempt at all.
+	if empty := generatedStackNaming(TargetStack{}, App{}); empty.Name != "" || empty.Title != "" {
+		t.Fatalf("naming = %#v", empty)
+	}
+}
+
+func TestGeneratedStackRenameFailureLeavesTheMigrationUsable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// An older Wodby 2 without the rename route.
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer server.Close()
+	client := mustTargetExecutionClient(t, server.URL)
+	executor, err := NewMigrationExecutor(client, MigrationExecutorOptions{StatePath: filepath.Join(t.TempDir(), "state.json")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	generated := TargetStack{ID: 7, RevID: 8, Name: "drupal11-2", Title: "Drupal 11 (2)", OrgID: 1}
+
+	got := executor.nameGeneratedStackAfterApp(
+		context.Background(),
+		PreparedMigration{App: AppExport{App: App{UUID: "app-1", Name: "example-app", Title: "Example App"}}},
+		TargetStack{Name: "drupal11", Title: "Drupal 11"},
+		generated,
+	)
+	// The stack is already created and usable; only its label is cosmetic.
+	if got != generated {
+		t.Fatalf("a failed rename must keep the created stack: %#v", got)
 	}
 }

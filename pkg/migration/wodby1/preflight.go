@@ -371,16 +371,34 @@ func (c *TargetClient) PreflightTarget(
 			for _, instance := range appExport.Instances {
 				instanceNames = append(instanceNames, fmt.Sprintf("%q", instance.Name))
 			}
+			// Reaching this branch means no resume state authorizes this app, so
+			// the operator cannot simply continue. Say whether the app is this
+			// migration's own earlier work, because that decides whether the fix
+			// is to resume it, roll it back, or remove an unrelated app.
+			message := fmt.Sprintf(
+				"target organization already contains app %q with ID %d; this blocks creation of planned target instance(s) %s. The migration will not overwrite or adopt the existing app or any of its instances. Remove or rename the unrelated target app, or resume with the original migration state file if that state created it",
+				existingApp.Name,
+				existingApp.ID,
+				strings.Join(instanceNames, ", "),
+			)
+			if c.appCarriesMigrationFingerprint(ctx, existingApp, appExport.App) {
+				message = fmt.Sprintf(
+					"Wodby 2 app %q (ID %d) was created by an earlier migration of this same Wodby 1 app:"+
+						" its generated stack carries this app's migration fingerprint. No resume state for it was"+
+						" found at the expected path, so this run cannot continue it and will not adopt it."+
+						" To continue that migration, rerun with --state-file pointing at its original state file."+
+						" To start over, roll it back with --rollback and that state file; if the state file is"+
+						" gone, delete app %q and its generated stack in Wodby 2 first",
+					existingApp.Name,
+					existingApp.ID,
+					existingApp.Name,
+				)
+			}
 			findings = append(findings, ReviewItem{
 				Severity: SeverityBlocking,
 				App:      appExport.App.Name,
 				Subject:  "target app name",
-				Message: fmt.Sprintf(
-					"target organization already contains app %q with ID %d; this blocks creation of planned target instance(s) %s. The migration will not overwrite or adopt the existing app or any of its instances. Remove or rename the unrelated target app, or resume with the original migration state file if that state created it",
-					existingApp.Name,
-					existingApp.ID,
-					strings.Join(instanceNames, ", "),
-				),
+				Message:  message,
 			})
 		}
 		repositoryFindings, err := c.resolveRepositoryPlan(ctx, appExport.App, appPlan.Repository, opts.SkipCode)
@@ -1619,4 +1637,45 @@ func contextSourceInstance(app AppExport, sourceUUID string) (Instance, bool) {
 		}
 	}
 	return Instance{}, false
+}
+
+// appCarriesMigrationFingerprint reports whether an existing Wodby 2 app looks
+// like the work of an earlier migration of this same Wodby 1 app.
+//
+// Wodby 2 records nothing about where an app came from. The only durable link is
+// the stack the migration generates, whose machine name ends in a digest of the
+// source app UUID, so a stack under this app carrying that digest is evidence
+// only a migration of this source could have produced.
+//
+// This is best effort and deliberately only chooses wording: a very long
+// generated name is digested differently, a stack can be renamed by hand, and a
+// stack created before the migration named its stacks carries no digest. A false
+// negative falls back to the generic message; nothing here gates behavior.
+func (c *TargetClient) appCarriesMigrationFingerprint(ctx context.Context, app TargetApp, source App) bool {
+	fingerprint := shortDigest(source.UUID)
+	if fingerprint == "" || app.ID <= 0 {
+		return false
+	}
+	instances, err := c.ListAppInstances(ctx, app.OrgID, app.ID)
+	if err != nil {
+		// Detection only improves a message, so a lookup failure must not fail
+		// the preflight that is already reporting a blocker.
+		return false
+	}
+	seen := map[int]bool{}
+	for _, instance := range instances {
+		stackID := instance.StackID
+		if stackID <= 0 || seen[stackID] {
+			continue
+		}
+		seen[stackID] = true
+		stack, err := c.GetStack(ctx, stackID)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(stack.Name, fingerprint) {
+			return true
+		}
+	}
+	return false
 }

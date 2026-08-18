@@ -18,13 +18,13 @@ func TestPrintReviewUsesTablesAndSeparateReviewSections(t *testing.T) {
 			ExportDigest: "export-digest",
 		},
 		Target: PlanTarget{
-			Org:                     "chingis23",
-			OrgID:                   48350498223106,
-			OrgName:                 "chingis23",
+			Org:                     "acme",
+			OrgID:                   900100200300400,
+			OrgName:                 "acme",
 			OrgRole:                 "owner",
-			Cluster:                 "213518072237423",
-			ClusterID:               213518072237423,
-			ClusterName:             "sdfbsdgre",
+			Cluster:                 "900500600700800",
+			ClusterID:               900500600700800,
+			ClusterName:             "production",
 			ClusterStatus:           "ok",
 			OrgOwnerOrAdminVerified: true,
 			DiscoveryVerified:       true,
@@ -166,8 +166,8 @@ func TestPrintReviewUsesTablesAndSeparateReviewSections(t *testing.T) {
 	}
 	for field, value := range map[string]string{
 		"Source":              "Demo - Dev (dev)",
-		"Target organization": "chingis23",
-		"Target cluster":      "sdfbsdgre",
+		"Target organization": "acme",
+		"Target cluster":      "production",
 		"Target CI":           "Wodby CI (built-in)",
 	} {
 		if !reviewTableContainsRow(text, field, value) {
@@ -185,8 +185,8 @@ func TestPrintReviewUsesTablesAndSeparateReviewSections(t *testing.T) {
 		"Target capabilities",
 		"app-1",
 		"instance-1",
-		"48350498223106",
-		"213518072237423",
+		"900100200300400",
+		"900500600700800",
 	} {
 		if strings.Contains(text, internalDetail) {
 			t.Fatalf("review output exposes internal detail %q:\n%s", internalDetail, text)

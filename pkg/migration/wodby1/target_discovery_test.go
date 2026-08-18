@@ -601,7 +601,7 @@ func TestTargetSelectorIDSupportsLargeWodbyIDs(t *testing.T) {
 		t.Skip("large Wodby IDs require a 64-bit CLI build")
 	}
 
-	const selector = "213518072237423"
+	const selector = "900500600700800"
 	id, isID, err := targetSelectorID("cluster", selector)
 	if err != nil {
 		t.Fatal(err)

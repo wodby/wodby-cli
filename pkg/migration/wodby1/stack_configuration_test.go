@@ -1,6 +1,7 @@
 package wodby1
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -471,4 +472,94 @@ func hasBlockingFindings(findings []ReviewItem) bool {
 		}
 	}
 	return false
+}
+
+// A single-instance migration must reach the same split as a whole-app one, so
+// that the app's other instances can be migrated later without either run
+// overwriting the other.
+func TestContextInstancesRestoreTheWholeAppSplit(t *testing.T) {
+	migrated := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
+	sibling := stackConfigurationTestInstance("dev", "DEV", "development", "shared")
+
+	withContext := stackConfigurationTestApp(migrated)
+	withContext.ContextInstances = []PreparedInstance{sibling}
+
+	contextual, findings, err := prepareStackConfigurationTest(withContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasBlockingFindings(findings) {
+		t.Fatalf("unexpected findings: %#v", findings)
+	}
+	wholeApp, _, err := prepareStackConfigurationTest(stackConfigurationTestApp(
+		stackConfigurationTestInstance("prod", "PROD", "production", "shared"),
+		stackConfigurationTestInstance("dev", "DEV", "development", "shared"),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(contextual.Services["php"].EnvVars, wholeApp.Services["php"].EnvVars) {
+		t.Fatalf(
+			"context split = %#v, whole-app split = %#v",
+			contextual.Services["php"].EnvVars, wholeApp.Services["php"].EnvVars,
+		)
+	}
+	// The value that differs per environment must not become app-wide.
+	prod := "PROD"
+	assertPreparedStackEnvVar(t, contextual.Services["php"].EnvVars, "APP_MODE", "production", &prod)
+	assertPreparedStackEnvVar(t, contextual.Services["php"].EnvVars, "SHARED", "shared", nil)
+}
+
+// Overrides belong to instances being created; a context instance has none to
+// apply because nothing creates it.
+func TestContextInstancesDoNotReceiveOverrides(t *testing.T) {
+	migrated := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
+	sibling := stackConfigurationTestInstance("dev", "DEV", "development", "shared")
+	app := stackConfigurationTestApp(migrated)
+	app.ContextInstances = []PreparedInstance{sibling}
+
+	configuration, _, err := prepareStackConfigurationTest(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configuration.Services["php"].EnvVars) == 0 {
+		t.Fatal("expected the split to produce stack service env vars")
+	}
+	if len(app.ContextInstances[0].Services) == 0 {
+		t.Fatal("context instance service mapping should be left intact")
+	}
+	for name, service := range app.ContextInstances[0].Services {
+		if len(service.InstanceEnvVars) != 0 || len(service.InstanceCronJobs) != 0 || service.InstanceVersion != "" {
+			t.Fatalf("context instance service %q received overrides: %#v", name, service)
+		}
+	}
+}
+
+// A genuinely single-instance app has no siblings, so its values really are
+// app-wide and must stay unscoped.
+func TestSingleInstanceAppWithoutSiblingsStaysAppWide(t *testing.T) {
+	configuration, _, err := prepareStackConfigurationTest(
+		stackConfigurationTestApp(stackConfigurationTestInstance("prod", "PROD", "production", "shared")),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPreparedStackEnvVar(t, configuration.Services["php"].EnvVars, "APP_MODE", "production", nil)
+}
+
+func assertPreparedStackEnvVarScoped(t *testing.T, variables []PreparedStackEnvVar, name string, envType *string) {
+	t.Helper()
+	for _, variable := range variables {
+		if variable.Name != name {
+			continue
+		}
+		if optionalStringValue(variable.EnvType) != optionalStringValue(envType) {
+			t.Fatalf(
+				"env var %q scope = %q, want %q",
+				name, optionalStringValue(variable.EnvType), optionalStringValue(envType),
+			)
+		}
+		return
+	}
+	t.Fatalf("env var %q is missing from %#v", name, variables)
 }

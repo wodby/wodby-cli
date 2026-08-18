@@ -82,7 +82,11 @@ func prepareStackConfiguration(app *PreparedAppMigration) (PreparedStackConfigur
 	instanceEnvVars := map[instanceServiceConfigKey][]EnvVar{}
 	instanceCrons := map[instanceServiceConfigKey][]CronJob{}
 
-	for _, instance := range app.Instances {
+	// Context instances take part in the split and nothing else. Deciding a
+	// value is app-wide means every instance of the app agrees on it, so a
+	// single-instance migration that could only see itself promoted its own
+	// values and a sibling migrated later overwrote them.
+	for _, instance := range append(append([]PreparedInstance(nil), app.Instances...), app.ContextInstances...) {
 		for _, source := range instance.Source.Services {
 			mapping, ok := instance.Services[source.Name]
 			if !ok || !source.Enabled {

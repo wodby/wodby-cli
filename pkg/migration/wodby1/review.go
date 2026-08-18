@@ -32,11 +32,6 @@ func PrintReview(w io.Writer, plan Plan, prepared ...PreparedMigration) {
 		{"Intentionally skipped", strconv.Itoa(plan.Summary.Intentionally)},
 	})
 
-	if reviewScopeHasItems(review, "", "") {
-		fmt.Fprintf(w, "\n%s\n", migrationColor(w, ansiBold+ansiCyan, "Migration-wide"))
-		printScopedReviewSections(w, "  ", review, "", "")
-	}
-
 	for appIndex, app := range plan.Apps {
 		targetAppName := app.Name
 		if plan.Target.AppID > 0 {
@@ -160,6 +155,11 @@ func PrintReview(w io.Writer, plan Plan, prepared ...PreparedMigration) {
 			}
 			printScopedNonMigrationSections(w, "    ", review, app.Name, instance.Name)
 		}
+	}
+
+	if reviewScopeHasItems(review, "", "") {
+		fmt.Fprintf(w, "\n%s\n", migrationColor(w, ansiBold+ansiCyan, "Migration-wide"))
+		printScopedReviewSections(w, "  ", review, "", "")
 	}
 }
 

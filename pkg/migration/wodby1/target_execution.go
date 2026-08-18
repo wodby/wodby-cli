@@ -392,6 +392,9 @@ func (c *TargetClient) ListStackEnvVars(ctx context.Context, stackRevID int) ([]
 	}
 	items := []TargetStackEnvVar{}
 	if err := c.client.Get(ctx, "/stack-revisions/"+strconv.Itoa(stackRevID)+"/env-vars", nil, &items); err != nil {
+		if isTargetNotFound(err) {
+			return nil, errors.New("target Wodby 2 API does not support stack-wide environment variables required by Wodby 1 migrations; deploy the matching backend version before resuming")
+		}
 		return nil, errors.Wrap(err, "list target Wodby 2 stack-wide environment variables")
 	}
 	for _, item := range items {

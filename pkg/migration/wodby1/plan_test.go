@@ -1886,7 +1886,7 @@ func TestBlockingSummaryMatchesWhatTheReviewRenders(t *testing.T) {
 			{Severity: SeverityBlocking, App: "demo", Instance: "prod", Subject: "a", Message: "shown"},
 			{Severity: SeverityBlocking, Subject: "b", Message: "migration-wide, shown"},
 			// Scoped to an instance the plan does not migrate.
-			{Severity: SeverityBlocking, App: "demo", Instance: "ski-dev", Subject: "c", Message: "unreachable"},
+			{Severity: SeverityBlocking, App: "demo", Instance: "stage", Subject: "c", Message: "unreachable"},
 		},
 	}
 	plan.computeSummary()

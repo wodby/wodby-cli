@@ -66,11 +66,73 @@ func TestExternalCIConfigurationWarningUsesDetectedProviderAndStack(t *testing.T
 		}}},
 	}
 	findings := externalCIConfigurationFindings(app)
-	if len(findings) != 1 || findings[0].Severity != SeverityServiceWarning ||
-		!strings.Contains(findings[0].Message, "identifies CircleCI") ||
-		!strings.Contains(findings[0].Message, "Wodby CLI 2.x") ||
-		!strings.Contains(findings[0].Message, "https://github.com/wodby/wodby-ci/blob/2.0/drupal/circleci/config.yml") {
+	if len(findings) != 1 || findings[0].Severity != SeverityServiceWarning {
 		t.Fatalf("findings = %#v", findings)
+	}
+	// Wodby 2 has CircleCI, but not the API token behind it, so the warning has
+	// to point at the integration the customer must bring.
+	for _, want := range []string{
+		"Wodby 1 uses CircleCI, which Wodby 2 supports",
+		"API token cannot be migrated",
+		"pass --target-ci-integration-id",
+		"otherwise Custom CI is used",
+		"WODBY_API_KEY and WODBY_APP_SERVICE_ID",
+		"https://github.com/wodby/wodby-ci/blob/2.0/drupal/circleci/config.yml",
+	} {
+		if !strings.Contains(findings[0].Message, want) {
+			t.Fatalf("warning missing %q: %s", want, findings[0].Message)
+		}
+	}
+	if strings.Contains(findings[0].Message, "does not identify a supported CI provider") {
+		t.Fatalf("a detected provider must not be reported as unidentified: %s", findings[0].Message)
+	}
+}
+
+// Wodby 2 has no Bitbucket provider, so a Bitbucket app migrates as Custom CI
+// and must not be told to create an integration Wodby 2 cannot offer.
+func TestExternalCIConfigurationWarningTreatsUnsupportedProvidersAsCustomCI(t *testing.T) {
+	app := PreparedAppMigration{
+		App: AppExport{App: App{UUID: "app-1", Name: "demo", Type: "drupal11"}},
+		Instances: []PreparedInstance{{Source: Instance{
+			UUID: "prod-1", Name: "prod",
+			Properties: map[string]interface{}{"deployment_type": "ci", "ci_provider": "bitbucket-pipelines"},
+			Stack:      Stack{Name: "drupal11"},
+		}}},
+	}
+	findings := externalCIConfigurationFindings(app)
+	if len(findings) != 1 {
+		t.Fatalf("findings = %#v", findings)
+	}
+	for _, want := range []string{
+		"Wodby 1 uses Bitbucket Pipelines, which Wodby 2 does not support",
+		"Custom CI is used",
+		"wodby ci init --provider bitbucket-pipelines",
+	} {
+		if !strings.Contains(findings[0].Message, want) {
+			t.Fatalf("warning missing %q: %s", want, findings[0].Message)
+		}
+	}
+	if strings.Contains(findings[0].Message, "--target-ci-integration-id") {
+		t.Fatalf("unsupported providers must not advertise an integration override: %s", findings[0].Message)
+	}
+}
+
+func TestPrepareCIIntegrationDoesNotNameUnsupportedProviders(t *testing.T) {
+	client := customCIIntegrationTestClient(t)
+	app := externalCITestApp(t, "bitbucket-pipelines")
+
+	integration, _, err := client.prepareCIIntegration(context.Background(), app, PlanTarget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The created integration really is custom-ci; naming it "Bitbucket
+	// Pipelines for ..." would imply a provider Wodby 2 does not have.
+	if !strings.HasPrefix(integration.Name, "ci-example-app-") || integration.Title != "CI for Example App" {
+		t.Fatalf("name = %q, title = %q", integration.Name, integration.Title)
+	}
+	if guidance := app.Instances[0].ExternalCI; guidance == nil ||
+		guidance.ProviderLabel != "Bitbucket Pipelines" || guidance.ProviderSupported {
+		t.Fatalf("guidance = %#v", app.Instances[0].ExternalCI)
 	}
 }
 
@@ -84,7 +146,8 @@ func TestExternalCIConfigurationWarningFallsBackToStackExamples(t *testing.T) {
 	}
 	findings := externalCIConfigurationFindings(app)
 	if len(findings) != 1 ||
-		!strings.Contains(findings[0].Message, "does not identify a supported CI provider") ||
+		!strings.Contains(findings[0].Message, "reports no provider") ||
+		!strings.Contains(findings[0].Message, "Custom CI is used") ||
 		!strings.Contains(findings[0].Message, "https://github.com/wodby/wodby-ci/tree/2.0/wordpress") {
 		t.Fatalf("findings = %#v", findings)
 	}
@@ -342,3 +405,116 @@ func backupInspection(serviceName, backupName string) TargetStackServiceInspecti
 }
 
 func stringPointer(value string) *string { return &value }
+
+func customCIIntegrationTestClient(t *testing.T) *TargetClient {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/providers/by-name/custom-ci" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(TargetProvider{ID: 501, RevID: 502, Name: "custom-ci", Title: "Custom CI"})
+	}))
+	t.Cleanup(server.Close)
+	return mustTargetExecutionClient(t, server.URL)
+}
+
+func externalCITestApp(t *testing.T, providers ...string) *PreparedAppMigration {
+	t.Helper()
+	app := &PreparedAppMigration{
+		App:       AppExport{App: App{UUID: "app-1", Name: "example-app", Title: "Example App", Type: "drupal11"}},
+		Instances: make([]PreparedInstance, 0, len(providers)),
+	}
+	for index, provider := range providers {
+		properties := map[string]interface{}{"deployment_type": "ci"}
+		if provider != "" {
+			properties["ci_provider"] = provider
+		}
+		app.Instances = append(app.Instances, PreparedInstance{Source: Instance{
+			UUID:       "instance-" + string(rune('a'+index)),
+			Name:       "instance-" + string(rune('a'+index)),
+			Properties: properties,
+			Stack:      Stack{Name: "drupal11"},
+		}})
+	}
+	return app
+}
+
+func TestPrepareCIIntegrationNamesItAfterTheWodby1Provider(t *testing.T) {
+	client := customCIIntegrationTestClient(t)
+	app := externalCITestApp(t, "github")
+
+	integration, _, err := client.prepareCIIntegration(context.Background(), app, PlanTarget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if integration == nil {
+		t.Fatal("external CI app must prepare a CI integration")
+	}
+	// Wodby 2 still backs it with custom-ci; only the identity is provider-named.
+	if integration.ProviderName != "custom-ci" {
+		t.Fatalf("provider = %q, want custom-ci", integration.ProviderName)
+	}
+	if !strings.HasPrefix(integration.Name, "ci-github-") {
+		t.Fatalf("name = %q, want a github-prefixed name", integration.Name)
+	}
+	if integration.Title != "GitHub Actions for Example App" {
+		t.Fatalf("title = %q", integration.Title)
+	}
+}
+
+func TestPrepareCIIntegrationFallsBackWhenProvidersDisagree(t *testing.T) {
+	client := customCIIntegrationTestClient(t)
+	app := externalCITestApp(t, "github", "gitlab")
+
+	integration, _, err := client.prepareCIIntegration(context.Background(), app, PlanTarget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(integration.Name, "ci-example-app-") || integration.Title != "CI for Example App" {
+		t.Fatalf("conflicting providers must stay generic: name = %q, title = %q", integration.Name, integration.Title)
+	}
+}
+
+func TestPrepareCIIntegrationIgnoresInstancesWithoutAReportedProvider(t *testing.T) {
+	client := customCIIntegrationTestClient(t)
+	app := externalCITestApp(t, "circleci", "")
+
+	integration, _, err := client.prepareCIIntegration(context.Background(), app, PlanTarget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(integration.Name, "ci-circleci-") || integration.Title != "CircleCI for Example App" {
+		t.Fatalf("name = %q, title = %q", integration.Name, integration.Title)
+	}
+}
+
+func TestPrepareCIIntegrationStaysGenericWithoutAnyProvider(t *testing.T) {
+	client := customCIIntegrationTestClient(t)
+	app := externalCITestApp(t, "")
+
+	integration, _, err := client.prepareCIIntegration(context.Background(), app, PlanTarget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(integration.Name, "ci-example-app-") || integration.Title != "CI for Example App" {
+		t.Fatalf("name = %q, title = %q", integration.Name, integration.Title)
+	}
+}
+
+func TestPrepareCIIntegrationRecordsBootstrapGuidancePerInstance(t *testing.T) {
+	client := customCIIntegrationTestClient(t)
+	app := externalCITestApp(t, "github")
+
+	if _, _, err := client.prepareCIIntegration(context.Background(), app, PlanTarget{}); err != nil {
+		t.Fatal(err)
+	}
+	guidance := app.Instances[0].ExternalCI
+	if guidance == nil {
+		t.Fatal("external CI instances must carry bootstrap guidance into the executor")
+	}
+	if guidance.ProviderLabel != "GitHub Actions" || !guidance.ProviderSupported ||
+		guidance.ExampleURL != "https://github.com/wodby/wodby-ci/blob/2.0/drupal/github-actions/wodby.yml" {
+		t.Fatalf("guidance = %#v", guidance)
+	}
+}

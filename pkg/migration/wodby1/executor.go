@@ -232,8 +232,16 @@ func (e *MigrationExecutor) Prepare(
 	}
 	failed := map[string]bool{}
 	failures := &instanceStageFailures{}
+	paused := &MigrationPausedError{}
+	// A paused instance is not a failed one: it stops here because a person has
+	// to act outside Wodby, with every recorded operation already successful.
 	recordFailure := func(item PreparedInstance, stage string, err error) {
 		failed[item.Source.UUID] = true
+		if blocked, ok := AsExternalActionRequired(err); ok {
+			paused.add(blocked)
+			e.reportProgress("Instance %q is paused: %v. Continuing with other instances.", item.Source.Name, blocked)
+			return
+		}
 		failures.add(item.Source.Name, stage, err)
 		e.reportProgress("Instance %q failed during %s: %v. Continuing with other instances.", item.Source.Name, stage, err)
 	}
@@ -335,8 +343,11 @@ func (e *MigrationExecutor) Prepare(
 		}
 	}
 	status := MigrationStatusRunning
-	if !failures.empty() {
+	switch {
+	case !failures.empty():
 		status = MigrationStatusFailed
+	case !paused.empty():
+		status = MigrationStatusAwaitingExternal
 	}
 	if err := state.SetStatus(status); err != nil {
 		return MigrationPhaseResult{}, err
@@ -346,6 +357,9 @@ func (e *MigrationExecutor) Prepare(
 	}
 	if !failures.empty() {
 		return MigrationPhaseResult{Phase: MigrationPhasePrepare, State: state}, failures
+	}
+	if !paused.empty() {
+		return MigrationPhaseResult{Phase: MigrationPhasePrepare, State: state}, paused
 	}
 	e.reportProgress("Target app %q (ID %d) is prepared.", app.Name, app.ID)
 	return MigrationPhaseResult{Phase: MigrationPhasePrepare, State: state}, nil
@@ -1770,7 +1784,7 @@ func promoteAppOperationForRecovery(state *MigrationState, operation string) err
 	}
 	item.Status = MigrationOperationIntent
 	state.App.Operations[operation] = item
-	if state.Status == MigrationStatusFailed {
+	if state.Status == MigrationStatusFailed || state.Status == MigrationStatusAwaitingExternal {
 		state.Status = MigrationStatusRunning
 	}
 	return state.Validate()
@@ -1795,7 +1809,7 @@ func promoteInstanceOperationForRecovery(state *MigrationState, sourceID, operat
 	}
 	item.Status = MigrationOperationIntent
 	resource.Operations[operation] = item
-	if state.Status == MigrationStatusFailed {
+	if state.Status == MigrationStatusFailed || state.Status == MigrationStatusAwaitingExternal {
 		state.Status = MigrationStatusRunning
 	}
 	return state.Validate()
@@ -2989,7 +3003,7 @@ func (e *MigrationExecutor) ensureTechnicalDeployment(
 			return err
 		}
 		if prepared.ExternalCIOnly {
-			build, err = e.ensureExternalCIBuild(ctx, state, prepared.Source.UUID, instance.ID, service.ID, prepared.BuildSource.Input)
+			build, err = e.ensureExternalCIBuild(ctx, state, prepared, prepared.Source.UUID, instance.ID, service.ID, prepared.BuildSource.Input)
 		} else {
 			build, err = e.ensureBuild(
 				ctx,
@@ -3070,6 +3084,7 @@ func technicalDeploymentInput(
 func (e *MigrationExecutor) ensureExternalCIBuild(
 	ctx context.Context,
 	state *MigrationState,
+	prepared PreparedInstance,
 	sourceID string,
 	instanceID int,
 	serviceID int,
@@ -3114,11 +3129,25 @@ func (e *MigrationExecutor) ensureExternalCIBuild(
 			return &build, nil
 		}
 	}
-	return nil, errors.Errorf(
-		"target instance ID %d is configured for Custom CI but has no completed build for service ID %d and the reviewed Git ref; run the target app's third-party CI pipeline once, then rerun the same --apply command",
-		instanceID,
-		serviceID,
-	)
+	blocked := &ExternalActionRequiredError{
+		Instance:         prepared.Source.Name,
+		TargetInstanceID: instanceID,
+		ServiceName:      prepared.BuildSource.ServiceName,
+		TargetServiceID:  serviceID,
+	}
+	if prepared.ExternalCI != nil {
+		blocked.ProviderKey = prepared.ExternalCI.ProviderKey
+		blocked.ProviderLabel = prepared.ExternalCI.ProviderLabel
+		blocked.ProviderSupported = prepared.ExternalCI.ProviderSupported
+		blocked.ExampleURL = prepared.ExternalCI.ExampleURL
+	}
+	// Only a linked repository pins the ref, and Custom CI instances usually
+	// have none. Naming a ref we do not actually match on would send the
+	// operator chasing the wrong branch.
+	if source.GitRef != nil {
+		blocked.GitRef = strings.TrimSpace(*source.GitRef)
+	}
+	return nil, blocked
 }
 
 func skippedCodeServiceNames(prepared PreparedInstance) map[string]struct{} {

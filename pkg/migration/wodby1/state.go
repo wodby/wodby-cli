@@ -43,7 +43,11 @@ const (
 	MigrationStatusInitialized MigrationStatus = "initialized"
 	MigrationStatusRunning     MigrationStatus = "running"
 	MigrationStatusFailed      MigrationStatus = "failed"
-	MigrationStatusComplete    MigrationStatus = "complete"
+	// MigrationStatusAwaitingExternal marks a run that stopped on a required
+	// action outside Wodby, such as the first Custom CI build. Every recorded
+	// operation succeeded; the same --apply command resumes once it is done.
+	MigrationStatusAwaitingExternal MigrationStatus = "awaiting_external"
+	MigrationStatusComplete         MigrationStatus = "complete"
 )
 
 type MigrationPhase string
@@ -236,7 +240,9 @@ func (s *MigrationState) CanRestartSafely() bool {
 	if s == nil || s.Validate() != nil {
 		return false
 	}
-	if s.Status != MigrationStatusInitialized && s.Status != MigrationStatusFailed {
+	if s.Status != MigrationStatusInitialized &&
+		s.Status != MigrationStatusFailed &&
+		s.Status != MigrationStatusAwaitingExternal {
 		return false
 	}
 	if s.Phase != MigrationPhasePlan && s.Phase != MigrationPhasePrepare {
@@ -955,7 +961,11 @@ func validateSourceInstanceSet(state *MigrationState, sourceInstanceIDs []string
 
 func validMigrationStatus(status MigrationStatus) bool {
 	switch status {
-	case MigrationStatusInitialized, MigrationStatusRunning, MigrationStatusFailed, MigrationStatusComplete:
+	case MigrationStatusInitialized,
+		MigrationStatusRunning,
+		MigrationStatusFailed,
+		MigrationStatusAwaitingExternal,
+		MigrationStatusComplete:
 		return true
 	default:
 		return false

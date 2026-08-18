@@ -1210,6 +1210,39 @@ func targetCatalogStackName(stack Stack) string {
 
 func addSourceStackCompatibilityReview(plan *Plan, app App, instance Instance, allowUnsupported bool) {
 	family := sourceStackFamily(instance.Stack)
+	familyFromPreset := false
+	if detection, found := detectDrupalNginxPreset(instance); found {
+		metadata := firstNonEmpty(strings.TrimSpace(instance.Stack.Type), strings.TrimSpace(instance.Stack.Name), family)
+		if detection.Conflict {
+			plan.addReview(
+				SeverityBlocking,
+				app.Name,
+				instance.Name,
+				"Drupal version detection",
+				fmt.Sprintf("enabled nginx environment variable NGINX_VHOST_PRESET has conflicting values %q; make the effective Wodby 1 nginx preset unambiguous before migration", detection.Values),
+			)
+			return
+		} else if detection.Family == "" {
+			plan.addReview(
+				SeverityConfirmation,
+				app.Name,
+				instance.Name,
+				"Drupal version detection",
+				fmt.Sprintf("enabled nginx environment variable NGINX_VHOST_PRESET=%q does not identify Drupal 8, 9, 10, or 11; migration will continue using Wodby 1 stack metadata %q", detection.Values[0], metadata),
+			)
+		} else {
+			family = detection.Family
+			familyFromPreset = true
+			major := strings.TrimPrefix(family, "drupal")
+			plan.addReview(
+				SeverityConfirmation,
+				app.Name,
+				instance.Name,
+				"Drupal version detection",
+				fmt.Sprintf("enabled nginx environment variable NGINX_VHOST_PRESET=%q indicates Drupal %s; migration will treat Wodby 1 stack metadata %q as Drupal %s and use the Wodby 2 Drupal 11 catalog stack. Confirm that the preset matches the application code before applying", detection.Values[0], major, metadata, major),
+			)
+		}
+	}
 	switch family {
 	case "drupal7":
 		plan.addReview(
@@ -1222,23 +1255,80 @@ func addSourceStackCompatibilityReview(plan *Plan, app App, instance Instance, a
 	case "drupal8", "drupal9":
 		major := strings.TrimPrefix(family, "drupal")
 		if !allowUnsupported {
+			message := fmt.Sprintf("Wodby 2 does not support Drupal %s stack metadata; confirm the application code already runs Drupal 10 or newer, then rerun with --allow-unsupported-drupal", major)
+			if familyFromPreset {
+				message = fmt.Sprintf("Wodby 2 does not support Drupal %s inferred from NGINX_VHOST_PRESET; confirm the application code already runs Drupal 10 or newer, then rerun with --allow-unsupported-drupal", major)
+			}
 			plan.addReview(
 				SeverityBlocking,
 				app.Name,
 				instance.Name,
 				"source stack compatibility",
-				fmt.Sprintf("Wodby 2 does not support Drupal %s stack metadata; confirm the application code already runs Drupal 10 or newer, then rerun with --allow-unsupported-drupal", major),
+				message,
 			)
 			return
+		}
+		message := fmt.Sprintf("Drupal %s stack metadata is being overridden; the CLI does not inspect application code, so verify the application already runs Drupal 10 or newer before applying", major)
+		if familyFromPreset {
+			message = fmt.Sprintf("Drupal %s inferred from NGINX_VHOST_PRESET is being overridden; the CLI does not inspect application code, so verify the application already runs Drupal 10 or newer before applying", major)
 		}
 		plan.addReview(
 			SeverityConfirmation,
 			app.Name,
 			instance.Name,
 			"IMPORTANT: source Drupal version",
-			fmt.Sprintf("Drupal %s stack metadata is being overridden; the CLI does not inspect application code, so verify the application already runs Drupal 10 or newer before applying", major),
+			message,
 		)
 	}
+}
+
+type drupalNginxPresetDetection struct {
+	Family   string
+	Values   []string
+	Conflict bool
+}
+
+func detectDrupalNginxPreset(instance Instance) (drupalNginxPresetDetection, bool) {
+	metadataFamily := sourceStackFamily(instance.Stack)
+	if metadataFamily != "drupal" && !strings.HasPrefix(metadataFamily, "drupal") {
+		return drupalNginxPresetDetection{}, false
+	}
+
+	values := map[string]bool{}
+	for _, service := range instance.Services {
+		if !strings.EqualFold(strings.TrimSpace(service.Name), "nginx") {
+			continue
+		}
+		for _, variable := range service.EnvVars {
+			if !variable.Enabled || !strings.EqualFold(strings.TrimSpace(variable.Name), "NGINX_VHOST_PRESET") {
+				continue
+			}
+			value := strings.ToLower(strings.TrimSpace(variable.Value))
+			if value != "" {
+				values[value] = true
+			}
+		}
+	}
+	if len(values) == 0 {
+		return drupalNginxPresetDetection{}, false
+	}
+
+	result := drupalNginxPresetDetection{Values: make([]string, 0, len(values))}
+	for value := range values {
+		result.Values = append(result.Values, value)
+	}
+	sort.Strings(result.Values)
+	if len(result.Values) != 1 {
+		result.Conflict = true
+		return result, true
+	}
+
+	compact := strings.NewReplacer("-", "", "_", "", " ", "").Replace(result.Values[0])
+	switch compact {
+	case "drupal7", "drupal8", "drupal9", "drupal10", "drupal11":
+		result.Family = compact
+	}
+	return result, true
 }
 
 func sourceEnvVarRequiresMigration(properties map[string]interface{}, envVar EnvVar) bool {

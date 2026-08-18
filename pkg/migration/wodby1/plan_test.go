@@ -426,6 +426,125 @@ func TestBuildPlanAllowsConfirmedDrupal8And9ButNeverDrupal7(t *testing.T) {
 	}
 }
 
+func TestBuildPlanInfersDrupalMajorFromEnabledNginxPreset(t *testing.T) {
+	for _, test := range []struct {
+		major          string
+		serviceEnabled bool
+	}{
+		{major: "10", serviceEnabled: true},
+		{major: "11", serviceEnabled: false},
+	} {
+		t.Run("Drupal "+test.major, func(t *testing.T) {
+			export := selectionTestExport("instance", "inst-dev")
+			export.Apps[0].Instances = export.Apps[0].Instances[1:]
+			instance := &export.Apps[0].Instances[0]
+			instance.Stack = Stack{Name: "customer-fork", Type: "drupal8", Custom: true}
+			instance.Services = []Service{{
+				Name: "nginx", Enabled: test.serviceEnabled,
+				EnvVars: []EnvVar{{Name: "NGINX_VHOST_PRESET", Value: "drupal" + test.major, Enabled: true, Origin: "default"}},
+			}}
+
+			plan, err := BuildPlan(export, PlanOptions{
+				SourceKind: "instance", SourceID: "inst-dev", SkipCode: true, SkipData: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hasReviewMessage(plan.Review, SeverityBlocking, "does not support Drupal") {
+				t.Fatalf("inferred Drupal %s remained blocked: %#v", test.major, plan.Review)
+			}
+			if !hasReviewMessage(plan.Review, SeverityConfirmation, "NGINX_VHOST_PRESET=\"drupal"+test.major+"\" indicates Drupal "+test.major) ||
+				!hasReviewMessage(plan.Review, SeverityConfirmation, "treat Wodby 1 stack metadata \"drupal8\" as Drupal "+test.major) {
+				t.Fatalf("inferred Drupal %s warning = %#v", test.major, plan.Review)
+			}
+			if got := plan.Apps[0].Instances[0].Stack.CatalogName; got != "drupal11" {
+				t.Fatalf("target catalog stack = %q, want drupal11", got)
+			}
+		})
+	}
+}
+
+func TestBuildPlanUsesNginxPresetForUnsupportedDrupalDecision(t *testing.T) {
+	export := selectionTestExport("instance", "inst-dev")
+	export.Apps[0].Instances = export.Apps[0].Instances[1:]
+	instance := &export.Apps[0].Instances[0]
+	instance.Stack = Stack{Name: "customer-fork", Type: "drupal8", Custom: true}
+	instance.Services = []Service{{
+		Name: "nginx", Enabled: true,
+		EnvVars: []EnvVar{{Name: "NGINX_VHOST_PRESET", Value: "drupal9", Enabled: true}},
+	}}
+
+	plan, err := BuildPlan(export, PlanOptions{
+		SourceKind: "instance", SourceID: "inst-dev", SkipCode: true, SkipData: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasReviewMessage(plan.Review, SeverityConfirmation, "indicates Drupal 9") ||
+		!hasReviewMessage(plan.Review, SeverityBlocking, "does not support Drupal 9 inferred from NGINX_VHOST_PRESET") {
+		t.Fatalf("Drupal 9 preset review = %#v", plan.Review)
+	}
+}
+
+func TestBuildPlanDoesNotTrustUnavailableOrConflictingNginxPreset(t *testing.T) {
+	tests := []struct {
+		name       string
+		services   []Service
+		severity   string
+		wantReview string
+	}{
+		{
+			name: "disabled preset",
+			services: []Service{{
+				Name: "nginx", Enabled: true,
+				EnvVars: []EnvVar{{Name: "NGINX_VHOST_PRESET", Value: "drupal10", Enabled: false}},
+			}},
+			severity:   SeverityBlocking,
+			wantReview: "does not support Drupal 8 stack metadata",
+		},
+		{
+			name: "unknown preset",
+			services: []Service{{
+				Name: "nginx", Enabled: true,
+				EnvVars: []EnvVar{{Name: "NGINX_VHOST_PRESET", Value: "php", Enabled: true}},
+			}},
+			severity:   SeverityConfirmation,
+			wantReview: "does not identify Drupal 8, 9, 10, or 11",
+		},
+		{
+			name: "conflicting presets",
+			services: []Service{{
+				Name: "nginx", Enabled: true,
+				EnvVars: []EnvVar{
+					{Name: "NGINX_VHOST_PRESET", Value: "drupal10", Enabled: true},
+					{Name: "NGINX_VHOST_PRESET", Value: "drupal11", Enabled: true},
+				},
+			}},
+			severity:   SeverityBlocking,
+			wantReview: "has conflicting values",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			export := selectionTestExport("instance", "inst-dev")
+			export.Apps[0].Instances = export.Apps[0].Instances[1:]
+			instance := &export.Apps[0].Instances[0]
+			instance.Stack = Stack{Name: "customer-fork", Type: "drupal8", Custom: true}
+			instance.Services = test.services
+			plan, err := BuildPlan(export, PlanOptions{
+				SourceKind: "instance", SourceID: "inst-dev", SkipCode: true, SkipData: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !hasReviewMessage(plan.Review, test.severity, test.wantReview) {
+				t.Fatalf("review does not contain %q: %#v", test.wantReview, plan.Review)
+			}
+		})
+	}
+}
+
 func TestSourceStackMetadataTypeIsAuthoritativeOverAncestor(t *testing.T) {
 	if got := sourceStackFamily(Stack{
 		Name: "customer-stack", Type: "custom-application", Custom: true, AncestorName: "drupal11",

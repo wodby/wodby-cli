@@ -317,8 +317,32 @@ func TestPrintReviewSeparatesMigrationAppAndInstanceScopes(t *testing.T) {
 	globalIndex := strings.Index(text, "Migration-wide")
 	appIndex := strings.Index(text, "App 1/1: demo → demo")
 	instanceIndex := strings.Index(text, "Instance 1/1: dev → dev")
-	if globalIndex < 0 || appIndex <= globalIndex || instanceIndex <= appIndex {
+	if appIndex < 0 || instanceIndex <= appIndex || globalIndex <= instanceIndex {
 		t.Fatalf("scope hierarchy is out of order:\n%s", text)
+	}
+}
+
+func TestPrintReviewPlacesMigrationWideSectionAfterAllApps(t *testing.T) {
+	plan := Plan{
+		Apps: []AppPlan{
+			{Name: "first", Instances: []InstancePlan{{Name: "dev"}}},
+			{Name: "second", Instances: []InstancePlan{{Name: "prod"}}},
+		},
+		Review: []ReviewItem{{
+			Severity: SeverityConfirmation,
+			Subject:  "global warning",
+			Message:  "review the complete migration",
+		}},
+	}
+
+	var output bytes.Buffer
+	PrintReview(&output, plan)
+	text := output.String()
+	lastAppIndex := strings.Index(text, "App 2/2: second → second")
+	lastInstanceIndex := strings.Index(text, "Instance 1/1: prod → prod")
+	globalIndex := strings.Index(text, "Migration-wide")
+	if lastAppIndex < 0 || lastInstanceIndex <= lastAppIndex || globalIndex <= lastInstanceIndex {
+		t.Fatalf("migration-wide section is not after every app and instance:\n%s", text)
 	}
 }
 

@@ -240,6 +240,18 @@ func TestTargetClientManagesStackWideEnvironmentVariables(t *testing.T) {
 	}
 }
 
+func TestTargetClientExplainsMissingStackEnvironmentVariableRESTSupport(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	defer server.Close()
+
+	client := mustTargetExecutionClient(t, server.URL)
+	_, err := client.ListStackEnvVars(context.Background(), 71)
+	if err == nil || !strings.Contains(err.Error(), "does not support stack-wide environment variables") ||
+		!strings.Contains(err.Error(), "deploy the matching backend version") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestTargetClientFindsAndAttachesMatchingCustomCertificate(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

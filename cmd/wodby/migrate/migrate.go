@@ -297,7 +297,7 @@ func bindFlags(cmd *cobra.Command, opts *options) {
 		&opts.allowUnsupportedDrupal,
 		"allow-unsupported-drupal",
 		false,
-		"Allow Drupal 8/9 stack metadata only after confirming the application code has already been upgraded to Drupal 10 or newer",
+		"Allow Drupal 8/9 when the nginx preset does not identify Drupal 10 or newer and you have independently confirmed the application was upgraded",
 	)
 	cmd.Flags().BoolVar(
 		&opts.addMissingServices,

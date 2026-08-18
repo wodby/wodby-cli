@@ -205,6 +205,11 @@ type ExportIssue struct {
 type AppExport struct {
 	App       App        `json:"app"`
 	Instances []Instance `json:"instances"`
+	// ContextInstances are the app's other instances, sent with a
+	// single-instance export so the stack/instance configuration split sees the
+	// whole app. They are never created: Wodby 1 omits the data needed to build
+	// them, and the migration treats them as read-only reference.
+	ContextInstances []Instance `json:"context_instances,omitempty"`
 }
 
 type App struct {
@@ -484,6 +489,21 @@ func (e Export) Validate() error {
 			if len(e.Apps) != 1 || len(e.Apps[0].Instances) != 1 ||
 				e.Apps[0].Instances[0].UUID != e.Source.UUID {
 				return fmt.Errorf("Wodby 1 migration/v2 instance export must contain exactly its requested source instance")
+			}
+			// Context instances describe the app's other instances so the
+			// configuration split matches a whole-app migration. The requested
+			// instance must not be repeated among them.
+			for _, context := range e.Apps[0].ContextInstances {
+				if context.UUID == e.Source.UUID {
+					return fmt.Errorf("Wodby 1 migration/v2 instance export repeats its source instance as context")
+				}
+			}
+		}
+		if e.Source.Kind != "instance" {
+			for _, app := range e.Apps {
+				if len(app.ContextInstances) != 0 {
+					return fmt.Errorf("Wodby 1 migration/v2 %s export must not carry context instances", e.Source.Kind)
+				}
 			}
 		}
 		if err := validateV2Identities(e.Apps); err != nil {

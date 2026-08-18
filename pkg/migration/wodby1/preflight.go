@@ -59,8 +59,13 @@ type PreparedMigration struct {
 }
 
 type PreparedAppMigration struct {
-	App                AppExport
-	Instances          []PreparedInstance
+	App       AppExport
+	Instances []PreparedInstance
+	// ContextInstances are the app's other instances, prepared only so the
+	// configuration split sees the whole app. Nothing creates them, so they are
+	// deliberately kept out of Instances rather than flagged inside it: every
+	// existing consumer of Instances stays correct without knowing about them.
+	ContextInstances   []PreparedInstance
 	StackConfiguration PreparedStackConfiguration
 	StackAdditions     []PreparedStackServiceAddition
 	Integrations       []PreparedIntegration
@@ -420,6 +425,32 @@ func (c *TargetClient) PreflightTarget(
 			preparedApp.Instances = append(preparedApp.Instances, preparedInstance)
 			findings = append(findings, instanceFindings...)
 		}
+		for contextIndex := range appPlan.ContextInstances {
+			contextPlan := &appPlan.ContextInstances[contextIndex]
+			source, found := contextSourceInstance(appExport, contextPlan.SourceUUID)
+			if !found {
+				return PreparedMigration{}, errors.Errorf("migration plan references unknown context instance %q", contextPlan.SourceUUID)
+			}
+			// Context instances resolve through the same path as migrated ones
+			// so their services and versions map identically; only their
+			// findings are dropped, because nothing about them is actionable.
+			preparedContext, _, err := c.preflightInstance(
+				ctx,
+				appExport.App,
+				source,
+				contextPlan,
+				plan.Target.OrgID,
+				plan.Target.ProjectID,
+				appPlan.Repository,
+				opts,
+				plan.Target.OrgCapabilities != nil && !plan.Target.OrgCapabilities.CronSchedules,
+				plan.Target.OrgCapabilities != nil && !plan.Target.OrgCapabilities.CustomDomains,
+			)
+			if err != nil {
+				return PreparedMigration{}, errors.Wrapf(err, "prepare context instance %q", contextPlan.Name)
+			}
+			preparedApp.ContextInstances = append(preparedApp.ContextInstances, preparedContext)
+		}
 		if len(preparedApp.Instances) != len(planInstances) {
 			return PreparedMigration{}, errors.Errorf("migration plan instance set does not match source app %q", appExport.App.UUID)
 		}
@@ -432,6 +463,24 @@ func (c *TargetClient) PreflightTarget(
 		stackConfiguration, stackFindings, err := prepareStackConfiguration(&preparedApp)
 		if err != nil {
 			return PreparedMigration{}, err
+		}
+		if len(preparedApp.ContextInstances) != 0 {
+			names := make([]string, 0, len(preparedApp.ContextInstances))
+			for _, item := range preparedApp.ContextInstances {
+				names = append(names, item.Source.Name)
+			}
+			sort.Strings(names)
+			findings = append(findings, ReviewItem{
+				Severity: SeverityMigration,
+				App:      appExport.App.Name,
+				Subject:  "app configuration context",
+				Message: fmt.Sprintf(
+					"the app's other instance(s) %s are read only here: they decide which settings belong to the"+
+						" shared target stack and which are per-instance overrides, exactly as a whole-app migration"+
+						" would, and are not created. Migrate them later into this same app with --target-app",
+					strings.Join(names, ", "),
+				),
+			})
 		}
 		promoteSharedServiceCapacity(&preparedApp, &stackConfiguration)
 		preparedApp.StackConfiguration = stackConfiguration
@@ -1561,4 +1610,13 @@ func stackVersionLabel(stack TargetStack) string {
 		return fmt.Sprintf("revision-%d", stack.LatestRevNumber)
 	}
 	return ""
+}
+
+func contextSourceInstance(app AppExport, sourceUUID string) (Instance, bool) {
+	for _, instance := range app.ContextInstances {
+		if instance.UUID == sourceUUID {
+			return instance, true
+		}
+	}
+	return Instance{}, false
 }

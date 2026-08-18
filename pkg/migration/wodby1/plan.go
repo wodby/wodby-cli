@@ -128,6 +128,11 @@ type AppPlan struct {
 	Repository    *RepositoryPlan   `json:"repository,omitempty"`
 	Integrations  []IntegrationPlan `json:"integrations,omitempty"`
 	Instances     []InstancePlan    `json:"instances"`
+	// ContextInstances describe the app's other instances for a
+	// single-instance migration. They exist so the stack/instance
+	// configuration split matches a whole-app migration and are never created,
+	// so they are kept out of Instances rather than flagged inside it.
+	ContextInstances []InstancePlan `json:"contextInstances,omitempty"`
 }
 
 type IntegrationPlan struct {
@@ -507,6 +512,16 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 		for _, instance := range instances {
 			instancePlan := buildInstancePlan(&plan, appExport.App, instance, opts, export.Schema == ExportSchemaV2)
 			appPlan.Instances = append(appPlan.Instances, instancePlan)
+		}
+		contextInstances := append([]Instance(nil), appExport.ContextInstances...)
+		sort.SliceStable(contextInstances, func(i, j int) bool {
+			return compareInstance(contextInstances[i], contextInstances[j]) < 0
+		})
+		for _, instance := range contextInstances {
+			// Resolved through the same path so the environment mapping that
+			// decides a value's scope is the one the operator configured.
+			instancePlan := buildInstancePlan(&plan, appExport.App, instance, opts, export.Schema == ExportSchemaV2)
+			appPlan.ContextInstances = append(appPlan.ContextInstances, instancePlan)
 		}
 		validateAppStackStrategy(&plan, &appPlan)
 		plan.Apps = append(plan.Apps, appPlan)

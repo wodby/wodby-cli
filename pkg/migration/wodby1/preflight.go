@@ -429,9 +429,23 @@ func (c *TargetClient) PreflightTarget(
 		sort.SliceStable(preparedApp.Instances, func(i, j int) bool {
 			return compareInstance(preparedApp.Instances[i].Source, preparedApp.Instances[j].Source) < 0
 		})
-		stackConfiguration, stackFindings, err := prepareStackConfiguration(&preparedApp)
+		// Only an app- or server-scoped migration exports every instance of the
+		// app; an instance-scoped one sees a single instance and must not treat
+		// its values as app-wide.
+		wholeApp := plan.Source.Kind != "instance"
+		stackConfiguration, stackFindings, err := prepareStackConfiguration(&preparedApp, wholeApp)
 		if err != nil {
 			return PreparedMigration{}, err
+		}
+		if !wholeApp {
+			findings = append(findings, ReviewItem{
+				Severity: SeverityMigration,
+				App:      appExport.App.Name,
+				Subject:  "instance-scoped configuration",
+				Message: "only this instance is being migrated, so its configuration is applied to the target" +
+					" stack scoped to its environment type rather than to every environment;" +
+					" migrate the app's other instances later into this same app with --target-app",
+			})
 		}
 		promoteSharedServiceCapacity(&preparedApp, &stackConfiguration)
 		preparedApp.StackConfiguration = stackConfiguration

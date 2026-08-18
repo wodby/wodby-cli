@@ -5,8 +5,16 @@ import (
 	"testing"
 )
 
+// prepareStackConfigurationTest models an app- or server-scoped migration,
+// which exports every instance of the app.
 func prepareStackConfigurationTest(app PreparedAppMigration) (PreparedStackConfiguration, []ReviewItem, error) {
-	return prepareStackConfiguration(&app)
+	return prepareStackConfiguration(&app, true)
+}
+
+// prepareInstanceScopedStackConfigurationTest models `migrate wodby1 instance`,
+// which exports one instance and cannot see the app's others.
+func prepareInstanceScopedStackConfigurationTest(app PreparedAppMigration) (PreparedStackConfiguration, []ReviewItem, error) {
+	return prepareStackConfiguration(&app, false)
 }
 
 func TestPrepareStackConfigurationScopesEnvironmentValues(t *testing.T) {
@@ -64,7 +72,7 @@ func TestPrepareStackConfigurationKeepsSameEnvironmentTypeDifferencesOnInstances
 		stackConfigurationTestInstance("dev-a", "DEV", "one", "shared"),
 		stackConfigurationTestInstance("dev-b", "DEV", "two", "shared"),
 	)
-	configuration, findings, err := prepareStackConfiguration(&app)
+	configuration, findings, err := prepareStackConfiguration(&app, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +105,7 @@ func TestPrepareStackConfigurationKeepsDifferentCronsOnInstances(t *testing.T) {
 	right.Services["php"] = rightService
 	app := stackConfigurationTestApp(left, right)
 
-	configuration, findings, err := prepareStackConfiguration(&app)
+	configuration, findings, err := prepareStackConfiguration(&app, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +135,7 @@ func TestPrepareStackConfigurationKeepsDifferentVersionsOnInstances(t *testing.T
 	right.Services["php"] = rightService
 	app := stackConfigurationTestApp(left, right)
 
-	configuration, findings, err := prepareStackConfiguration(&app)
+	configuration, findings, err := prepareStackConfiguration(&app, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,4 +479,86 @@ func hasBlockingFindings(findings []ReviewItem) bool {
 		}
 	}
 	return false
+}
+
+// An instance-scoped migration exports one instance, so "every instance I can
+// see defines this" is trivially true and says nothing about the app. Promoting
+// those values to all environments makes the app's other instances inherit them
+// when they are migrated later.
+func TestInstanceScopedMigrationScopesValuesToItsOwnEnvironment(t *testing.T) {
+	prod := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
+	prod.Source.Services[0].EnvVars = append(prod.Source.Services[0].EnvVars,
+		EnvVar{Name: "PROD_ONLY", Value: "live-secret", Enabled: true})
+
+	configuration, findings, err := prepareInstanceScopedStackConfigurationTest(stackConfigurationTestApp(prod))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasBlockingFindings(findings) {
+		t.Fatalf("unexpected findings: %#v", findings)
+	}
+	scope := "PROD"
+	for _, name := range []string{"APP_MODE", "PROD_ONLY", "SHARED"} {
+		assertPreparedStackEnvVarScoped(t, configuration.Services["php"].EnvVars, name, &scope)
+	}
+}
+
+// The same instance migrated as part of its whole app keeps the existing
+// behavior: a value shared by every instance is genuinely app-wide.
+func TestWholeAppMigrationStillPromotesSharedValues(t *testing.T) {
+	configuration, _, err := prepareStackConfigurationTest(stackConfigurationTestApp(
+		stackConfigurationTestInstance("prod", "PROD", "production", "shared"),
+		stackConfigurationTestInstance("dev", "DEV", "development", "shared"),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPreparedStackEnvVarScoped(t, configuration.Services["php"].EnvVars, "SHARED", nil)
+}
+
+// Migrating prod and then dev must not leave the two fighting over one value.
+func TestSequentialInstanceMigrationsDoNotCollide(t *testing.T) {
+	prodOnly, _, err := prepareInstanceScopedStackConfigurationTest(stackConfigurationTestApp(
+		stackConfigurationTestInstance("prod", "PROD", "production", "shared"),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	devOnly, _, err := prepareInstanceScopedStackConfigurationTest(stackConfigurationTestApp(
+		stackConfigurationTestInstance("dev", "DEV", "development", "shared"),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, first := range prodOnly.Services["php"].EnvVars {
+		for _, second := range devOnly.Services["php"].EnvVars {
+			if first.Name != second.Name {
+				continue
+			}
+			if optionalStringValue(first.EnvType) == optionalStringValue(second.EnvType) &&
+				first.Value != second.Value {
+				t.Fatalf(
+					"%q would overwrite the earlier migration: %q vs %q at the same scope",
+					first.Name, first.Value, second.Value,
+				)
+			}
+		}
+	}
+}
+
+func assertPreparedStackEnvVarScoped(t *testing.T, variables []PreparedStackEnvVar, name string, envType *string) {
+	t.Helper()
+	for _, variable := range variables {
+		if variable.Name != name {
+			continue
+		}
+		if optionalStringValue(variable.EnvType) != optionalStringValue(envType) {
+			t.Fatalf(
+				"env var %q scope = %q, want %q",
+				name, optionalStringValue(variable.EnvType), optionalStringValue(envType),
+			)
+		}
+		return
+	}
+	t.Fatalf("env var %q is missing from %#v", name, variables)
 }

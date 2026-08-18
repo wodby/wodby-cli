@@ -70,7 +70,18 @@ type instanceServiceConfigKey struct {
 	sourceName string
 }
 
-func prepareStackConfiguration(app *PreparedAppMigration) (PreparedStackConfiguration, []ReviewItem, error) {
+// prepareStackConfiguration splits source configuration into stack-level values
+// shared by the whole app and per-instance overrides.
+//
+// wholeApp reports whether this migration covers every instance of the app. It
+// gates promotion of a value to an unscoped, all-environment stack value: a
+// value seen on every migrated instance is only evidence about the app when the
+// migration can see the whole app. An instance-scoped migration sees one
+// instance, so "shared by everything I can see" is trivially true and proves
+// nothing; those values are scoped to their own environment type instead, which
+// leaves room for the app's other instances to be migrated later without
+// overwriting each other.
+func prepareStackConfiguration(app *PreparedAppMigration, wholeApp bool) (PreparedStackConfiguration, []ReviewItem, error) {
 	if app == nil {
 		return PreparedStackConfiguration{}, nil, fmt.Errorf("prepared app is required")
 	}
@@ -120,7 +131,7 @@ func prepareStackConfiguration(app *PreparedAppMigration) (PreparedStackConfigur
 			findings = append(findings, versionFindings...)
 		}
 
-		envVars, envOverrides, envFindings := preparedStackEnvVars(app.App.App.Name, targetName, items)
+		envVars, envOverrides, envFindings := preparedStackEnvVars(app.App.App.Name, targetName, items, wholeApp)
 		serviceConfig.EnvVars = envVars
 		for key, variables := range envOverrides {
 			instanceEnvVars[key] = append(instanceEnvVars[key], variables...)
@@ -142,7 +153,7 @@ func prepareStackConfiguration(app *PreparedAppMigration) (PreparedStackConfigur
 		}
 
 		if !derivative {
-			crons, cronOverrides, cronFindings := preparedStackCrons(app.App.App.Name, targetName, items)
+			crons, cronOverrides, cronFindings := preparedStackCrons(app.App.App.Name, targetName, items, wholeApp)
 			serviceConfig.CronSchedules = append(serviceConfig.CronSchedules, crons...)
 			for key, schedules := range cronOverrides {
 				instanceCrons[key] = append(instanceCrons[key], schedules...)
@@ -460,7 +471,7 @@ func preparedStackVersionOptions(appName, targetName string, items []stackConfig
 	return inputs, overrides, nil, nil
 }
 
-func preparedStackEnvVars(appName, targetName string, items []stackConfigServiceInstance) ([]PreparedStackEnvVar, map[instanceServiceConfigKey][]EnvVar, []ReviewItem) {
+func preparedStackEnvVars(appName, targetName string, items []stackConfigServiceInstance, wholeApp bool) ([]PreparedStackEnvVar, map[instanceServiceConfigKey][]EnvVar, []ReviewItem) {
 	expectedByEnv := map[string]map[string]bool{}
 	observations := map[string][]stackEnvObservation{}
 	findings := []ReviewItem{}
@@ -547,7 +558,7 @@ func preparedStackEnvVars(appName, targetName string, items []stackConfigService
 		for _, expected := range expectedByEnv {
 			expectedTotal += len(expected)
 		}
-		if allSame && len(uniqueStackEnvInstances(all)) == expectedTotal && len(overridesForEnvVariable(overrides, name)) == 0 {
+		if wholeApp && allSame && len(uniqueStackEnvInstances(all)) == expectedTotal && len(overridesForEnvVariable(overrides, name)) == 0 {
 			result = append(result, PreparedStackEnvVar{Name: name, Value: allValue, Secret: allSecret})
 			continue
 		}
@@ -619,7 +630,7 @@ func preparedStackSettings(appName, targetName string, items []stackConfigServic
 	return result, findings
 }
 
-func preparedStackCrons(appName, targetName string, items []stackConfigServiceInstance) ([]PreparedStackCronSchedule, map[instanceServiceConfigKey][]CronJob, []ReviewItem) {
+func preparedStackCrons(appName, targetName string, items []stackConfigServiceInstance, wholeApp bool) ([]PreparedStackCronSchedule, map[instanceServiceConfigKey][]CronJob, []ReviewItem) {
 	expectedByEnv := map[string]map[string]bool{}
 	observations := map[string][]stackCronObservation{}
 	findings := []ReviewItem{}
@@ -692,7 +703,7 @@ func preparedStackCrons(appName, targetName string, items []stackConfigServiceIn
 		for _, expected := range expectedByEnv {
 			expectedTotal += len(expected)
 		}
-		if len(uniqueStackCronInstances(all)) == expectedTotal && len(overridesForCron(overrides, name, targetName)) == 0 {
+		if wholeApp && len(uniqueStackCronInstances(all)) == expectedTotal && len(overridesForCron(overrides, name, targetName)) == 0 {
 			result = append(result, all[0].cron)
 			continue
 		}

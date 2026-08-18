@@ -1853,3 +1853,52 @@ func equalPreflightStrings(left []string, right []string) bool {
 	}
 	return true
 }
+
+// The whole-app conclusion is drawn from the migration's source kind, because
+// only an app- or server-scoped export contains every instance of the app.
+func TestPreflightTargetReportsInstanceScopedConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		kind       string
+		wantReview bool
+	}{
+		{"instance", true},
+		{"app", false},
+	} {
+		t.Run(test.kind, func(t *testing.T) {
+			export := preflightFixtureExport(false)
+			// An instance export is identified by its instance UUID.
+			sourceUUID := "app-1"
+			if test.kind == "instance" {
+				sourceUUID = export.Apps[0].Instances[0].UUID
+			}
+			export.Source = &ExportSource{Kind: test.kind, UUID: sourceUUID}
+			options := preflightOwnerPlanOptions()
+			options.SkipCode = true
+			options.SkipData = true
+			options.SourceKind = test.kind
+			options.SourceID = sourceUUID
+			plan := preflightBuildPlan(t, export, options)
+
+			api := newPreflightTargetAPI(t, preflightOfficialCatalog())
+			if _, err := api.client.PreflightTarget(
+				context.Background(), export, &plan,
+				TargetPreflightOptions{SkipCode: true, SkipData: true},
+			); err != nil {
+				t.Fatal(err)
+			}
+
+			found := false
+			for _, item := range plan.Review {
+				if item.Subject == "instance-scoped configuration" {
+					found = true
+					if !strings.Contains(item.Message, "--target-app") {
+						t.Fatalf("the notice must point at how to migrate the rest: %q", item.Message)
+					}
+				}
+			}
+			if found != test.wantReview {
+				t.Fatalf("instance-scoped review item present = %v, want %v", found, test.wantReview)
+			}
+		})
+	}
+}

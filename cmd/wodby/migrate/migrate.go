@@ -744,11 +744,10 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 		}
 		return rejectBlockedMigrationAction(cmd, plan, action, prepared)
 	}
-	if reviewedPlan != nil && plan.PlanHash != reviewedPlan.PlanHash {
-		return errors.Errorf(
-			"cannot continue from saved plan %s because the current executable plan differs; the saved plan was not overwritten. Rerun with the original source/options, or use --restart only if the resume state contains no target mutations",
-			planPath,
-		)
+	if reviewedPlan != nil {
+		if err := wodby1.RestoreReviewedPlanForResume(&plan, *reviewedPlan); err != nil {
+			return errors.Wrap(err, "cannot continue from saved plan because the current source or options change its executable actions; the saved plan was not overwritten")
+		}
 	}
 	if err := ensureArtifactDirectories(planPath, statePath); err != nil {
 		return err
@@ -1295,11 +1294,10 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 		}
 		return rejectBlockedMigrationAction(cmd, plan, action, prepared)
 	}
-	if reviewedPlan != nil && plan.PlanHash != reviewedPlan.PlanHash {
-		return errors.Errorf(
-			"cannot continue from saved server plan %s because the current executable plan differs; the saved plan was not overwritten. Rerun with the original source/options, or use --restart only when every per-app resume state contains no target mutations",
-			planPath,
-		)
+	if reviewedPlan != nil {
+		if err := wodby1.RestoreReviewedPlanForResume(&plan, *reviewedPlan); err != nil {
+			return errors.Wrap(err, "cannot continue from saved server plan because the current source or options change its executable actions; the saved plan was not overwritten")
+		}
 	}
 	if err := ensureArtifactDirectories(planPath, statePath); err != nil {
 		return err

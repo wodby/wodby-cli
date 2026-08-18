@@ -208,6 +208,50 @@ func TestPinReviewedTargetsRejectsChangedOptionsWithoutMutatingCurrent(t *testin
 	}
 }
 
+func TestRestoreReviewedPlanForResumeAllowsReviewPresentationChanges(t *testing.T) {
+	reviewed := reviewedPlanFixture(t)
+	current, err := cloneMigrationPlan(reviewed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Review = []ReviewItem{{
+		Severity: SeverityConfirmation,
+		Subject:  "updated explanation",
+		Message:  "newer CLI wording",
+	}}
+	current.Summary = PlanSummary{Apps: 99, Confirmation: 1}
+	current.Status = "requires_review"
+	current.PlanHash, err = current.contentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RestoreReviewedPlanForResume(&current, reviewed); err != nil {
+		t.Fatal(err)
+	}
+	if current.PlanHash != reviewed.PlanHash || current.Status != reviewed.Status || len(current.Review) != len(reviewed.Review) {
+		t.Fatalf("restored plan = %#v, want reviewed artifact", current)
+	}
+}
+
+func TestRestoreReviewedPlanForResumeRejectsExecutableChanges(t *testing.T) {
+	reviewed := reviewedPlanFixture(t)
+	current, err := cloneMigrationPlan(reviewed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Apps[0].Instances[0].Services[0].Action = "skip"
+	current.PlanHash, err = current.contentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = RestoreReviewedPlanForResume(&current, reviewed)
+	if err == nil || !strings.Contains(err.Error(), "executable migration actions changed") {
+		t.Fatalf("RestoreReviewedPlanForResume() error = %v", err)
+	}
+}
+
 func TestValidateReviewedAcceptsExactlyOneInstanceSource(t *testing.T) {
 	plan := reviewedPlanFixture(t)
 	plan.Source.Kind = "instance"

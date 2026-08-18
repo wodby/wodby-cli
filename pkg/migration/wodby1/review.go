@@ -13,7 +13,7 @@ import (
 )
 
 func PrintReview(w io.Writer, plan Plan, prepared ...PreparedMigration) {
-	review := reviewItemsWithPromotedCommonScope(plan.Review, plan.Apps)
+	review := reviewItemsWithPromotedCommonScope(reviewItemsWithReachableScope(plan.Review, plan.Apps), plan.Apps)
 	fmt.Fprintf(w, "%s\n", migrationColor(w, ansiBold+ansiCyan, "Wodby 1 to Wodby 2 migration plan"))
 	printReviewTable(w, "  ", []string{"Field", "Value"}, reviewOverviewRows(plan))
 	fmt.Fprintf(w, "\nSummary:\n")
@@ -161,6 +161,39 @@ func PrintReview(w io.Writer, plan Plan, prepared ...PreparedMigration) {
 		fmt.Fprintf(w, "\n%s\n", migrationColor(w, ansiBold+ansiCyan, "Migration-wide"))
 		printScopedReviewSections(w, "  ", review, "", "")
 	}
+}
+
+// reviewItemsWithReachableScope re-scopes items whose app or instance the plan
+// does not contain, so the summary can never count a blocker the operator has no
+// section to read it in. Such an item indicates a bug in whatever produced it;
+// showing it migration-wide keeps it visible while it is diagnosed, because
+// hiding a blocker leaves the run unresolvable.
+func reviewItemsWithReachableScope(items []ReviewItem, apps []AppPlan) []ReviewItem {
+	instanceNames := map[string]map[string]bool{}
+	for _, app := range apps {
+		names := map[string]bool{}
+		for _, instance := range app.Instances {
+			names[instance.Name] = true
+		}
+		instanceNames[app.Name] = names
+	}
+	result := make([]ReviewItem, 0, len(items))
+	for _, item := range items {
+		if item.App != "" {
+			names, appFound := instanceNames[item.App]
+			switch {
+			case !appFound:
+				item.App = ""
+				item.Instance = ""
+			case item.Instance != "" && !names[item.Instance]:
+				item.Instance = ""
+			}
+		} else if item.Instance != "" {
+			item.Instance = ""
+		}
+		result = append(result, item)
+	}
+	return result
 }
 
 func preparedInstanceForReview(prepared PreparedMigration, sourceUUID string) (PreparedInstance, bool) {

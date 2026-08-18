@@ -1,6 +1,7 @@
 package wodby1
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -1868,5 +1869,108 @@ func TestPlanHashTreatsOwnerAndAdminAsTheSameAuthorizationClass(t *testing.T) {
 	}
 	if tamperedHash == ownerHash {
 		t.Fatal("role outside the authorized owner/admin class did not change plan hash")
+	}
+}
+
+// A review item counted in the summary but scoped to something the renderer
+// never walks is unresolvable: the operator is told to fix N blockers and shown
+// fewer, with no way to reach the rest. This is the invariant that catches it.
+func TestBlockingSummaryMatchesWhatTheReviewRenders(t *testing.T) {
+	plan := Plan{
+		Apps: []AppPlan{{
+			SourceUUID: "app-1",
+			Name:       "demo",
+			Instances:  []InstancePlan{{SourceUUID: "inst-1", Name: "prod"}},
+		}},
+		Review: []ReviewItem{
+			{Severity: SeverityBlocking, App: "demo", Instance: "prod", Subject: "a", Message: "shown"},
+			{Severity: SeverityBlocking, Subject: "b", Message: "migration-wide, shown"},
+			// Scoped to an instance the plan does not migrate.
+			{Severity: SeverityBlocking, App: "demo", Instance: "ski-dev", Subject: "c", Message: "unreachable"},
+		},
+	}
+	plan.computeSummary()
+
+	var rendered bytes.Buffer
+	PrintReview(&rendered, plan)
+	text := rendered.String()
+
+	shown := 0
+	for _, item := range plan.Review {
+		if item.Severity != SeverityBlocking {
+			continue
+		}
+		if strings.Contains(text, item.Message) {
+			shown++
+		}
+	}
+	if plan.Summary.Blocking != shown {
+		t.Fatalf(
+			"summary counts %d blocking item(s) but the review renders %d; an item the operator cannot see cannot be resolved",
+			plan.Summary.Blocking, shown,
+		)
+	}
+}
+
+// The CLI meets Wodby 1 deployments that predate context-instance issue
+// scoping, so it must drop those issues itself rather than block a migration of
+// a different instance.
+func TestContextInstanceExportIssuesDoNotBlockAnotherInstance(t *testing.T) {
+	export := Export{
+		Schema:          ExportSchemaV2,
+		GeneratedAt:     100,
+		SecretsIncluded: true,
+		Source:          &ExportSource{Kind: "instance", UUID: "inst-1"},
+		Apps: []AppExport{{
+			App:              App{UUID: "app-1", Name: "demo"},
+			Instances:        []Instance{exportContextTestInstance("inst-1", "prod", "prod")},
+			ContextInstances: []Instance{exportContextTestInstance("inst-2", "dev", "dev")},
+		}},
+		Issues: []ExportIssue{
+			{
+				Code:     "service.configuration_unsupported",
+				Severity: SeverityBlocking,
+				Path:     "apps.app-1.instances.inst-2.services.php.configuration.implementation",
+				Message:  "belongs to an instance this migration does not create",
+			},
+			{
+				Code:     "service.configuration_unsupported",
+				Severity: SeverityBlocking,
+				Path:     "apps.app-1.instances.inst-1.services.php.configuration.ports",
+				Message:  "belongs to the migrated instance",
+			},
+			{
+				Code:     "source.unknown_shape",
+				Severity: SeverityBlocking,
+				Path:     "apps.app-1",
+				Message:  "an unrecognized path is still reported",
+			},
+		},
+	}
+
+	contextOnly := contextOnlyInstanceUUIDs(export)
+	if !contextOnly["inst-2"] || contextOnly["inst-1"] {
+		t.Fatalf("context-only instances = %#v", contextOnly)
+	}
+	if got := issueInstanceUUID(export.Issues[0].Path); got != "inst-2" {
+		t.Fatalf("issueInstanceUUID() = %q", got)
+	}
+	// An unrecognized shape must fail open and stay reported.
+	if got := issueInstanceUUID("apps.app-1"); got != "" {
+		t.Fatalf("issueInstanceUUID() on a non-instance path = %q", got)
+	}
+}
+
+// An instance that is both migrated and listed as context keeps its own issues.
+func TestMigratedInstanceIsNeverTreatedAsContextOnly(t *testing.T) {
+	export := Export{
+		Apps: []AppExport{{
+			App:              App{UUID: "app-1", Name: "demo"},
+			Instances:        []Instance{exportContextTestInstance("inst-1", "prod", "prod")},
+			ContextInstances: []Instance{exportContextTestInstance("inst-1", "prod", "prod")},
+		}},
+	}
+	if contextOnlyInstanceUUIDs(export)["inst-1"] {
+		t.Fatal("an instance being migrated must never be treated as context only")
 	}
 }

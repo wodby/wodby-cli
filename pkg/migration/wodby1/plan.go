@@ -402,8 +402,14 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 		}
 	}
 
+	contextOnlyInstances := contextOnlyInstanceUUIDs(export)
 	for _, issue := range export.Issues {
 		if handledLegacyCapacityIssue(issue) {
+			continue
+		}
+		// A Wodby 1 deployment that predates context-instance issue scoping
+		// still reports them. They belong to a migration of that instance.
+		if uuid := issueInstanceUUID(issue.Path); uuid != "" && contextOnlyInstances[uuid] {
 			continue
 		}
 		severity := issue.Severity
@@ -519,8 +525,13 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 		})
 		for _, instance := range contextInstances {
 			// Resolved through the same path so the environment mapping that
-			// decides a value's scope is the one the operator configured.
-			instancePlan := buildInstancePlan(&plan, appExport.App, instance, opts, export.Schema == ExportSchemaV2)
+			// decides a value's scope is the one the operator configured, but
+			// against a throwaway plan: nothing about an instance this migration
+			// does not create is actionable, and a review item naming it cannot
+			// be resolved by the operator. buildInstancePlan touches its plan
+			// argument only through addReview, so discarding it is enough.
+			scratch := Plan{}
+			instancePlan := buildInstancePlan(&scratch, appExport.App, instance, opts, export.Schema == ExportSchemaV2)
 			appPlan.ContextInstances = append(appPlan.ContextInstances, instancePlan)
 		}
 		validateAppStackStrategy(&plan, &appPlan)
@@ -2059,4 +2070,39 @@ func (p *Plan) computeSummary() {
 	default:
 		p.Status = "source_inventory_unvalidated"
 	}
+}
+
+// contextOnlyInstanceUUIDs collects instances present only as configuration
+// context. An instance that is also being migrated is never treated as context,
+// so its own issues are always reported.
+func contextOnlyInstanceUUIDs(export Export) map[string]bool {
+	migrated := map[string]bool{}
+	for _, app := range export.AppExports() {
+		for _, instance := range app.Instances {
+			migrated[instance.UUID] = true
+		}
+	}
+	contextOnly := map[string]bool{}
+	for _, app := range export.AppExports() {
+		for _, instance := range app.ContextInstances {
+			if instance.UUID != "" && !migrated[instance.UUID] {
+				contextOnly[instance.UUID] = true
+			}
+		}
+	}
+	return contextOnly
+}
+
+// issueInstanceUUID reads the instance an export issue belongs to from its
+// dotted path, such as apps.APP_UUID.instances.INSTANCE_UUID.services.php. It
+// returns an empty string for any other shape, so an unrecognized path is
+// reported rather than silently dropped.
+func issueInstanceUUID(path string) string {
+	parts := strings.Split(path, ".")
+	for index := 0; index+1 < len(parts); index++ {
+		if parts[index] == "instances" {
+			return parts[index+1]
+		}
+	}
+	return ""
 }

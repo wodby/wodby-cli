@@ -1853,3 +1853,72 @@ func equalPreflightStrings(left []string, right []string) bool {
 	}
 	return true
 }
+
+// Wodby 2 records nothing about an app's origin, so the generated stack name is
+// the only durable link back to the source app it was migrated from.
+func TestDetectsAnAppCreatedByAnEarlierMigrationOfTheSameSource(t *testing.T) {
+	source := App{UUID: "app-1", Name: "demo", Title: "Demo"}
+	generated := generatedStackNaming(TargetStack{Name: "drupal11", Title: "Drupal 11"}, source)
+
+	for _, test := range []struct {
+		name      string
+		stackName string
+		want      bool
+	}{
+		{"stack this migration would generate", generated.Name, true},
+		{"unrelated stack of the same catalog", "drupal11", false},
+		{"stack generated for a different source app", "drupal11-demo-" + shortDigest("app-2"), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stackRequests int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/v1/app-instances":
+					writeTargetExecutionJSON(t, w, []TargetAppInstance{{
+						ID: 9, AppID: 101, Name: "prod", ClusterID: 3, EnvID: 4,
+						StackID: 55, StackRevID: 56,
+					}})
+				case r.URL.Path == "/v1/stacks/55":
+					stackRequests++
+					writeTargetExecutionJSON(t, w, TargetStack{
+						ID: 55, RevID: 56, Name: test.stackName, Status: "OK", OrgID: 1,
+					})
+				default:
+					t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+			}))
+			defer server.Close()
+
+			client := mustTargetExecutionClient(t, server.URL)
+			got := client.appCarriesMigrationFingerprint(
+				context.Background(),
+				TargetApp{ID: 101, OrgID: 1, Name: "demo"},
+				source,
+			)
+			if got != test.want {
+				t.Fatalf("appCarriesMigrationFingerprint() = %v, want %v", got, test.want)
+			}
+			if stackRequests != 1 {
+				t.Fatalf("stack lookups = %d, want 1", stackRequests)
+			}
+		})
+	}
+}
+
+// Detection only chooses wording, so a lookup failure must never fail a
+// preflight that is already reporting a blocker.
+func TestMigrationFingerprintDetectionFailsQuietly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := mustTargetExecutionClient(t, server.URL)
+	if client.appCarriesMigrationFingerprint(
+		context.Background(),
+		TargetApp{ID: 101, OrgID: 1, Name: "demo"},
+		App{UUID: "app-1", Name: "demo"},
+	) {
+		t.Fatal("an unreachable target must not be reported as a previous migration")
+	}
+}

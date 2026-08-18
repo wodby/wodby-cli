@@ -20,6 +20,9 @@ type (
 	ServiceDeploymentInput struct {
 		Name  string `json:"name"`
 		Image string `json:"image"`
+		// UnmanagedImage reports an image that was not built FROM the service
+		// image. Omitted when false so older backends are unaffected.
+		UnmanagedImage bool `json:"unmanagedImage,omitempty"`
 	}
 	AppDeployment struct {
 		ID ID `json:"id"`

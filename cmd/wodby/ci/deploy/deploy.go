@@ -106,8 +106,9 @@ func deploymentServices(builtServices []types.BuiltService, serviceNames []strin
 		for _, svc := range builtServices {
 			if svc.Released {
 				servicesToDeploy = append(servicesToDeploy, &types.ServiceDeploymentInput{
-					Name:  svc.Name,
-					Image: svc.Image,
+					Name:           svc.Name,
+					Image:          svc.Image,
+					UnmanagedImage: svc.Unmanaged,
 				})
 			}
 		}
@@ -127,8 +128,9 @@ func deploymentServices(builtServices []types.BuiltService, serviceNames []strin
 				return nil, errors.New(fmt.Sprintf("Service %s hasn't been released", svc.Name))
 			}
 			servicesToDeploy = append(servicesToDeploy, &types.ServiceDeploymentInput{
-				Name:  svc.Name,
-				Image: svc.Image,
+				Name:           svc.Name,
+				Image:          svc.Image,
+				UnmanagedImage: svc.Unmanaged,
 			})
 			break
 		}

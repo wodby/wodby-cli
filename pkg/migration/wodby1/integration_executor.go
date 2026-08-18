@@ -86,7 +86,14 @@ func (e *MigrationExecutor) ensureTargetIntegrations(
 			_ = SaveMigrationState(e.statePath, state)
 			return PreparedMigration{}, errors.Errorf("resolved target integration %q does not match the reviewed organization and scope", item.Key)
 		}
-		if err := state.MarkAppOperationSuccessWithIDs(operation, result.Integration.ID, 0); err != nil {
+		// Record whether this migration created the integration or reused one
+		// that already existed, so rollback never deletes a shared integration
+		// it merely adopted.
+		if result.Created {
+			if err := state.MarkAppOperationCreated(operation, result.Integration.ID, 0); err != nil {
+				return PreparedMigration{}, err
+			}
+		} else if err := state.MarkAppOperationSuccessWithIDs(operation, result.Integration.ID, 0); err != nil {
 			return PreparedMigration{}, err
 		}
 		if err := SaveMigrationState(e.statePath, state); err != nil {

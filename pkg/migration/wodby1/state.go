@@ -122,6 +122,11 @@ type MigrationState struct {
 	Phase     MigrationPhase                     `json:"phase"`
 	App       MigrationResourceState             `json:"app"`
 	Instances map[string]*MigrationResourceState `json:"instances"`
+	// TracksProvenance marks a state written by a CLI that records whether each
+	// target resource was created or adopted. It is absent in older state
+	// files, where a missing Created flag proves nothing, so rollback must
+	// treat their integrations as unknown instead of as reused.
+	TracksProvenance bool `json:"tracksProvenance,omitempty"`
 }
 
 type MigrationResourceState struct {
@@ -138,6 +143,12 @@ type MigrationOperationState struct {
 	IntentAt    time.Time                `json:"intentAt"`
 	UpdatedAt   time.Time                `json:"updatedAt"`
 	FailureCode string                   `json:"failureCode,omitempty"`
+	// Created distinguishes a target resource this migration brought into
+	// existence from one it adopted or reused. Rollback deletes only the
+	// former, and its absence is not proof of reuse: state written before this
+	// field existed records nothing, so rollback must treat those as unknown
+	// rather than as safe to delete.
+	Created bool `json:"created,omitempty"`
 }
 
 // NewMigrationState creates an in-memory state bound to identity. Call
@@ -165,12 +176,13 @@ func NewMigrationState(identity MigrationStateIdentity, sourceInstanceIDs []stri
 			ID:           identity.Source.ID,
 			ConfigDigest: identity.Source.ConfigDigest,
 		},
-		PlanHash:  identity.PlanHash,
-		Target:    identity.Target,
-		Status:    MigrationStatusInitialized,
-		Phase:     MigrationPhasePlan,
-		App:       *newMigrationResourceState(),
-		Instances: instances,
+		PlanHash:         identity.PlanHash,
+		Target:           identity.Target,
+		Status:           MigrationStatusInitialized,
+		Phase:            MigrationPhasePlan,
+		App:              *newMigrationResourceState(),
+		Instances:        instances,
+		TracksProvenance: true,
 	}
 	if err := state.Validate(); err != nil {
 		return nil, err
@@ -288,6 +300,22 @@ func RemoveMigrationStateAfterTargetDeletion(path string, expected MigrationStat
 	return removeMigrationState(path, expected, targetAppID)
 }
 
+// RemoveMigrationStateAfterRollback removes a state whose recorded target
+// resources the caller has just deleted. Unlike a restart, a rollback is only
+// reached after successful target mutations, so the restart-safety check does
+// not apply; the identity is still revalidated under the state lock so a stale
+// caller cannot remove a different migration's state.
+//
+// Removing it matters: a state left behind after a rollback would let a later
+// --apply resume onto resources that no longer exist.
+func RemoveMigrationStateAfterRollback(path string, expected MigrationStateIdentity) error {
+	return removeMigrationState(path, expected, rollbackCompleted)
+}
+
+// rollbackCompleted tells removeMigrationState that the caller undid the
+// migration, rather than proving no mutation happened or naming a deleted app.
+const rollbackCompleted = -1
+
 func removeMigrationState(path string, expected MigrationStateIdentity, deletedTargetAppID int) error {
 	if err := expected.validate(); err != nil {
 		return err
@@ -299,10 +327,14 @@ func removeMigrationState(path string, expected MigrationStateIdentity, deletedT
 	if state.Identity() != expected {
 		return ErrMigrationStateIdentityMismatch
 	}
-	if deletedTargetAppID == 0 && !state.CanRestartSafely() {
-		return ErrMigrationStateUnsafeRestart
-	}
-	if deletedTargetAppID != 0 && state.App.TargetID != deletedTargetAppID {
+	switch {
+	case deletedTargetAppID == rollbackCompleted:
+		// The caller deleted the recorded resources; nothing left to protect.
+	case deletedTargetAppID == 0:
+		if !state.CanRestartSafely() {
+			return ErrMigrationStateUnsafeRestart
+		}
+	case state.App.TargetID != deletedTargetAppID:
 		return ErrMigrationStateIdentityMismatch
 	}
 	if err := verifyMigrationStateTargetUnchanged(path, info); err != nil {
@@ -571,6 +603,18 @@ func (s *MigrationState) MarkAppOperationSuccessWithIDs(
 	taskID int,
 ) error {
 	return s.markOperationSuccess(&s.App, operation, targetID, taskID)
+}
+
+// MarkAppOperationCreated records a successful operation that created the
+// target resource, as opposed to adopting an existing one.
+func (s *MigrationState) MarkAppOperationCreated(operation string, targetID, taskID int) error {
+	if err := s.markOperationSuccess(&s.App, operation, targetID, taskID); err != nil {
+		return err
+	}
+	current := s.App.Operations[operation]
+	current.Created = true
+	s.App.Operations[operation] = current
+	return s.Validate()
 }
 
 func (s *MigrationState) MarkAppOperationFailure(operation string, failureCode string) error {

@@ -2545,3 +2545,61 @@ func TestServerScopePausedResultKeepsThePausedStatus(t *testing.T) {
 		t.Fatalf("wrapped message lost its guidance: %v", wrapped)
 	}
 }
+
+func TestRollbackFlagIsExposedAndMutuallyExclusive(t *testing.T) {
+	cmd := newWodby1InstanceCommand()
+	if cmd.Flags().Lookup("rollback") == nil {
+		t.Fatal("--rollback flag is missing")
+	}
+	for _, conflicting := range []string{"apply", "verify", "restart"} {
+		opts := defaultOptions()
+		opts.sourceBaseURL = "https://example.com"
+		opts.sourceToken = testSourceToken
+		opts.targetCluster = "cluster"
+		opts.output = "text"
+		opts.rollback = true
+		switch conflicting {
+		case "apply":
+			opts.apply = true
+		case "verify":
+			opts.verify = true
+		case "restart":
+			opts.apply, opts.restart = true, true
+		}
+		if err := validateOptions(opts); err == nil ||
+			!strings.Contains(err.Error(), "--rollback cannot be combined") {
+			t.Fatalf("--rollback with --%s returned %v", conflicting, err)
+		}
+	}
+}
+
+func TestRollbackConfirmationRequiresTheAppName(t *testing.T) {
+	cmd := newWodby1InstanceCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetIn(strings.NewReader("wrong-name\n"))
+	// A bare y/N is too easy to answer on the wrong terminal for something
+	// that deletes imported data.
+	if err := confirmRollback(cmd, false, "demo"); err == nil ||
+		!strings.Contains(err.Error(), "no Wodby 2 resource was deleted") {
+		t.Fatalf("mismatched confirmation returned %v", err)
+	}
+
+	cmd.SetIn(strings.NewReader("demo\n"))
+	if err := confirmRollback(cmd, false, "demo"); err != nil {
+		t.Fatalf("typed app name should confirm: %v", err)
+	}
+}
+
+func TestRollbackJSONOutputRequiresExplicitApproval(t *testing.T) {
+	cmd := newWodby1InstanceCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	if err := cmd.Flags().Set("output", "json"); err != nil {
+		t.Skipf("json output flag unavailable: %v", err)
+	}
+	if err := confirmRollback(cmd, false, "demo"); err == nil ||
+		!strings.Contains(err.Error(), "requires --yes") {
+		t.Fatalf("non-interactive rollback returned %v", err)
+	}
+}

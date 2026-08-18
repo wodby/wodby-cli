@@ -420,7 +420,7 @@ func (e *MigrationExecutor) ensureGeneratedTargetStack(
 			if err := promoteAppOperationForRecovery(state, generatedStackOperation); err != nil {
 				return PreparedMigration{}, err
 			}
-			if err := state.MarkAppOperationSuccessWithIDs(generatedStackOperation, generated.ID, generated.RevID); err != nil {
+			if err := state.MarkAppOperationCreated(generatedStackOperation, generated.ID, generated.RevID); err != nil {
 				return PreparedMigration{}, err
 			}
 			if err := SaveMigrationState(e.statePath, state); err != nil {
@@ -467,7 +467,7 @@ func (e *MigrationExecutor) ensureGeneratedTargetStack(
 		_ = SaveMigrationState(e.statePath, state)
 		return PreparedMigration{}, err
 	}
-	if err := state.MarkAppOperationSuccessWithIDs(generatedStackOperation, generated.ID, generated.RevID); err != nil {
+	if err := state.MarkAppOperationCreated(generatedStackOperation, generated.ID, generated.RevID); err != nil {
 		return PreparedMigration{}, err
 	}
 	if err := SaveMigrationState(e.statePath, state); err != nil {

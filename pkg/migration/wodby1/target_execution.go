@@ -3445,3 +3445,64 @@ func targetEqualOptionalID(a, b *int) bool {
 	}
 	return *a == *b
 }
+
+// DeleteApp removes an app and, through Wodby 2, every app instance under it.
+// The returned task covers that whole cascade.
+func (c *TargetClient) DeleteApp(ctx context.Context, appID int) (TargetOperationResult, error) {
+	if err := targetRequirePositiveID("app", appID); err != nil {
+		return TargetOperationResult{}, err
+	}
+	var result TargetOperationResult
+	if err := c.client.Delete(ctx, "/apps/"+strconv.Itoa(appID), nil, &result); err != nil {
+		return TargetOperationResult{}, errors.Wrap(err, "delete target Wodby 2 app")
+	}
+	if err := targetValidateOptionalPositiveID("app deletion task", result.TaskID); err != nil {
+		return TargetOperationResult{}, err
+	}
+	return result, nil
+}
+
+// DeleteAppInstance removes a single app instance, used when the migration
+// added instances to an app that already existed and must not be deleted.
+func (c *TargetClient) DeleteAppInstance(ctx context.Context, appInstanceID int) (TargetOperationResult, error) {
+	if err := targetRequirePositiveID("app instance", appInstanceID); err != nil {
+		return TargetOperationResult{}, err
+	}
+	var result TargetOperationResult
+	if err := c.client.Delete(ctx, "/app-instances/"+strconv.Itoa(appInstanceID), nil, &result); err != nil {
+		return TargetOperationResult{}, errors.Wrap(err, "delete target Wodby 2 app instance")
+	}
+	if err := targetValidateOptionalPositiveID("app instance deletion task", result.TaskID); err != nil {
+		return TargetOperationResult{}, err
+	}
+	return result, nil
+}
+
+// DeleteStack removes a stack the migration generated. Wodby 2 refuses while an
+// app instance still references it, which is why rollback deletes apps first.
+func (c *TargetClient) DeleteStack(ctx context.Context, stackID int) (TargetOperationResult, error) {
+	if err := targetRequirePositiveID("stack", stackID); err != nil {
+		return TargetOperationResult{}, err
+	}
+	var result TargetOperationResult
+	if err := c.client.Delete(ctx, "/stacks/"+strconv.Itoa(stackID), nil, &result); err != nil {
+		return TargetOperationResult{}, errors.Wrap(err, "delete generated Wodby 2 stack")
+	}
+	return result, nil
+}
+
+// DeleteIntegration removes an integration the migration created. Integrations
+// it merely reused are never passed here.
+func (c *TargetClient) DeleteIntegration(ctx context.Context, integrationID int) (TargetOperationResult, error) {
+	if err := targetRequirePositiveID("integration", integrationID); err != nil {
+		return TargetOperationResult{}, err
+	}
+	var result TargetOperationResult
+	if err := c.client.Delete(ctx, "/integrations/"+strconv.Itoa(integrationID), nil, &result); err != nil {
+		return TargetOperationResult{}, errors.Wrap(err, "delete target Wodby 2 integration")
+	}
+	if err := targetValidateOptionalPositiveID("integration deletion task", result.TaskID); err != nil {
+		return TargetOperationResult{}, err
+	}
+	return result, nil
+}

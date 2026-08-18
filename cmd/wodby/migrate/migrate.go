@@ -36,6 +36,7 @@ type options struct {
 	apply         bool
 	verify        bool
 	restart       bool
+	rollback      bool
 	yes           bool
 
 	targetProject    string
@@ -143,7 +144,9 @@ all components to a different complete snapshot, or
 not migrated. Apply is resumable and stores its plan and state in the system
 temporary directory. When state exists, the same --apply command preserves the saved plan
 and continues completed work. --restart replaces it only when state proves that
-no target mutation occurred.`,
+no target mutation occurred. --rollback deletes the Wodby 2 resources this
+migration created and discards its state; it refuses once --verify has
+succeeded, because DNS then points at Wodby 2.`,
 		Example: `  export WODBY1_SOURCE_TOKEN=...
   export WODBY_API_KEY=...
 
@@ -182,7 +185,9 @@ individual snapshots, or --skip-data to omit data. Changes after each selected
 backup completed are not migrated. Test the
 migrated apps before changing DNS, then use --verify. When per-app state exists,
 --apply preserves the aggregate saved plan and continues completed work;
---restart is allowed only before any target mutation.`,
+--restart is allowed only before any target mutation. --rollback deletes the
+Wodby 2 resources this migration created and discards its state; it refuses
+once --verify has succeeded, because DNS then points at Wodby 2.`,
 		Example: `  export WODBY1_SOURCE_TOKEN=...
   export WODBY_API_KEY=...
 
@@ -233,7 +238,9 @@ snapshots, or --skip-data to omit data.
 Changes after each selected backup completed are not migrated. If a target mutation is ambiguous, inspect Wodby 2 and pass
 --retry-ambiguous only with the exact operation ID printed by the command. When
 state exists, --apply preserves the saved plan and continues completed work;
---restart is allowed only before any target mutation.`,
+--restart is allowed only before any target mutation. --rollback deletes the
+Wodby 2 resources this migration created and discards its state; it refuses
+once --verify has succeeded, because DNS then points at Wodby 2.`,
 		Example: `  export WODBY1_SOURCE_TOKEN=...
   export WODBY_API_KEY=...
 
@@ -272,6 +279,7 @@ func bindFlags(cmd *cobra.Command, opts *options) {
 	cmd.Flags().BoolVar(&opts.apply, "apply", false, "Create the target and import data using the displayed plan")
 	cmd.Flags().BoolVar(&opts.verify, "verify", false, "Verify the applied migration after testing and DNS cutover")
 	cmd.Flags().BoolVar(&opts.restart, "restart", false, "Start a new applied plan only when saved state proves that no target mutation occurred (requires --apply)")
+	cmd.Flags().BoolVar(&opts.rollback, "rollback", false, "Delete the Wodby 2 resources this migration created and discard its resume state")
 	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "Approve a new migration plan without an interactive prompt")
 
 	cmd.Flags().StringVar(&opts.targetProject, "target-project", "", "Wodby 2 project ID or exact name (defaults to a project-owned cluster's owner; otherwise organization-owned)")
@@ -381,6 +389,15 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 	planExists, err := artifactExists(planPath)
 	if err != nil {
 		return err
+	}
+	if opts.rollback {
+		if !stateExists {
+			return errors.Errorf(
+				"no migration state found at %s; there is nothing this migration created to roll back",
+				statePath,
+			)
+		}
+		return runMigrationRollback(cmd, opts, planPath, planExists, statePath)
 	}
 	if opts.verify && !stateExists {
 		return errors.Errorf("no applied migration state found at %s; run the same command with --apply first", statePath)
@@ -1493,6 +1510,9 @@ func validateOptions(opts *options) error {
 	if opts.restart && !opts.apply {
 		return errors.New("--restart requires --apply")
 	}
+	if opts.rollback && (opts.apply || opts.verify || opts.restart) {
+		return errors.New("--rollback cannot be combined with --apply, --verify, or --restart")
+	}
 	if len(opts.sourceBackups) != 0 && opts.skipData {
 		return errors.New("--source-backup cannot be used with --skip-data")
 	}
@@ -2246,6 +2266,115 @@ func printApplyReview(cmd *cobra.Command, plan wodby1.Plan, continuing bool, pre
 		fmt.Fprintln(cmd.OutOrStdout(), "\nApplying the migration plan shown above.")
 	}
 	return nil
+}
+
+// runMigrationRollback deletes the Wodby 2 resources this migration created and
+// discards its resume state. It reads the plan only to revalidate the state's
+// identity; every deletion target comes from the state itself, so a rollback
+// can never remove something the migration did not record creating.
+func runMigrationRollback(
+	cmd *cobra.Command,
+	opts *options,
+	planPath string,
+	planExists bool,
+	statePath string,
+) (runErr error) {
+	if !planExists {
+		return errors.Errorf(
+			"migration state exists at %s but its plan is missing at %s; restore the plan before rolling back",
+			statePath,
+			planPath,
+		)
+	}
+	reviewed, err := wodby1.LoadReviewedPlan(planPath)
+	if err != nil {
+		return err
+	}
+
+	// Hold the lock for the whole rollback so a concurrent --apply cannot race
+	// deletions against new mutations.
+	stateLock, err := wodby1.AcquireMigrationStateLock(statePath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := stateLock.Close(); runErr == nil && err != nil {
+			runErr = err
+		}
+	}()
+
+	state, err := wodby1.LoadMigrationState(statePath, migrationStateIdentity(reviewed))
+	if err != nil {
+		return err
+	}
+	rollback, err := wodby1.PlanRollback(state)
+	if err != nil {
+		return err
+	}
+
+	appName := reviewedPlanAppName(reviewed)
+	w := cmd.OutOrStdout()
+	fmt.Fprintln(w, cliColor(w, cliColorBold+cliColorRed, "\nMigration rollback"))
+	fmt.Fprintln(w)
+	fmt.Fprint(w, rollback.Describe(appName))
+	if err := confirmRollback(cmd, opts.yes, appName); err != nil {
+		return err
+	}
+
+	targetClient, err := wodby1.NewTargetClient(types.APIConfig{
+		Endpoint: strings.TrimSpace(viper.GetString("api_base_url")),
+		Key:      strings.TrimSpace(viper.GetString("api_key")),
+	})
+	if err != nil {
+		return err
+	}
+	executor, err := wodby1.NewMigrationExecutor(targetClient, wodby1.MigrationExecutorOptions{
+		StatePath:        statePath,
+		PollInterval:     opts.pollInterval,
+		OperationTimeout: opts.waitTimeout,
+		Progress:         migrationProgressReporter(cmd),
+	})
+	if err != nil {
+		return err
+	}
+	if err := executor.Rollback(cmd.Context(), state, rollback, appName); err != nil {
+		return errors.Wrapf(
+			err,
+			"migration rollback stopped; inspect Wodby 2 and rerun the same --rollback command to continue (state: %s)",
+			statePath,
+		)
+	}
+	fmt.Fprintln(w, cliColor(w, cliColorGreen, "\nRollback completed."))
+	fmt.Fprintf(w, "Removed the resume state at %s; Wodby 1 was not touched.\n", statePath)
+	return nil
+}
+
+// confirmRollback requires the app name to be typed back. Rollback destroys
+// imported data, so a bare y/N is too easy to answer on the wrong terminal.
+func confirmRollback(cmd *cobra.Command, approved bool, appName string) error {
+	if approved {
+		fmt.Fprintln(cmd.OutOrStdout(), cliColor(cmd.OutOrStdout(), cliColorGreen, "Rollback approved with --yes."))
+		return nil
+	}
+	if planOutputJSON(cmd) {
+		return errors.New("--output json requires --yes when rolling a migration back")
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Type the app name %q to confirm: ", appName)
+	line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return errors.Wrap(err, "read rollback confirmation")
+	}
+	if strings.TrimSpace(line) != appName {
+		return errors.New("rollback canceled; no Wodby 2 resource was deleted")
+	}
+	return nil
+}
+
+func reviewedPlanAppName(plan wodby1.Plan) string {
+	if len(plan.Apps) == 0 {
+		return ""
+	}
+	return plan.Apps[0].Name
 }
 
 func confirmApply(cmd *cobra.Command, approved bool) error {

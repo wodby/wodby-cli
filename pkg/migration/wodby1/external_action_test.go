@@ -9,17 +9,19 @@ import (
 
 func TestExternalActionNextStepsExplainThePipelineWork(t *testing.T) {
 	blocked := &ExternalActionRequiredError{
-		Instance:         "prod",
-		TargetInstanceID: 4100,
-		ServiceName:      "php",
-		TargetServiceID:  4200,
-		ProviderLabel:    "GitHub Actions",
-		ExampleURL:       "https://github.com/wodby/wodby-ci/blob/2.0/drupal/github-actions/wodby.yml",
+		Instance:           "prod",
+		TargetInstanceID:   4100,
+		ServiceName:        "php",
+		TargetServiceID:    4200,
+		ProviderKey:        "github",
+		ProviderLabel:      "GitHub Actions",
+		ProviderHasExample: true,
+		ExampleURL:         "https://github.com/wodby/wodby-ci/blob/2.0/drupal/github-actions/wodby.yml",
 	}
 	steps := blocked.NextSteps()
 	for _, want := range []string{
 		"prod",
-		"GitHub Actions pipeline to Wodby CLI 2.x",
+		"GitHub Actions configuration to Wodby CLI 2.x",
 		"https://github.com/wodby/wodby-ci/blob/2.0/drupal/github-actions/wodby.yml",
 		"All examples: https://github.com/wodby/wodby-ci/tree/2.0",
 		"WODBY_API_KEY",
@@ -105,6 +107,78 @@ func TestWodbyCIExampleURLPrefersTheMostSpecificPage(t *testing.T) {
 	for _, test := range tests {
 		if got := wodbyCIExampleURL(test.stack, test.path); got != test.want {
 			t.Fatalf("wodbyCIExampleURL(%q, %q) = %q, want %q", test.stack, test.path, got, test.want)
+		}
+	}
+}
+
+// Wodby CI 1.0 shipped Bitbucket and Travis examples and Wodby 1 autodetects
+// Jenkins, but wodby/wodby-ci 2.0 covers GitHub Actions, GitLab CI, and
+// CircleCI only. Linking a stack page as "the example closest to this app"
+// would send those operators looking for a file that does not exist.
+func TestExternalActionAdmitsWhenWodby2HasNoExampleForTheProvider(t *testing.T) {
+	for _, test := range []struct{ key, label string }{
+		{"travisci", "Travis CI"},
+		{"bitbucket-pipelines", "Bitbucket Pipelines"},
+		{"jenkins", "Jenkins"},
+	} {
+		t.Run(test.key, func(t *testing.T) {
+			steps := (&ExternalActionRequiredError{
+				Instance: "prod", ServiceName: "php", TargetServiceID: 42,
+				ProviderKey: test.key, ProviderLabel: test.label,
+				ExampleURL: "https://github.com/wodby/wodby-ci/tree/2.0/drupal",
+			}).NextSteps()
+
+			if !strings.Contains(steps, "Wodby 2 ships no "+test.label+" example") ||
+				!strings.Contains(steps, wodby2CIProviderLabels) {
+				t.Fatalf("missing provider example must be stated plainly:\n%s", steps)
+			}
+			// Without the override the build is recorded as "unknown".
+			if !strings.Contains(steps, "wodby ci init --provider "+test.key) {
+				t.Fatalf("unsupported provider needs the --provider hint:\n%s", steps)
+			}
+		})
+	}
+}
+
+// The Wodby 1 CLI writes exactly these values to a build's provider field; see
+// pkg/types/types.go on the Wodby 1 branch. Every one must map, or the
+// migration silently degrades to generic naming and a root link.
+func TestEveryWodby1AutodetectedProviderIsRecognized(t *testing.T) {
+	for _, test := range []struct {
+		stored, provider, label string
+		wantExample             bool
+	}{
+		{"github", "github", "GitHub Actions", true},
+		{"gitlab", "gitlab", "GitLab CI", true},
+		{"circleci", "circleci", "CircleCI", true},
+		{"travisci", "travisci", "Travis CI", false},
+		{"bitbucket-pipelines", "bitbucket-pipelines", "Bitbucket Pipelines", false},
+		{"jenkins", "jenkins", "Jenkins", false},
+	} {
+		t.Run(test.stored, func(t *testing.T) {
+			provider, label, examplePath := normalizedWodby1CIProvider(test.stored)
+			if provider != test.provider || label != test.label {
+				t.Fatalf("normalizedWodby1CIProvider(%q) = %q, %q", test.stored, provider, label)
+			}
+			if (examplePath != "") != test.wantExample {
+				t.Fatalf("%q example path = %q, want present = %v", test.stored, examplePath, test.wantExample)
+			}
+		})
+	}
+}
+
+// Wodby 1 stores the literal "Unknown" when it detected no CI environment, and
+// `wodby ci init --provider` takes free text.
+func TestUnrecognizedWodby1ProvidersStayGeneric(t *testing.T) {
+	for _, value := range []string{"Unknown", "", "  ", "teamcity", "some-internal-runner"} {
+		if provider, label, path := normalizedWodby1CIProvider(value); provider != "" || label != "" || path != "" {
+			t.Fatalf("normalizedWodby1CIProvider(%q) = %q, %q, %q", value, provider, label, path)
+		}
+	}
+	// Spellings a person may type into --provider still resolve.
+	for _, value := range []string{"GitHub Actions", "gitlab ci", "Circle CI", "Bitbucket Pipelines", "TRAVIS-CI"} {
+		if provider, _, _ := normalizedWodby1CIProvider(value); provider == "" {
+			t.Fatalf("normalizedWodby1CIProvider(%q) was not recognized", value)
 		}
 	}
 }

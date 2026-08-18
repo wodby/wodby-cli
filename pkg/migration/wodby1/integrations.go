@@ -200,12 +200,14 @@ func commonWodby1CIProvider(app PreparedAppMigration) (provider, label string) {
 // needs to explain the manual bootstrap build. The source app and instance are
 // both in scope here and are not threaded into the executor.
 func prepareExternalCIGuidance(app App, instance Instance) *PreparedExternalCI {
-	_, label, examplePath := normalizedWodby1CIProvider(
+	provider, label, examplePath := normalizedWodby1CIProvider(
 		stringProperty(instance.Properties, "ci_provider"),
 	)
 	return &PreparedExternalCI{
-		ProviderLabel: label,
-		ExampleURL:    wodbyCIExampleURL(wodbyCIExampleStack(app, instance), examplePath),
+		ProviderKey:        provider,
+		ProviderLabel:      label,
+		ProviderHasExample: examplePath != "",
+		ExampleURL:         wodbyCIExampleURL(wodbyCIExampleStack(app, instance), examplePath),
 	}
 }
 
@@ -225,7 +227,12 @@ func externalCIConfigurationFindings(app PreparedAppMigration) []ReviewItem {
 		} else if reportedProvider != "" {
 			message = fmt.Sprintf("Wodby 1's current deployed build reports CI provider %q, but no provider-specific Wodby 2 example is available", reportedProvider)
 		}
-		message += "; Wodby CLI usage for third-party CI changed in Wodby 2. Update the pipeline to use Wodby CLI 2.x with WODBY_API_KEY and WODBY_APP_SERVICE_ID. Start from " + link
+		message += "; Wodby CLI usage for third-party CI changed in Wodby 2. Update the pipeline to use Wodby CLI 2.x with WODBY_API_KEY and WODBY_APP_SERVICE_ID."
+		if provider != "" && providerPath == "" {
+			message += " Wodby 2 ships no " + providerLabel + " example and Wodby CLI 2.x does not autodetect it;" +
+				" adapt one of " + wodby2CIProviderLabels + " and pass `wodby ci init --provider " + provider + "`."
+		}
+		message += " Start from " + link
 		findings = append(findings, ReviewItem{
 			Severity: SeverityServiceWarning,
 			App:      app.App.App.Name,
@@ -237,17 +244,32 @@ func externalCIConfigurationFindings(app PreparedAppMigration) []ReviewItem {
 	return findings
 }
 
+// normalizedWodby1CIProvider maps a Wodby 1 build provider to its Wodby 2
+// identity, label, and pipeline example.
+//
+// The recognized values are exactly what Wodby 1's CLI writes to a build:
+// "github", "gitlab", "circleci", "travisci", "bitbucket-pipelines", and
+// "jenkins". Wodby 1 also stores the literal "Unknown" when it detected no CI
+// environment, and `wodby ci init --provider` accepts free text, so the spaced
+// spellings a person is likely to type are accepted too. Anything else is
+// reported as unrecognized rather than guessed at.
+//
+// An empty examplePath means Wodby 2 ships no pipeline example for that
+// provider. Wodby CI 1.0 had bitbucket and travis examples; the 2.0 repository
+// covers GitHub Actions, GitLab CI, and CircleCI only, and Wodby 1 autodetects
+// Jenkins without ever having had one. Callers must say so instead of linking a
+// stack directory that holds nothing for the customer's provider.
 func normalizedWodby1CIProvider(value string) (provider, label, examplePath string) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "circle", "circleci":
+	case "circle", "circleci", "circle ci":
 		return "circleci", "CircleCI", "circleci/config.yml"
-	case "gitlab", "gitlab-ci":
+	case "gitlab", "gitlab-ci", "gitlab ci":
 		return "gitlab", "GitLab CI", "gitlab-ci/.gitlab-ci.yml"
-	case "github", "github-actions":
+	case "github", "github-actions", "github actions":
 		return "github", "GitHub Actions", "github-actions/wodby.yml"
-	case "travis", "travisci", "travis-ci":
+	case "travis", "travisci", "travis-ci", "travis ci":
 		return "travisci", "Travis CI", ""
-	case "bitbucket", "bitbucket-pipelines":
+	case "bitbucket", "bitbucket-pipelines", "bitbucket pipelines":
 		return "bitbucket-pipelines", "Bitbucket Pipelines", ""
 	case "jenkins":
 		return "jenkins", "Jenkins", ""
@@ -255,6 +277,11 @@ func normalizedWodby1CIProvider(value string) (provider, label, examplePath stri
 		return "", "", ""
 	}
 }
+
+// wodby2CIProviderLabels lists the providers Wodby 2 ships examples for, and
+// that Wodby CLI 2.x autodetects. A migrated pipeline on any other provider has
+// to adapt one of these and pass `wodby ci init --provider`.
+const wodby2CIProviderLabels = "GitHub Actions, GitLab CI, or CircleCI"
 
 func wodbyCIExampleStack(app App, instance Instance) string {
 	candidates := []string{app.Type, instance.Stack.Type, instance.Stack.Name, instance.Stack.AncestorName}

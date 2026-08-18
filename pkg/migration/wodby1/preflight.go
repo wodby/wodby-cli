@@ -106,10 +106,16 @@ type PreparedInstance struct {
 // so the executor can explain the manual bootstrap build without re-deriving
 // them from the source export.
 type PreparedExternalCI struct {
-	// ProviderLabel is the CI provider from Wodby 1's last successful build,
-	// empty when Wodby 1 reported none that maps to a Wodby 2 example.
+	// ProviderKey and ProviderLabel come from the CI provider Wodby 1 recorded
+	// on the instance's last successful build. Both are empty when Wodby 1
+	// reported nothing recognizable.
+	ProviderKey   string
 	ProviderLabel string
-	// ExampleURL is the closest wodby/wodby-ci 2.0 example for this app.
+	// ProviderHasExample reports whether wodby/wodby-ci 2.0 actually ships a
+	// pipeline for this provider. Wodby 1 recognizes providers that Wodby 2 has
+	// no example for, and those operators must adapt a different one.
+	ProviderHasExample bool
+	// ExampleURL is the closest wodby/wodby-ci 2.0 page for this app.
 	ExampleURL string
 }
 

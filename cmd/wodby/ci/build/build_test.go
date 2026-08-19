@@ -468,3 +468,27 @@ func TestDockerfileContentHash(t *testing.T) {
 		t.Fatalf("dockerfileContentHash(\"\") = %q, want empty", dockerfileContentHash(""))
 	}
 }
+
+func TestJoinCopyPath(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		root   string
+		subdir string
+		want   string
+	}{
+		{name: "default root, no subdir", root: ".", subdir: "", want: "."},
+		{name: "default root with subdir", root: ".", subdir: "web", want: "web"},
+		{name: "explicit root with subdir", root: "static", subdir: "web", want: "static/web"},
+		{name: "absolute destination with subdir", root: "/var/www/html", subdir: "web", want: "/var/www/html/web"},
+		{name: "explicit root, no subdir", root: "static", subdir: "", want: "static"},
+		{name: "empty root, no subdir", root: "", subdir: "", want: "."},
+		{name: "empty root with subdir", root: "", subdir: "web", want: "web"},
+		{name: "nested subdir", root: ".", subdir: "apps/web", want: "apps/web"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := joinCopyPath(tc.root, tc.subdir); got != tc.want {
+				t.Fatalf("joinCopyPath(%q, %q) = %q, want %q", tc.root, tc.subdir, got, tc.want)
+			}
+		})
+	}
+}

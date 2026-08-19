@@ -141,7 +141,9 @@ var Cmd = &cobra.Command{
 		for _, appServiceBuildConfig := range appServiceBuildConfigs {
 			buildArgs := make(map[string]string)
 			var redactValues []string
-			buildArgs["COPY_FROM"] = opts.from
+			// A service can narrow the build to a subdirectory of the context, so
+			// the flags give the roots and the service gives the path within them.
+			buildArgs["COPY_FROM"] = joinCopyPath(opts.from, appServiceBuildConfig.CopyFrom)
 			buildArgs["WODBY_BASE_IMAGE"] = appServiceBuildConfig.Image
 			buildFiles := newBuildFiles(context, appServiceBuildConfig.Name, opts.dockerfile)
 			cacheFrom, cacheTo, err := resolveCacheOptions(config, appServiceBuildConfig.Name, opts)
@@ -172,7 +174,7 @@ var Cmd = &cobra.Command{
 					return errors.WithStack(err)
 				}
 				dockerfile = string(d)
-				if err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, opts.to, logger, &redactValues); err != nil {
+				if err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, joinCopyPath(opts.to, appServiceBuildConfig.CopyTo), logger, &redactValues); err != nil {
 					return errors.WithStack(err)
 				}
 			} else if fileExists(buildFiles.dockerfilePath) {
@@ -183,7 +185,7 @@ var Cmd = &cobra.Command{
 					return errors.WithStack(err)
 				}
 				dockerfile = string(d)
-				if err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, opts.to, logger, &redactValues); err != nil {
+				if err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, joinCopyPath(opts.to, appServiceBuildConfig.CopyTo), logger, &redactValues); err != nil {
 					return errors.WithStack(err)
 				}
 			} else {
@@ -191,13 +193,13 @@ var Cmd = &cobra.Command{
 					dockerfileSource = dockerfileSourceService
 					fmt.Println("Dockerfile provided by app service")
 					dockerfile = *appServiceBuildConfig.Dockerfile
-					if err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, opts.to, logger, &redactValues); err != nil {
+					if err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, joinCopyPath(opts.to, appServiceBuildConfig.CopyTo), logger, &redactValues); err != nil {
 						return errors.WithStack(err)
 					}
 				} else {
 					dockerfileSource = dockerfileSourceDefault
 					fmt.Println("No Dockerfile provided by app service, using the default")
-					buildArgs["COPY_TO"] = opts.to
+					buildArgs["COPY_TO"] = joinCopyPath(opts.to, appServiceBuildConfig.CopyTo)
 					// Replace default image user in dockerfile template.
 					defaultUser, err := dockerClient.GetImageDefaultUser(appServiceBuildConfig.Image)
 					if err != nil {
@@ -345,6 +347,24 @@ func dockerfileContentHash(dockerfile string) string {
 	sum := sha256.Sum256([]byte(dockerfile))
 
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// joinCopyPath places a service's copy subdirectory under the root given by the
+// --from/--to flags. An empty subdirectory leaves the root untouched, which is
+// the default whole-context build.
+func joinCopyPath(root string, subdir string) string {
+	if subdir == "" {
+		if root == "" {
+			return "."
+		}
+
+		return root
+	}
+	if root == "" {
+		root = "."
+	}
+
+	return path.Join(root, subdir)
 }
 
 func authoredDockerfile(source string) bool {

@@ -21,6 +21,10 @@ type (
 		// Unmanaged marks an image that was not built FROM the service image,
 		// so it no longer tracks service image updates.
 		Unmanaged bool
-		Released  bool
+		// DockerfilePath is set only for an author-provided Dockerfile.
+		DockerfilePath string
+		// DockerfileHash is the SHA-256 of the Dockerfile that produced the image.
+		DockerfileHash string
+		Released       bool
 	}
 )

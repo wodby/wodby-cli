@@ -2,6 +2,8 @@ package build
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -254,6 +256,15 @@ var Cmd = &cobra.Command{
 			})
 			buildErr := err
 			unmanaged := false
+			// Recorded so a later investigation can tell which Dockerfile produced
+			// the image and whether it changed between builds. Only an
+			// author-provided path is meaningful; a Wodby-provided Dockerfile is
+			// written to a temporary file whose name carries no information.
+			var reportedDockerfilePath string
+			if authoredDockerfile(dockerfileSource) {
+				reportedDockerfilePath = buildFiles.dockerfilePath
+			}
+			dockerfileHash := dockerfileContentHash(dockerfile)
 			if buildErr == nil && authoredDockerfile(dockerfileSource) {
 				derived, err := imageDerivedFrom(dockerClient, appServiceBuildConfig.Image, tag)
 				if err != nil {
@@ -272,9 +283,11 @@ var Cmd = &cobra.Command{
 			}
 			if buildErr == nil {
 				config.BuiltServices = append(config.BuiltServices, types.BuiltService{
-					Name:      appServiceBuildConfig.Name,
-					Image:     tag,
-					Unmanaged: unmanaged,
+					Name:           appServiceBuildConfig.Name,
+					Image:          tag,
+					Unmanaged:      unmanaged,
+					DockerfilePath: reportedDockerfilePath,
+					DockerfileHash: dockerfileHash,
 				})
 			}
 
@@ -323,6 +336,17 @@ func appBuildImageTag(config *types.Config, serviceName string) string {
 // authoredDockerfile reports whether the Dockerfile came from the repository
 // rather than from Wodby. Only those need a base image check: a service-provided
 // or generated Dockerfile always builds FROM the service image.
+// dockerfileContentHash hashes the Dockerfile that produced the image, whatever
+// its source, so builds stay comparable across a change of Dockerfile.
+func dockerfileContentHash(dockerfile string) string {
+	if dockerfile == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(dockerfile))
+
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
 func authoredDockerfile(source string) bool {
 	return source == dockerfileSourceFlag || source == dockerfileSourceContext
 }

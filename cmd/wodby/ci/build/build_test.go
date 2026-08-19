@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	log "github.com/sirupsen/logrus"
@@ -447,5 +448,23 @@ func TestAuthoredDockerfileOnlyCoversRepositoryDockerfiles(t *testing.T) {
 		if got := authoredDockerfile(source); got != want {
 			t.Fatalf("authoredDockerfile(%q) = %v, want %v", source, got, want)
 		}
+	}
+}
+
+func TestDockerfileContentHash(t *testing.T) {
+	const dockerfile = "ARG WODBY_BASE_IMAGE\nFROM ${WODBY_BASE_IMAGE}\n"
+
+	got := dockerfileContentHash(dockerfile)
+	if !strings.HasPrefix(got, "sha256:") {
+		t.Fatalf("dockerfileContentHash() = %q, want a sha256: prefix", got)
+	}
+	if got != dockerfileContentHash(dockerfile) {
+		t.Fatal("dockerfileContentHash() is not stable for identical content")
+	}
+	if got == dockerfileContentHash(dockerfile+"RUN true\n") {
+		t.Fatal("dockerfileContentHash() collided for different content")
+	}
+	if dockerfileContentHash("") != "" {
+		t.Fatalf("dockerfileContentHash(\"\") = %q, want empty", dockerfileContentHash(""))
 	}
 }

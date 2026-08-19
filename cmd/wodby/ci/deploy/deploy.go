@@ -109,6 +109,8 @@ func deploymentServices(builtServices []types.BuiltService, serviceNames []strin
 					Name:           svc.Name,
 					Image:          svc.Image,
 					UnmanagedImage: svc.Unmanaged,
+					DockerfilePath: svc.DockerfilePath,
+					DockerfileHash: svc.DockerfileHash,
 				})
 			}
 		}
@@ -131,6 +133,8 @@ func deploymentServices(builtServices []types.BuiltService, serviceNames []strin
 				Name:           svc.Name,
 				Image:          svc.Image,
 				UnmanagedImage: svc.Unmanaged,
+				DockerfilePath: svc.DockerfilePath,
+				DockerfileHash: svc.DockerfileHash,
 			})
 			break
 		}

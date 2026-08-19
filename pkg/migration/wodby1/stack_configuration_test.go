@@ -563,3 +563,55 @@ func assertPreparedStackEnvVarScoped(t *testing.T, variables []PreparedStackEnvV
 	}
 	t.Fatalf("env var %q is missing from %#v", name, variables)
 }
+
+// Wodby 1 exports some service configuration scopes for their effective value
+// rather than as settings. They are not scalars, so treating them as stack
+// settings blocked the migration on a value nothing consumes.
+func TestNonSettingConfigurationScopesDoNotBecomeStackSettings(t *testing.T) {
+	for _, scope := range []string{"deployment", "resources", "implementation"} {
+		if sourceConfigurationIsStackSetting(scope) {
+			t.Fatalf("%q must not become a stack service setting", scope)
+		}
+	}
+	if !sourceConfigurationIsStackSetting("php_max_execution_time") {
+		t.Fatal("a genuine setting must still be migrated")
+	}
+}
+
+// A Wodby 1 deployment that still exports the implementation value must not
+// block the migration.
+func TestImplementationOverrideFromAnOlderExportDoesNotBlock(t *testing.T) {
+	instance := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
+	// The real shape: a template reference, not a scalar.
+	instance.Source.Services[0].Configuration = map[string]interface{}{
+		"implementation": map[string]interface{}{"uuid": "tpl-1", "name": "php", "version": "8.4"},
+	}
+
+	configuration, findings, err := prepareStackConfigurationTest(stackConfigurationTestApp(instance))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasBlockingFindings(findings) {
+		t.Fatalf("an effective-value scope must not block the migration: %#v", findings)
+	}
+	if _, present := configuration.Services["php"].Settings["implementation"]; present {
+		t.Fatalf("settings = %#v", configuration.Services["php"].Settings)
+	}
+}
+
+// A genuinely unrepresentable setting must still block, so the skip list does
+// not become a way to lose real problems.
+func TestUnsupportedSettingValueStillBlocks(t *testing.T) {
+	instance := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
+	instance.Source.Services[0].Configuration = map[string]interface{}{
+		"php_custom_setting": map[string]interface{}{"unsupported": "shape"},
+	}
+
+	_, findings, err := prepareStackConfigurationTest(stackConfigurationTestApp(instance))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasBlockingFindings(findings) {
+		t.Fatalf("an unrepresentable setting must still block: %#v", findings)
+	}
+}

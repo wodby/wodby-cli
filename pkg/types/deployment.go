@@ -20,6 +20,13 @@ type (
 	ServiceDeploymentInput struct {
 		Name  string `json:"name"`
 		Image string `json:"image"`
+		// UnmanagedImage reports an image that was not built FROM the service
+		// image. Omitted when false so older backends are unaffected.
+		UnmanagedImage bool `json:"unmanagedImage,omitempty"`
+		// DockerfilePath is empty when Wodby provided the Dockerfile.
+		DockerfilePath string `json:"dockerfilePath,omitempty"`
+		// DockerfileHash is the SHA-256 of the Dockerfile that produced the image.
+		DockerfileHash string `json:"dockerfileHash,omitempty"`
 	}
 	AppDeployment struct {
 		ID ID `json:"id"`

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	log "github.com/sirupsen/logrus"
@@ -406,5 +407,64 @@ func TestAddDockerfileBuildArgsForSecretRequiresEnv(t *testing.T) {
 	err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, "/srv/app", log.NewEntry(log.New()), &redactValues)
 	if err == nil {
 		t.Fatal("addDockerfileBuildArgs() error = nil, want missing env error")
+	}
+}
+
+func TestLayersDerivedFrom(t *testing.T) {
+	base := []string{"sha256:a", "sha256:b", "sha256:c"}
+
+	for _, tc := range []struct {
+		name  string
+		built []string
+		want  bool
+	}{
+		{name: "derived with extra layers", built: []string{"sha256:a", "sha256:b", "sha256:c", "sha256:d"}, want: true},
+		{name: "identical", built: base, want: true},
+		{name: "unrelated base", built: []string{"sha256:x", "sha256:y"}, want: false},
+		{name: "shares a prefix but diverges", built: []string{"sha256:a", "sha256:x", "sha256:c", "sha256:d"}, want: false},
+		{name: "shorter than base", built: []string{"sha256:a", "sha256:b"}, want: false},
+		{name: "base layers appear later, not as a prefix", built: []string{"sha256:z", "sha256:a", "sha256:b", "sha256:c"}, want: false},
+		{name: "empty built", built: nil, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := layersDerivedFrom(base, tc.built); got != tc.want {
+				t.Fatalf("layersDerivedFrom() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	if layersDerivedFrom(nil, []string{"sha256:a"}) {
+		t.Fatal("layersDerivedFrom() with no base layers = true, want false")
+	}
+}
+
+func TestAuthoredDockerfileOnlyCoversRepositoryDockerfiles(t *testing.T) {
+	for source, want := range map[string]bool{
+		dockerfileSourceFlag:    true,
+		dockerfileSourceContext: true,
+		dockerfileSourceService: false,
+		dockerfileSourceDefault: false,
+	} {
+		if got := authoredDockerfile(source); got != want {
+			t.Fatalf("authoredDockerfile(%q) = %v, want %v", source, got, want)
+		}
+	}
+}
+
+func TestDockerfileContentHash(t *testing.T) {
+	const dockerfile = "ARG WODBY_BASE_IMAGE\nFROM ${WODBY_BASE_IMAGE}\n"
+
+	got := dockerfileContentHash(dockerfile)
+	if !strings.HasPrefix(got, "sha256:") {
+		t.Fatalf("dockerfileContentHash() = %q, want a sha256: prefix", got)
+	}
+	if got != dockerfileContentHash(dockerfile) {
+		t.Fatal("dockerfileContentHash() is not stable for identical content")
+	}
+	if got == dockerfileContentHash(dockerfile+"RUN true\n") {
+		t.Fatal("dockerfileContentHash() collided for different content")
+	}
+	if dockerfileContentHash("") != "" {
+		t.Fatalf("dockerfileContentHash(\"\") = %q, want empty", dockerfileContentHash(""))
 	}
 }

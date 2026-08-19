@@ -2,6 +2,8 @@ package build
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -35,7 +37,18 @@ type options struct {
 	cacheMode       string
 	cacheFrom       []string
 	cacheTo         []string
+	allowUnmanaged  bool
 }
+
+// Where the Dockerfile used for a service build came from. The first two are
+// author-provided, so the resulting image is only guaranteed to derive from the
+// service image if the author built FROM it.
+const (
+	dockerfileSourceFlag    = "flag"
+	dockerfileSourceContext = "context"
+	dockerfileSourceService = "service"
+	dockerfileSourceDefault = "default"
+)
 
 var opts options
 
@@ -123,6 +136,7 @@ var Cmd = &cobra.Command{
 		dockerClient := docker.NewClient()
 		var dockerfile string
 		var tag string
+		var dockerfileSource string
 
 		for _, appServiceBuildConfig := range appServiceBuildConfigs {
 			buildArgs := make(map[string]string)
@@ -151,6 +165,7 @@ var Cmd = &cobra.Command{
 			}
 
 			if opts.dockerfile != "" {
+				dockerfileSource = dockerfileSourceFlag
 				fmt.Println("Using specified Dockerfile")
 				d, err := os.ReadFile(buildFiles.dockerfilePath)
 				if err != nil {
@@ -161,6 +176,7 @@ var Cmd = &cobra.Command{
 					return errors.WithStack(err)
 				}
 			} else if fileExists(buildFiles.dockerfilePath) {
+				dockerfileSource = dockerfileSourceContext
 				fmt.Printf("Using Dockerfile from context: %s\n", buildFiles.dockerfilePath)
 				d, err := os.ReadFile(buildFiles.dockerfilePath)
 				if err != nil {
@@ -172,12 +188,14 @@ var Cmd = &cobra.Command{
 				}
 			} else {
 				if appServiceBuildConfig.Dockerfile != nil {
+					dockerfileSource = dockerfileSourceService
 					fmt.Println("Dockerfile provided by app service")
 					dockerfile = *appServiceBuildConfig.Dockerfile
 					if err := addDockerfileBuildArgs(buildArgs, dockerfile, appServiceBuildConfig, opts.to, logger, &redactValues); err != nil {
 						return errors.WithStack(err)
 					}
 				} else {
+					dockerfileSource = dockerfileSourceDefault
 					fmt.Println("No Dockerfile provided by app service, using the default")
 					buildArgs["COPY_TO"] = opts.to
 					// Replace default image user in dockerfile template.
@@ -237,10 +255,39 @@ var Cmd = &cobra.Command{
 				RedactValues: redactValues,
 			})
 			buildErr := err
+			unmanaged := false
+			// Recorded so a later investigation can tell which Dockerfile produced
+			// the image and whether it changed between builds. Only an
+			// author-provided path is meaningful; a Wodby-provided Dockerfile is
+			// written to a temporary file whose name carries no information.
+			var reportedDockerfilePath string
+			if authoredDockerfile(dockerfileSource) {
+				reportedDockerfilePath = buildFiles.dockerfilePath
+			}
+			dockerfileHash := dockerfileContentHash(dockerfile)
+			if buildErr == nil && authoredDockerfile(dockerfileSource) {
+				derived, err := imageDerivedFrom(dockerClient, appServiceBuildConfig.Image, tag)
+				if err != nil {
+					buildErr = err
+				} else if !derived {
+					if !opts.allowUnmanaged {
+						buildErr = unmanagedImageError(buildFiles.dockerfilePath, appServiceBuildConfig.Image)
+					} else {
+						unmanaged = true
+						fmt.Printf(
+							"WARNING: %s is not built FROM %s. Wodby will stop tracking service image versions for %s.\n",
+							buildFiles.dockerfilePath, appServiceBuildConfig.Image, appServiceBuildConfig.Name,
+						)
+					}
+				}
+			}
 			if buildErr == nil {
 				config.BuiltServices = append(config.BuiltServices, types.BuiltService{
-					Name:  appServiceBuildConfig.Name,
-					Image: tag,
+					Name:           appServiceBuildConfig.Name,
+					Image:          tag,
+					Unmanaged:      unmanaged,
+					DockerfilePath: reportedDockerfilePath,
+					DockerfileHash: dockerfileHash,
 				})
 			}
 
@@ -284,6 +331,76 @@ func appBuildImageTag(config *types.Config, serviceName string) string {
 		config.AppBuild.Number,
 		config.AppBuild.ID.String(),
 	)
+}
+
+// authoredDockerfile reports whether the Dockerfile came from the repository
+// rather than from Wodby. Only those need a base image check: a service-provided
+// or generated Dockerfile always builds FROM the service image.
+// dockerfileContentHash hashes the Dockerfile that produced the image, whatever
+// its source, so builds stay comparable across a change of Dockerfile.
+func dockerfileContentHash(dockerfile string) string {
+	if dockerfile == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(dockerfile))
+
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func authoredDockerfile(source string) bool {
+	return source == dockerfileSourceFlag || source == dockerfileSourceContext
+}
+
+// imageDerivedFrom reports whether builtImage was built FROM baseImage. Docker
+// reuses a parent's layers verbatim, so a derived image carries the parent's
+// layer list as a prefix of its own. Comparing layers rather than scanning the
+// Dockerfile for "FROM ${WODBY_BASE_IMAGE}" keeps multi-stage builds working and
+// still catches a Dockerfile that uses the service image only in a build stage
+// it later discards.
+func imageDerivedFrom(c *docker.Client, baseImage string, builtImage string) (bool, error) {
+	// The build pulled the base image only if the Dockerfile actually referenced
+	// it, so make sure it is present before inspecting.
+	if err := c.Pull(baseImage); err != nil {
+		return false, errors.WithStack(err)
+	}
+	base, err := c.GetImageLayers(baseImage)
+	if err != nil {
+		return false, errors.WithStack(err)
+	}
+	built, err := c.GetImageLayers(builtImage)
+	if err != nil {
+		return false, errors.WithStack(err)
+	}
+	return layersDerivedFrom(base, built), nil
+}
+
+// layersDerivedFrom reports whether built starts with every layer of base, in
+// order. An empty base means nothing can be verified, so it is not a match.
+func layersDerivedFrom(base []string, built []string) bool {
+	if len(base) == 0 || len(built) < len(base) {
+		return false
+	}
+	for i, layer := range base {
+		if built[i] != layer {
+			return false
+		}
+	}
+
+	return true
+}
+
+func unmanagedImageError(dockerfilePath string, baseImage string) error {
+	return errors.Errorf(`the image built from %s is not based on the service image %s
+
+Build FROM the service image so this app service keeps receiving service image updates:
+
+    ARG WODBY_BASE_IMAGE
+    FROM ${WODBY_BASE_IMAGE}
+
+In a multi-stage build the final stage must be the one that uses it.
+
+Use --allow-unmanaged-image to build anyway. Wodby will stop tracking the service
+image version for this app service.`, dockerfilePath, baseImage)
 }
 
 func containsString(s []string, e string) bool {
@@ -533,6 +650,7 @@ func init() {
 	Cmd.Flags().StringVar(&opts.from, "from", ".", "Relative path to codebase")
 	Cmd.Flags().StringVar(&opts.to, "to", ".", "Codebase destination path in container")
 	Cmd.Flags().StringVarP(&opts.dockerfile, "dockerfile", "f", "", "Relative path to dockerfile")
+	Cmd.Flags().BoolVar(&opts.allowUnmanaged, "allow-unmanaged-image", false, "Allow an image that is not built FROM the service image. Wodby stops tracking service image versions for it")
 	Cmd.Flags().StringArrayVar(&opts.buildArgs, "build-arg", nil, "Additional build argument in the 'NAME=VALUE' format. Repeatable")
 	Cmd.Flags().StringArrayVar(&opts.buildArgEnvVars, "build-arg-env", nil, "Environment variable name to forward as a docker build argument. Repeatable")
 	Cmd.Flags().StringVar(&opts.cacheBackend, "cache-backend", "auto", "Build cache backend: auto, local, registry, none")

@@ -135,6 +135,25 @@ func (c *Client) GetImageWorkingDir(image string) (string, error) {
 	return config.WorkingDir, nil
 }
 
+// GetImageLayers returns the image's rootfs layer diff IDs, ordered base first.
+// An image built FROM another repeats the parent's layers as a prefix of its
+// own, which is what makes base image lineage checkable. The image must already
+// be present locally; unlike GetImageConfig this never pulls, because it is
+// also used on locally built tags that do not exist in any registry.
+func (c *Client) GetImageLayers(image string) ([]string, error) {
+	out, err := exec.Command("docker", "image", "inspect", image, "-f", "{{json .RootFS.Layers}}").CombinedOutput()
+	if err != nil {
+		return nil, errors.Wrap(err, string(out))
+	}
+
+	var layers []string
+	if err := json.Unmarshal(bytes.TrimSpace(out), &layers); err != nil {
+		return nil, errors.Wrap(err, "failed to decode image layers")
+	}
+
+	return layers, nil
+}
+
 func (c *Client) GetImageConfig(image string) (ImageConfig, error) {
 	config := ImageConfig{}
 

@@ -584,7 +584,7 @@ func preparedStackSettings(appName, targetName string, items []stackConfigServic
 	findings := []ReviewItem{}
 	for _, item := range items {
 		for name, raw := range item.source.Configuration {
-			if name == "deployment" || name == "resources" {
+			if !sourceConfigurationIsStackSetting(name) {
 				continue
 			}
 			value, err := scalarConfigurationValue(raw)
@@ -858,4 +858,23 @@ func appUsesExplicitTargetStack(plan *AppPlan) bool {
 		}
 	}
 	return false
+}
+
+// sourceConfigurationIsStackSetting reports whether an exported Wodby 1 service
+// configuration scope becomes a Wodby 2 stack service setting.
+//
+// Some scopes are exported for their effective value rather than as settings:
+// deployment and resources arrive as normalized capacity fields, and
+// implementation names a Wodby 1 service template whose effect is already
+// carried by the exported service version. None of them is a scalar setting, so
+// converting them produced a blocking review item for a value nothing consumes.
+// Wodby 1 also filters these, but a Wodby 2 CLI meets Wodby 1 deployments that
+// do not yet.
+func sourceConfigurationIsStackSetting(name string) bool {
+	switch name {
+	case "deployment", "resources", "implementation":
+		return false
+	default:
+		return true
+	}
 }

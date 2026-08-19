@@ -25,14 +25,18 @@ type (
 		Services           []*AppServiceBuildConfig `json:"services"`
 	}
 	AppServiceBuildConfig struct {
-		Name         string                `json:"name"`
-		Title        string                `json:"title"`
-		Image        string                `json:"image"`
-		Managed      bool                  `json:"managed"`
-		Main         bool                  `json:"main"`
-		Dockerfile   *string               `json:"dockerfile"`
-		Dockerignore *string               `json:"dockerignore"`
-		Args         []*AppServiceBuildArg `json:"args"`
+		Name         string  `json:"name"`
+		Title        string  `json:"title"`
+		Image        string  `json:"image"`
+		Managed      bool    `json:"managed"`
+		Main         bool    `json:"main"`
+		Dockerfile   *string `json:"dockerfile"`
+		Dockerignore *string `json:"dockerignore"`
+		// CopyFrom and CopyTo narrow the build to a subdirectory, relative to the
+		// --from and --to paths. Empty means copy the whole context.
+		CopyFrom string                `json:"copyFrom"`
+		CopyTo   string                `json:"copyTo"`
+		Args     []*AppServiceBuildArg `json:"args"`
 	}
 	AppServiceBuildArg struct {
 		Name   string `json:"name"`

@@ -20,6 +20,7 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	"github.com/wodby/wodby-cli/pkg/migration/wodby1"
 	"github.com/wodby/wodby-cli/pkg/types"
@@ -143,10 +144,13 @@ all components to a different complete snapshot, or
 --skip-data to omit data. Changes made after the selected backup completed are
 not migrated. Apply is resumable and stores its plan and state in the system
 temporary directory. When state exists, the same --apply command preserves the saved plan
-and continues completed work. --restart replaces it only when state proves that
-no target mutation occurred. --rollback deletes the Wodby 2 resources this
-migration created and discards its state; it refuses once --verify has
-succeeded, because DNS then points at Wodby 2.`,
+and continues completed work. --apply --restart replaces the saved plan. If the
+migration already changed Wodby 2, the CLI first shows and confirms removal of
+only the resources recorded as created by this migration; pre-existing target
+apps and reused resources are preserved. Restart is refused after successful
+verification or while any target operation remains ambiguous. --rollback
+deletes the Wodby 2 resources this migration created and discards its state; it
+refuses once --verify has succeeded, because DNS then points at Wodby 2.`,
 		Example: `  export WODBY1_SOURCE_TOKEN=...
   export WODBY_API_KEY=...
 
@@ -185,9 +189,12 @@ individual snapshots, or --skip-data to omit data. Changes after each selected
 backup completed are not migrated. Test the
 migrated apps before changing DNS, then use --verify. When per-app state exists,
 --apply preserves the aggregate saved plan and continues completed work;
---restart is allowed only before any target mutation. --rollback deletes the
-Wodby 2 resources this migration created and discards its state; it refuses
-once --verify has succeeded, because DNS then points at Wodby 2.`,
+--apply --restart replaces the saved plan after showing and confirming removal
+of only resources recorded as created by these migrations. Pre-existing target
+apps and reused resources are preserved. Restart is refused after successful
+verification or while any target operation remains ambiguous. --rollback
+deletes the Wodby 2 resources this migration created and discards its state; it
+refuses once --verify has succeeded, because DNS then points at Wodby 2.`,
 		Example: `  export WODBY1_SOURCE_TOKEN=...
   export WODBY_API_KEY=...
 
@@ -238,9 +245,13 @@ snapshots, or --skip-data to omit data.
 Changes after each selected backup completed are not migrated. If a target mutation is ambiguous, inspect Wodby 2 and pass
 --retry-ambiguous only with the exact operation ID printed by the command. When
 state exists, --apply preserves the saved plan and continues completed work;
---restart is allowed only before any target mutation. --rollback deletes the
-Wodby 2 resources this migration created and discards its state; it refuses
-once --verify has succeeded, because DNS then points at Wodby 2.`,
+--apply --restart replaces the saved plan. If the migration already changed
+Wodby 2, the CLI first shows and confirms removal of only resources recorded as
+created by this migration; pre-existing target apps and reused resources are
+preserved. Restart is refused after successful verification or while any target
+operation remains ambiguous. --rollback deletes the Wodby 2 resources this
+migration created and discards its state; it refuses once --verify has
+succeeded, because DNS then points at Wodby 2.`,
 		Example: `  export WODBY1_SOURCE_TOKEN=...
   export WODBY_API_KEY=...
 
@@ -278,7 +289,7 @@ func bindFlags(cmd *cobra.Command, opts *options) {
 	cmd.Flags().StringVar(&opts.sourceToken, "source-token", "", "Wodby 1 API token (defaults to "+sourceTokenEnv+")")
 	cmd.Flags().BoolVar(&opts.apply, "apply", false, "Create the target and import data using the displayed plan")
 	cmd.Flags().BoolVar(&opts.verify, "verify", false, "Verify the applied migration after testing and DNS cutover")
-	cmd.Flags().BoolVar(&opts.restart, "restart", false, "Start a new applied plan only when saved state proves that no target mutation occurred (requires --apply)")
+	cmd.Flags().BoolVar(&opts.restart, "restart", false, "Replace the saved plan, safely removing migration-created target resources first when necessary (requires --apply)")
 	cmd.Flags().BoolVar(&opts.rollback, "rollback", false, "Delete the Wodby 2 resources this migration created and discard its resume state")
 	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "Approve a new migration plan without an interactive prompt")
 
@@ -319,6 +330,46 @@ func bindFlags(cmd *cobra.Command, opts *options) {
 	cmd.Flags().DurationVar(&opts.waitTimeout, "wait-timeout", 30*time.Minute, "Timeout for each target operation")
 	cmd.Flags().StringVar(&opts.retryAmbiguous, "retry-ambiguous", "", "Retry exactly one inspected ambiguous operation ID")
 	cmd.Flags().StringVarP(&opts.output, "output", "o", "text", "Output format: text or json")
+}
+
+// restartCommandSuggestion reconstructs the current invocation without secret
+// values. It includes every explicitly supplied migration option, replacing
+// the run mode with --apply --restart so the suggested command preserves the
+// reviewed target and mappings.
+func restartCommandSuggestion(cmd *cobra.Command, sourceKind string, sourceID string) string {
+	args := []string{"wodby", "migrate", "wodby1", sourceKind, sourceID}
+	cmd.Flags().Visit(func(flag *pflag.Flag) {
+		switch flag.Name {
+		case "apply", "verify", "restart", "rollback", "source-token":
+			return
+		}
+		name := "--" + flag.Name
+		if values, ok := flag.Value.(pflag.SliceValue); ok {
+			for _, value := range values.GetSlice() {
+				args = append(args, name, shellCommandArgument(value))
+			}
+			return
+		}
+		if flag.Value.Type() == "bool" && flag.Value.String() == "true" {
+			args = append(args, name)
+			return
+		}
+		args = append(args, name, shellCommandArgument(flag.Value.String()))
+	})
+	args = append(args, "--apply", "--restart")
+	return strings.Join(args, " ")
+}
+
+func shellCommandArgument(value string) string {
+	if value != "" && strings.IndexFunc(value, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') &&
+			!(r >= 'A' && r <= 'Z') &&
+			!(r >= '0' && r <= '9') &&
+			!strings.ContainsRune("._:/=@,+-", r)
+	}) == -1 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func runWodby1App(cmd *cobra.Command, sourceID string, opts *options) (runErr error) {
@@ -377,9 +428,9 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 	var reviewedPlan *wodby1.Plan
 	var restartStateIdentity *wodby1.MigrationStateIdentity
 	var restartStateWithMutations *wodby1.MigrationState
+	restartStateAppName := sourceID
 	var resumeState *wodby1.MigrationState
 	var incompatiblePlan *wodby1.UnsupportedMigrationPlanSchemaError
-	restartDeletedTargetAppID := 0
 	allowedTargetAppID := 0
 	allowTargetAppRecovery := false
 	stateExists, err := artifactExists(statePath)
@@ -435,8 +486,8 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 				identity := state.Identity()
 				restartStateIdentity = &identity
 			} else {
-				if state.App.TargetID <= 0 {
-					return incompatiblePlanUnsafeRestartError(incompatiblePlan, planPath, statePath, state)
+				if _, err := wodby1.PlanRollback(state); err != nil {
+					return errors.Wrap(err, "prepare --restart cleanup")
 				}
 				restartStateWithMutations = state
 			}
@@ -449,17 +500,14 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 				return errors.Wrap(err, "load migration state before target preflight")
 			}
 			if opts.restart {
+				restartStateAppName = reviewedPlanAppName(reviewed)
 				if state.CanRestartSafely() {
 					identity := state.Identity()
 					restartStateIdentity = &identity
 				} else {
-					if state.App.TargetID <= 0 {
-						return unsafeSingleRestartError(state, statePath)
+					if _, err := wodby1.PlanRollback(state); err != nil {
+						return errors.Wrap(err, "prepare --restart cleanup")
 					}
-					// A state with successful or ambiguous mutations normally cannot be
-					// discarded. After target discovery we make one safe exception: a
-					// recorded app ID that the original organization definitively says
-					// no longer exists.
 					restartStateWithMutations = state
 				}
 			} else {
@@ -507,33 +555,17 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 		return err
 	}
 	if restartStateWithMutations != nil {
-		if restartStateWithMutations.Target.ExistingApp {
-			return unsafeExistingAppRestartError(restartStateWithMutations, statePath)
-		}
-		if restartStateWithMutations.App.TargetID <= 0 {
-			return unsafeSingleRestartError(restartStateWithMutations, statePath)
-		}
-		if scope.Org.ID != restartStateWithMutations.Target.OrgID {
+		if scope.Org.ID != restartStateWithMutations.Target.OrgID ||
+			scope.Cluster.ID != restartStateWithMutations.Target.ClusterID {
 			return errors.Errorf(
-				"cannot verify deletion of saved target app ID %d because the current target resolves to organization ID %d instead of the saved organization ID %d; use the original target credentials and options",
-				restartStateWithMutations.App.TargetID,
+				"cannot restart the saved migration because the current target resolves to organization ID %d and cluster ID %d instead of the saved organization ID %d and cluster ID %d; use the original target credentials and options",
 				scope.Org.ID,
+				scope.Cluster.ID,
 				restartStateWithMutations.Target.OrgID,
+				restartStateWithMutations.Target.ClusterID,
 			)
 		}
-		_, found, err := targetClient.FindAppByID(cmd.Context(), restartStateWithMutations.App.TargetID)
-		if err != nil {
-			return errors.Wrap(err, "verify saved target app before restart")
-		}
-		if found {
-			if incompatiblePlan != nil {
-				return incompatibleTargetAppExistsError(incompatiblePlan, planPath, statePath, restartStateWithMutations)
-			}
-			return unsafeSingleRestartError(restartStateWithMutations, statePath)
-		}
-		identity := restartStateWithMutations.Identity()
-		restartStateIdentity = &identity
-		restartDeletedTargetAppID = restartStateWithMutations.App.TargetID
+		allowedTargetAppID, allowTargetAppRecovery = stateBackedTargetAppState(restartStateWithMutations)
 	}
 	if resumeState != nil && resumeState.App.TargetID > 0 {
 		if scope.Org.ID != resumeState.Target.OrgID {
@@ -733,6 +765,10 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 	}
 	preparation.CompleteStep(fmt.Sprintf("Planned %d app(s) and %d instance(s).", plan.Summary.Apps, plan.Summary.Instances))
 	preparation.StartStep("Inspect target mappings and capabilities")
+	preflightState := resumeState
+	if restartStateWithMutations != nil {
+		preflightState = restartStateWithMutations
+	}
 	prepared, err := targetClient.PreflightTarget(cmd.Context(), export, &plan, wodby1.TargetPreflightOptions{
 		SkipCode:                    opts.skipCode,
 		SkipData:                    opts.skipData,
@@ -741,8 +777,8 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 		CodeService:                 opts.targetCodeService,
 		AllowedTargetAppID:          allowedTargetAppID,
 		AllowStateBackedAppRecovery: allowTargetAppRecovery,
-		AllowedTargetInstanceIDs:    stateTargetInstanceIDs(resumeState),
-		StateBackedInstanceRecovery: stateTargetInstanceRecovery(resumeState),
+		AllowedTargetInstanceIDs:    stateTargetInstanceIDs(preflightState),
+		StateBackedInstanceRecovery: stateTargetInstanceRecovery(preflightState),
 		AddMissingServices:          opts.addMissingServices,
 		Progress:                    preparation.TargetPreflight,
 	})
@@ -763,7 +799,11 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 	}
 	if reviewedPlan != nil {
 		if err := wodby1.RestoreReviewedPlanForResume(&plan, *reviewedPlan); err != nil {
-			return errors.Wrap(err, "cannot continue from saved plan because the current source or options change its executable actions; the saved plan was not overwritten")
+			return errors.Wrapf(
+				err,
+				"cannot continue from saved plan because the current source or options change its executable actions; the saved plan was not overwritten\nNext step: restart with this command (the source token is intentionally omitted):\n  %s\nThe CLI will replace the saved plan and safely remove only resources this migration created",
+				restartCommandSuggestion(cmd, sourceKind, sourceID),
+			)
 		}
 	}
 	if err := ensureArtifactDirectories(planPath, statePath); err != nil {
@@ -779,29 +819,49 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 		}
 	}()
 	if opts.apply {
+		var restartCleanup *migrationRestartCleanup
 		if resumeState == nil && opts.restart {
-			if restartDeletedTargetAppID > 0 {
-				printDeletedTargetRestartNotice(cmd, planPath, statePath, restartDeletedTargetAppID)
-			} else {
-				printRestartNotice(cmd, planPath, statePath)
+			cleanupAppName := restartStateAppName
+			if cleanupAppName == "" {
+				cleanupAppName = sourceID
+			}
+			restartCleanup = &migrationRestartCleanup{StatePath: statePath, State: restartStateWithMutations, AppName: cleanupAppName}
+			if restartStateWithMutations != nil {
+				restartCleanup.Plan, err = wodby1.PlanRollback(restartStateWithMutations)
+				if err != nil {
+					return errors.Wrap(err, "prepare --restart cleanup")
+				}
 			}
 		}
-		if err := printApplyReview(cmd, plan, resumeState != nil, prepared); err != nil {
+		if err := printApplyReview(cmd, plan, resumeState != nil, opts.restart, prepared); err != nil {
 			return err
 		}
+		if resumeState == nil && opts.restart {
+			printRestartConflict(cmd, sourceKind, sourceID, []migrationRestartCleanup{*restartCleanup}, restartStateIdentity != nil, true, planPath, statePath)
+		}
 		if resumeState == nil {
-			if err := confirmApply(cmd, opts.yes); err != nil {
+			if opts.restart {
+				if err := confirmRestart(cmd, opts.yes, restartCleanup.AppName, restartCleanup.Plan.DeletesResources()); err != nil {
+					return err
+				}
+			} else {
+				if err := confirmApply(cmd, opts.yes); err != nil {
+					return err
+				}
+			}
+		}
+		if restartStateWithMutations != nil {
+			if err := runMigrationRestartCleanupLocked(
+				cmd,
+				opts,
+				targetClient,
+				*restartCleanup,
+			); err != nil {
 				return err
 			}
 		}
 		if restartStateIdentity != nil {
-			var err error
-			if restartDeletedTargetAppID > 0 {
-				err = wodby1.RemoveMigrationStateAfterTargetDeletion(statePath, *restartStateIdentity, restartDeletedTargetAppID)
-			} else {
-				err = wodby1.RemoveRestartableMigrationState(statePath, *restartStateIdentity)
-			}
-			if err != nil {
+			if err := wodby1.RemoveRestartableMigrationState(statePath, *restartStateIdentity); err != nil {
 				return errors.Wrap(err, "replace migration state for restart")
 			}
 		}
@@ -1013,7 +1073,7 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 
 	var reviewedPlan *wodby1.Plan
 	var restartStateIdentities map[string]wodby1.MigrationStateIdentity
-	var restartDeletedTargetAppIDs map[string]int
+	restartCleanupStates := map[string]*wodby1.MigrationState{}
 	var incompatiblePlan *wodby1.UnsupportedMigrationPlanSchemaError
 	var incompatibleServerStates map[string]*wodby1.MigrationState
 	statePaths, err := serverMigrationStatePaths(statePath)
@@ -1059,16 +1119,16 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 				return incompatiblePlanRestartError(incompatiblePlan, planPath, statePaths, states)
 			}
 			restartStateIdentities = make(map[string]wodby1.MigrationStateIdentity, len(incompatibleServerStates))
-			restartDeletedTargetAppIDs = map[string]int{}
 			for _, path := range statePaths {
 				state := incompatibleServerStates[path]
-				restartStateIdentities[path] = state.Identity()
-				if !state.CanRestartSafely() {
-					if state.App.TargetID <= 0 {
-						return incompatiblePlanUnsafeRestartError(incompatiblePlan, planPath, statePath, state)
-					}
-					restartDeletedTargetAppIDs[path] = state.App.TargetID
+				if state.CanRestartSafely() {
+					restartStateIdentities[path] = state.Identity()
+					continue
 				}
+				if _, err := wodby1.PlanRollback(state); err != nil {
+					return errors.Wrapf(err, "prepare --restart cleanup for source app %s", state.Source.ID)
+				}
+				restartCleanupStates[path] = state
 			}
 		} else {
 			if reviewed.Source.Kind != "server" || reviewed.Source.ID != sourceID {
@@ -1082,16 +1142,12 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 				)
 			}
 			if opts.restart {
-				identities, restartable, err := restartableServerMigrationStates(statePath, reviewed, statePaths)
+				identities, cleanup, err := serverMigrationStatesForRestart(statePath, reviewed, statePaths)
 				if err != nil {
 					return err
 				}
-				if !restartable {
-					return errors.Errorf(
-						"cannot restart server migration from scratch because at least one resume state records target mutations; continue without --restart to reuse the saved plan and completed work",
-					)
-				}
 				restartStateIdentities = identities
+				restartCleanupStates = cleanup
 			} else {
 				reviewedPlan = &reviewed
 				if opts.apply {
@@ -1126,26 +1182,15 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 	if err != nil {
 		return err
 	}
-	for _, path := range statePaths {
-		targetAppID := restartDeletedTargetAppIDs[path]
-		if targetAppID <= 0 {
-			continue
-		}
-		state := incompatibleServerStates[path]
-		if scope.Org.ID != state.Target.OrgID {
+	for _, state := range restartCleanupStates {
+		if scope.Org.ID != state.Target.OrgID || scope.Cluster.ID != state.Target.ClusterID {
 			return errors.Errorf(
-				"cannot verify deletion of saved target app ID %d because the current target resolves to organization ID %d instead of the saved organization ID %d; use the original target credentials and options",
-				targetAppID,
+				"cannot restart the saved server migration because the current target resolves to organization ID %d and cluster ID %d instead of the saved organization ID %d and cluster ID %d; use the original target credentials and options",
 				scope.Org.ID,
+				scope.Cluster.ID,
 				state.Target.OrgID,
+				state.Target.ClusterID,
 			)
-		}
-		_, found, err := targetClient.FindAppByID(cmd.Context(), targetAppID)
-		if err != nil {
-			return errors.Wrap(err, "verify saved target app before restarting incompatible server migration")
-		}
-		if found {
-			return incompatibleTargetAppExistsError(incompatiblePlan, planPath, path, state)
 		}
 	}
 	preparation.CompleteStep(fmt.Sprintf("Target %s / %s is ready.", scope.Org.Name, scope.Cluster.Name))
@@ -1287,6 +1332,13 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 			stateBackedRecovery[app.SourceUUID] = allowRecovery
 		}
 	}
+	if reviewedPlan == nil && len(restartCleanupStates) != 0 {
+		for _, state := range restartCleanupStates {
+			targetID, allowRecovery := stateBackedTargetAppState(state)
+			allowedTargetAppIDs[state.Source.ID] = targetID
+			stateBackedRecovery[state.Source.ID] = allowRecovery
+		}
+	}
 	preparation.StartStep("Inspect target mappings and capabilities")
 	prepared, err := targetClient.PreflightTarget(cmd.Context(), export, &plan, wodby1.TargetPreflightOptions{
 		SkipCode:               opts.skipCode,
@@ -1316,7 +1368,11 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 	}
 	if reviewedPlan != nil {
 		if err := wodby1.RestoreReviewedPlanForResume(&plan, *reviewedPlan); err != nil {
-			return errors.Wrap(err, "cannot continue from saved server plan because the current source or options change its executable actions; the saved plan was not overwritten")
+			return errors.Wrapf(
+				err,
+				"cannot continue from saved server plan because the current source or options change its executable actions; the saved plan was not overwritten\nNext step: restart with this command (the source token is intentionally omitted):\n  %s\nThe CLI will replace the saved plan and safely remove only resources these migrations created",
+				restartCommandSuggestion(cmd, "server", sourceID),
+			)
 		}
 	}
 	if err := ensureArtifactDirectories(planPath, statePath); err != nil {
@@ -1332,20 +1388,64 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 		}
 	}()
 	if opts.apply {
+		var restartCleanups []migrationRestartCleanup
 		if reviewedPlan == nil && opts.restart {
-			printRestartNotice(cmd, planPath, statePath)
+			appNames := make(map[string]string, len(plan.Apps))
+			for _, app := range plan.Apps {
+				appNames[app.SourceUUID] = app.Name
+			}
+			for _, path := range statePaths {
+				state := restartCleanupStates[path]
+				if state == nil {
+					continue
+				}
+				appName := appNames[state.Source.ID]
+				if appName == "" {
+					appName = state.Source.ID
+				}
+				rollback, err := wodby1.PlanRollback(state)
+				if err != nil {
+					return errors.Wrapf(err, "prepare --restart cleanup for source app %s", state.Source.ID)
+				}
+				restartCleanups = append(restartCleanups, migrationRestartCleanup{
+					StatePath: path,
+					State:     state,
+					Plan:      rollback,
+					AppName:   appName,
+				})
+			}
 		}
-		if err := printApplyReview(cmd, plan, reviewedPlan != nil, prepared); err != nil {
+		if err := printApplyReview(cmd, plan, reviewedPlan != nil, opts.restart, prepared); err != nil {
 			return err
 		}
+		if reviewedPlan == nil && opts.restart {
+			printRestartConflict(cmd, "server", sourceID, restartCleanups, len(restartStateIdentities) != 0, false, planPath, statePath)
+		}
 		if reviewedPlan == nil {
-			if err := confirmApply(cmd, opts.yes); err != nil {
-				return err
+			if opts.restart {
+				destructive := false
+				for _, cleanup := range restartCleanups {
+					destructive = destructive || cleanup.Plan.DeletesResources()
+				}
+				if err := confirmRestart(cmd, opts.yes, "restart "+sourceID, destructive); err != nil {
+					return err
+				}
+			} else {
+				if err := confirmApply(cmd, opts.yes); err != nil {
+					return err
+				}
+			}
+		}
+		if len(restartCleanups) != 0 {
+			for _, cleanup := range restartCleanups {
+				if err := runMigrationRestartCleanupLocked(cmd, opts, targetClient, cleanup); err != nil {
+					return errors.Wrapf(err, "restart cleanup for source app %s", cleanup.State.Source.ID)
+				}
 			}
 		}
 		if len(restartStateIdentities) != 0 {
-			if err := removeServerMigrationStates(statePath, restartStateIdentities, restartDeletedTargetAppIDs); err != nil {
-				return errors.Wrap(err, "restart server migration after definitive target rejection")
+			if err := removeServerMigrationStates(statePath, restartStateIdentities, nil); err != nil {
+				return errors.Wrap(err, "replace safely restartable server migration states")
 			}
 		}
 		if reviewedPlan == nil {
@@ -1891,6 +1991,50 @@ func restartableServerMigrationStates(
 	return identities, len(identities) != 0, nil
 }
 
+func serverMigrationStatesForRestart(
+	basePath string,
+	plan wodby1.Plan,
+	paths []string,
+) (map[string]wodby1.MigrationStateIdentity, map[string]*wodby1.MigrationState, error) {
+	appIDs := make(map[string]bool, len(plan.Apps))
+	for _, app := range plan.Apps {
+		appIDs[app.SourceUUID] = true
+	}
+	safe := make(map[string]wodby1.MigrationStateIdentity, len(paths))
+	cleanup := make(map[string]*wodby1.MigrationState, len(paths))
+	for _, path := range paths {
+		state, err := wodby1.InspectMigrationState(path)
+		if err != nil {
+			return nil, nil, errors.Wrap(err, "inspect server app migration state")
+		}
+		if state.Source.Kind != "app" || !appIDs[state.Source.ID] {
+			return nil, nil, errors.Errorf("server migration state %s does not belong to an app in the applied plan", path)
+		}
+		expectedPath := serverAppStatePath(basePath, state.Source.ID)
+		same, err := sameArtifactPath(path, expectedPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !same {
+			return nil, nil, errors.Errorf("server migration state %s does not match its source app identity", path)
+		}
+		if state.Target.OrgID != plan.Target.OrgID ||
+			state.Target.ProjectID != plan.Target.ProjectID ||
+			state.Target.ClusterID != plan.Target.ClusterID {
+			return nil, nil, errors.Errorf("server migration state %s does not match the applied plan target", path)
+		}
+		if state.CanRestartSafely() {
+			safe[path] = state.Identity()
+			continue
+		}
+		if _, err := wodby1.PlanRollback(state); err != nil {
+			return nil, nil, errors.Wrapf(err, "prepare --restart cleanup for source app %s", state.Source.ID)
+		}
+		cleanup[path] = state
+	}
+	return safe, cleanup, nil
+}
+
 func inspectIncompatibleServerMigrationStates(
 	basePath string,
 	paths []string,
@@ -2096,78 +2240,13 @@ func incompatiblePlanRestartError(
 		}
 	}
 	if len(existingTargetIDs) != 0 {
-		fmt.Fprintf(&message, "\nExisting target app ID(s): %s", strings.Join(existingTargetIDs, ", "))
-		fmt.Fprintf(&message, "\nThe CLI will not delete or discard state containing changes to an existing app. Continue with the CLI version that created this migration state.")
-		return errors.New(message.String())
+		fmt.Fprintf(&message, "\nPre-existing target app ID(s), which restart will preserve: %s", strings.Join(existingTargetIDs, ", "))
 	}
-	if len(targetIDs) == 0 {
-		fmt.Fprintf(&message, "\nNext step: rerun the same command with --apply --restart. The CLI will replace the obsolete plan and state files.")
-	} else {
+	if len(targetIDs) != 0 {
 		fmt.Fprintf(&message, "\nSaved target app ID(s): %s", strings.Join(targetIDs, ", "))
-		fmt.Fprintf(&message, "\nNext step: delete these target apps if they still exist, then rerun the same command with --apply --restart. The CLI will verify their deletion and replace the obsolete plan and state files.")
 	}
+	fmt.Fprintf(&message, "\nNext step: rerun the same command with --apply --restart. The CLI will show and confirm cleanup of only migration-created resources, replace the obsolete plan and state, and continue with a fresh apply.")
 	return errors.New(message.String())
-}
-
-func incompatiblePlanUnsafeRestartError(
-	plan *wodby1.UnsupportedMigrationPlanSchemaError,
-	planPath string,
-	statePath string,
-	state *wodby1.MigrationState,
-) error {
-	base := incompatiblePlanRestartError(plan, planPath, []string{statePath}, []*wodby1.MigrationState{state})
-	return errors.Errorf("%s\nThe saved state records target mutations but does not identify a target app, so the CLI cannot discard it safely.", base)
-}
-
-func incompatibleTargetAppExistsError(
-	plan *wodby1.UnsupportedMigrationPlanSchemaError,
-	planPath string,
-	statePath string,
-	state *wodby1.MigrationState,
-) error {
-	if state.Target.ExistingApp {
-		return errors.Errorf(
-			"the saved migration uses incompatible plan schema %s (supported: %s) and records changes while adding an instance to existing target app ID %d\nPlan: %s\nState: %s\nThe CLI will not ask you to delete an existing app; continue with the CLI version that created this migration state",
-			plan.Actual,
-			plan.Supported,
-			state.Target.AppID,
-			planPath,
-			statePath,
-		)
-	}
-	return errors.Errorf(
-		"the saved migration uses incompatible plan schema %s (supported: %s) and cannot be resumed\nPlan: %s\nState: %s\nTarget app ID %d still exists. Delete it, then rerun the same command with --apply --restart; the CLI will replace the obsolete plan and state files",
-		plan.Actual,
-		plan.Supported,
-		planPath,
-		statePath,
-		state.App.TargetID,
-	)
-}
-
-func unsafeSingleRestartError(state *wodby1.MigrationState, statePath string) error {
-	if state == nil {
-		return errors.Errorf("cannot restart from scratch because migration state %s is unavailable", statePath)
-	}
-	target := ""
-	if state.App.TargetID > 0 {
-		target = fmt.Sprintf(" (target app ID %d)", state.App.TargetID)
-	}
-	return errors.Errorf(
-		"cannot restart migration from scratch because state %s records target mutations%s at status=%s phase=%s; continue without --restart to reuse the saved plan and completed work",
-		statePath,
-		target,
-		state.Status,
-		state.Phase,
-	)
-}
-
-func unsafeExistingAppRestartError(state *wodby1.MigrationState, statePath string) error {
-	return errors.Errorf(
-		"cannot restart this migration from scratch because state %s records changes made while adding an instance to existing target app ID %d; the CLI will never ask you to delete an existing app. Continue without --restart to reuse completed work",
-		statePath,
-		state.Target.AppID,
-	)
 }
 
 func stateBackedTargetAppState(state *wodby1.MigrationState) (targetID int, allowRecovery bool) {
@@ -2255,13 +2334,15 @@ func printPreview(cmd *cobra.Command, plan wodby1.Plan, prepared ...wodby1.Prepa
 	return nil
 }
 
-func printApplyReview(cmd *cobra.Command, plan wodby1.Plan, continuing bool, prepared ...wodby1.PreparedMigration) error {
+func printApplyReview(cmd *cobra.Command, plan wodby1.Plan, continuing bool, restarting bool, prepared ...wodby1.PreparedMigration) error {
 	if planOutputJSON(cmd) {
 		return nil
 	}
 	wodby1.PrintReview(cmd.OutOrStdout(), plan, prepared...)
 	if continuing {
 		fmt.Fprintln(cmd.OutOrStdout(), "\nContinuing the saved migration plan shown above.")
+	} else if restarting {
+		fmt.Fprintln(cmd.OutOrStdout(), "\nFresh migration plan shown above. It has not started.")
 	} else {
 		fmt.Fprintln(cmd.OutOrStdout(), "\nApplying the migration plan shown above.")
 	}
@@ -2349,6 +2430,45 @@ func runMigrationRollback(
 	return nil
 }
 
+type migrationRestartCleanup struct {
+	StatePath string
+	State     *wodby1.MigrationState
+	Plan      wodby1.RollbackPlan
+	AppName   string
+}
+
+// runMigrationRestartCleanupLocked executes cleanup that was already shown and
+// approved as part of the fresh migration plan. The caller holds the migration
+// state lock and continues with the new apply after this returns.
+func runMigrationRestartCleanupLocked(
+	cmd *cobra.Command,
+	opts *options,
+	targetClient *wodby1.TargetClient,
+	cleanup migrationRestartCleanup,
+) error {
+	w := cmd.OutOrStdout()
+	headingColor := cliColorBold + cliColorGreen
+	if cleanup.Plan.DeletesResources() {
+		headingColor = cliColorBold + cliColorRed
+	}
+	fmt.Fprintln(w, cliColor(w, headingColor, "\nRestart cleanup execution"))
+
+	executor, err := wodby1.NewMigrationExecutor(targetClient, wodby1.MigrationExecutorOptions{
+		StatePath:        cleanup.StatePath,
+		PollInterval:     opts.pollInterval,
+		OperationTimeout: opts.waitTimeout,
+		Progress:         migrationProgressReporter(cmd),
+	})
+	if err != nil {
+		return err
+	}
+	if err := executor.Rollback(cmd.Context(), cleanup.State, cleanup.Plan, cleanup.AppName); err != nil {
+		return errors.Wrap(err, "restart cleanup stopped; inspect Wodby 2 and rerun the same --apply --restart command")
+	}
+	fmt.Fprintln(w, cliColor(w, cliColorGreen, "Restart cleanup completed. The saved migration will now be replaced."))
+	return nil
+}
+
 // confirmRollback requires the app name to be typed back. Rollback destroys
 // imported data, so a bare y/N is too easy to answer on the wrong terminal.
 func confirmRollback(cmd *cobra.Command, approved bool, appName string) error {
@@ -2397,6 +2517,47 @@ func confirmApply(cmd *cobra.Command, approved bool) error {
 		return errors.New("migration canceled; no plan, state, or target resource was created")
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), cliColor(cmd.OutOrStdout(), cliColorGreen, "Migration approved."))
+	return nil
+}
+
+// confirmRestart is the only approval requested for a restart. When cleanup
+// deletes target resources, typing a deliberate phrase authorizes both that
+// deletion and the fresh plan shown immediately above it.
+func confirmRestart(cmd *cobra.Command, approved bool, confirmation string, destructive bool) error {
+	if approved {
+		if !planOutputJSON(cmd) {
+			fmt.Fprintln(cmd.OutOrStdout(), cliColor(cmd.OutOrStdout(), cliColorGreen, "Restart and fresh migration approved with --yes."))
+		}
+		return nil
+	}
+	if planOutputJSON(cmd) {
+		return errors.New("--output json requires --yes when restarting a migration")
+	}
+	if !destructive {
+		fmt.Fprint(cmd.OutOrStdout(), "\nReplace the saved plan and state, then apply this fresh migration? [y/N] ")
+		line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return errors.Wrap(err, "read restart confirmation")
+		}
+		answer := strings.ToLower(strings.TrimSpace(line))
+		if answer != "y" && answer != "yes" {
+			return errors.New("restart canceled; the saved plan and state were kept and no Wodby 2 resource was deleted")
+		}
+	} else {
+		fmt.Fprintf(
+			cmd.OutOrStdout(),
+			"\nType %q to delete the resources listed above and apply this fresh migration: ",
+			confirmation,
+		)
+		line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return errors.Wrap(err, "read restart confirmation")
+		}
+		if strings.TrimSpace(line) != confirmation {
+			return errors.New("restart canceled; the saved plan and state were kept and no Wodby 2 resource was deleted")
+		}
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), cliColor(cmd.OutOrStdout(), cliColorGreen, "Restart and fresh migration approved."))
 	return nil
 }
 
@@ -2508,24 +2669,63 @@ func migrationPhaseLabel(phase wodby1.MigrationPhase) string {
 	}
 }
 
-func printRestartNotice(cmd *cobra.Command, planPath string, statePath string) {
+func printRestartConflict(
+	cmd *cobra.Command,
+	sourceKind string,
+	sourceID string,
+	cleanups []migrationRestartCleanup,
+	hasStateOnly bool,
+	rollbackAvailable bool,
+	planPath string,
+	statePath string,
+) {
 	w := cmd.OutOrStdout()
 	if planOutputJSON(cmd) {
 		w = cmd.ErrOrStderr()
 	}
-	fmt.Fprintln(w, "Starting the migration from scratch as requested by --restart.")
-	fmt.Fprintf(w, "The safely restartable state will be replaced: %s\n", statePath)
-	fmt.Fprintf(w, "The applied plan will be regenerated: %s\n", planPath)
-}
-
-func printDeletedTargetRestartNotice(cmd *cobra.Command, planPath string, statePath string, targetAppID int) {
-	w := cmd.OutOrStdout()
-	if planOutputJSON(cmd) {
-		w = cmd.ErrOrStderr()
+	destructive := false
+	for _, cleanup := range cleanups {
+		destructive = destructive || cleanup.Plan.DeletesResources()
 	}
-	fmt.Fprintf(w, "Saved target app ID %d no longer exists; --restart will replace its stale migration state.\n", targetAppID)
-	fmt.Fprintf(w, "The previous applied plan will be replaced: %s\n", planPath)
-	fmt.Fprintf(w, "The stale resume state will be replaced: %s\n", statePath)
+	headingColor := cliColorBold + cliColorOrange
+	heading := "RESTART PAUSED: confirmation required"
+	if destructive {
+		headingColor = cliColorBold + cliColorRed
+		heading = "RESTART BLOCKED: destructive cleanup approval required"
+	}
+	fmt.Fprintln(w, cliColor(w, headingColor, "\n"+heading))
+	fmt.Fprintln(w, cliColor(w, cliColorBold, "Existing saved migration found"))
+	fmt.Fprintf(w, "Source: %s %s\n", sourceKind, sourceID)
+	fmt.Fprintln(w, "A fresh migration cannot start until the saved migration is either continued or cleaned up.")
+	cleanupHeading := "\nCleanup required before restart"
+	if destructive {
+		fmt.Fprintln(w, cliColor(w, cliColorBold+cliColorRed, cleanupHeading))
+	} else {
+		fmt.Fprintln(w, cliColor(w, cliColorBold, cleanupHeading))
+	}
+	if len(cleanups) == 0 {
+		fmt.Fprintln(w, "No migration-created Wodby 2 resources need to be deleted.")
+	}
+	for index, cleanup := range cleanups {
+		if len(cleanups) > 1 {
+			fmt.Fprintf(w, "\nApp %d/%d: %s\n", index+1, len(cleanups), cleanup.AppName)
+		}
+		fmt.Fprint(w, cleanup.Plan.DescribeRestart(cleanup.AppName))
+	}
+	if hasStateOnly {
+		fmt.Fprintln(w, "Saved state without target mutations will be replaced.")
+	}
+	fmt.Fprintln(w, "\nChoose how to proceed:")
+	fmt.Fprintln(w, "  Continue saved migration  Stop now and rerun the same --apply command without --restart")
+	if rollbackAvailable {
+		fmt.Fprintln(w, "  Clean up and stop          Stop now and rerun the same command with --rollback instead of --apply --restart")
+	}
+	fmt.Fprintln(w, "  Restart now               Confirm below to clean up and immediately apply the fresh plan")
+	fmt.Fprintln(w, "\nNothing has been deleted and the fresh migration has not started.")
+	if viper.GetBool("verbose") {
+		fmt.Fprintf(w, "  Plan file: %s\n", planPath)
+		fmt.Fprintf(w, "  Resume-state file: %s\n", statePath)
+	}
 }
 
 func rejectBlockedMigrationAction(cmd *cobra.Command, plan wodby1.Plan, action string, prepared ...wodby1.PreparedMigration) error {

@@ -2,6 +2,8 @@ package wodby1
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"net/url"
 	"strings"
 
@@ -16,16 +18,13 @@ type TargetClient struct {
 	client *rest.Client
 }
 
-// TargetCurrentUser is the authenticated Wodby 2 account relevant to
-// migration authorization. Organization authorization is derived from the
-// selected organization's membership, not the account's platform-admin flag.
+// TargetCurrentUser is the authenticated Wodby 2 account relevant to migration
+// authorization. Organization authorization is derived solely from the
+// selected organization's membership.
 type TargetCurrentUser struct {
 	ID    int    `json:"id"`
 	Email string `json:"email"`
 	Name  string `json:"name"`
-	// IsAdmin is retained for response compatibility only. Migration
-	// authorization must never use this platform-level flag.
-	IsAdmin bool `json:"isAdmin"`
 }
 
 // TargetOrgMembership is the authenticated account's relationship to a
@@ -36,6 +35,14 @@ type TargetOrgMembership struct {
 	OrgID  int    `json:"orgId"`
 	Role   string `json:"role"`
 	Status string `json:"status"`
+}
+
+type TargetAppServiceCapacityPreflight struct {
+	Allowed        bool    `json:"allowed"`
+	Enforced       bool    `json:"enforced"`
+	Usage          float64 `json:"usage"`
+	UsageIncluded  float64 `json:"usageIncluded"`
+	ProjectedUsage float64 `json:"projectedUsage"`
 }
 
 func NewTargetClient(config types.APIConfig) (*TargetClient, error) {
@@ -80,6 +87,47 @@ func (c *TargetClient) ListOrgMemberships(ctx context.Context, orgID int) ([]Tar
 		return nil, errors.Wrap(err, "list target Wodby 2 organization memberships")
 	}
 	return items, nil
+}
+
+// PreflightAppServiceCapacity asks the target backend to evaluate the exact
+// app-service increase. Billing exemptions remain private to the backend.
+func (c *TargetClient) PreflightAppServiceCapacity(ctx context.Context, orgID int, additionalUsage int) (TargetAppServiceCapacityPreflight, error) {
+	if orgID <= 0 {
+		return TargetAppServiceCapacityPreflight{}, errors.New("target organization ID must be positive")
+	}
+	if additionalUsage < 0 {
+		return TargetAppServiceCapacityPreflight{}, errors.New("additional app-service usage must not be negative")
+	}
+
+	var result TargetAppServiceCapacityPreflight
+	err := c.client.Post(
+		ctx,
+		fmt.Sprintf("/orgs/%d/actions/preflight-app-service-capacity", orgID),
+		nil,
+		map[string]int{"additionalUsage": additionalUsage},
+		&result,
+	)
+	if err != nil {
+		return TargetAppServiceCapacityPreflight{}, errors.Wrap(err, "preflight target app-service capacity")
+	}
+	values := []float64{result.Usage, result.UsageIncluded, result.ProjectedUsage}
+	for _, value := range values {
+		if value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			return TargetAppServiceCapacityPreflight{}, errors.New("target app-service capacity preflight returned invalid usage values")
+		}
+	}
+	expectedProjected := result.Usage + float64(additionalUsage)
+	if math.Abs(result.ProjectedUsage-expectedProjected) > 0.000001 {
+		return TargetAppServiceCapacityPreflight{}, errors.Errorf(
+			"target app-service capacity preflight returned projected usage %.6g, expected %.6g",
+			result.ProjectedUsage,
+			expectedProjected,
+		)
+	}
+	if !result.Allowed && !result.Enforced {
+		return TargetAppServiceCapacityPreflight{}, errors.New("target app-service capacity preflight returned a denied but unenforced decision")
+	}
+	return result, nil
 }
 
 // RequireOrgOwnerOrAdmin rejects credentials that are not an active OWNER or ADMIN

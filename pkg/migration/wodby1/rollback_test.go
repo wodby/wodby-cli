@@ -156,6 +156,38 @@ func TestPlanRollbackOnAnUntouchedTargetIsANoOp(t *testing.T) {
 	if !plan.empty() {
 		t.Fatalf("plan = %#v", plan)
 	}
+	if plan.DeletesResources() || !strings.Contains(plan.Describe("demo"), "No migration-created Wodby 2 resources") {
+		t.Fatalf("empty plan description = %q", plan.Describe("demo"))
+	}
+}
+
+func TestRestartDescriptionExplainsCleanupWithoutCallingItRollback(t *testing.T) {
+	plan := RollbackPlan{AppID: 900, ReusedIntegrations: []int{610}}
+	description := plan.DescribeRestart("demo")
+	for _, expected := range []string{
+		"Restart will delete the following",
+		`app "demo" (ID 900)`,
+		"After cleanup, the fresh migration plan will be saved and applied",
+	} {
+		if !strings.Contains(description, expected) {
+			t.Fatalf("restart description missing %q:\n%s", expected, description)
+		}
+	}
+	if strings.Contains(description, "Rollback will delete") {
+		t.Fatalf("restart description presents cleanup as a separate rollback:\n%s", description)
+	}
+}
+
+func TestPlanRollbackRejectsUnresolvedTargetOperations(t *testing.T) {
+	state := rollbackTestState(t, false)
+	if err := state.MarkAppOperationIntent("stack_create"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PlanRollback(state); err == nil ||
+		!strings.Contains(err.Error(), "app:stack_create (intent)") ||
+		!strings.Contains(err.Error(), "retry them before restarting") {
+		t.Fatalf("PlanRollback() error = %v", err)
+	}
 }
 
 func TestRollbackDeletesInDependencyOrder(t *testing.T) {
@@ -232,5 +264,26 @@ func TestRollbackTreatsAlreadyDeletedResourcesAsDone(t *testing.T) {
 	// Rerunning an interrupted rollback must not trip over its own progress.
 	if err := executor.Rollback(context.Background(), state, RollbackPlan{AppID: 900}, "demo"); err != nil {
 		t.Fatalf("already-deleted resources must not fail a rollback: %v", err)
+	}
+}
+
+func TestRollbackRemovesStateWhenNothingWasCreated(t *testing.T) {
+	state := rollbackTestState(t, false)
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := SaveMigrationState(statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	executor, err := NewMigrationExecutor(
+		mustTargetExecutionClient(t, "http://127.0.0.1"),
+		MigrationExecutorOptions{StatePath: statePath},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.Rollback(context.Background(), state, RollbackPlan{}, "demo"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InspectMigrationState(statePath); err == nil {
+		t.Fatal("empty rollback left its obsolete state behind")
 	}
 }

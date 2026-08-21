@@ -32,7 +32,6 @@ type TargetOrg struct {
 	Domain          string                 `json:"domain,omitempty"`
 	DefaultTimeZone string                 `json:"defaultTimeZone,omitempty"`
 	Capabilities    *TargetOrgCapabilities `json:"capabilities,omitempty"`
-	Subscription    *TargetOrgSubscription `json:"subscription,omitempty"`
 }
 
 type TargetOrgCapabilities struct {

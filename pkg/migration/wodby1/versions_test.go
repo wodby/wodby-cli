@@ -106,24 +106,6 @@ func TestCustomStackDefaultEnvironmentRequiresMigration(t *testing.T) {
 	}
 }
 
-func TestTargetServiceCapacityBlocksFreePlanBeforeMutation(t *testing.T) {
-	plan := Plan{Target: PlanTarget{Subscription: &TargetOrgSubscription{
-		Status: "ACTIVE",
-		Plan: &TargetOrgSubscriptionPlan{
-			Name: "developer", Usage: 8, UsageIncluded: 10,
-		},
-	}}}
-	prepared := PreparedMigration{Apps: []PreparedAppMigration{{
-		Instances: []PreparedInstance{{EffectiveState: map[string]bool{
-			"php": true, "nginx": true, "mariadb": true, "mailpit": false,
-		}}},
-	}}}
-	findings := targetServiceCapacityFindings(&plan, prepared, TargetPreflightOptions{})
-	if len(findings) != 1 || findings[0].Severity != SeverityBlocking {
-		t.Fatalf("expected free-plan capacity blocker, got %#v", findings)
-	}
-}
-
 func versionTestInspection(name string, options []TargetServiceOption) TargetStackServiceInspection {
 	return TargetStackServiceInspection{
 		StackService: TargetStackService{Name: name},

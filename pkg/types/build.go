@@ -32,11 +32,11 @@ type (
 		Main         bool    `json:"main"`
 		Dockerfile   *string `json:"dockerfile"`
 		Dockerignore *string `json:"dockerignore"`
-		// CopyFrom and CopyTo narrow the build to a subdirectory, relative to the
-		// --from and --to paths. Empty means copy the whole context.
-		CopyFrom string                `json:"copyFrom"`
-		CopyTo   string                `json:"copyTo"`
-		Args     []*AppServiceBuildArg `json:"args"`
+		// CopySubdir narrows the build to a subdirectory, applied under both the
+		// --from and --to paths so the path is preserved. Empty means copy the
+		// whole context.
+		CopySubdir string                `json:"copySubdir"`
+		Args       []*AppServiceBuildArg `json:"args"`
 	}
 	AppServiceBuildArg struct {
 		Name   string `json:"name"`

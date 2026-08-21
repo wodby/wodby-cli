@@ -368,7 +368,6 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 		plan.Target.DiscoveryVerified = true
 		plan.Target.Capabilities = &capabilities
 		plan.Target.OrgCapabilities = opts.TargetScope.Org.Capabilities
-		plan.Target.Subscription = opts.TargetScope.Org.Subscription
 		plan.Target.OrgDefaultTimeZone = opts.TargetScope.Org.DefaultTimeZone
 		if !plan.Target.OrgOwnerOrAdminVerified {
 			plan.addReview(SeverityBlocking, "", "", "target authorization", "target discovery did not verify an active Wodby 2 organization owner or administrator")

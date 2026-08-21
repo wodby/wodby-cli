@@ -166,9 +166,61 @@ func TestPreflightTargetResolvesOfficialStackServicesAndRehashesPlan(t *testing.
 		"/v1/service-revisions/102",
 		"/v1/service-revisions/101",
 		"/v1/integrations/44/options/remote-git-repo-file",
+		"/v1/orgs/8/actions/preflight-app-service-capacity",
 	}
 	if got := api.requestPaths(); !equalPreflightStrings(got, wantPaths) {
 		t.Fatalf("target API paths = %#v, want %#v", got, wantPaths)
+	}
+}
+
+func TestPreflightTargetUsesBackendAppServiceCapacityDecision(t *testing.T) {
+	tests := []struct {
+		name         string
+		decision     TargetAppServiceCapacityPreflight
+		wantBlocking bool
+	}{
+		{
+			name: "backend rejects projected usage",
+			decision: TargetAppServiceCapacityPreflight{
+				Allowed: false, Enforced: true, Usage: 10, UsageIncluded: 10, ProjectedUsage: 11,
+			},
+			wantBlocking: true,
+		},
+		{
+			name: "backend exemption allows projected usage",
+			decision: TargetAppServiceCapacityPreflight{
+				Allowed: true, Enforced: false, Usage: 0, UsageIncluded: 10, ProjectedUsage: 1,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			export := preflightFixtureExport(false)
+			export.Apps[0].Instances[0].Services = []Service{{Name: "php", Enabled: true}}
+			options := preflightOwnerPlanOptions()
+			options.SkipCode = true
+			options.SkipData = true
+			plan := preflightBuildPlan(t, export, options)
+			catalog := preflightSingleBuildCatalog("php", false)
+			catalog.capacityDecision = &test.decision
+			api := newPreflightTargetAPI(t, catalog)
+
+			if _, err := api.client.PreflightTarget(
+				context.Background(),
+				export,
+				&plan,
+				TargetPreflightOptions{SkipCode: true, SkipData: true},
+			); err != nil {
+				t.Fatal(err)
+			}
+			if got := api.capacityRequests(); !reflect.DeepEqual(got, []int{1}) {
+				t.Fatalf("capacity requests = %#v, want [1]", got)
+			}
+			if got := preflightHasReview(plan, SeverityBlocking, "target app-service capacity", "backend capacity preflight rejected"); got != test.wantBlocking {
+				t.Fatalf("capacity blocker = %t, want %t: %#v", got, test.wantBlocking, plan.Review)
+			}
+		})
 	}
 }
 
@@ -451,6 +503,7 @@ func TestPreflightTargetUsesReviewedRevisionAfterLatestRevisionChanges(t *testin
 		"/v1/service-revisions/103",
 		"/v1/service-revisions/102",
 		"/v1/service-revisions/101",
+		"/v1/orgs/8/actions/preflight-app-service-capacity",
 	}
 	if got := changedAPI.requestPaths(); !equalPreflightStrings(got, wantPaths) {
 		t.Fatalf("target API paths = %#v, want exact reviewed reads %#v", got, wantPaths)
@@ -496,6 +549,74 @@ func TestPreflightTargetBlocksUnrelatedAppNameCollisionButAllowsStateBackedApp(t
 	}
 	if preflightHasReview(resumed, SeverityBlocking, "target app name", "") {
 		t.Fatalf("state-backed app was treated as a collision: %#v", resumed.Review)
+	}
+}
+
+func TestPreflightTargetBlocksRenamedAppCreatedByPriorMigration(t *testing.T) {
+	for _, test := range []struct {
+		name               string
+		targetInstanceName string
+		want               []string
+	}{
+		{
+			name:               "same instance already migrated",
+			targetInstanceName: "prod",
+			want: []string{
+				`app "renamed-target" (ID 91)`,
+				`instance(s) "prod" (ID 92)`,
+				`Target instance "prod" already exists there`,
+				"original --state-file",
+			},
+		},
+		{
+			name:               "another instance can target existing app",
+			targetInstanceName: "stage",
+			want: []string{
+				`app "renamed-target" (ID 91)`,
+				`instance(s) "stage" (ID 92)`,
+				"--target-app 91",
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			export := preflightFixtureExport(false)
+			export.Source = &ExportSource{Kind: "instance", UUID: "inst-1"}
+			export.Apps[0].Instances[0].Services = nil
+			options := preflightOwnerPlanOptions()
+			options.SourceKind = "instance"
+			options.SourceID = "inst-1"
+			plan := preflightBuildPlan(t, export, options)
+
+			catalog := preflightOfficialCatalog()
+			generated := generatedStackNaming(catalog.stacks["drupal11"], export.Apps[0].App)
+			catalog.apps = []TargetApp{{ID: 91, Name: "renamed-target", OrgID: 8}}
+			catalog.appInstances = []TargetAppInstance{{
+				ID: 92, AppID: 91, Name: test.targetInstanceName,
+				ClusterID: 10, EnvID: 11, StackID: 55, StackRevID: 56,
+			}}
+			catalog.stacks[generated.Name] = TargetStack{
+				ID: 55, Name: generated.Name, Title: generated.Title, Status: "OK",
+				RevID: 56, LatestRevNumber: 1, OrgID: 8,
+			}
+			api := newPreflightTargetAPI(t, catalog)
+
+			if _, err := api.client.PreflightTarget(
+				context.Background(),
+				export,
+				&plan,
+				TargetPreflightOptions{SkipCode: true, SkipData: true},
+			); err != nil {
+				t.Fatal(err)
+			}
+			if !preflightHasReview(plan, SeverityBlocking, "previous migration", "blocked before it can create a duplicate app") {
+				t.Fatalf("previous migration blocker = %#v", plan.Review)
+			}
+			for _, expected := range test.want {
+				if !preflightHasReview(plan, SeverityBlocking, "previous migration", expected) {
+					t.Fatalf("previous migration blocker missing %q: %#v", expected, plan.Review)
+				}
+			}
+		})
 	}
 }
 
@@ -596,11 +717,10 @@ func TestPreflightTargetRequiresVerifiedOrgOwnerOrAdminPlan(t *testing.T) {
 	requestsAfterOwner := len(api.requestPaths())
 
 	memberOptions := preflightOwnerPlanOptions()
-	memberOptions.TargetScope.User.IsAdmin = true
 	memberOptions.TargetScope.Membership.Role = "member"
 	memberPlan := preflightBuildPlan(t, export, memberOptions)
 	if memberPlan.Target.OrgOwnerOrAdminVerified {
-		t.Fatalf("platform admin/member was treated as an organization admin: %#v", memberPlan.Target)
+		t.Fatalf("organization member was treated as an organization admin: %#v", memberPlan.Target)
 	}
 	if !preflightHasReview(
 		memberPlan,
@@ -1339,6 +1459,7 @@ func TestNormalizeGitRefType(t *testing.T) {
 
 type preflightTargetCatalog struct {
 	apps               []TargetApp
+	appInstances       []TargetAppInstance
 	publicStacks       []TargetStack
 	remoteGitRepos     map[int][]TargetRemoteGitRepo
 	remoteGitRepoFiles map[string]bool
@@ -1346,12 +1467,14 @@ type preflightTargetCatalog struct {
 	stackRevisions     map[int]TargetStackRevision
 	stackServices      map[int][]TargetStackService
 	revisions          map[int]TargetServiceRevision
+	capacityDecision   *TargetAppServiceCapacityPreflight
 }
 
 type preflightTargetAPI struct {
-	client *TargetClient
-	mu     sync.Mutex
-	paths  []string
+	client             *TargetClient
+	mu                 sync.Mutex
+	paths              []string
+	capacityAdditional []int
 }
 
 func newPreflightTargetAPI(t *testing.T, catalog preflightTargetCatalog) *preflightTargetAPI {
@@ -1362,6 +1485,27 @@ func newPreflightTargetAPI(t *testing.T, catalog preflightTargetCatalog) *prefli
 		api.paths = append(api.paths, request.URL.Path)
 		api.mu.Unlock()
 
+		if request.Method == http.MethodPost && request.URL.Path == "/v1/orgs/8/actions/preflight-app-service-capacity" {
+			var input struct {
+				AdditionalUsage int `json:"additionalUsage"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&input); err != nil || input.AdditionalUsage < 0 {
+				http.Error(w, "invalid capacity request", http.StatusBadRequest)
+				return
+			}
+			api.mu.Lock()
+			api.capacityAdditional = append(api.capacityAdditional, input.AdditionalUsage)
+			api.mu.Unlock()
+			decision := TargetAppServiceCapacityPreflight{
+				Allowed: true, Enforced: true, UsageIncluded: 10,
+				ProjectedUsage: float64(input.AdditionalUsage),
+			}
+			if catalog.capacityDecision != nil {
+				decision = *catalog.capacityDecision
+			}
+			preflightWriteJSON(w, decision)
+			return
+		}
 		if request.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -1373,6 +1517,19 @@ func newPreflightTargetAPI(t *testing.T, catalog preflightTargetCatalog) *prefli
 			preflightWriteJSON(w, catalog.publicStacks)
 		case request.URL.Path == "/v1/apps":
 			preflightWriteJSON(w, catalog.apps)
+		case request.URL.Path == "/v1/app-instances":
+			if request.URL.Query().Get("orgId") != "8" {
+				http.Error(w, "invalid app instance scope", http.StatusBadRequest)
+				return
+			}
+			appID := request.URL.Query().Get("appId")
+			items := []TargetAppInstance{}
+			for _, item := range catalog.appInstances {
+				if appID == "" || appID == strconv.Itoa(item.AppID) {
+					items = append(items, item)
+				}
+			}
+			preflightWriteJSON(w, items)
 		case strings.HasPrefix(request.URL.Path, "/v1/integrations/") &&
 			strings.HasSuffix(request.URL.Path, "/options/remote-git-repo-file"):
 			value := strings.TrimSuffix(
@@ -1420,12 +1577,29 @@ func newPreflightTargetAPI(t *testing.T, catalog preflightTargetCatalog) *prefli
 			}
 			preflightWriteJSON(w, repositories)
 		case request.URL.Path == "/v1/stacks":
-			if request.URL.Query().Get("orgId") != "8" ||
-				request.URL.Query().Get("projectIds") != "9" {
+			if request.URL.Query().Get("orgId") != "8" {
 				http.Error(w, "invalid stack scope", http.StatusBadRequest)
 				return
 			}
+			projectIDs := request.URL.Query().Get("projectIds")
+			if projectIDs != "" && projectIDs != "9" {
+				http.Error(w, "invalid stack project scope", http.StatusBadRequest)
+				return
+			}
 			name := request.URL.Query().Get("search")
+			if projectIDs == "" {
+				items := []TargetStack{}
+				for _, stack := range catalog.stacks {
+					if stack.OrgID == 8 && strings.Contains(stack.Name, name) {
+						if stack.Status == "" {
+							stack.Status = "OK"
+						}
+						items = append(items, stack)
+					}
+				}
+				preflightWriteJSON(w, TargetStacksResponse{Items: items, TotalCount: len(items)})
+				break
+			}
 			stack, found := catalog.stacks[name]
 			if !found {
 				preflightWriteJSON(w, TargetStacksResponse{Items: []TargetStack{}})
@@ -1534,6 +1708,12 @@ func (a *preflightTargetAPI) requestPaths() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]string(nil), a.paths...)
+}
+
+func (a *preflightTargetAPI) capacityRequests() []int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]int(nil), a.capacityAdditional...)
 }
 
 func preflightWriteJSON(w http.ResponseWriter, value interface{}) {
@@ -1725,7 +1905,7 @@ func preflightOwnerPlanOptions() PlanOptions {
 		TargetStackID: 7,
 		TargetScope: &TargetScopeDiscovery{
 			User: TargetCurrentUser{
-				ID: userID, Email: "owner@example.test", IsAdmin: false,
+				ID: userID, Email: "owner@example.test",
 			},
 			Membership: TargetOrgMembership{
 				ID: 88, UserID: &userID, OrgID: 8, Role: "owner", Status: "ok",
@@ -1733,12 +1913,6 @@ func preflightOwnerPlanOptions() PlanOptions {
 			Org: TargetOrg{
 				ID: 8, Name: "acme", Title: "Acme",
 				Capabilities: &TargetOrgCapabilities{CustomDomains: true, CronSchedules: true},
-				Subscription: &TargetOrgSubscription{
-					Status: "ACTIVE",
-					Plan: &TargetOrgSubscriptionPlan{
-						Name: "team", Title: "Team", Usage: 4, UsageIncluded: 10,
-					},
-				},
 			},
 			Project: TargetProject{ID: 9, Name: "customer", Title: "Customer", OrgID: 8},
 			Cluster: TargetCluster{

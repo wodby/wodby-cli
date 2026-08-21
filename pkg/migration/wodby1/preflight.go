@@ -304,6 +304,28 @@ func (c *TargetClient) PreflightTarget(
 		}
 		planApps[item.SourceUUID] = item
 	}
+	var targetApps []TargetApp
+	if plan.Target.AppID == 0 {
+		items, err := c.ListApps(ctx, plan.Target.OrgID)
+		if err != nil {
+			return PreparedMigration{}, errors.Wrap(err, "discover existing target apps")
+		}
+		targetApps = items
+	}
+	var targetInstances []TargetAppInstance
+	targetInstancesLoaded := false
+	loadTargetInstances := func() ([]TargetAppInstance, error) {
+		if targetInstancesLoaded {
+			return targetInstances, nil
+		}
+		items, err := c.ListOrgAppInstances(ctx, plan.Target.OrgID)
+		if err != nil {
+			return nil, err
+		}
+		targetInstances = items
+		targetInstancesLoaded = true
+		return targetInstances, nil
+	}
 	prepared := PreparedMigration{Apps: []PreparedAppMigration{}}
 	findings := []ReviewItem{}
 	for appIndex, appExport := range appExports {
@@ -321,7 +343,7 @@ func (c *TargetClient) PreflightTarget(
 		if plan.Target.AppID > 0 {
 			existingApp, appFound, err = c.FindAppByID(ctx, plan.Target.AppID)
 		} else {
-			existingApp, appFound, err = c.FindAppExact(ctx, plan.Target.OrgID, appExport.App.Name)
+			existingApp, appFound, err = findTargetAppExact(targetApps, appExport.App.Name)
 		}
 		if err != nil {
 			return PreparedMigration{}, errors.Wrap(err, "check target app availability")
@@ -400,6 +422,29 @@ func (c *TargetClient) PreflightTarget(
 				Subject:  "target app name",
 				Message:  message,
 			})
+		} else if !appFound && allowedTargetAppID == 0 && !allowRecovery && len(targetApps) != 0 {
+			instances, listErr := loadTargetInstances()
+			if listErr != nil {
+				return PreparedMigration{}, errors.Wrap(listErr, "inspect target instances for an earlier migration")
+			}
+			matches, matchErr := c.findPriorMigrationAppMatches(
+				ctx,
+				plan.Target.OrgID,
+				appExport.App,
+				targetApps,
+				instances,
+			)
+			if matchErr != nil {
+				return PreparedMigration{}, errors.Wrap(matchErr, "detect an earlier migration of the source app")
+			}
+			if len(matches) != 0 {
+				findings = append(findings, ReviewItem{
+					Severity: SeverityBlocking,
+					App:      appExport.App.Name,
+					Subject:  "previous migration",
+					Message:  priorMigrationBlockerMessage(plan.Source.Kind, appExport, matches),
+				})
+			}
 		}
 		repositoryFindings, err := c.resolveRepositoryPlan(ctx, appExport.App, appPlan.Repository, opts.SkipCode)
 		if err != nil {
@@ -549,7 +594,11 @@ func (c *TargetClient) PreflightTarget(
 		prepared.StackAdditions = prepared.Apps[0].StackAdditions
 		prepared.Integrations = prepared.Apps[0].Integrations
 	}
-	findings = append(findings, targetServiceCapacityFindings(plan, prepared, opts)...)
+	capacityFindings, err := c.targetServiceCapacityFindings(ctx, plan, prepared, opts)
+	if err != nil {
+		return PreparedMigration{}, err
+	}
+	findings = append(findings, capacityFindings...)
 	if err := plan.AddReviewItems(findings...); err != nil {
 		return PreparedMigration{}, err
 	}
@@ -580,36 +629,21 @@ func preparedMigrationUsesLegacyWodby1EnvVars(prepared PreparedMigration) bool {
 	return false
 }
 
-func targetServiceCapacityFindings(
+func (c *TargetClient) targetServiceCapacityFindings(
+	ctx context.Context,
 	plan *Plan,
 	prepared PreparedMigration,
 	opts TargetPreflightOptions,
-) []ReviewItem {
-	if plan == nil || plan.Target.Subscription == nil || plan.Target.Subscription.Plan == nil {
-		return []ReviewItem{{
-			Severity: SeverityBlocking,
-			Subject:  "target app-service capacity",
-			Message:  "target Wodby 2 API did not return subscription usage and allowance; capacity cannot be verified safely",
-		}}
+) ([]ReviewItem, error) {
+	if plan == nil {
+		return nil, errors.New("migration plan is required")
 	}
 	// A resume can contain target services already included in live usage. The
 	// backend repeats its atomic limit check for every remaining app/instance,
 	// while recounting the entire saved plan here would double-count them.
 	if opts.AllowedTargetAppID > 0 || opts.AllowStateBackedAppRecovery ||
 		len(opts.AllowedTargetAppIDs) != 0 || len(opts.StateBackedAppRecovery) != 0 {
-		return nil
-	}
-	subscription := plan.Target.Subscription
-	if !strings.EqualFold(strings.TrimSpace(subscription.Status), "ACTIVE") &&
-		!strings.EqualFold(strings.TrimSpace(subscription.Status), "CANCELING") {
-		return []ReviewItem{{
-			Severity: SeverityBlocking,
-			Subject:  "target subscription",
-			Message:  fmt.Sprintf("target subscription status %q cannot accept new app services", subscription.Status),
-		}}
-	}
-	if !strings.EqualFold(strings.TrimSpace(subscription.Plan.Name), "developer") {
-		return nil
+		return nil, nil
 	}
 	additional := 0
 	for _, app := range prepared.Apps {
@@ -621,21 +655,24 @@ func targetServiceCapacityFindings(
 			}
 		}
 	}
-	projected := subscription.Plan.Usage + float64(additional)
-	if projected <= subscription.Plan.UsageIncluded {
-		return nil
+	decision, err := c.PreflightAppServiceCapacity(ctx, plan.Target.OrgID, additional)
+	if err != nil {
+		return nil, err
+	}
+	if decision.Allowed {
+		return nil, nil
 	}
 	return []ReviewItem{{
 		Severity: SeverityBlocking,
 		Subject:  "target app-service capacity",
 		Message: fmt.Sprintf(
-			"migration needs %d enabled target app service(s), which would raise free-plan usage from %.0f to %.0f; the current allowance is %.0f. Disable or remap optional services, remove other usage, or upgrade the target plan",
+			"migration needs %d enabled target app service(s), but the backend capacity preflight rejected projected usage from %.0f to %.0f (included usage: %.0f). Disable or remap optional services, remove other usage, adjust the target spending limit, or upgrade the target plan",
 			additional,
-			subscription.Plan.Usage,
-			projected,
-			subscription.Plan.UsageIncluded,
+			decision.Usage,
+			decision.ProjectedUsage,
+			decision.UsageIncluded,
 		),
-	}}
+	}}, nil
 }
 
 // preflightWodbyCIPipelines checks every distinct source ref used by an app,
@@ -1637,6 +1674,147 @@ func contextSourceInstance(app AppExport, sourceUUID string) (Instance, bool) {
 		}
 	}
 	return Instance{}, false
+}
+
+type priorMigrationAppMatch struct {
+	App       TargetApp
+	Instances []TargetAppInstance
+	Stacks    []TargetStack
+}
+
+// findPriorMigrationAppMatches detects apps whose active instance stack names
+// carry the digest embedded by generatedStackNaming for this Wodby 1 app. This
+// works even when the target app itself was renamed after migration.
+func (c *TargetClient) findPriorMigrationAppMatches(
+	ctx context.Context,
+	orgID int,
+	source App,
+	apps []TargetApp,
+	instances []TargetAppInstance,
+) ([]priorMigrationAppMatch, error) {
+	fingerprint := shortDigest(source.UUID)
+	if fingerprint == "" || len(apps) == 0 || len(instances) == 0 {
+		return nil, nil
+	}
+	stacks, err := c.listStackRevisionCandidates(ctx, orgID, 0, fingerprint)
+	if err != nil {
+		return nil, err
+	}
+	matchingStacks := map[int]TargetStack{}
+	for _, stack := range stacks {
+		if stack.OrgID != orgID || stack.Public || !strings.Contains(stack.Name, fingerprint) {
+			continue
+		}
+		if err := validateTargetStack(stack); err != nil {
+			return nil, err
+		}
+		matchingStacks[stack.ID] = stack
+	}
+	if len(matchingStacks) == 0 {
+		return nil, nil
+	}
+
+	appsByID := make(map[int]TargetApp, len(apps))
+	for _, app := range apps {
+		appsByID[app.ID] = app
+	}
+	matchesByAppID := map[int]*priorMigrationAppMatch{}
+	seenStacksByAppID := map[int]map[int]bool{}
+	for _, instance := range instances {
+		stack, matched := matchingStacks[instance.StackID]
+		app, visible := appsByID[instance.AppID]
+		if !matched || !visible {
+			continue
+		}
+		match := matchesByAppID[app.ID]
+		if match == nil {
+			match = &priorMigrationAppMatch{App: app}
+			matchesByAppID[app.ID] = match
+			seenStacksByAppID[app.ID] = map[int]bool{}
+		}
+		match.Instances = append(match.Instances, instance)
+		if !seenStacksByAppID[app.ID][stack.ID] {
+			match.Stacks = append(match.Stacks, stack)
+			seenStacksByAppID[app.ID][stack.ID] = true
+		}
+	}
+
+	matches := make([]priorMigrationAppMatch, 0, len(matchesByAppID))
+	for _, match := range matchesByAppID {
+		sort.Slice(match.Instances, func(i, j int) bool {
+			if match.Instances[i].Name == match.Instances[j].Name {
+				return match.Instances[i].ID < match.Instances[j].ID
+			}
+			return match.Instances[i].Name < match.Instances[j].Name
+		})
+		sort.Slice(match.Stacks, func(i, j int) bool { return match.Stacks[i].ID < match.Stacks[j].ID })
+		matches = append(matches, *match)
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].App.ID < matches[j].App.ID })
+	return matches, nil
+}
+
+func priorMigrationBlockerMessage(sourceKind string, source AppExport, matches []priorMigrationAppMatch) string {
+	var b strings.Builder
+	b.WriteString("generated target stack fingerprints identify an earlier migration of this Wodby 1 app: ")
+	for index, match := range matches {
+		if index != 0 {
+			b.WriteString("; ")
+		}
+		fmt.Fprintf(&b, "app %q (ID %d)", match.App.Name, match.App.ID)
+		if len(match.Stacks) != 0 {
+			b.WriteString(", stack(s) ")
+			for stackIndex, stack := range match.Stacks {
+				if stackIndex != 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "%q (ID %d)", stack.Name, stack.ID)
+			}
+		}
+		if len(match.Instances) != 0 {
+			b.WriteString(", instance(s) ")
+			for instanceIndex, instance := range match.Instances {
+				if instanceIndex != 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "%q (ID %d)", instance.Name, instance.ID)
+			}
+		}
+	}
+	b.WriteString(". No resume state at the expected path authorizes these resources, so this run is blocked before it can create a duplicate app. ")
+
+	if sourceKind == "instance" && len(matches) == 1 {
+		plannedName := ""
+		if len(source.Instances) == 1 {
+			plannedName = source.Instances[0].Name
+		}
+		for _, instance := range matches[0].Instances {
+			if plannedName != "" && instance.Name == plannedName {
+				fmt.Fprintf(
+					&b,
+					"Target instance %q already exists there; use the original --state-file to resume or verify that migration. The CLI will not adopt it without its state.",
+					plannedName,
+				)
+				return b.String()
+			}
+		}
+		fmt.Fprintf(
+			&b,
+			"To migrate this not-yet-created instance into the detected app, rerun explicitly with --target-app %d.",
+			matches[0].App.ID,
+		)
+		return b.String()
+	}
+
+	b.WriteString("Use the original migration --state-file to resume or verify it.")
+	if len(matches) == 1 {
+		fmt.Fprintf(
+			&b,
+			" To migrate another instance separately, run migrate wodby1 instance for that source instance with --target-app %d.",
+			matches[0].App.ID,
+		)
+	}
+	return b.String()
 }
 
 // appCarriesMigrationFingerprint reports whether an existing Wodby 2 app looks

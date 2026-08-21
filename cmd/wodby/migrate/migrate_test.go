@@ -757,6 +757,108 @@ func TestWodby1ServerRestartReplansAfterDefinitiveRejection(t *testing.T) {
 	}
 }
 
+func TestWodby1ServerRestartCleansUpMigrationCreatedTargetApp(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	fixture.setSourceKind("server")
+	fixture.mu.Lock()
+	fixture.targetApp101Exists = true
+	fixture.mu.Unlock()
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	t.Setenv("TMPDIR", t.TempDir())
+	statePath := filepath.Join(t.TempDir(), "server-state.json")
+
+	var preview bytes.Buffer
+	previewCmd := newWodby1ServerCommand()
+	previewCmd.SilenceUsage = true
+	previewCmd.SetOut(&preview)
+	previewCmd.SetArgs(fixture.serverPlanArgs("", "json"))
+	if err := previewCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var plan wodby1.Plan
+	if err := json.Unmarshal(preview.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	planPath, _, err := artifactPaths("server", "server-1", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureArtifactDirectories(planPath, statePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePlanFile(planPath, plan); err != nil {
+		t.Fatal(err)
+	}
+	childStatePath := serverAppStatePath(statePath, "app-1")
+	saveSuccessfulTargetState(t, childStatePath, wodby1.MigrationStateIdentity{
+		Source: wodby1.MigrationStateSourceIdentity{
+			Kind: "app", ID: "app-1", ConfigDigest: strings.Repeat("a", 64),
+		},
+		PlanHash: strings.Repeat("b", 64),
+		Target: wodby1.MigrationStateTarget{
+			OrgID: plan.Target.OrgID, ProjectID: plan.Target.ProjectID, ClusterID: plan.Target.ClusterID,
+		},
+	}, "instance-1", 101, 201)
+
+	var output bytes.Buffer
+	cmd := newWodby1ServerCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&output)
+	cmd.SetIn(strings.NewReader("restart server-1\n"))
+	cmd.SetArgs(append(withoutCLIArg(fixture.serverPlanArgs("", "text"), "--yes"),
+		"--state-file", statePath,
+		"--apply",
+		"--restart",
+	))
+	applyErr := cmd.Execute()
+	if applyErr == nil || !strings.Contains(applyErr.Error(), "server migration completed with 2 failed app(s)") {
+		t.Fatalf("apply error = %v", applyErr)
+	}
+	for _, expected := range []string{
+		"Existing saved migration found",
+		`Type "restart server-1" to delete the resources listed above and apply this fresh migration`,
+		"Restart cleanup execution",
+		"app \"demo\" (ID 101)",
+		"Target app ID 101 deleted",
+		"Restart cleanup completed. The saved migration will now be replaced.",
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("restart output missing %q:\n%s", expected, output.String())
+		}
+	}
+	if strings.Count(output.String(), `Type "restart server-1"`) != 1 ||
+		strings.Contains(output.String(), "Proceed with this migration? [y/N]") {
+		t.Fatalf("server restart requested more than one approval:\n%s", output.String())
+	}
+	planIndex := strings.Index(output.String(), "Wodby 1 to Wodby 2 migration plan")
+	blockIndex := strings.Index(output.String(), "RESTART BLOCKED: destructive cleanup approval required")
+	promptIndex := strings.Index(output.String(), `Type "restart server-1"`)
+	if planIndex < 0 || blockIndex <= planIndex || promptIndex <= blockIndex {
+		t.Fatalf("restart blocker must follow the plan and remain next to its confirmation:\n%s", output.String())
+	}
+	fixture.mu.Lock()
+	requests := append([]string(nil), fixture.targetRequests...)
+	targetExists := fixture.targetApp101Exists
+	fixture.mu.Unlock()
+	if targetExists {
+		t.Fatal("restart preserved the target app created by the prior migration")
+	}
+	deleteIndex, laterMutationIndex := -1, -1
+	for i, request := range requests {
+		if request == "DELETE /v1/apps/101" {
+			deleteIndex = i
+		}
+		if deleteIndex >= 0 && i > deleteIndex && !strings.HasPrefix(request, "GET ") {
+			laterMutationIndex = i
+			break
+		}
+	}
+	if deleteIndex < 0 || laterMutationIndex < 0 || deleteIndex >= laterMutationIndex {
+		t.Fatalf("target requests do not clean up before fresh apply: %v", requests)
+	}
+}
+
 func TestWodby1ServerResumeStateRequiresSavedPlan(t *testing.T) {
 	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
 	defer fixture.Close()
@@ -1183,9 +1285,12 @@ func TestWodby1AppCommandRestartsIncompatiblePlanAfterTargetDeletion(t *testing.
 		t.Fatalf("restart error = %v", err)
 	}
 	for _, expected := range []string{
-		"Saved target app ID 101 no longer exists",
-		"The previous applied plan will be replaced: " + planPath,
-		"The stale resume state will be replaced: " + statePath,
+		"Existing saved migration found",
+		"RESTART BLOCKED: destructive cleanup approval required",
+		"Restart cleanup execution",
+		"Target app ID 101 is already deleted",
+		"A fresh migration cannot start until the saved migration is either continued or cleaned up",
+		"The saved migration will now be replaced",
 	} {
 		if !strings.Contains(output.String(), expected) {
 			t.Fatalf("restart output missing %q:\n%s", expected, output.String())
@@ -1207,7 +1312,7 @@ func TestWodby1AppCommandRestartsIncompatiblePlanAfterTargetDeletion(t *testing.
 	}
 }
 
-func TestWodby1AppCommandRequiresDeletingTargetBeforeRestartingIncompatiblePlan(t *testing.T) {
+func TestWodby1AppCommandRestartDeletesRecordedTargetForIncompatiblePlan(t *testing.T) {
 	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
 	defer fixture.Close()
 	fixture.setTargetApp101Exists(true)
@@ -1217,27 +1322,48 @@ func TestWodby1AppCommandRequiresDeletingTargetBeforeRestartingIncompatiblePlan(
 	_, planPath, statePath := saveIncompatibleAppliedPlan(t, fixture, 101)
 	cmd := newWodby1AppCommand()
 	cmd.SilenceUsage = true
-	cmd.SetOut(&bytes.Buffer{})
+	var output bytes.Buffer
+	cmd.SetOut(&output)
 	cmd.SetArgs(append(fixture.planArgs("", "text"), "--apply", "--restart"))
 	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected existing target app error")
+	if err == nil || !strings.Contains(err.Error(), "app creation is ambiguous") {
+		t.Fatalf("restart error = %v", err)
 	}
 	for _, expected := range []string{
-		"incompatible plan schema",
-		"Plan: " + planPath,
-		"State: " + statePath,
-		"Target app ID 101 still exists",
-		"Delete it",
-		"--apply --restart",
+		"Existing saved migration found",
+		"Restart cleanup execution",
+		`app "app-1" (ID 101)`,
+		"Target app ID 101 deleted",
+		"The saved migration will now be replaced",
 	} {
-		if !strings.Contains(err.Error(), expected) {
-			t.Fatalf("error missing %q:\n%s", expected, err)
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("restart output missing %q:\n%s", expected, output.String())
 		}
 	}
+	newPlan, loadErr := wodby1.LoadReviewedPlan(planPath)
+	if loadErr != nil || newPlan.Schema != wodby1.MigrationPlanSchema {
+		t.Fatalf("replacement plan = %#v, %v", newPlan, loadErr)
+	}
 	state, loadErr := wodby1.InspectMigrationState(statePath)
-	if loadErr != nil || state.App.TargetID != 101 {
-		t.Fatalf("unsafe restart changed state: %#v, %v", state, loadErr)
+	if loadErr != nil || state.App.TargetID == 101 {
+		t.Fatalf("replacement state = %#v, %v", state, loadErr)
+	}
+
+	// Once restart has replaced the old artifacts and begun the fresh apply,
+	// an ordinary --apply command must resume that new migration. Requiring
+	// --restart again would repeat cleanup instead of continuing completed work.
+	var resumeOutput bytes.Buffer
+	resume := newWodby1AppCommand()
+	resume.SilenceUsage = true
+	resume.SetOut(&resumeOutput)
+	resume.SetArgs(append(fixture.planArgs("", "text"), "--apply"))
+	resumeErr := resume.Execute()
+	if resumeErr == nil || !strings.Contains(resumeErr.Error(), "ambiguous") {
+		t.Fatalf("post-restart resume error = %v", resumeErr)
+	}
+	if strings.Contains(resumeErr.Error(), "--restart") ||
+		!strings.Contains(resumeOutput.String(), "Continuing the saved migration plan shown above") {
+		t.Fatalf("post-restart run did not continue with ordinary --apply:\nerror: %v\n%s", resumeErr, resumeOutput.String())
 	}
 }
 
@@ -1385,12 +1511,101 @@ func TestWodby1AppCommandRestartRejectsStateWithTargetMutationRisk(t *testing.T)
 	restart.SetOut(&bytes.Buffer{})
 	restart.SetArgs(append(args, "--restart"))
 	err := restart.Execute()
-	if err == nil || !strings.Contains(err.Error(), "records target mutations") ||
-		!strings.Contains(err.Error(), "continue without --restart") {
+	if err == nil || !strings.Contains(err.Error(), "cannot safely identify every target mutation") ||
+		!strings.Contains(err.Error(), "retry them before restarting") {
 		t.Fatalf("restart error = %v", err)
 	}
 	if fixture.sourceRequestCount() != sourceRequests || len(fixture.targetRequestPaths()) != targetRequests {
 		t.Fatal("unsafe restart made API requests before rejecting persisted mutation risk")
+	}
+}
+
+func TestWodby1AppCommandRestartCleansUpPreAppStackAndIntegration(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	t.Setenv("TMPDIR", t.TempDir())
+
+	var preview bytes.Buffer
+	previewCmd := newWodby1AppCommand()
+	previewCmd.SilenceUsage = true
+	previewCmd.SetOut(&preview)
+	previewCmd.SetArgs(fixture.planArgs("", "json"))
+	if err := previewCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var plan wodby1.Plan
+	if err := json.Unmarshal(preview.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	planPath, statePath, err := artifactPaths("app", "app-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureArtifactDirectories(planPath, statePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePlanFile(planPath, plan); err != nil {
+		t.Fatal(err)
+	}
+	state, err := wodby1.NewMigrationState(migrationStateIdentity(plan), []string{"instance-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkAppOperationIntent("stack_create"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkAppOperationCreated("stack_create", 700, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkAppOperationIntent("integration_resolve.smtp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkAppOperationCreated("integration_resolve.smtp", 610, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.SetStatus(wodby1.MigrationStatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.SetPhase(wodby1.MigrationPhasePrepare); err != nil {
+		t.Fatal(err)
+	}
+	if err := wodby1.SaveMigrationState(statePath, state); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	restart := newWodby1AppCommand()
+	restart.SilenceUsage = true
+	restart.SetOut(&output)
+	restart.SetArgs(append(fixture.planArgs("", "text"), "--apply", "--restart"))
+	err = restart.Execute()
+	if err == nil || !strings.Contains(err.Error(), "app creation is ambiguous") {
+		t.Fatalf("restart error = %v", err)
+	}
+	for _, expected := range []string{
+		"the stack this migration generated (ID 700)",
+		"integration ID 610, created by this migration",
+		"Target stack ID 700 deleted",
+		"Target integration ID 610 deleted",
+		"The saved migration will now be replaced",
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("restart output missing %q:\n%s", expected, output.String())
+		}
+	}
+	requests := fixture.targetRequestPaths()
+	stackDelete, integrationDelete := -1, -1
+	for index, request := range requests {
+		if request == "DELETE /v1/stacks/700" {
+			stackDelete = index
+		}
+		if request == "DELETE /v1/integrations/610" {
+			integrationDelete = index
+		}
+	}
+	if stackDelete < 0 || integrationDelete <= stackDelete {
+		t.Fatalf("restart cleanup order = %v", requests)
 	}
 }
 
@@ -1459,7 +1674,8 @@ func TestWodby1AppCommandRestartsAfterSavedTargetWasDeleted(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "app creation is ambiguous") {
 		t.Fatalf("restart error = %v", err)
 	}
-	if !strings.Contains(output.String(), "Saved target app ID 101 no longer exists; --restart will replace its stale migration state.") {
+	if !strings.Contains(output.String(), "Restart cleanup") ||
+		!strings.Contains(output.String(), "Target app ID 101 is already deleted") {
 		t.Fatalf("restart output is unclear:\n%s", output.String())
 	}
 	state, err := wodby1.InspectMigrationState(statePath)
@@ -1541,7 +1757,10 @@ func TestWodby1AppCommandRestartReplansAfterDefinitiveRejection(t *testing.T) {
 	continueCmd.SetArgs(append(fixture.planArgs("", "text"), "--apply"))
 	continueErr := continueCmd.Execute()
 	if continueErr == nil || !strings.Contains(continueErr.Error(), "cannot continue from saved plan") ||
-		!strings.Contains(continueErr.Error(), "saved plan was not overwritten") {
+		!strings.Contains(continueErr.Error(), "saved plan was not overwritten") ||
+		!strings.Contains(continueErr.Error(), "wodby migrate wodby1 app app-1") ||
+		!strings.Contains(continueErr.Error(), "--apply --restart") ||
+		strings.Contains(continueErr.Error(), testSourceToken) {
 		t.Fatalf("continue error = %v", continueErr)
 	}
 	preservedPlan, err := wodby1.LoadReviewedPlan(planPath)
@@ -1964,6 +2183,16 @@ func (f *migrationAPIFixture) Close() {
 	f.target.Close()
 }
 
+func withoutCLIArg(args []string, omitted string) []string {
+	result := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg != omitted {
+			result = append(result, arg)
+		}
+	}
+	return result
+}
+
 func (f *migrationAPIFixture) planArgs(planPath string, output string) []string {
 	_ = planPath
 	return []string{
@@ -2097,9 +2326,10 @@ func (f *migrationAPIFixture) handleSource(w http.ResponseWriter, r *http.Reques
 }
 
 func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Request) {
+	isCapacityPreflight := r.Method == http.MethodPost && r.URL.Path == "/v1/orgs/11/actions/preflight-app-service-capacity"
 	f.mu.Lock()
 	f.targetRequests = append(f.targetRequests, r.Method+" "+r.URL.RequestURI())
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && !isCapacityPreflight {
 		f.mutations++
 	}
 	stackRevID := f.stackRevID
@@ -2108,6 +2338,35 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 	targetApp101InstanceName := f.targetApp101InstanceName
 	f.mu.Unlock()
 
+	if r.Method == http.MethodDelete && r.URL.Path == "/v1/apps/101" {
+		if !targetApp101Exists {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		f.mu.Lock()
+		f.targetApp101Exists = false
+		f.mu.Unlock()
+		writeMigrationJSON(w, wodby1.TargetOperationResult{Success: true})
+		return
+	}
+	if r.Method == http.MethodDelete && (r.URL.Path == "/v1/stacks/700" || r.URL.Path == "/v1/integrations/610") {
+		writeMigrationJSON(w, wodby1.TargetOperationResult{Success: true})
+		return
+	}
+	if isCapacityPreflight {
+		var input struct {
+			AdditionalUsage int `json:"additionalUsage"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.AdditionalUsage < 0 {
+			http.Error(w, "invalid capacity request", http.StatusBadRequest)
+			return
+		}
+		writeMigrationJSON(w, wodby1.TargetAppServiceCapacityPreflight{
+			Allowed: true, Enforced: true, UsageIncluded: 10,
+			ProjectedUsage: float64(input.AdditionalUsage),
+		})
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "unexpected target mutation", http.StatusInternalServerError)
 		return
@@ -2149,8 +2408,8 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 	case "/v1/orgs/11":
 		writeMigrationJSON(w, migrationTargetOrgFixture())
 	case "/v1/user":
-		writeMigrationJSON(w, wodby1.TargetCurrentUser{
-			ID: userID, Email: "customer@example.test", IsAdmin: f.platformAdmin,
+		writeMigrationJSON(w, map[string]interface{}{
+			"id": userID, "email": "customer@example.test", "isAdmin": f.platformAdmin,
 		})
 	case "/v1/org-memberships":
 		writeMigrationJSON(w, []wodby1.TargetOrgMembership{{
@@ -2232,12 +2491,6 @@ func migrationTargetOrgFixture() wodby1.TargetOrg {
 	return wodby1.TargetOrg{
 		ID: 11, Name: "acme", Title: "Acme",
 		Capabilities: &wodby1.TargetOrgCapabilities{CustomDomains: true, CronSchedules: true},
-		Subscription: &wodby1.TargetOrgSubscription{
-			Status: "ACTIVE",
-			Plan: &wodby1.TargetOrgSubscriptionPlan{
-				Name: "team", Title: "Team", Usage: 2, UsageIncluded: 10,
-			},
-		},
 	}
 }
 
@@ -2601,5 +2854,48 @@ func TestRollbackJSONOutputRequiresExplicitApproval(t *testing.T) {
 	if err := confirmRollback(cmd, false, "demo"); err == nil ||
 		!strings.Contains(err.Error(), "requires --yes") {
 		t.Fatalf("non-interactive rollback returned %v", err)
+	}
+}
+
+func TestRestartConfirmationApprovesCleanupAndFreshApplyOnce(t *testing.T) {
+	cmd := newWodby1InstanceCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetIn(strings.NewReader("demo\n"))
+
+	if err := confirmRestart(cmd, false, "demo", true); err != nil {
+		t.Fatalf("typed restart confirmation returned %v", err)
+	}
+	text := output.String()
+	if strings.Count(text, "Type \"demo\"") != 1 ||
+		!strings.Contains(text, "delete the resources listed above and apply this fresh migration") ||
+		!strings.Contains(text, "Restart and fresh migration approved") {
+		t.Fatalf("restart confirmation is unclear:\n%s", text)
+	}
+}
+
+func TestRestartConfirmationKeepsSavedMigrationOnMismatch(t *testing.T) {
+	cmd := newWodby1InstanceCommand()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetIn(strings.NewReader("y\n"))
+
+	err := confirmRestart(cmd, false, "demo", true)
+	if err == nil || !strings.Contains(err.Error(), "saved plan and state were kept") ||
+		!strings.Contains(err.Error(), "no Wodby 2 resource was deleted") {
+		t.Fatalf("mismatched restart confirmation returned %v", err)
+	}
+}
+
+func TestRestartConfirmationWithoutCleanupUsesYesNo(t *testing.T) {
+	cmd := newWodby1InstanceCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetIn(strings.NewReader("yes\n"))
+
+	if err := confirmRestart(cmd, false, "demo", false); err != nil {
+		t.Fatalf("non-destructive restart confirmation returned %v", err)
+	}
+	if !strings.Contains(output.String(), "Replace the saved plan and state") {
+		t.Fatalf("non-destructive restart prompt is unclear:\n%s", output.String())
 	}
 }

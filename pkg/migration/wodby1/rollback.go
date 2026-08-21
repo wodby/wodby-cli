@@ -41,6 +41,13 @@ func (p RollbackPlan) empty() bool {
 	return p.AppID == 0 && len(p.InstanceIDs) == 0 && p.StackID == 0 && len(p.IntegrationIDs) == 0
 }
 
+// DeletesResources reports whether executing the plan removes anything from
+// Wodby 2. A plan that only forgets local resume state does not need a second
+// destructive confirmation after the fresh apply plan was approved.
+func (p RollbackPlan) DeletesResources() bool {
+	return !p.empty()
+}
+
 // ErrRollbackAfterCutover reports a migration that has already been verified,
 // which means DNS points at Wodby 2 and the target is serving live traffic.
 var ErrRollbackAfterCutover = errors.New(
@@ -62,6 +69,12 @@ func PlanRollback(state *MigrationState) (RollbackPlan, error) {
 	// DNS resolves to Wodby 2.
 	if state.Status == MigrationStatusComplete || state.Phase == MigrationPhaseVerify {
 		return RollbackPlan{}, ErrRollbackAfterCutover
+	}
+	if unresolved := unresolvedRollbackOperations(state); len(unresolved) != 0 {
+		return RollbackPlan{}, errors.Errorf(
+			"rollback cannot safely identify every target mutation while these operations are unresolved: %s; resume the migration and resolve or retry them before restarting",
+			strings.Join(unresolved, ", "),
+		)
 	}
 
 	plan := RollbackPlan{}
@@ -107,10 +120,54 @@ func PlanRollback(state *MigrationState) (RollbackPlan, error) {
 	return plan, nil
 }
 
+func unresolvedRollbackOperations(state *MigrationState) []string {
+	if state == nil {
+		return nil
+	}
+	result := []string{}
+	collect := func(scope string, resource MigrationResourceState) {
+		for name, operation := range resource.Operations {
+			switch operation.Status {
+			case MigrationOperationIntent, MigrationOperationAccepted, MigrationOperationAmbiguous:
+				result = append(result, fmt.Sprintf("%s:%s (%s)", scope, name, operation.Status))
+			}
+		}
+	}
+	collect("app", state.App)
+	for sourceID, instance := range state.Instances {
+		if instance != nil {
+			collect("instance:"+sourceID, *instance)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
 // Describe renders the plan for the confirmation prompt.
 func (p RollbackPlan) Describe(appName string) string {
+	return p.describe(appName, "Rollback", false)
+}
+
+// DescribeRestart renders the resources from a saved migration that must be
+// removed before a fresh plan can be applied. It deliberately avoids calling
+// this a rollback: restart cleanup is one part of the new apply operation, not
+// a separate action the operator has already approved.
+func (p RollbackPlan) DescribeRestart(appName string) string {
+	return p.describe(appName, "Restart", true)
+}
+
+func (p RollbackPlan) describe(appName string, action string, continuing bool) string {
 	var b strings.Builder
-	b.WriteString("Rollback will delete the following from Wodby 2:\n\n")
+	if !p.DeletesResources() {
+		b.WriteString("No migration-created Wodby 2 resources need to be deleted.\n")
+		if continuing {
+			b.WriteString("The saved local migration state will be replaced before the fresh migration starts.\n")
+		} else {
+			b.WriteString("The saved local migration state will be replaced; Wodby 1 is not touched.\n")
+		}
+		return b.String()
+	}
+	fmt.Fprintf(&b, "%s will delete the following from Wodby 2:\n\n", action)
 	if p.AppID > 0 {
 		fmt.Fprintf(&b, "  app %q (ID %d) and every app instance, service, route, and imported\n", appName, p.AppID)
 		b.WriteString("    database and files under it\n")
@@ -135,7 +192,10 @@ func (p RollbackPlan) Describe(appName string) string {
 			len(p.SkippedIntegrations), p.SkippedIntegrations,
 		)
 	}
-	b.WriteString("\nThis cannot be undone. Wodby 1 is not touched.\n")
+	b.WriteString("\nThis deletion cannot be undone. Wodby 1 is not touched.\n")
+	if continuing {
+		b.WriteString("After cleanup, the fresh migration plan will be saved and applied.\n")
+	}
 	return b.String()
 }
 
@@ -158,7 +218,7 @@ func (e *MigrationExecutor) Rollback(
 	}
 	if plan.empty() {
 		e.reportProgress("Nothing recorded in migration state was created in Wodby 2; nothing to roll back.")
-		return nil
+		return RemoveMigrationStateAfterRollback(e.statePath, state.Identity())
 	}
 
 	if plan.AppID > 0 {

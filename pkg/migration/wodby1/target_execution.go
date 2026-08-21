@@ -1732,22 +1732,46 @@ func (c *TargetClient) FindAppByID(ctx context.Context, appID int) (TargetApp, b
 }
 
 func (c *TargetClient) FindAppExact(ctx context.Context, orgID int, name string) (TargetApp, bool, error) {
-	if err := targetRequirePositiveID("organization", orgID); err != nil {
+	items, err := c.ListApps(ctx, orgID)
+	if err != nil {
 		return TargetApp{}, false, err
 	}
-	if strings.TrimSpace(name) == "" {
-		return TargetApp{}, false, errors.New("target app name is required")
+	return findTargetAppExact(items, name)
+}
+
+// ListApps returns every non-infrastructure app visible to the current caller
+// in the organization. Migration preflight uses the complete set both for
+// exact-name collision checks and for detecting renamed apps created by an
+// earlier Wodby 1 migration.
+func (c *TargetClient) ListApps(ctx context.Context, orgID int) ([]TargetApp, error) {
+	if err := targetRequirePositiveID("organization", orgID); err != nil {
+		return nil, err
 	}
 	query := url.Values{"orgId": []string{strconv.Itoa(orgID)}}
 	items := []TargetApp{}
 	if err := c.client.Get(ctx, "/apps", query, &items); err != nil {
-		return TargetApp{}, false, errors.Wrap(err, "list target Wodby 2 apps for exact lookup")
+		return nil, errors.Wrap(err, "list target Wodby 2 apps")
+	}
+	for _, item := range items {
+		if err := validateTargetApp(item, orgID); err != nil {
+			return nil, err
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Name == items[j].Name {
+			return items[i].ID < items[j].ID
+		}
+		return items[i].Name < items[j].Name
+	})
+	return items, nil
+}
+
+func findTargetAppExact(items []TargetApp, name string) (TargetApp, bool, error) {
+	if strings.TrimSpace(name) == "" {
+		return TargetApp{}, false, errors.New("target app name is required")
 	}
 	matches := make([]TargetApp, 0, 1)
 	for _, item := range items {
-		if err := validateTargetApp(item, orgID); err != nil {
-			return TargetApp{}, false, err
-		}
 		if item.Name == name {
 			matches = append(matches, item)
 		}
@@ -1843,17 +1867,35 @@ func (c *TargetClient) ListAppInstances(ctx context.Context, orgID, appID int) (
 	if err := targetRequirePositiveID("app", appID); err != nil {
 		return nil, err
 	}
-	query := url.Values{
+	return c.listAppInstances(ctx, url.Values{
 		"appId": []string{strconv.Itoa(appID)},
 		"orgId": []string{strconv.Itoa(orgID)},
+	}, appID)
+}
+
+// ListOrgAppInstances returns every app instance visible to the caller in an
+// organization. It lets preflight correlate generated migration stacks with
+// renamed target apps without issuing one request per app.
+func (c *TargetClient) ListOrgAppInstances(ctx context.Context, orgID int) ([]TargetAppInstance, error) {
+	if err := targetRequirePositiveID("organization", orgID); err != nil {
+		return nil, err
 	}
+	return c.listAppInstances(ctx, url.Values{
+		"orgId": []string{strconv.Itoa(orgID)},
+	}, 0)
+}
+
+func (c *TargetClient) listAppInstances(ctx context.Context, query url.Values, expectedAppID int) ([]TargetAppInstance, error) {
 	items := []TargetAppInstance{}
 	if err := c.client.Get(ctx, "/app-instances", query, &items); err != nil {
 		return nil, errors.Wrap(err, "list target Wodby 2 app instances")
 	}
 	for _, item := range items {
-		if err := validateTargetAppInstance(item, appID); err != nil {
+		if err := validateTargetAppInstance(item, expectedAppID); err != nil {
 			return nil, err
+		}
+		if expectedAppID == 0 && item.AppID <= 0 {
+			return nil, errors.New("target app instance returned an invalid app ID")
 		}
 	}
 	sort.Slice(items, func(i, j int) bool {

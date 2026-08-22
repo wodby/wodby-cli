@@ -207,6 +207,7 @@ func knownImageCacheProfiles(image string) []string {
 	case "docker.io/library/composer",
 		"docker.io/wodby/php",
 		"docker.io/wodby/drupal-php",
+		"docker.io/wodby/laravel-php",
 		"docker.io/wodby/wordpress-php",
 		"docker.io/wodby/php-apache",
 		"docker.io/wodby/php-nginx",

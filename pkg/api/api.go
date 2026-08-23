@@ -58,13 +58,14 @@ func (c *Client) EncodePayload(payload interface{}) (io.Reader, error) {
 	return bytes.NewBuffer(b), nil
 }
 
-// DecodeResponse decodes the response.
-func (c *Client) DecodeResponse(resp *http.Response, result interface{}) error {
+// readResponse reads and closes an API response and converts non-200 responses
+// into errors before callers attempt to parse the successful response format.
+func (c *Client) readResponse(resp *http.Response) ([]byte, error) {
 	defer resp.Body.Close()
 
 	str, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return errors.New("response body reading failed")
+		return nil, errors.New("response body reading failed")
 	}
 
 	if viper.GetBool("dump") {
@@ -73,13 +74,21 @@ func (c *Client) DecodeResponse(resp *http.Response, result interface{}) error {
 
 	if resp.StatusCode != http.StatusOK {
 		errResp := new(types.ErrorResponse)
-		err = json.Unmarshal(str, errResp)
-
-		if err != nil {
-			return errors.New(resp.Status)
-		} else {
-			return errors.New(errResp.Error.Message)
+		if err := json.Unmarshal(str, errResp); err == nil && errResp.Error.Message != "" {
+			return nil, errors.New(errResp.Error.Message)
 		}
+
+		return nil, errors.New(resp.Status)
+	}
+
+	return str, nil
+}
+
+// DecodeResponse decodes the response.
+func (c *Client) DecodeResponse(resp *http.Response, result interface{}) error {
+	str, err := c.readResponse(resp)
+	if err != nil {
+		return err
 	}
 
 	err = json.Unmarshal(str, result)

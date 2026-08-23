@@ -2,10 +2,10 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/pkg/errors"
 	"github.com/wodby/wodby-cli/pkg/types"
-	"io/ioutil"
 )
 
 // DeployBuildPayload is the deploy build action payload.
@@ -14,7 +14,7 @@ type DeployBuildPayload struct {
 	Metadata     *types.BuildMetadata `json:"info"`
 	PostDeploy   *bool                `json:"post_deployment,omitempty"`
 	ServicesTags map[string]string    `json:"services_tags"`
-	Token 		 string				  `json:"token"`
+	Token        string               `json:"token"`
 }
 
 // NewGetBuildConfigRequest makes new build config request.
@@ -61,7 +61,7 @@ func (c *Client) GetBuildConfig(UUID string) (*types.BuildConfig, error) {
 	return config, nil
 }
 
-// GetBuildConfig does build config request.
+// GetLatestVersion returns the minimum supported CLI version from the API.
 func (c *Client) GetLatestVersion() (string, error) {
 	req, err := c.NewGetBuildLatestVerRequest()
 	if err != nil {
@@ -73,12 +73,17 @@ func (c *Client) GetLatestVersion() (string, error) {
 		return "", err
 	}
 
-	str, err := ioutil.ReadAll(resp.Body)
+	str, err := c.readResponse(resp)
 	if err != nil {
-		return "", errors.New("response body reading failed")
+		return "", err
 	}
 
-	return string(str), nil
+	version := strings.TrimSpace(string(str))
+	if version == "" {
+		return "", errors.New("empty minimum CLI version returned by API")
+	}
+
+	return version, nil
 }
 
 // NewDeployBuildRequest makes new deploy build request.

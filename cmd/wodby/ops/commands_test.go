@@ -6187,13 +6187,28 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 			response:   map[string]interface{}{"success": true},
 		},
 		{
-			name:       "instance upgrade stack",
+			name:       "instance upgrade stack preserves configuration by default",
 			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
-			args:       []string{"upgrade-stack", "21", "--tokens=false"},
+			args:       []string{"upgrade-stack", "21"},
 			wantMethod: http.MethodPost,
 			wantPath:   "/v1/app-instances/21/actions/upgrade-stack",
 			assertBody: func(t *testing.T, body map[string]interface{}) {
-				if body["versions"] != true || body["tokens"] != false {
+				for _, name := range stackUpgradeFlagNames() {
+					if body[name] != false {
+						t.Fatalf("upgrade body[%q] = %#v, want false; body=%#v", name, body[name], body)
+					}
+				}
+			},
+			response: map[string]interface{}{"success": true, "taskId": 55},
+		},
+		{
+			name:       "instance upgrade stack enables explicit override",
+			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			args:       []string{"upgrade-stack", "21", "--tokens=true"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/app-instances/21/actions/upgrade-stack",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["tokens"] != true || body["versions"] != false {
 					t.Fatalf("upgrade body = %#v", body)
 				}
 			},

@@ -4424,7 +4424,7 @@ func newAppInstanceUpgradeStackCommand(out outputOptions) *cobra.Command {
 	}
 	addBodyFlags(cmd, &body)
 	addWaitFlags(cmd, &wait)
-	addStackUpgradeFlags(cmd, "", true)
+	addStackUpgradeFlags(cmd, "", false)
 	return cmd
 }
 
@@ -4434,7 +4434,7 @@ func stackUpgradeFlagNames() []string {
 
 func addStackUpgradeFlags(cmd *cobra.Command, prefix string, defaultValue bool) {
 	for _, name := range stackUpgradeFlagNames() {
-		cmd.Flags().Bool(prefix+name, defaultValue, "Include "+strings.ReplaceAll(name, "-", " ")+" during stack upgrade")
+		cmd.Flags().Bool(prefix+name, defaultValue, "Replace existing "+strings.ReplaceAll(name, "-", " ")+" with stack defaults")
 	}
 }
 

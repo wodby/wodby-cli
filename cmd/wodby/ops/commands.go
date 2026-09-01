@@ -27,7 +27,7 @@ var (
 	clusterColumns                   = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "version", "singleNode"}
 	clusterGetColumns                = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "singleNode", "storageClasses", "storageClassesObservedAt"}
 	infraAppColumns                  = []string{"id", "name", "title", "status", "stack"}
-	integrationColumns               = []string{"id", "name", "title", "scope", "status", "provider", "createdAt"}
+	integrationColumns               = []string{"id", "name", "title", "scope", "status", "outdated", "provider", "createdAt"}
 	providerColumns                  = []string{"id", "name", "title", "status", "providerVersion"}
 	providerRevisionColumns          = []string{"id", "name", "title", "number", "version", "provider", "permissionAudit", "createdAt"}
 	stackColumns                     = []string{"id", "name", "title", "status", "revision", "currentVersion", "outdated", "autoUpdates", "createdAt", "updatedAt"}
@@ -55,7 +55,7 @@ var (
 	instanceGetColumns               = append(append([]string{}, instanceColumns...), "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
 	instanceCICDSettingsColumns      = []string{"appInstanceId", "ciIntegrationId", "registryIntegrationId", "registryRepository"}
 	instanceStatusColumns            = []string{"id", "title", "status", "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
-	serviceColumns                   = []string{"id", "name", "title", "type", "status", "version", "replicas", "scalability", "disabled", "main", "needsRebuild", "needsRedeploy", "configurationReady", "configurationIssues", "buildSourceBoilerplate"}
+	serviceColumns                   = []string{"id", "name", "title", "type", "status", "version", "replicas", "scalability", "disabled", "main", "needsRebuild", "needsRedeploy", "stackState", "configurationReady", "configurationIssues", "buildSourceBoilerplate"}
 	appServiceEnvColumns             = []string{"id", "name", "value", "secret", "runtime", "build", "envType", "workload", "container", "source", "createdAt"}
 	appServiceValueColumns           = []string{"id", "name", "value", "secret", "source", "createdAt"}
 	appServiceTokenColumns           = []string{"id", "name", "value", "secret", "envType", "createdAt"}
@@ -77,12 +77,12 @@ var (
 	buildListColumns                 = []string{"id", "number", "service", "services", "imageCount", "gitRefType", "gitRef", "startedAt", "duration", "status"}
 	buildColumns                     = []string{"id", "number", "status", "instance", "service", "services", "images", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "createdAt", "startedAt", "endedAt", "duration"}
 	deploymentListColumns            = []string{"id", "number", "services", "builds", "startedAt", "duration", "status", "postDeploymentStatus", "rollbackStatus"}
-	deploymentColumns                = []string{"id", "number", "status", "postDeploymentStatus", "rollbackStatus", "instance", "services", "images", "task", "postDeploymentTask", "skipRollback", "createdAt", "startedAt", "endedAt", "duration"}
-	backupColumns                    = []string{"id", "name", "status", "instance", "service", "database", "databaseDb", "task", "createdAt"}
+	deploymentColumns                = []string{"id", "number", "status", "canCancel", "postDeploymentStatus", "rollbackStatus", "instance", "services", "images", "task", "postDeploymentTask", "skipRollback", "createdAt", "startedAt", "endedAt", "duration"}
+	backupColumns                    = []string{"id", "name", "status", "manual", "backupPresetId", "size", "instance", "service", "database", "databaseDb", "task", "createdAt"}
 	importListColumns                = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "startedAt", "duration"}
 	importColumns                    = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "backup", "createdAt", "updatedAt", "startedAt", "endedAt", "duration"}
-	taskColumns                      = []string{"id", "name", "title", "executionScope", "status", "progress", "projects", "author", "startedAt", "duration"}
-	taskGetColumns                   = []string{"id", "name", "title", "executionScope", "status", "progress", "projects", "author", "app", "instance", "service", "database", "databaseDb", "originTask", "repeatedTask", "spawnedTasks", "createdAt", "startedAt", "endedAt", "duration"}
+	taskColumns                      = []string{"id", "name", "title", "compactTitle", "executionScope", "status", "progress", "projects", "author", "startedAt", "duration"}
+	taskGetColumns                   = []string{"id", "name", "title", "compactTitle", "executionScope", "status", "progress", "projects", "author", "app", "instance", "service", "database", "databaseDb", "originTask", "repeatedTask", "spawnedTasks", "createdAt", "startedAt", "endedAt", "duration"}
 	appAccessColumns                 = []string{"id", "mode", "scope", "status", "integrationId", "effectiveUrl", "publicRoutesSuppressed", "lastError", "endpoints", "resources", "createdAt", "updatedAt"}
 	appAccessCleanupColumns          = []string{"id", "appAccessId", "appInstanceId", "integrationId", "provider", "status", "attempts", "lastError", "createdAt", "updatedAt"}
 	changelogColumns                 = []string{"name", "title", "kind", "previousVersion", "version", "previousRevNumber", "revNumber", "entries"}
@@ -101,6 +101,7 @@ func Commands() []*cobra.Command {
 		newMemberCommand(),
 		newProjectCommand(),
 		newEnvCommand(),
+		newAppEnvironmentCommand(),
 		newDatabaseCommand(),
 		newClusterCommand(),
 		newIntegrationCommand(),
@@ -118,6 +119,7 @@ func Commands() []*cobra.Command {
 		newBuildCommand(),
 		newDeploymentCommand(),
 		newBackupCommand(),
+		newBackupPresetCommand(),
 		newImportCommand(),
 		newTaskCommand(),
 	}
@@ -417,8 +419,9 @@ func newProjectCreateCommand(out outputOptions) *cobra.Command {
 func newEnvCommand() *cobra.Command {
 	out := outputOptions{}
 	cmd := &cobra.Command{
-		Use:   "env",
-		Short: "Manage environments",
+		Use:        "env",
+		Short:      "Manage environments",
+		Deprecated: "environment types are fixed; use the app environment commands instead",
 	}
 	addOutputFlag(cmd, &out)
 
@@ -883,7 +886,7 @@ func newDatabaseUserDBsCommand(out outputOptions) *cobra.Command {
 
 func newDatabaseCreateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
-	var orgID, projectID, envID, integrationKindID, name, title, dbType, version, machineType, region, zone, password, residedClusterID string
+	var orgID, projectID, envID, envType, integrationKindID, name, title, dbType, version, machineType, region, zone, password, residedClusterID string
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create database",
@@ -897,8 +900,11 @@ func newDatabaseCreateCommand(out outputOptions) *cobra.Command {
 				return err
 			}
 			if !hasBody {
-				if err := requireFlag(envID, "--env"); err != nil {
-					return err
+				if envID == "" && envType == "" {
+					return errors.New("one of --env-type or deprecated --env is required")
+				}
+				if envID != "" && envType != "" {
+					return errors.New("--env-type and --env cannot be combined")
 				}
 				if err := requireFlag(integrationKindID, "--integration-kind"); err != nil {
 					return err
@@ -918,22 +924,26 @@ func newDatabaseCreateCommand(out outputOptions) *cobra.Command {
 				if err := requireFlag(machineType, "--machine-type"); err != nil {
 					return err
 				}
-				envIDNumber, err := strconv.Atoi(envID)
-				if err != nil {
-					return errors.Wrap(err, "invalid --env")
-				}
 				integrationKindIDNumber, err := strconv.Atoi(integrationKindID)
 				if err != nil {
 					return errors.Wrap(err, "invalid --integration-kind")
 				}
 				values := map[string]interface{}{
-					"envId":             envIDNumber,
 					"integrationKindId": integrationKindIDNumber,
 					"name":              name,
 					"title":             title,
 					"type":              dbType,
 					"version":           version,
 					"machineType":       machineType,
+				}
+				if envType != "" {
+					values["envType"] = envType
+				} else {
+					envIDNumber, err := strconv.Atoi(envID)
+					if err != nil {
+						return errors.Wrap(err, "invalid --env")
+					}
+					values["envId"] = envIDNumber
 				}
 				resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
 				if err != nil {
@@ -976,6 +986,7 @@ func newDatabaseCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
 	cmd.Flags().StringVar(&projectID, "project", "", "Project ID")
 	cmd.Flags().StringVar(&envID, "env", "", "Environment ID")
+	cmd.Flags().StringVar(&envType, "env-type", "", "Environment type: prod, test, staging, dev, or feature")
 	cmd.Flags().StringVar(&integrationKindID, "integration-kind", "", "Integration kind ID")
 	cmd.Flags().StringVar(&name, "name", "", "Database machine name")
 	cmd.Flags().StringVar(&title, "title", "", "Database title")
@@ -1036,7 +1047,7 @@ func newClusterCommand() *cobra.Command {
 	}
 	addOutputFlag(cmd, &out)
 
-	var orgID, projectIDs, integrationID string
+	var orgID, projectIDs, integrationID, envID, envType string
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List clusters",
@@ -1052,6 +1063,8 @@ func newClusterCommand() *cobra.Command {
 			query := url.Values{"orgId": []string{resolvedOrgID}}
 			addQuery(query, "projectIds", projectIDs)
 			addQuery(query, "integrationId", integrationID)
+			addQuery(query, "envId", envID)
+			addQuery(query, "envType", envType)
 			var result interface{}
 			if err := client.Get(cmd.Context(), "/clusters", query, &result); err != nil {
 				return err
@@ -1062,6 +1075,8 @@ func newClusterCommand() *cobra.Command {
 	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
 	listCmd.Flags().StringVar(&projectIDs, "project", "", "Project ID or comma-separated project IDs")
 	listCmd.Flags().StringVar(&integrationID, "integration", "", "Integration ID")
+	listCmd.Flags().StringVar(&envID, "env", "", "Deprecated environment ID filter")
+	listCmd.Flags().StringVar(&envType, "env-type", "", "Environment type filter")
 
 	getCmd := &cobra.Command{
 		Use:   "get ID",
@@ -1081,8 +1096,10 @@ func newClusterCommand() *cobra.Command {
 		newClusterCreateCommand(out),
 		newClusterUpdateCommand(out),
 		newClusterSettingsCommand(out),
+		newRawBodyPutCommand("update-environment-policy ID", "Update cluster environment policy", "/clusters/environment-policy/%s", clusterColumns, out),
 		newClusterActionCommand("upgrade-infra ID", "Upgrade cluster infrastructure", "/clusters/%s/actions/upgrade-infra", out),
 		newClusterActionCommand("upgrade-infra-apps ID", "Upgrade cluster infrastructure apps", "/clusters/%s/actions/upgrade-infra-apps", out),
+		newGetCommand("kubernetes-version-upgrade-plan ID", "Get Kubernetes version upgrade plan", "/cluster-kubernetes-version-upgrade-plans/", kubernetesVersionUpgradePlanColumns, out),
 		newClusterInfraAppUpgradeChangelogCommand(out),
 		newClusterDeleteCommand(out),
 	)
@@ -1534,7 +1551,7 @@ func newIntegrationCommand() *cobra.Command {
 	}
 	addOutputFlag(cmd, &out)
 
-	var orgID, projectIDs, labels string
+	var orgID, projectIDs, labels, envID, envType string
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List integrations",
@@ -1550,6 +1567,8 @@ func newIntegrationCommand() *cobra.Command {
 			query := url.Values{"orgId": []string{resolvedOrgID}}
 			addQuery(query, "projectIds", projectIDs)
 			addQuery(query, "labels", labels)
+			addQuery(query, "envId", envID)
+			addQuery(query, "envType", envType)
 			var result interface{}
 			if err := client.Get(cmd.Context(), "/integrations", query, &result); err != nil {
 				return err
@@ -1560,6 +1579,8 @@ func newIntegrationCommand() *cobra.Command {
 	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
 	listCmd.Flags().StringVar(&projectIDs, "project", "", "Project ID or comma-separated project IDs")
 	listCmd.Flags().StringVar(&labels, "labels", "", "Comma-separated labels")
+	listCmd.Flags().StringVar(&envID, "env", "", "Deprecated environment ID filter")
+	listCmd.Flags().StringVar(&envType, "env-type", "", "Environment type filter")
 
 	getCmd := &cobra.Command{
 		Use:   "get ID",
@@ -1578,7 +1599,10 @@ func newIntegrationCommand() *cobra.Command {
 		newIntegrationCreateCommand(out),
 		newIntegrationUpdateCommand(out),
 		newIntegrationConfigureCommand(out),
+		newRawBodyPutCommand("update-environment-policy ID", "Update integration environment policy", "/integrations/environment-policy/%s", integrationColumns, out),
 		newClusterActionCommand("test-permissions ID", "Test integration permissions", "/integrations/%s/actions/test-permissions", out),
+		newIntegrationProviderRevisionUpgradePreviewCommand(out),
+		newIntegrationProviderRevisionUpgradeCommand(out),
 		newRawBodyPostCommand("validate-app-access-hostname ID", "Validate an app-access hostname", "/integrations/%s/actions/validate-app-access-hostname", []string{"valid"}, out),
 		newIntegrationOptionsCommand(out),
 		newDeleteCommand("delete ID", "Delete integration", "/integrations/", integrationColumns, out),
@@ -2021,7 +2045,7 @@ func newStackCommand() *cobra.Command {
 		newStackRevisionCommand(out),
 		newStackPublishDraftCommand(out),
 		newStackUpdateFromGitCommand(out),
-		newClusterActionCommand("update-service-revisions ID", "Update stack service revisions", "/stacks/%s/actions/update-service-revisions", out),
+		newStackUpdateServiceRevisionsCommand(out),
 		newStackServiceUpdateChangelogCommand(out),
 		newGetCommand("origin-sync-changelog ID", "Preview stack origin synchronization", "/stack-origin-sync-changelogs/", stackOriginChangelogColumns, out),
 		newStackDuplicateCommand(out),
@@ -3807,13 +3831,14 @@ func newAppCommand() *cobra.Command {
 		newDeleteCommand("delete ID", "Delete app", "/apps/", appColumns, out),
 	)
 	cmd.AddCommand(newAppInstanceCommand("instance", "Manage app instances"))
+	cmd.AddCommand(newAppEnvironmentCommand())
 	return cmd
 }
 
 func newAppCreateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
 	wait := waitOptions{}
-	var orgID, projectID, env, clusterID, stack, stackRevID, name, title, instanceName, instanceTitle, domain, ciIntegrationID, registryIntegrationID string
+	var orgID, projectID, env, environmentName, environmentTitle, environmentType, clusterID, stack, stackRevID, name, title, instanceName, instanceTitle, domain, ciIntegrationID, registryIntegrationID string
 	var deferInitialDeployment bool
 	cmd := &cobra.Command{
 		Use:   "create",
@@ -3831,20 +3856,29 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 				if err := requireFlag(name, "--name"); err != nil {
 					return err
 				}
-				if err := requireFlag(instanceName, "--instance"); err != nil {
-					return err
-				}
-				if err := requireFlag(env, "--env"); err != nil {
-					return err
-				}
-				if err := requireFlag(clusterID, "--cluster"); err != nil {
-					return err
+				canonicalEnvironment := environmentName != "" || environmentTitle != "" || environmentType != ""
+				if canonicalEnvironment {
+					if env != "" || instanceName != "" || instanceTitle != "" {
+						return errors.New("canonical --environment-* flags cannot be combined with deprecated --env or --instance flags")
+					}
+					if err := requireFlag(environmentName, "--environment-name"); err != nil {
+						return err
+					}
+					if err := requireFlag(environmentType, "--environment-type"); err != nil {
+						return err
+					}
+				} else {
+					if err := requireFlag(instanceName, "--instance"); err != nil {
+						return err
+					}
+					if err := requireFlag(env, "--env"); err != nil {
+						return err
+					}
+					if err := requireFlag(clusterID, "--cluster"); err != nil {
+						return err
+					}
 				}
 				resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
-				if err != nil {
-					return err
-				}
-				resolvedEnvID, err := resolveEnvID(cmd.Context(), client, env, resolvedOrgID)
 				if err != nil {
 					return err
 				}
@@ -3852,16 +3886,23 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				resolvedClusterID, err := resolveClusterID(cmd.Context(), client, clusterID, resolvedOrgID)
-				if err != nil {
-					return err
-				}
-				values := map[string]interface{}{
-					"name":         name,
-					"instanceName": instanceName,
-				}
+				values := map[string]interface{}{"name": name}
 				addOptionalString(values, "title", title)
-				addOptionalString(values, "instanceTitle", instanceTitle)
+				if canonicalEnvironment {
+					values["environmentName"] = environmentName
+					values["environmentType"] = environmentType
+					addOptionalString(values, "environmentTitle", environmentTitle)
+				} else {
+					resolvedEnvID, err := resolveEnvID(cmd.Context(), client, env, resolvedOrgID)
+					if err != nil {
+						return err
+					}
+					values["instanceName"] = instanceName
+					addOptionalString(values, "instanceTitle", instanceTitle)
+					if err := addOptionalInt(values, "envId", resolvedEnvID, "--env"); err != nil {
+						return err
+					}
+				}
 				addOptionalString(values, "domain", domain)
 				if err := addOptionalInt(values, "orgId", resolvedOrgID, "--org"); err != nil {
 					return err
@@ -3869,14 +3910,17 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 				if err := addOptionalInt(values, "projectId", projectID, "--project"); err != nil {
 					return err
 				}
-				if err := addOptionalInt(values, "envId", resolvedEnvID, "--env"); err != nil {
-					return err
-				}
 				if err := addOptionalInt(values, "stackRevId", resolvedStackRevID, "--stack-rev"); err != nil {
 					return err
 				}
-				if err := addOptionalInt(values, "clusterId", resolvedClusterID, "--cluster"); err != nil {
-					return err
+				if clusterID != "" {
+					resolvedClusterID, err := resolveClusterID(cmd.Context(), client, clusterID, resolvedOrgID)
+					if err != nil {
+						return err
+					}
+					if err := addOptionalInt(values, "clusterId", resolvedClusterID, "--cluster"); err != nil {
+						return err
+					}
 				}
 				if err := addOptionalInt(values, "ciIntegrationId", ciIntegrationID, "--ci-integration"); err != nil {
 					return err
@@ -3910,6 +3954,9 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
 	cmd.Flags().StringVar(&projectID, "project", "", "Project ID")
 	cmd.Flags().StringVar(&env, "env", "", "Environment ID or name")
+	cmd.Flags().StringVar(&environmentName, "environment-name", "", "Initial app environment machine name")
+	cmd.Flags().StringVar(&environmentTitle, "environment-title", "", "Initial app environment title")
+	cmd.Flags().StringVar(&environmentType, "environment-type", "", "Initial app environment type: prod, test, staging, dev, or feature")
 	cmd.Flags().StringVar(&clusterID, "cluster", "", "Cluster ID or name")
 	cmd.Flags().StringVar(&stack, "stack", "", "Stack ID or name; uses the current revision")
 	cmd.Flags().StringVar(&stackRevID, "stack-rev", "", "Stack revision ID")
@@ -4875,7 +4922,7 @@ func newInstanceDeploymentCommand() *cobra.Command {
 
 	listCmd := newInstancePaginatedListCommand("list INSTANCE_ID", "List deployments", "/app-deployments", deploymentListColumns, out)
 	defaultToList(cmd, listCmd)
-	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get deployment", "/app-deployments/", deploymentColumns, out), waitCmd, newDeploymentCreateCommand(out), newDeploymentRedeployCommand(out))
+	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get deployment", "/app-deployments/", deploymentColumns, out), waitCmd, newDeploymentCreateCommand(out), newDeploymentRedeployCommand(out), newAppDeploymentCancelCommand(out))
 	return cmd
 }
 
@@ -5040,6 +5087,7 @@ func newAppServiceCommand(use string, aliases []string, short string, mode insta
 		newAppServiceCronScheduleCommand(out),
 		newAppServiceCronJobCommand(out),
 		newAppServiceLogStreamCommand(out),
+		newAppServiceBackupOptionDefaultsCommand(out),
 	)
 	return cmd
 }

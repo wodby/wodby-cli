@@ -134,7 +134,7 @@ func TestDefaultTableColumnsUseReadableRelations(t *testing.T) {
 
 func TestDefaultTaskColumnsUseCompactListShape(t *testing.T) {
 	got := strings.Join(taskColumns, ",")
-	want := "id,name,title,executionScope,status,progress,projects,author,startedAt,duration"
+	want := "id,name,title,compactTitle,executionScope,status,progress,projects,author,startedAt,duration"
 	if got != want {
 		t.Fatalf("taskColumns = %q, want %q", got, want)
 	}
@@ -6259,10 +6259,19 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 		{
 			name:       "stack update service revisions",
 			cmd:        newStackCommand,
-			args:       []string{"update-service-revisions", "7"},
+			args:       []string{"update-service-revisions", "7", "--scope", "stateless_only"},
 			wantMethod: http.MethodPost,
 			wantPath:   "/v1/stacks/7/actions/update-service-revisions",
+			wantQuery:  "scope=stateless_only",
 			response:   map[string]interface{}{"success": true, "taskId": 56},
+		},
+		{
+			name:       "cluster Kubernetes version upgrade plan",
+			cmd:        newClusterCommand,
+			args:       []string{"kubernetes-version-upgrade-plan", "4"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/v1/cluster-kubernetes-version-upgrade-plans/4",
+			response:   map[string]interface{}{"supported": true, "targets": []interface{}{}},
 		},
 		{
 			name:       "stack service update changelog",
@@ -6298,6 +6307,76 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 			wantMethod: http.MethodPost,
 			wantPath:   "/v1/integrations/9/actions/test-permissions",
 			response:   map[string]interface{}{"success": true, "taskId": 57},
+		},
+		{
+			name:       "integration provider revision upgrade preview",
+			cmd:        newIntegrationCommand,
+			args:       []string{"provider-revision-upgrade", "9"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/v1/integration-provider-revision-upgrades/9",
+			response:   map[string]interface{}{"state": "safe"},
+		},
+		{
+			name:       "integration provider revision upgrade",
+			cmd:        newIntegrationCommand,
+			args:       []string{"upgrade-provider-revision", "9", "--drop-removed-fields"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/integrations/9/actions/upgrade-provider-revision",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["dropRemovedFields"] != true {
+					t.Fatalf("upgrade body = %#v", body)
+				}
+			},
+			response: map[string]interface{}{"success": true, "taskId": 58},
+		},
+		{
+			name:       "app environment get",
+			cmd:        newAppEnvironmentCommand,
+			args:       []string{"get", "21"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/v1/app-environments/21",
+			response:   map[string]interface{}{"id": 21, "environmentType": "prod"},
+		},
+		{
+			name:       "app environment create",
+			cmd:        newAppEnvironmentCommand,
+			args:       []string{"create", "--org", "1", "--app", "11", "--name", "prod", "--title", "Production", "--type", "prod", "--stack-rev", "70", "--cluster", "33", "--defer-initial-deployment"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/app-environments",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["appId"] != float64(11) || body["environmentName"] != "prod" || body["environmentType"] != "prod" || body["stackRevId"] != float64(70) || body["clusterId"] != float64(33) || body["deferInitialDeployment"] != true {
+					t.Fatalf("app environment body = %#v", body)
+				}
+			},
+			response: map[string]interface{}{"id": 21, "environmentType": "prod"},
+		},
+		{
+			name:       "deployment cancel",
+			cmd:        newInstanceDeploymentCommand,
+			args:       []string{"cancel", "31"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/app-deployments/31/actions/cancel",
+			response:   map[string]interface{}{"id": 31, "status": "canceled"},
+		},
+		{
+			name:       "backup preset backups",
+			cmd:        newBackupPresetCommand,
+			args:       []string{"backups", "41", "--page", "2", "--page-size", "25"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/v1/backup-presets/41/backups",
+			wantQuery:  "page=2&pageSize=25",
+			response:   map[string]interface{}{"items": []interface{}{}, "totalCount": 0},
+		},
+		{
+			name: "app service backup option defaults",
+			cmd: func() *cobra.Command {
+				return newAppServiceCommand("service", nil, "Manage app services", instanceFilterFlag)
+			},
+			args:       []string{"backup-option-defaults", "51", "--backup-name", "files"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/v1/app-services/51/options/backup-option-defaults",
+			wantQuery:  "backupName=files",
+			response:   []interface{}{},
 		},
 		{
 			name:       "integration configure",
@@ -6415,6 +6494,69 @@ func TestLongRunningResourceColumnsIncludeTask(t *testing.T) {
 		if strings.Contains(deploymentListColumnList, unwanted) {
 			t.Fatalf("deploymentListColumns should not include %q: %s", unwanted, deploymentListColumnList)
 		}
+	}
+}
+
+func TestAppCreateUsesCanonicalEnvironmentContract(t *testing.T) {
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/tasks" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"items": []interface{}{}, "totalCount": 0})
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/apps" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 1, "name": "site"})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newAppCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"create", "--org", "1", "--name", "site", "--environment-name", "prod", "--environment-title", "Production", "--environment-type", "prod", "--stack-rev", "70"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if body["environmentName"] != "prod" || body["environmentTitle"] != "Production" || body["environmentType"] != "prod" {
+		t.Fatalf("canonical environment body = %#v", body)
+	}
+	if _, ok := body["envId"]; ok {
+		t.Fatalf("canonical body contains envId: %#v", body)
+	}
+	if _, ok := body["instanceName"]; ok {
+		t.Fatalf("canonical body contains instanceName: %#v", body)
+	}
+}
+
+func TestDatabaseCreateUsesEnvironmentType(t *testing.T) {
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/databases" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 1, "name": "db"})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newDatabaseCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"create", "--org", "1", "--env-type", "staging", "--integration-kind", "2", "--name", "db", "--title", "DB", "--type", "postgres", "--version", "17", "--machine-type", "small"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if body["envType"] != "staging" {
+		t.Fatalf("database envType body = %#v", body)
+	}
+	if _, ok := body["envId"]; ok {
+		t.Fatalf("canonical body contains envId: %#v", body)
 	}
 }
 

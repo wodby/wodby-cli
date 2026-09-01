@@ -68,7 +68,6 @@ var relationColumns = map[string]relationColumn{
 		idTitle:       "env id",
 		idPaths:       []string{"envId", "env.id", "environmentId", "environment.id"},
 		idScalarPaths: []string{"env", "environment"},
-		pathPrefix:    "/envs/",
 		titlePaths:    []string{"envTitle", "env.title", "environmentTitle", "environment.title", "env", "environment", "envName", "env.name", "environment.name"},
 	},
 	"cluster": {
@@ -121,7 +120,7 @@ var relationColumns = map[string]relationColumn{
 		idTitle:       "instance id",
 		idPaths:       []string{"appInstanceId", "appInstance.id", "instanceId", "instance.id", "origin.appInstanceId", "origin.appInstance.id", "origin.instanceId", "origin.instance.id"},
 		idScalarPaths: []string{"appInstance", "instance", "origin.appInstance", "origin.instance"},
-		pathPrefix:    "/app-instances/",
+		pathPrefix:    "/app-environments/",
 		titlePaths:    []string{"appInstanceTitle", "appInstance.title", "instanceTitle", "instance.title", "appInstance", "instance", "appInstanceName", "appInstance.name", "instanceName", "instance.name", "origin.appInstanceTitle", "origin.appInstance.title", "origin.appInstance.name", "origin.instanceTitle", "origin.instance.title", "origin.instance.name"},
 	},
 	"database": {

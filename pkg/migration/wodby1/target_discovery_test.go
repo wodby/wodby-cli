@@ -56,13 +56,6 @@ func TestTargetClientTypedDiscoveryOperations(t *testing.T) {
 			}
 		case "/v1/clusters/13":
 			response = TargetCluster{ID: 13, Name: "alpha", OrgID: 7}
-		case "/v1/envs":
-			response = []TargetEnv{
-				{ID: 22, Name: "zulu", OrgID: 7},
-				{ID: 21, Name: "alpha", OrgID: 7},
-			}
-		case "/v1/envs/21":
-			response = TargetEnv{ID: 21, Name: "alpha", OrgID: 7}
 		default:
 			http.NotFound(w, r)
 			return
@@ -108,7 +101,7 @@ func TestTargetClientTypedDiscoveryOperations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, err := client.GetEnv(ctx, 21)
+	env, err := client.GetEnv(ctx, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,10 +115,10 @@ func TestTargetClientTypedDiscoveryOperations(t *testing.T) {
 	if got := []int{clusters[0].ID, clusters[1].ID}; !reflect.DeepEqual(got, []int{13, 14}) {
 		t.Fatalf("cluster order = %v", got)
 	}
-	if got := []int{envs[0].ID, envs[1].ID}; !reflect.DeepEqual(got, []int{21, 22}) {
+	if got := []int{envs[0].ID, envs[1].ID}; !reflect.DeepEqual(got, []int{1, 2}) {
 		t.Fatalf("environment order = %v", got)
 	}
-	if org.ID != 7 || project.ID != 11 || cluster.ID != 13 || env.ID != 21 {
+	if org.ID != 7 || project.ID != 11 || cluster.ID != 13 || env.ID != 1 {
 		t.Fatalf("get results: org=%#v project=%#v cluster=%#v env=%#v", org, project, cluster, env)
 	}
 
@@ -139,8 +132,6 @@ func TestTargetClientTypedDiscoveryOperations(t *testing.T) {
 		"GET /v1/projects/11",
 		"GET /v1/clusters?orgId=7&projectIds=11%2C12",
 		"GET /v1/clusters/13",
-		"GET /v1/envs?orgId=7",
-		"GET /v1/envs/21",
 	}
 	if !reflect.DeepEqual(gotRequests, wantRequests) {
 		t.Fatalf("requests:\n got: %#v\nwant: %#v", gotRequests, wantRequests)
@@ -203,15 +194,6 @@ func TestTargetClientDiscoverTargetByExactNames(t *testing.T) {
 				return
 			}
 			response = []TargetCluster{cluster}
-		case "/v1/envs":
-			if r.URL.Query().Get("orgId") != "7" {
-				http.Error(w, "missing environment org scope", http.StatusBadRequest)
-				return
-			}
-			response = []TargetEnv{
-				{ID: 22, Name: "staging", Type: "STAGING", OrgID: 7},
-				{ID: 21, Name: "prod", Type: "PROD", OrgID: 7},
-			}
 		default:
 			http.NotFound(w, r)
 			return
@@ -246,7 +228,7 @@ func TestTargetClientDiscoverTargetByExactNames(t *testing.T) {
 	if got := []string{result.Environments[0].Selector, result.Environments[1].Selector}; !reflect.DeepEqual(got, []string{"prod", "staging"}) {
 		t.Fatalf("environment selector order = %#v", got)
 	}
-	if got := []int{result.Environments[0].Env.ID, result.Environments[1].Env.ID}; !reflect.DeepEqual(got, []int{21, 22}) {
+	if got := []int{result.Environments[0].Env.ID, result.Environments[1].Env.ID}; !reflect.DeepEqual(got, []int{1, 3}) {
 		t.Fatalf("environment IDs = %#v", got)
 	}
 
@@ -265,7 +247,7 @@ func TestTargetClientDiscoverTargetByExactNames(t *testing.T) {
 	}
 }
 
-func TestTargetClientDiscoverTargetByIDs(t *testing.T) {
+func TestTargetClientDiscoverTargetByEnvironmentType(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var response any
 		switch r.URL.RequestURI() {
@@ -281,8 +263,6 @@ func TestTargetClientDiscoverTargetByIDs(t *testing.T) {
 			response = TargetCluster{ID: 13, Name: "production", OrgID: 7}
 		case "/v1/clusters?orgId=7&projectIds=11":
 			response = []TargetCluster{{ID: 13, Name: "production", OrgID: 7}}
-		case "/v1/envs/21":
-			response = TargetEnv{ID: 21, Name: "prod", OrgID: 7}
 		default:
 			http.NotFound(w, r)
 			return
@@ -297,13 +277,13 @@ func TestTargetClientDiscoverTargetByIDs(t *testing.T) {
 	}
 	result, err := client.DiscoverTarget(context.Background(), TargetDiscoveryRequest{
 		TargetScopeSelectors: TargetScopeSelectors{Org: "7", Project: "11", Cluster: "13"},
-		Environments:         []string{"21"},
+		Environments:         []string{"prod"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Org.ID != 7 || result.Project.ID != 11 || result.Cluster.ID != 13 ||
-		len(result.Environments) != 1 || result.Environments[0].Env.ID != 21 {
+		len(result.Environments) != 1 || result.Environments[0].Env.ID != 1 {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -529,20 +509,6 @@ func TestTargetDiscoveryRelationshipBlockers(t *testing.T) {
 			`target cluster selector "13" is not associated with project ID 11`)
 	})
 
-	t.Run("environment organization", func(t *testing.T) {
-		server := newTargetDiscoveryServer(t, func(r *http.Request) any {
-			if r.URL.RequestURI() == "/v1/envs/21" {
-				return TargetEnv{ID: 21, Name: "prod", OrgID: 8}
-			}
-			return nil
-		})
-		defer server.Close()
-
-		client := mustTargetClient(t, server.URL)
-		_, err := client.ResolveTargetEnvs(context.Background(), 7, []string{"21"})
-		assertTargetBlocker(t, err, TargetBlockerWrongOrg,
-			`target environment selector "21" belongs to organization ID 8, expected organization ID 7`)
-	})
 }
 
 func TestTargetDiscoveryStableSelectorBlockers(t *testing.T) {
@@ -561,8 +527,8 @@ func TestTargetDiscoveryStableSelectorBlockers(t *testing.T) {
 	t.Run("invalid numeric", func(t *testing.T) {
 		client := &TargetClient{}
 		_, err := client.ResolveTargetEnvs(context.Background(), 7, []string{"-1"})
-		assertTargetBlocker(t, err, TargetBlockerSelectorInvalid,
-			`target environment selector "-1" must be a positive ID or exact name`)
+		assertTargetBlocker(t, err, TargetBlockerNotFound,
+			`target environment type selector "-1" was not found in organization ID 7`)
 	})
 
 	t.Run("not found", func(t *testing.T) {
@@ -574,25 +540,7 @@ func TestTargetDiscoveryStableSelectorBlockers(t *testing.T) {
 		client := mustTargetClient(t, server.URL)
 		_, err := client.ResolveTargetEnvs(context.Background(), 7, []string{"99"})
 		assertTargetBlocker(t, err, TargetBlockerNotFound,
-			`target environment selector "99" was not found in organization ID 7`)
-	})
-
-	t.Run("ambiguous exact name", func(t *testing.T) {
-		server := newTargetDiscoveryServer(t, func(r *http.Request) any {
-			if r.URL.RequestURI() == "/v1/envs?orgId=7" {
-				return []TargetEnv{
-					{ID: 21, Name: "prod", OrgID: 7},
-					{ID: 22, Name: "prod", OrgID: 7},
-				}
-			}
-			return nil
-		})
-		defer server.Close()
-
-		client := mustTargetClient(t, server.URL)
-		_, err := client.ResolveTargetEnvs(context.Background(), 7, []string{"prod"})
-		assertTargetBlocker(t, err, TargetBlockerAmbiguous,
-			`target environment selector "prod" matched multiple resources`)
+			`target environment type selector "99" was not found in organization ID 7`)
 	})
 }
 

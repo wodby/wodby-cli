@@ -592,7 +592,7 @@ func TestPreflightTargetBlocksRenamedAppCreatedByPriorMigration(t *testing.T) {
 			catalog.apps = []TargetApp{{ID: 91, Name: "renamed-target", OrgID: 8}}
 			catalog.appInstances = []TargetAppInstance{{
 				ID: 92, AppID: 91, Name: test.targetInstanceName,
-				ClusterID: 10, EnvID: 11, StackID: 55, StackRevID: 56,
+				ClusterID: 10, EnvironmentType: "prod", StackID: 55, StackRevID: 56,
 			}}
 			catalog.stacks[generated.Name] = TargetStack{
 				ID: 55, Name: generated.Name, Title: generated.Title, Status: "OK",
@@ -1517,7 +1517,7 @@ func newPreflightTargetAPI(t *testing.T, catalog preflightTargetCatalog) *prefli
 			preflightWriteJSON(w, catalog.publicStacks)
 		case request.URL.Path == "/v1/apps":
 			preflightWriteJSON(w, catalog.apps)
-		case request.URL.Path == "/v1/app-instances":
+		case request.URL.Path == "/v1/app-environments":
 			if request.URL.Query().Get("orgId") != "8" {
 				http.Error(w, "invalid app instance scope", http.StatusBadRequest)
 				return
@@ -2047,9 +2047,9 @@ func TestDetectsAnAppCreatedByAnEarlierMigrationOfTheSameSource(t *testing.T) {
 			var stackRequests int
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
-				case r.URL.Path == "/v1/app-instances":
+				case r.URL.Path == "/v1/app-environments":
 					writeTargetExecutionJSON(t, w, []TargetAppInstance{{
-						ID: 9, AppID: 101, Name: "prod", ClusterID: 3, EnvID: 4,
+						ID: 9, AppID: 101, Name: "prod", ClusterID: 3, EnvironmentType: "prod",
 						StackID: 55, StackRevID: 56,
 					}})
 				case r.URL.Path == "/v1/stacks/55":

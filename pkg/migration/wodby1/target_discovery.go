@@ -247,30 +247,35 @@ func (c *TargetClient) GetCluster(ctx context.Context, id int) (TargetCluster, e
 	return item, nil
 }
 
-func (c *TargetClient) ListEnvs(ctx context.Context, orgID int) ([]TargetEnv, error) {
-	query, err := targetOrgQuery(orgID)
-	if err != nil {
-		return nil, err
+func (c *TargetClient) ListEnvs(_ context.Context, orgID int) ([]TargetEnv, error) {
+	if orgID <= 0 {
+		return nil, errors.New("target organization ID must be positive")
 	}
-	items := []TargetEnv{}
-	if err := c.client.Get(ctx, "/envs", query, &items); err != nil {
-		return nil, errors.Wrap(err, "list target Wodby 2 environments")
+	items := make([]TargetEnv, 0, 5)
+	for _, item := range targetEnvironmentTypes(orgID) {
+		items = append(items, item)
 	}
-	sort.Slice(items, func(i, j int) bool {
-		return compareTargetIdentity(items[i].ID, items[i].Name, items[j].ID, items[j].Name)
-	})
+	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
 	return items, nil
 }
 
-func (c *TargetClient) GetEnv(ctx context.Context, id int) (TargetEnv, error) {
-	if id <= 0 {
-		return TargetEnv{}, errors.New("target environment ID must be positive")
+func (c *TargetClient) GetEnv(_ context.Context, id int) (TargetEnv, error) {
+	for _, item := range targetEnvironmentTypes(0) {
+		if item.ID == id {
+			return item, nil
+		}
 	}
-	var item TargetEnv
-	if err := c.client.Get(ctx, "/envs/"+strconv.Itoa(id), nil, &item); err != nil {
-		return TargetEnv{}, errors.Wrap(err, "get target Wodby 2 environment")
+	return TargetEnv{}, errors.Errorf("unknown target app environment type ID %d", id)
+}
+
+func targetEnvironmentTypes(orgID int) map[string]TargetEnv {
+	return map[string]TargetEnv{
+		"prod":    {ID: 1, Name: "prod", Title: "Production", Type: "PROD", OrgID: orgID},
+		"test":    {ID: 2, Name: "test", Title: "Test", Type: "TEST", OrgID: orgID},
+		"staging": {ID: 3, Name: "staging", Title: "Staging", Type: "STAGING", OrgID: orgID},
+		"dev":     {ID: 4, Name: "dev", Title: "Development", Type: "DEV", OrgID: orgID},
+		"feature": {ID: 5, Name: "feature", Title: "Feature", Type: "FEATURE", OrgID: orgID},
 	}
-	return item, nil
 }
 
 // DiscoverTargetScope derives the target organization from the API key (or
@@ -398,10 +403,10 @@ func (c *TargetClient) DiscoverTarget(ctx context.Context, request TargetDiscove
 	}, nil
 }
 
-// ResolveTargetEnvs resolves exact environment IDs or names inside an
-// organization already returned by DiscoverTargetScope. It performs no
-// mutation and returns results ordered by normalized selector.
-func (c *TargetClient) ResolveTargetEnvs(ctx context.Context, orgID int, selectors []string) ([]TargetResolvedEnv, error) {
+// ResolveTargetEnvs validates app-environment types without querying the
+// removed environment catalog. The synthetic IDs are stable migration-plan
+// identifiers only and are never sent to the target API.
+func (c *TargetClient) ResolveTargetEnvs(_ context.Context, orgID int, selectors []string) ([]TargetResolvedEnv, error) {
 	if orgID <= 0 {
 		return nil, errors.New("target organization ID must be positive")
 	}
@@ -419,37 +424,16 @@ func (c *TargetClient) ResolveTargetEnvs(ctx context.Context, orgID int, selecto
 	}
 	sort.Strings(normalized)
 
+	environmentTypes := targetEnvironmentTypes(orgID)
 	result := make([]TargetResolvedEnv, 0, len(normalized))
-	var envs []TargetEnv
-	envsLoaded := false
 	for _, selector := range normalized {
-		id, isID, err := targetSelectorID("environment", selector)
-		if err != nil {
-			return nil, err
-		}
-		var env TargetEnv
-		if isID {
-			env, err = c.GetEnv(ctx, id)
-			if err != nil {
-				if isTargetNotFound(err) {
-					return nil, newTargetNotFoundBlocker("environment", selector, orgID)
-				}
-				return nil, errors.Wrap(err, "resolve target environment selector")
-			}
-			if env.OrgID != orgID {
-				return nil, newTargetWrongOrgBlocker("environment", selector, env.OrgID, orgID)
-			}
-		} else {
-			if !envsLoaded {
-				envs, err = c.ListEnvs(ctx, orgID)
-				if err != nil {
-					return nil, errors.Wrap(err, "resolve target environment selector")
-				}
-				envsLoaded = true
-			}
-			env, err = selectTargetEnvByName(envs, selector, orgID)
-			if err != nil {
-				return nil, err
+		env, ok := environmentTypes[strings.ToLower(selector)]
+		if !ok {
+			return nil, &TargetDiscoveryBlocker{
+				Code:          TargetBlockerNotFound,
+				Resource:      "environment type",
+				Selector:      selector,
+				ExpectedOrgID: orgID,
 			}
 		}
 		result = append(result, TargetResolvedEnv{Selector: selector, Env: env})

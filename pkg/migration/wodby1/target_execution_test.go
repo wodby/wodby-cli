@@ -391,7 +391,8 @@ func TestTargetClientCreatesAppAndInstanceWithServerDefaultsOmitted(t *testing.T
 			assertTargetExecutionNumber(t, body, "orgId", 8)
 			assertTargetExecutionNumber(t, body, "projectId", 9)
 			assertTargetExecutionNumber(t, body, "clusterId", 10)
-			assertTargetExecutionNumber(t, body, "envId", 11)
+			assertTargetExecutionString(t, body, "environmentName", "prod")
+			assertTargetExecutionString(t, body, "environmentType", "prod")
 			assertTargetExecutionNumber(t, body, "stackRevId", 12)
 			assertTargetExecutionNumber(t, body, "ciIntegrationId", 0)
 			assertTargetExecutionBool(t, body, "deferInitialDeployment", true)
@@ -401,22 +402,24 @@ func TestTargetClientCreatesAppAndInstanceWithServerDefaultsOmitted(t *testing.T
 				t.Fatalf("apps query = %q", r.URL.RawQuery)
 			}
 			writeTargetExecutionJSON(t, w, []TargetApp{{ID: 20, Name: "example", OrgID: 8}})
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/app-instances":
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/app-environments":
 			body := decodeTargetExecutionObject(t, r)
 			assertTargetExecutionAbsent(t, body, "services", "domain")
 			assertTargetExecutionNumber(t, body, "appId", 20)
+			assertTargetExecutionString(t, body, "environmentName", "stage")
+			assertTargetExecutionString(t, body, "environmentType", "prod")
 			assertTargetExecutionNumber(t, body, "ciIntegrationId", 0)
 			assertTargetExecutionBool(t, body, "deferInitialDeployment", true)
 			writeTargetExecutionJSON(t, w, TargetAppInstance{
-				ID: 21, Name: "stage", AppID: 20, ClusterID: 10, EnvID: 11,
+				ID: 21, Name: "stage", AppID: 20, ClusterID: 10, EnvironmentType: "prod",
 				StackID: 5, StackRevID: 12,
 			})
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-instances":
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-environments":
 			if got := r.URL.Query(); got.Get("orgId") != "8" || got.Get("appId") != "20" {
 				t.Fatalf("instances query = %q", r.URL.RawQuery)
 			}
 			writeTargetExecutionJSON(t, w, []TargetAppInstance{{
-				ID: 21, Name: "stage", AppID: 20, ClusterID: 10, EnvID: 11,
+				ID: 21, Name: "stage", AppID: 20, ClusterID: 10, EnvironmentType: "prod",
 				StackID: 5, StackRevID: 12,
 			}})
 		default:
@@ -430,7 +433,7 @@ func TestTargetClientCreatesAppAndInstanceWithServerDefaultsOmitted(t *testing.T
 	wodbyCI := 0
 	app, err := client.CreateApp(context.Background(), TargetCreateAppInput{
 		OrgID: 8, Name: "example", InstanceName: "prod", ProjectID: &projectID,
-		StackRevID: 12, ClusterID: 10, EnvID: 11, CIIntegrationID: &wodbyCI,
+		StackRevID: 12, ClusterID: 10, EnvironmentType: "prod", CIIntegrationID: &wodbyCI,
 		DeferInitialDeployment: true,
 	})
 	if err != nil {
@@ -441,7 +444,7 @@ func TestTargetClientCreatesAppAndInstanceWithServerDefaultsOmitted(t *testing.T
 	}
 
 	instance, err := client.CreateAppInstance(context.Background(), TargetCreateAppInstanceInput{
-		AppID: 20, InstanceName: "stage", StackRevID: 12, ClusterID: 10, EnvID: 11,
+		AppID: 20, InstanceName: "stage", StackRevID: 12, ClusterID: 10, EnvironmentType: "prod",
 		CIIntegrationID: &wodbyCI, DeferInitialDeployment: true,
 	})
 	if err != nil {
@@ -479,7 +482,7 @@ func TestTargetClientCreatesOrganizationOwnedAppWithoutProjectID(t *testing.T) {
 	client := mustTargetExecutionClient(t, server.URL)
 	app, err := client.CreateApp(context.Background(), TargetCreateAppInput{
 		OrgID: 8, Name: "example", InstanceName: "prod",
-		StackRevID: 12, ClusterID: 10, EnvID: 11,
+		StackRevID: 12, ClusterID: 10, EnvironmentType: "prod",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1299,6 +1302,13 @@ func assertTargetExecutionNumber(t *testing.T, object map[string]any, field stri
 	t.Helper()
 	if got, ok := object[field].(float64); !ok || int(got) != want {
 		t.Fatalf("%s = %#v, want %d", field, object[field], want)
+	}
+}
+
+func assertTargetExecutionString(t *testing.T, object map[string]any, field, want string) {
+	t.Helper()
+	if got, ok := object[field].(string); !ok || got != want {
+		t.Fatalf("%s = %#v, want %q", field, object[field], want)
 	}
 }
 

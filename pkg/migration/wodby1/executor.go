@@ -1115,7 +1115,7 @@ func (e *MigrationExecutor) Verify(
 		instancePlan := planInstance(plan, item.Source.UUID)
 		if instancePlan == nil || instance.AppID != app.ID ||
 			instance.ClusterID != plan.Target.ClusterID ||
-			instance.EnvID != instancePlan.TargetEnvID ||
+			!strings.EqualFold(instance.EnvironmentType, instancePlan.TargetEnvType) ||
 			instance.StackRevID != item.Stack.RevID ||
 			instance.Name != item.Source.Name {
 			return MigrationPhaseResult{}, errors.New("target instance relationships no longer match the approved migration")
@@ -1534,7 +1534,7 @@ func (e *MigrationExecutor) ensureApp(
 		ProjectID:              projectID,
 		StackRevID:             initial.Stack.RevID,
 		ClusterID:              plan.Target.ClusterID,
-		EnvID:                  initialPlan.TargetEnvID,
+		EnvironmentType:        strings.ToLower(initialPlan.TargetEnvType),
 		CIIntegrationID:        &ciIntegrationID,
 		DeferInitialDeployment: true,
 	}
@@ -1678,7 +1678,7 @@ func (e *MigrationExecutor) ensureInstance(
 		InstanceTitle:          prepared.Source.Title,
 		StackRevID:             prepared.Stack.RevID,
 		ClusterID:              plan.Target.ClusterID,
-		EnvID:                  instancePlan.TargetEnvID,
+		EnvironmentType:        strings.ToLower(instancePlan.TargetEnvType),
 		CIIntegrationID:        &ciIntegrationID,
 		DeferInitialDeployment: true,
 	}
@@ -1768,7 +1768,7 @@ func validatePreparedInstance(
 	clusterID int,
 ) error {
 	if item.AppID != appID || item.Name != prepared.Source.Name ||
-		item.EnvID != plan.TargetEnvID || item.StackRevID != prepared.Stack.RevID {
+		!strings.EqualFold(item.EnvironmentType, plan.TargetEnvType) || item.StackRevID != prepared.Stack.RevID {
 		return errors.New("target app instance relationships do not match the approved migration")
 	}
 	if clusterID > 0 && item.ClusterID != clusterID {

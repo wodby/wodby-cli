@@ -1104,7 +1104,7 @@ func TestWodby1AppCommandPreviewsWithoutWritingArtifacts(t *testing.T) {
 					t.Fatalf("target plan = %#v", plan.Target)
 				}
 				instance := plan.Apps[0].Instances[0]
-				if instance.TargetEnvID != 44 || instance.Stack.Target != "acme/drupal11" ||
+				if instance.TargetEnvID != 1 || instance.TargetEnvType != "PROD" || instance.Stack.Target != "acme/drupal11" ||
 					instance.Stack.TargetID != 7 || instance.Stack.TargetRevID != 71 {
 					t.Fatalf("preflighted instance = %#v", instance)
 				}
@@ -1118,7 +1118,6 @@ func TestWodby1AppCommandPreviewsWithoutWritingArtifacts(t *testing.T) {
 				"GET /v1/projects/22",
 				"GET /v1/clusters/33",
 				"GET /v1/clusters?orgId=11&projectIds=22",
-				"GET /v1/envs?orgId=11",
 				"GET /v1/stacks/7",
 				"GET /v1/stack-revisions/71/services",
 			} {
@@ -2202,7 +2201,7 @@ func (f *migrationAPIFixture) planArgs(planPath string, output string) []string 
 		"--target-project", "22",
 		"--target-cluster", "33",
 		"--target-stack-id", "7",
-		"--target-env-map", "prod=production",
+		"--target-env-map", "prod=prod",
 		"--skip-code",
 		"--skip-data",
 		"--yes",
@@ -2218,7 +2217,7 @@ func (f *migrationAPIFixture) organizationPlanArgs(planPath string, output strin
 		"--source-token", testSourceToken,
 		"--target-cluster", "33",
 		"--target-stack-id", "7",
-		"--target-env-map", "prod=production",
+		"--target-env-map", "prod=prod",
 		"--skip-code",
 		"--skip-data",
 		"--yes",
@@ -2241,7 +2240,7 @@ func (f *migrationAPIFixture) serverPlanArgs(planPath string, output string) []s
 		"--target-project", "22",
 		"--target-cluster", "33",
 		"--target-stack-id", "7",
-		"--target-env-map", "prod=production",
+		"--target-env-map", "prod=prod",
 		"--skip-code",
 		"--skip-data",
 		"--yes",
@@ -2391,7 +2390,7 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 	switch r.URL.Path {
 	case "/v1/apps":
 		writeMigrationJSON(w, []wodby1.TargetApp{})
-	case "/v1/app-instances":
+	case "/v1/app-environments":
 		if !targetApp101Exists || r.URL.Query().Get("orgId") != "11" || r.URL.Query().Get("appId") != "101" {
 			http.Error(w, "invalid app instance query", http.StatusBadRequest)
 			return
@@ -2401,7 +2400,7 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 		}
 		writeMigrationJSON(w, []wodby1.TargetAppInstance{{
 			ID: 102, Name: targetApp101InstanceName, AppID: 101, ClusterID: 33,
-			EnvID: 44, StackID: 7, StackRevID: stackRevID,
+			EnvironmentType: "prod", StackID: 7, StackRevID: stackRevID,
 		}})
 	case "/v1/orgs":
 		writeMigrationJSON(w, []wodby1.TargetOrg{migrationTargetOrgFixture()})
@@ -2421,10 +2420,6 @@ func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Reques
 		writeMigrationJSON(w, cluster)
 	case "/v1/clusters":
 		writeMigrationJSON(w, []wodby1.TargetCluster{cluster})
-	case "/v1/envs":
-		writeMigrationJSON(w, []wodby1.TargetEnv{{
-			ID: 44, Name: "production", Title: "Production", Type: "PROD", OrgID: 11,
-		}})
 	case "/v1/stacks":
 		if r.URL.Query().Get("orgId") != "11" ||
 			(r.URL.Query().Get("projectIds") != "" && r.URL.Query().Get("projectIds") != "22") ||

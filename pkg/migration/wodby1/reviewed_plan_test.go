@@ -304,7 +304,7 @@ func reviewedPlanFixture(t *testing.T) Plan {
 			},
 			Instances: []InstancePlan{{
 				SourceUUID: "instance-1", Name: "prod", Title: "Production",
-				SourceType: "prod", TargetEnv: "prod", TargetEnvID: 21,
+				SourceType: "prod", TargetEnv: "prod", TargetEnvID: 1, TargetEnvType: "prod",
 				BuildServiceID: 11, BuildServiceRevID: 101,
 				Stack: StackPlan{
 					Name: "drupal11", Target: "acme/drupal11",

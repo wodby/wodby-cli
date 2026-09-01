@@ -229,7 +229,7 @@ func printAppInstanceCreateTaskLogs(ctx context.Context, cmd *cobra.Command, cli
 		}
 	}
 
-	handled, err := printResolvedCreatedResourceTaskLogs(ctx, cmd, client, "app instance", instanceID, taskID)
+	handled, err := printResolvedCreatedResourceTaskLogs(ctx, cmd, client, "app environment", instanceID, taskID)
 	if err != nil || !handled {
 		return handled, err
 	}
@@ -317,7 +317,7 @@ func createdAppInstanceID(ctx context.Context, client *rest.Client, value interf
 		"pageSize": []string{"1"},
 	}
 	var result interface{}
-	if err := client.Get(ctx, "/app-instances", query, &result); err != nil {
+	if err := client.Get(ctx, "/app-environments", query, &result); err != nil {
 		return "", err
 	}
 

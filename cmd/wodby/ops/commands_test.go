@@ -31,7 +31,6 @@ func TestCommandsExposeTopLevelOperationalSurface(t *testing.T) {
 		"org",
 		"member",
 		"project",
-		"env",
 		"database",
 		"cluster",
 		"integration",
@@ -40,7 +39,7 @@ func TestCommandsExposeTopLevelOperationalSurface(t *testing.T) {
 		"stack",
 		"service",
 		"app",
-		"instance",
+		"environment",
 		"aps",
 		"route",
 		"port",
@@ -55,6 +54,11 @@ func TestCommandsExposeTopLevelOperationalSurface(t *testing.T) {
 			t.Fatalf("missing command %q", name)
 		}
 	}
+	for _, name := range []string{"env", "instance"} {
+		if names[name] {
+			t.Fatalf("deprecated command %q must not be registered", name)
+		}
+	}
 }
 
 func TestListSubcommandMustBeExplicit(t *testing.T) {
@@ -65,7 +69,7 @@ func TestListSubcommandMustBeExplicit(t *testing.T) {
 	}{
 		{name: "app", cmd: newAppCommand()},
 		{name: "task", cmd: newTaskCommand()},
-		{name: "instance build", cmd: newAppInstanceCommand("instance", "Manage app instances"), args: []string{"build"}},
+		{name: "instance build", cmd: newAppEnvironmentCommand(), args: []string{"build"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			test.cmd.SetOut(io.Discard)
@@ -85,7 +89,6 @@ func TestListSubcommandMustBeExplicit(t *testing.T) {
 func TestDefaultTableColumnsOmitOrgID(t *testing.T) {
 	for name, columns := range map[string][]string{
 		"project":      projectColumns,
-		"env":          envColumns,
 		"database":     databaseColumns,
 		"cluster":      clusterColumns,
 		"integration":  integrationColumns,
@@ -1303,18 +1306,18 @@ func TestCreateCommandsStreamReferencedTaskLogs(t *testing.T) {
 		{
 			name:      "app",
 			command:   newAppCommand,
-			args:      []string{"create", "--data", `{"orgId":10,"projectId":12,"envId":22,"clusterId":33,"stackRevId":70,"name":"site","instanceName":"prod"}`},
+			args:      []string{"create", "--data", `{"orgId":10,"projectId":12,"clusterId":33,"stackRevId":70,"name":"site","environmentName":"prod","environmentType":"prod"}`},
 			createURL: "/v1/apps",
 			queryName: "appId",
 			message:   "app creation started. Streaming task logs for app 101 (task 42).",
 		},
 		{
 			name:      "app instance",
-			command:   func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
-			args:      []string{"create", "--data", `{"appId":11,"envId":22,"clusterId":33,"stackRevId":70,"instanceName":"prod"}`},
-			createURL: "/v1/app-instances",
+			command:   func() *cobra.Command { return newAppEnvironmentCommand() },
+			args:      []string{"create", "--data", `{"appId":11,"clusterId":33,"stackRevId":70,"environmentName":"prod","environmentType":"prod"}`},
+			createURL: "/v1/app-environments",
 			queryName: "appInstanceId",
-			message:   "app instance creation started. Streaming task logs for app instance 101 (task 42).",
+			message:   "app environment creation started. Streaming task logs for app environment 101 (task 42).",
 		},
 		{
 			name:      "cluster",
@@ -1462,7 +1465,7 @@ func TestAppCreateStreamsInitialInstanceTaskWhenAppTaskMissing(t *testing.T) {
 			default:
 				t.Fatalf("task query should include appId or appInstanceId: %s", r.URL.RawQuery)
 			}
-		case http.MethodGet + " /v1/app-instances":
+		case http.MethodGet + " /v1/app-environments":
 			if got := r.URL.Query().Get("appId"); got != "101" {
 				t.Fatalf("instance appId = %q, want 101", got)
 			}
@@ -1520,7 +1523,7 @@ func TestAppCreateStreamsInitialInstanceTaskWhenAppTaskMissing(t *testing.T) {
 
 	cmd := newAppCommand()
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"create", "--data", `{"orgId":10,"projectId":12,"envId":22,"clusterId":33,"stackRevId":70,"name":"site","instanceName":"prod"}`})
+	cmd.SetArgs([]string{"create", "--data", `{"orgId":10,"projectId":12,"clusterId":33,"stackRevId":70,"name":"site","environmentName":"prod","environmentType":"prod"}`})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -1542,7 +1545,7 @@ func TestAppCreateStreamsInitialInstanceTaskWhenAppTaskMissing(t *testing.T) {
 	wantRequests := []string{
 		"POST /v1/apps",
 		"GET /v1/tasks",
-		"GET /v1/app-instances",
+		"GET /v1/app-environments",
 		"GET /v1/tasks",
 		"GET /v1/tasks/42",
 		"GET /v1/task-steps/step-1/logs",
@@ -1604,7 +1607,7 @@ func TestAppCreateStreamsBuildTaskAfterCreationTask(t *testing.T) {
 					{"level": "info", "message": "app is ready"},
 				},
 			})
-		case http.MethodGet + " /v1/app-instances":
+		case http.MethodGet + " /v1/app-environments":
 			if got := r.URL.Query().Get("appId"); got != "101" {
 				t.Fatalf("instance appId = %q, want 101", got)
 			}
@@ -1705,7 +1708,7 @@ func TestAppCreateStreamsBuildTaskAfterCreationTask(t *testing.T) {
 
 	cmd := newAppCommand()
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"create", "--data", `{"orgId":10,"projectId":12,"envId":22,"clusterId":33,"stackRevId":70,"name":"site","instanceName":"prod"}`})
+	cmd.SetArgs([]string{"create", "--data", `{"orgId":10,"projectId":12,"clusterId":33,"stackRevId":70,"name":"site","environmentName":"prod","environmentType":"prod"}`})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -1731,7 +1734,7 @@ func TestAppCreateStreamsBuildTaskAfterCreationTask(t *testing.T) {
 		"GET /v1/tasks",
 		"GET /v1/tasks/42",
 		"GET /v1/task-steps/step-create/logs",
-		"GET /v1/app-instances",
+		"GET /v1/app-environments",
 		"GET /v1/app-builds",
 		"GET /v1/tasks/84",
 		"GET /v1/task-steps/step-build/logs",
@@ -1752,7 +1755,7 @@ func TestAppInstanceCreateStreamsDeploymentTaskWhenNoBuildTask(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
 		switch r.Method + " " + r.URL.Path {
-		case http.MethodPost + " /v1/app-instances":
+		case http.MethodPost + " /v1/app-environments":
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"id":    202,
@@ -1850,16 +1853,16 @@ func TestAppInstanceCreateStreamsDeploymentTaskWhenNoBuildTask(t *testing.T) {
 	defer server.Close()
 	configureTestAPI(t, server.URL+"/v1")
 
-	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd := newAppEnvironmentCommand()
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"create", "--data", `{"appId":11,"envId":22,"clusterId":33,"stackRevId":70,"instanceName":"prod"}`})
+	cmd.SetArgs([]string{"create", "--data", `{"appId":11,"clusterId":33,"stackRevId":70,"environmentName":"prod","environmentType":"prod"}`})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
 
 	output := out.String()
 	for _, expected := range []string{
-		"app instance creation started. Streaming task logs for app instance 202 (task 42).",
+		"app environment creation started. Streaming task logs for app environment 202 (task 42).",
 		"[info] instance is ready",
 		"Task completed.",
 		"Deployment started. Streaming task logs for deployment 601 (task 85).",
@@ -1871,7 +1874,7 @@ func TestAppInstanceCreateStreamsDeploymentTaskWhenNoBuildTask(t *testing.T) {
 		}
 	}
 	wantRequests := []string{
-		"POST /v1/app-instances",
+		"POST /v1/app-environments",
 		"GET /v1/tasks",
 		"GET /v1/tasks/42",
 		"GET /v1/task-steps/step-create/logs",
@@ -2421,7 +2424,7 @@ func TestInheritedOutputFlagControlsCopiedOutputOptions(t *testing.T) {
 		},
 		{
 			name:       "instance nested list",
-			cmd:        newAppInstanceCommand("instance", "Manage app instances"),
+			cmd:        newAppEnvironmentCommand(),
 			args:       []string{"build", "list", "21", "-o", "json"},
 			want:       `"commitMessage": "Build PHP"`,
 			unexpected: "commit message",
@@ -2656,7 +2659,7 @@ func TestAppCommandExposesCanonicalNestedResources(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	for _, name := range []string{"list", "get", "status", "create", "instance"} {
+	for _, name := range []string{"list", "get", "status", "create", "environment"} {
 		if !names[name] {
 			t.Fatalf("missing app subcommand %q", name)
 		}
@@ -2669,7 +2672,7 @@ func TestAppCommandExposesCanonicalNestedResources(t *testing.T) {
 }
 
 func TestInstanceCommandExposesCanonicalNestedResources(t *testing.T) {
-	instance := newAppInstanceCommand("instance", "Manage app instances")
+	instance := newAppEnvironmentCommand()
 	names := make(map[string]bool)
 	for _, cmd := range instance.Commands() {
 		names[cmd.Name()] = true
@@ -3430,14 +3433,14 @@ func TestAppCreateUsesPublicAPIShape(t *testing.T) {
 		"create",
 		"--org", "10",
 		"--project", "12",
-		"--env", "22",
 		"--cluster", "33",
 		"--stack", "7",
 		"--stack-rev", "70",
 		"--name", "drupal",
 		"--title", "Drupal",
-		"--instance-name", "prod",
-		"--instance-title", "Production",
+		"--environment-name", "prod",
+		"--environment-title", "Production",
+		"--environment-type", "prod",
 		"--domain", "example.com",
 		"--defer-initial-deployment",
 	})
@@ -3457,9 +3460,6 @@ func TestAppCreateUsesPublicAPIShape(t *testing.T) {
 	if body["projectId"] != float64(12) {
 		t.Fatalf("projectId = %#v, want 12", body["projectId"])
 	}
-	if body["envId"] != float64(22) {
-		t.Fatalf("envId = %#v, want 22", body["envId"])
-	}
 	if body["clusterId"] != float64(33) {
 		t.Fatalf("clusterId = %#v, want 33", body["clusterId"])
 	}
@@ -3469,8 +3469,8 @@ func TestAppCreateUsesPublicAPIShape(t *testing.T) {
 	if body["name"] != "drupal" || body["title"] != "Drupal" {
 		t.Fatalf("name/title body = %#v", body)
 	}
-	if body["instanceName"] != "prod" || body["instanceTitle"] != "Production" {
-		t.Fatalf("instance name/title body = %#v", body)
+	if body["environmentName"] != "prod" || body["environmentTitle"] != "Production" || body["environmentType"] != "prod" {
+		t.Fatalf("environment body = %#v", body)
 	}
 	if body["domain"] != "example.com" {
 		t.Fatalf("domain = %#v, want example.com", body["domain"])
@@ -3486,7 +3486,7 @@ func TestAppCreateUsesPublicAPIShape(t *testing.T) {
 	}
 }
 
-func TestAppCreateRequiresCluster(t *testing.T) {
+func TestAppCreateRequiresEnvironmentType(t *testing.T) {
 	var requests int
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3501,16 +3501,15 @@ func TestAppCreateRequiresCluster(t *testing.T) {
 	cmd.SetArgs([]string{
 		"create",
 		"--name", "site",
-		"--instance", "prod",
-		"--env", "prod",
+		"--environment-name", "prod",
 		"--stack", "drupal",
 	})
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("Execute() error = nil, want --cluster required")
+		t.Fatal("Execute() error = nil, want --environment-type required")
 	}
-	if !strings.Contains(err.Error(), "--cluster is required") {
-		t.Fatalf("Execute() error = %q, want --cluster required", err)
+	if !strings.Contains(err.Error(), "--environment-type is required") {
+		t.Fatalf("Execute() error = %q, want --environment-type required", err)
 	}
 	if requests != 0 {
 		t.Fatalf("requests = %d, want 0", requests)
@@ -3548,21 +3547,18 @@ func TestAppInstanceCreateUsesPublicAPIShape(t *testing.T) {
 	defer server.Close()
 	configureTestAPI(t, server.URL+"/v1")
 
-	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd := newAppEnvironmentCommand()
 	cmd.SetOut(io.Discard)
 	cmd.SetArgs([]string{
 		"create",
 		"--app", "11",
-		"--env", "22",
 		"--cluster", "33",
 		"--stack", "7",
 		"--stack-rev", "70",
-		"--instance-name", "prod",
-		"--instance-title", "Production",
+		"--name", "prod",
+		"--title", "Production",
+		"--type", "prod",
 		"--domain", "example.com",
-		"--region", "us",
-		"--zone", "us-a",
-		"--cluster-app",
 		"--defer-initial-deployment",
 	})
 	if err := cmd.Execute(); err != nil {
@@ -3572,14 +3568,11 @@ func TestAppInstanceCreateUsesPublicAPIShape(t *testing.T) {
 	if requestedMethod != http.MethodPost {
 		t.Fatalf("method = %q, want POST", requestedMethod)
 	}
-	if requestedPath != "/v1/app-instances" {
-		t.Fatalf("path = %q, want /v1/app-instances", requestedPath)
+	if requestedPath != "/v1/app-environments" {
+		t.Fatalf("path = %q, want /v1/app-environments", requestedPath)
 	}
 	if body["appId"] != float64(11) {
 		t.Fatalf("appId = %#v, want 11", body["appId"])
-	}
-	if body["envId"] != float64(22) {
-		t.Fatalf("envId = %#v, want 22", body["envId"])
 	}
 	if body["clusterId"] != float64(33) {
 		t.Fatalf("clusterId = %#v, want 33", body["clusterId"])
@@ -3587,8 +3580,8 @@ func TestAppInstanceCreateUsesPublicAPIShape(t *testing.T) {
 	if body["stackRevId"] != float64(70) {
 		t.Fatalf("stackRevId = %#v, want 70", body["stackRevId"])
 	}
-	if body["instanceName"] != "prod" || body["instanceTitle"] != "Production" {
-		t.Fatalf("instance name/title body = %#v", body)
+	if body["environmentName"] != "prod" || body["environmentTitle"] != "Production" || body["environmentType"] != "prod" {
+		t.Fatalf("environment body = %#v", body)
 	}
 	if body["domain"] != "example.com" {
 		t.Fatalf("domain = %#v, want example.com", body["domain"])
@@ -3596,26 +3589,18 @@ func TestAppInstanceCreateUsesPublicAPIShape(t *testing.T) {
 	if body["deferInitialDeployment"] != true {
 		t.Fatalf("deferInitialDeployment = %#v, want true", body["deferInitialDeployment"])
 	}
-	for _, key := range []string{"stackId", "name", "title", "mainDomain", "region", "zone", "clusterApp"} {
+	for _, key := range []string{"stackId", "instanceName", "instanceTitle", "envId", "mainDomain", "region", "zone", "clusterApp"} {
 		if _, ok := body[key]; ok {
 			t.Fatalf("body should not include %s: %#v", key, body)
 		}
 	}
 }
 
-func TestAppCreateResolvesEnvAndStackNames(t *testing.T) {
+func TestAppCreateResolvesStackAndClusterNames(t *testing.T) {
 	var body map[string]interface{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/envs/by-name/prod":
-			if got := r.URL.Query().Get("orgId"); got != "10" {
-				t.Fatalf("env orgId = %q, want 10", got)
-			}
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"id":   22,
-				"name": "prod",
-			})
 		case "/v1/stacks/by-name/drupal":
 			if got := r.URL.Query().Get("orgId"); got != "10" {
 				t.Fatalf("stack orgId = %q, want 10", got)
@@ -3667,27 +3652,24 @@ func TestAppCreateResolvesEnvAndStackNames(t *testing.T) {
 		"create",
 		"--org", "10",
 		"--project", "12",
-		"--env", "prod",
+		"--environment-name", "prod",
+		"--environment-type", "prod",
 		"--cluster", "primary",
 		"--stack", "drupal",
 		"--name", "site",
-		"--instance", "prod",
 	})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
 
-	if body["envId"] != float64(22) {
-		t.Fatalf("envId = %#v, want 22", body["envId"])
-	}
 	if body["stackRevId"] != float64(70) {
 		t.Fatalf("stackRevId = %#v, want 70", body["stackRevId"])
 	}
 	if body["clusterId"] != float64(33) {
 		t.Fatalf("clusterId = %#v, want 33", body["clusterId"])
 	}
-	if body["instanceName"] != "prod" {
-		t.Fatalf("instanceName = %#v, want prod", body["instanceName"])
+	if body["environmentName"] != "prod" || body["environmentType"] != "prod" {
+		t.Fatalf("environment = %#v", body)
 	}
 }
 
@@ -3699,14 +3681,6 @@ func TestAppCreateResolvesBareStackNameWithCurrentOrgPrefix(t *testing.T) {
 		case "/v1/orgs":
 			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
 				{"id": 10, "name": "curorg"},
-			})
-		case "/v1/envs/by-name/prod":
-			if got := r.URL.Query().Get("orgId"); got != "10" {
-				t.Fatalf("env orgId = %q, want 10", got)
-			}
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"id":   22,
-				"name": "prod",
 			})
 		case "/v1/stacks/by-name/drupal":
 			if got := r.URL.Query().Get("orgId"); got != "10" {
@@ -3759,11 +3733,11 @@ func TestAppCreateResolvesBareStackNameWithCurrentOrgPrefix(t *testing.T) {
 	cmd.SetOut(io.Discard)
 	cmd.SetArgs([]string{
 		"create",
-		"--env", "prod",
+		"--environment-name", "prod",
+		"--environment-type", "prod",
 		"--cluster", "33",
 		"--stack", "drupal",
 		"--name", "site",
-		"--instance", "prod",
 	})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
@@ -3806,11 +3780,11 @@ func TestAppCreateReportsPrefixedStackLookupError(t *testing.T) {
 	cmd.SetArgs([]string{
 		"create",
 		"--org", "10",
-		"--env", "22",
+		"--environment-name", "prod",
+		"--environment-type", "prod",
 		"--cluster", "33",
 		"--stack", "missing",
 		"--name", "site",
-		"--instance", "prod",
 	})
 	err := cmd.Execute()
 	if err == nil {
@@ -3824,7 +3798,7 @@ func TestAppCreateReportsPrefixedStackLookupError(t *testing.T) {
 	}
 }
 
-func TestAppInstanceCreateResolvesAppEnvAndStackNames(t *testing.T) {
+func TestAppEnvironmentCreateResolvesAppStackAndClusterNames(t *testing.T) {
 	var body map[string]interface{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3836,14 +3810,6 @@ func TestAppInstanceCreateResolvesAppEnvAndStackNames(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"id":   11,
 				"name": "drupal",
-			})
-		case "/v1/envs/by-name/prod":
-			if got := r.URL.Query().Get("orgId"); got != "10" {
-				t.Fatalf("env orgId = %q, want 10", got)
-			}
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"id":   22,
-				"name": "prod",
 			})
 		case "/v1/stacks/by-name/drupal":
 			if got := r.URL.Query().Get("orgId"); got != "10" {
@@ -3864,7 +3830,7 @@ func TestAppInstanceCreateResolvesAppEnvAndStackNames(t *testing.T) {
 				"id":   33,
 				"name": "primary",
 			})
-		case "/v1/app-instances":
+		case "/v1/app-environments":
 			if r.Method != http.MethodPost {
 				t.Fatalf("method = %q, want POST", r.Method)
 			}
@@ -3892,16 +3858,16 @@ func TestAppInstanceCreateResolvesAppEnvAndStackNames(t *testing.T) {
 	defer server.Close()
 	configureTestAPI(t, server.URL+"/v1")
 
-	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd := newAppEnvironmentCommand()
 	cmd.SetOut(io.Discard)
 	cmd.SetArgs([]string{
 		"create",
 		"--org", "10",
 		"--app", "drupal",
-		"--env", "prod",
+		"--name", "prod",
+		"--type", "prod",
 		"--cluster", "primary",
 		"--stack", "drupal",
-		"--instance", "prod",
 	})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
@@ -3910,17 +3876,14 @@ func TestAppInstanceCreateResolvesAppEnvAndStackNames(t *testing.T) {
 	if body["appId"] != float64(11) {
 		t.Fatalf("appId = %#v, want 11", body["appId"])
 	}
-	if body["envId"] != float64(22) {
-		t.Fatalf("envId = %#v, want 22", body["envId"])
-	}
 	if body["clusterId"] != float64(33) {
 		t.Fatalf("clusterId = %#v, want 33", body["clusterId"])
 	}
 	if body["stackRevId"] != float64(70) {
 		t.Fatalf("stackRevId = %#v, want 70", body["stackRevId"])
 	}
-	if body["instanceName"] != "prod" {
-		t.Fatalf("instanceName = %#v, want prod", body["instanceName"])
+	if body["environmentName"] != "prod" || body["environmentType"] != "prod" {
+		t.Fatalf("environment = %#v", body)
 	}
 }
 
@@ -3944,7 +3907,7 @@ func TestAppListEnrichesStackRelation(t *testing.T) {
 			})
 		case "/v1/stacks/7":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 7, "title": "Drupal Stack"})
-		case "/v1/app-instances":
+		case "/v1/app-environments":
 			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
 				{"id": 21, "appId": 1},
 				{"id": 22, "appId": 1},
@@ -3996,7 +3959,7 @@ func TestAppListShowsStackFromStackRevision(t *testing.T) {
 					},
 				},
 			})
-		case "/v1/app-instances":
+		case "/v1/app-environments":
 			_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
@@ -4040,7 +4003,7 @@ func TestAppListShowsStackFromInstanceRelation(t *testing.T) {
 					"status": "running",
 				},
 			})
-		case "/v1/app-instances":
+		case "/v1/app-environments":
 			if got := r.URL.Query().Get("orgId"); got != "123" {
 				t.Fatalf("orgId = %q, want 123", got)
 			}
@@ -4142,7 +4105,7 @@ func TestAppGetEnrichesStackRelation(t *testing.T) {
 			})
 		case "/v1/stacks/7":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 7, "title": "Drupal Stack"})
-		case "/v1/app-instances":
+		case "/v1/app-environments":
 			if got := r.URL.Query().Get("appId"); got != "1" {
 				t.Fatalf("appId = %q, want 1", got)
 			}
@@ -4190,7 +4153,7 @@ func TestAppGetShowsStackFromInstanceRelation(t *testing.T) {
 				"title":  "Drupal",
 				"status": "running",
 			})
-		case "/v1/app-instances":
+		case "/v1/app-environments":
 			if got := r.URL.Query().Get("appId"); got != "1" {
 				t.Fatalf("appId = %q, want 1", got)
 			}
@@ -4291,7 +4254,7 @@ func TestAppStatusComposesInstanceOperationalSummary(t *testing.T) {
 				"status": "running",
 				"orgId":  123,
 			})
-		case "/v1/app-instances":
+		case "/v1/app-environments":
 			if got := r.URL.Query().Get("appId"); got != "1" {
 				t.Fatalf("appId = %q, want 1", got)
 			}
@@ -4367,7 +4330,7 @@ func TestInstanceStatusComposesOperationalSummary(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/app-instances/21":
+		case "/v1/app-environments/21":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"id":     21,
 				"title":  "Production",
@@ -4406,7 +4369,7 @@ func TestInstanceStatusComposesOperationalSummary(t *testing.T) {
 	defer server.Close()
 	configureTestAPI(t, server.URL+"/v1")
 
-	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd := newAppEnvironmentCommand()
 	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"status", "21"})
 	if err := cmd.Execute(); err != nil {
@@ -4468,7 +4431,7 @@ func TestRouteListShowsCompactRouteSummary(t *testing.T) {
 	defer server.Close()
 	configureTestAPI(t, server.URL+"/v1")
 
-	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd := newAppEnvironmentCommand()
 	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"route", "list", "21"})
 	if err := cmd.Execute(); err != nil {
@@ -4513,7 +4476,7 @@ func TestPortListShowsReadableRelations(t *testing.T) {
 			})
 		case "/v1/app-services/22":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 22, "title": "Nginx"})
-		case "/v1/app-instances/21":
+		case "/v1/app-environments/21":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 21, "title": "Production"})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
@@ -4522,7 +4485,7 @@ func TestPortListShowsReadableRelations(t *testing.T) {
 	defer server.Close()
 	configureTestAPI(t, server.URL+"/v1")
 
-	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd := newAppEnvironmentCommand()
 	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"port", "list", "21"})
 	if err := cmd.Execute(); err != nil {
@@ -4556,7 +4519,7 @@ func TestTopLevelRouteListUsesInstanceFlag(t *testing.T) {
 
 	cmd := newAppRouteCommand("route", []string{"routes"}, "Manage app routes", instanceFilterFlag)
 	cmd.SetOut(io.Discard)
-	cmd.SetArgs([]string{"list", "--instance", "21"})
+	cmd.SetArgs([]string{"list", "--environment", "21"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -4623,7 +4586,7 @@ func TestTopLevelPortListUsesInstanceFlag(t *testing.T) {
 
 	cmd := newAppPortCommand("port", []string{"ports"}, "Manage app ports", instanceFilterFlag)
 	cmd.SetOut(io.Discard)
-	cmd.SetArgs([]string{"list", "--instance", "21"})
+	cmd.SetArgs([]string{"list", "--environment", "21"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -4650,7 +4613,7 @@ func TestTopLevelApsListUsesInstanceFlag(t *testing.T) {
 
 	cmd := newAppServiceCommand("aps", nil, "Manage app services", instanceFilterFlag)
 	cmd.SetOut(io.Discard)
-	cmd.SetArgs([]string{"list", "--instance", "21"})
+	cmd.SetArgs([]string{"list", "--environment", "21"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -4994,7 +4957,7 @@ func TestAppInstanceSettingsValidatesAutomationTimeWindowFlags(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			cmd := newAppInstanceCommand("instance", "Manage app instances")
+			cmd := newAppEnvironmentCommand()
 			cmd.SetOut(io.Discard)
 			cmd.SetErr(io.Discard)
 			cmd.SilenceUsage = true
@@ -5015,12 +4978,12 @@ func TestInstanceFlagSupportsShortI(t *testing.T) {
 		wantPath  string
 		wantQuery string
 	}{
-		{name: "route", cmd: newAppRouteCommand("route", nil, "Manage app routes", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-routes", wantQuery: "appInstanceId=21"},
-		{name: "aps", cmd: newAppServiceCommand("aps", nil, "Manage app services", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-services", wantQuery: "appInstanceId=21"},
-		{name: "port", cmd: newAppPortCommand("port", nil, "Manage app ports", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-ports", wantQuery: "appInstanceId=21"},
-		{name: "cert", cmd: newAppCertCommand("cert", nil, "Manage app certificates", instanceFilterFlag), args: []string{"list", "-i", "21"}, wantPath: "/v1/certs", wantQuery: ""},
-		{name: "build", cmd: newBuildCommand(), args: []string{"list", "-i", "21"}, wantPath: "/v1/app-builds", wantQuery: "appInstanceId=21"},
-		{name: "task", cmd: newTaskCommand(), args: []string{"list", "-i", "21"}, wantPath: "/v1/tasks", wantQuery: "appInstanceId=21"},
+		{name: "route", cmd: newAppRouteCommand("route", nil, "Manage app routes", instanceFilterFlag), args: []string{"list", "-e", "21"}, wantPath: "/v1/app-routes", wantQuery: "appInstanceId=21"},
+		{name: "aps", cmd: newAppServiceCommand("aps", nil, "Manage app services", instanceFilterFlag), args: []string{"list", "-e", "21"}, wantPath: "/v1/app-services", wantQuery: "appInstanceId=21"},
+		{name: "port", cmd: newAppPortCommand("port", nil, "Manage app ports", instanceFilterFlag), args: []string{"list", "-e", "21"}, wantPath: "/v1/app-ports", wantQuery: "appInstanceId=21"},
+		{name: "cert", cmd: newAppCertCommand("cert", nil, "Manage app certificates", instanceFilterFlag), args: []string{"list", "-e", "21"}, wantPath: "/v1/certs", wantQuery: ""},
+		{name: "build", cmd: newBuildCommand(), args: []string{"list", "-e", "21"}, wantPath: "/v1/app-builds", wantQuery: "appInstanceId=21"},
+		{name: "task", cmd: newTaskCommand(), args: []string{"list", "-e", "21"}, wantPath: "/v1/tasks", wantQuery: "appInstanceId=21"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var requestedPath string
@@ -5061,46 +5024,46 @@ func TestCommandsDoNotDefaultToListSubcommand(t *testing.T) {
 			cmd: func() *cobra.Command {
 				return newAppRouteCommand("route", nil, "Manage app routes", instanceFilterFlag)
 			},
-			args: []string{"-i", "21"},
+			args: []string{"-e", "21"},
 		},
 		{
 			name: "aps",
 			cmd: func() *cobra.Command {
 				return newAppServiceCommand("aps", nil, "Manage app services", instanceFilterFlag)
 			},
-			args: []string{"-i", "21"},
+			args: []string{"-e", "21"},
 		},
 		{
 			name: "cert",
 			cmd: func() *cobra.Command {
 				return newAppCertCommand("cert", nil, "Manage app certificates", instanceFilterFlag)
 			},
-			args: []string{"-i", "21"},
+			args: []string{"-e", "21"},
 		},
 		{
 			name: "build",
 			cmd:  newBuildCommand,
-			args: []string{"-i", "21"},
+			args: []string{"-e", "21"},
 		},
 		{
 			name: "deployment",
 			cmd:  newDeploymentCommand,
-			args: []string{"-i", "21"},
+			args: []string{"-e", "21"},
 		},
 		{
 			name: "backup",
 			cmd:  newBackupCommand,
-			args: []string{"-i", "21"},
+			args: []string{"-e", "21"},
 		},
 		{
 			name: "import",
 			cmd:  newImportCommand,
-			args: []string{"-i", "21"},
+			args: []string{"-e", "21"},
 		},
 		{
 			name: "task",
 			cmd:  newTaskCommand,
-			args: []string{"-i", "21"},
+			args: []string{"-e", "21"},
 		},
 		{
 			name: "database db",
@@ -5119,12 +5082,12 @@ func TestCommandsDoNotDefaultToListSubcommand(t *testing.T) {
 		},
 		{
 			name: "instance backup",
-			cmd:  func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			cmd:  func() *cobra.Command { return newAppEnvironmentCommand() },
 			args: []string{"backup", "21"},
 		},
 		{
 			name: "instance import",
-			cmd:  func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			cmd:  func() *cobra.Command { return newAppEnvironmentCommand() },
 			args: []string{"import", "21"},
 		},
 		{
@@ -5175,14 +5138,14 @@ func TestInstanceBackupAndImportListUseInstanceArg(t *testing.T) {
 	defer server.Close()
 	configureTestAPI(t, server.URL+"/v1")
 
-	backupCmd := newAppInstanceCommand("instance", "Manage app instances")
+	backupCmd := newAppEnvironmentCommand()
 	backupCmd.SetOut(io.Discard)
 	backupCmd.SetArgs([]string{"backup", "list", "21"})
 	if err := backupCmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
 
-	importCmd := newAppInstanceCommand("instance", "Manage app instances")
+	importCmd := newAppEnvironmentCommand()
 	importCmd.SetOut(io.Discard)
 	importCmd.SetArgs([]string{"import", "list", "21"})
 	if err := importCmd.Execute(); err != nil {
@@ -5219,7 +5182,7 @@ func TestBackupAndImportListRequireScope(t *testing.T) {
 			if err == nil {
 				t.Fatal("Execute() error = nil, want required scope error")
 			}
-			if !strings.Contains(err.Error(), "one of --instance, --service, --database, or --database-db is required") {
+			if !strings.Contains(err.Error(), "one of --environment, --service, --database, or --database-db is required") {
 				t.Fatalf("Execute() error = %q, want required scope error", err)
 			}
 			if requests != 0 {
@@ -6134,18 +6097,18 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 		},
 		{
 			name:       "instance get CI/CD settings",
-			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			cmd:        func() *cobra.Command { return newAppEnvironmentCommand() },
 			args:       []string{"cicd-settings", "get", "21"},
 			wantMethod: http.MethodGet,
-			wantPath:   "/v1/app-instances/cicd-settings/21",
+			wantPath:   "/v1/app-environments/cicd-settings/21",
 			response:   map[string]interface{}{"appInstanceId": 21, "ciIntegrationId": 12, "registryIntegrationId": 34},
 		},
 		{
 			name:       "instance update CI/CD settings",
-			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			cmd:        func() *cobra.Command { return newAppEnvironmentCommand() },
 			args:       []string{"cicd-settings", "update", "21", "--ci-integration", "12", "--registry-integration", "34"},
 			wantMethod: http.MethodPut,
-			wantPath:   "/v1/app-instances/cicd-settings/21",
+			wantPath:   "/v1/app-environments/cicd-settings/21",
 			assertBody: func(t *testing.T, body map[string]interface{}) {
 				if body["ciIntegrationId"] != float64(12) || body["registryIntegrationId"] != float64(34) {
 					t.Fatalf("app instance CI/CD settings body = %#v", body)
@@ -6155,10 +6118,10 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 		},
 		{
 			name:       "instance update automation time window",
-			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			cmd:        func() *cobra.Command { return newAppEnvironmentCommand() },
 			args:       []string{"settings", "update", "21", "--auto-stack-upgrade-enabled", "--time-window-enabled", "--time-window-start", "02:00", "--time-window-end", "04:00", "--time-window-time-zone", "Europe/London", "--time-window-day", "monday", "--time-window-day", "wednesday"},
 			wantMethod: http.MethodPut,
-			wantPath:   "/v1/app-instances/settings/21",
+			wantPath:   "/v1/app-environments/settings/21",
 			assertBody: func(t *testing.T, body map[string]interface{}) {
 				autoStackUpgrade, ok := body["autoStackUpgrade"].(map[string]interface{})
 				if !ok {
@@ -6179,19 +6142,19 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 		},
 		{
 			name:       "instance delete force",
-			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			cmd:        func() *cobra.Command { return newAppEnvironmentCommand() },
 			args:       []string{"delete", "21", "--force", "-y"},
 			wantMethod: http.MethodDelete,
-			wantPath:   "/v1/app-instances/21",
+			wantPath:   "/v1/app-environments/21",
 			wantQuery:  "force=true",
 			response:   map[string]interface{}{"success": true},
 		},
 		{
 			name:       "instance upgrade stack preserves configuration by default",
-			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			cmd:        func() *cobra.Command { return newAppEnvironmentCommand() },
 			args:       []string{"upgrade-stack", "21"},
 			wantMethod: http.MethodPost,
-			wantPath:   "/v1/app-instances/21/actions/upgrade-stack",
+			wantPath:   "/v1/app-environments/21/actions/upgrade-stack",
 			assertBody: func(t *testing.T, body map[string]interface{}) {
 				for _, name := range stackUpgradeFlagNames() {
 					if body[name] != false {
@@ -6203,10 +6166,10 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 		},
 		{
 			name:       "instance upgrade stack enables explicit override",
-			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			cmd:        func() *cobra.Command { return newAppEnvironmentCommand() },
 			args:       []string{"upgrade-stack", "21", "--tokens=true"},
 			wantMethod: http.MethodPost,
-			wantPath:   "/v1/app-instances/21/actions/upgrade-stack",
+			wantPath:   "/v1/app-environments/21/actions/upgrade-stack",
 			assertBody: func(t *testing.T, body map[string]interface{}) {
 				if body["tokens"] != true || body["versions"] != false {
 					t.Fatalf("upgrade body = %#v", body)
@@ -6216,26 +6179,26 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 		},
 		{
 			name:       "instance upgrade stack changelog",
-			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			cmd:        func() *cobra.Command { return newAppEnvironmentCommand() },
 			args:       []string{"upgrade-stack-changelog", "21"},
 			wantMethod: http.MethodGet,
-			wantPath:   "/v1/app-instance-stack-upgrade-changelogs/21",
+			wantPath:   "/v1/app-environment-stack-upgrade-changelogs/21",
 			response:   map[string]interface{}{"previousStackVersion": "1.0.0", "stackVersion": "1.1.0", "serviceChanges": []interface{}{}},
 		},
 		{
 			name:       "instance access get",
-			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			cmd:        func() *cobra.Command { return newAppEnvironmentCommand() },
 			args:       []string{"access", "get", "21"},
 			wantMethod: http.MethodGet,
-			wantPath:   "/v1/app-instance-accesses/21",
+			wantPath:   "/v1/app-environment-accesses/21",
 			response:   map[string]interface{}{"id": 77, "mode": "PROTECTED", "scope": "ENTIRE_APP", "status": "READY"},
 		},
 		{
 			name:       "instance access create",
-			cmd:        func() *cobra.Command { return newAppInstanceCommand("instance", "Manage app instances") },
+			cmd:        func() *cobra.Command { return newAppEnvironmentCommand() },
 			args:       []string{"access", "create", "21", "--data", `{"integrationId":9,"mode":"PROTECTED","scope":"ENTIRE_APP","endpoints":[]}`},
 			wantMethod: http.MethodPost,
-			wantPath:   "/v1/app-instance-accesses/21",
+			wantPath:   "/v1/app-environment-accesses/21",
 			assertBody: func(t *testing.T, body map[string]interface{}) {
 				if body["integrationId"] != float64(9) || body["mode"] != "PROTECTED" {
 					t.Fatalf("access body = %#v", body)
@@ -6397,6 +6360,10 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var gotMethod, gotPath, gotQuery string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/tasks" {
+					_ = json.NewEncoder(w).Encode([]interface{}{})
+					return
+				}
 				if strings.HasPrefix(r.URL.Path, "/v1/tasks/") {
 					taskID := strings.TrimPrefix(r.URL.Path, "/v1/tasks/")
 					_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -6592,7 +6559,7 @@ func TestBuildListShowsServiceAndImageCounts(t *testing.T) {
 
 	cmd := newBuildCommand()
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"list", "-i", "21"})
+	cmd.SetArgs([]string{"list", "-e", "21"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -6832,7 +6799,7 @@ func TestDeploymentListShowsServiceBuildCountsAndDurationWithoutImages(t *testin
 
 	cmd := newDeploymentCommand()
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"list", "-i", "21"})
+	cmd.SetArgs([]string{"list", "-e", "21"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -6879,7 +6846,7 @@ func TestImportListUsesStartedAndDuration(t *testing.T) {
 
 	cmd := newImportCommand()
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"list", "-i", "21"})
+	cmd.SetArgs([]string{"list", "-e", "21"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -6923,7 +6890,7 @@ func TestDatabaseCreateUsesPublicAPIShape(t *testing.T) {
 	cmd.SetOut(io.Discard)
 	cmd.SetArgs([]string{
 		"create",
-		"--env", "3",
+		"--env-type", "prod",
 		"--integration-kind", "7",
 		"--name", "main",
 		"--title", "Main",
@@ -6950,8 +6917,8 @@ func TestDatabaseCreateUsesPublicAPIShape(t *testing.T) {
 	if requestedPath != "/v1/databases" {
 		t.Fatalf("path = %q, want /v1/databases", requestedPath)
 	}
-	if body["envId"] != float64(3) {
-		t.Fatalf("envId = %#v, want 3", body["envId"])
+	if body["envType"] != "prod" {
+		t.Fatalf("envType = %#v, want prod", body["envType"])
 	}
 	if body["integrationKindId"] != float64(7) {
 		t.Fatalf("integrationKindId = %#v, want 7", body["integrationKindId"])
@@ -7617,7 +7584,7 @@ func TestClusterAppListShowsInstanceIDAndStackFromInstance(t *testing.T) {
 					"status": "running",
 				},
 			})
-		case "/v1/app-instances":
+		case "/v1/app-environments":
 			if got := r.URL.Query().Get("clusterId"); got != "101" {
 				t.Fatalf("clusterId = %q, want 101", got)
 			}
@@ -7736,7 +7703,7 @@ func TestClusterGetOmitsSpecialIntegrationIDRows(t *testing.T) {
 				"wodby":         true,
 				"integrationId": 701,
 			})
-		case "/v1/app-instances":
+		case "/v1/app-environments":
 			_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
@@ -7928,22 +7895,21 @@ func TestInstanceListCanFilterClusterApps(t *testing.T) {
 
 func TestInstanceListEnrichesReadableRelations(t *testing.T) {
 	var out bytes.Buffer
-	deployedAt := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/app-instances":
+		case "/v1/app-environments":
 			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
 				{
-					"id":         1,
-					"name":       "prod",
-					"title":      "Production",
-					"status":     "running",
-					"outdated":   true,
-					"appId":      11,
-					"envId":      22,
-					"clusterId":  33,
-					"mainDomain": "example.com",
+					"id":              1,
+					"name":            "prod",
+					"title":           "Production",
+					"status":          "running",
+					"outdated":        true,
+					"appId":           11,
+					"environmentType": "prod",
+					"clusterId":       33,
+					"mainDomain":      "example.com",
 				},
 			})
 		case "/v1/apps/11":
@@ -7957,22 +7923,8 @@ func TestInstanceListEnrichesReadableRelations(t *testing.T) {
 					},
 				},
 			})
-		case "/v1/envs/22":
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 22, "title": "Prod"})
 		case "/v1/clusters/33":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 33, "title": "Primary"})
-		case "/v1/app-deployments":
-			if got := r.URL.Query().Get("appInstanceId"); got != "1" {
-				t.Fatalf("deployment appInstanceId = %q, want 1", got)
-			}
-			if got := r.URL.Query().Get("pageSize"); got != "1" {
-				t.Fatalf("deployment pageSize = %q, want 1", got)
-			}
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"items": []map[string]interface{}{
-					{"id": 71, "number": 4, "status": "completed", "startedAt": "2026-01-02T03:04:00Z", "endedAt": deployedAt, "createdAt": "2026-01-02T03:03:00Z"},
-				},
-			})
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
 		}
@@ -7980,7 +7932,7 @@ func TestInstanceListEnrichesReadableRelations(t *testing.T) {
 	defer server.Close()
 	configureTestAPI(t, server.URL+"/v1")
 
-	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd := newAppEnvironmentCommand()
 	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"list", "--org", "123"})
 	if err := cmd.Execute(); err != nil {
@@ -7988,12 +7940,12 @@ func TestInstanceListEnrichesReadableRelations(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, expected := range []string{"outdated", "app", "stack", "env", "cluster", "domain", "last deployed at", "Drupal", "Drupal Stack", "Prod", "Primary", "example.com", "2h ago"} {
+	for _, expected := range []string{"outdated", "app", "stack", "environment type", "cluster", "domain", "Drupal", "Drupal Stack", "prod", "Primary", "example.com"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("output should include %q: %s", expected, output)
 		}
 	}
-	for _, unwanted := range []string{"appId", "stackId", "envId", "clusterId", "mainDomain", "11", "7", "22", "33"} {
+	for _, unwanted := range []string{"appId", "stackId", "envId", "clusterId", "mainDomain", "11", "7", "22", "33", "last deployed at"} {
 		if strings.Contains(output, unwanted) {
 			t.Fatalf("output should not include %q: %s", unwanted, output)
 		}
@@ -8005,7 +7957,7 @@ func TestInstanceListUsesStackFromInstanceRelation(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/app-instances":
+		case "/v1/app-environments":
 			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
 				{
 					"id":         1,
@@ -8046,7 +7998,7 @@ func TestInstanceListUsesStackFromInstanceRelation(t *testing.T) {
 	defer server.Close()
 	configureTestAPI(t, server.URL+"/v1")
 
-	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd := newAppEnvironmentCommand()
 	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"list", "--org", "123"})
 	if err := cmd.Execute(); err != nil {
@@ -8066,12 +8018,12 @@ func TestInstanceListUsesStackFromInstanceRelation(t *testing.T) {
 	}
 }
 
-func TestInstanceGetEnrichesStackThroughAppRelation(t *testing.T) {
+func TestEnvironmentStatusEnrichesStackThroughAppRelation(t *testing.T) {
 	var out bytes.Buffer
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/app-instances/1":
+		case "/v1/app-environments/1":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"id":     1,
 				"name":   "prod",
@@ -8101,32 +8053,27 @@ func TestInstanceGetEnrichesStackThroughAppRelation(t *testing.T) {
 	defer server.Close()
 	configureTestAPI(t, server.URL+"/v1")
 
-	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd := newAppEnvironmentCommand()
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"get", "1"})
+	cmd.SetArgs([]string{"status", "1"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
 
 	output := out.String()
-	for _, expected := range []string{"app:", "Drupal", "app id:", "11", "stack:", "Drupal Stack", "stack id:", "7", "service status:", "no services", "route status:", "no routes", "port status:", "no ports"} {
+	for _, expected := range []string{"service status:", "no services", "route status:", "no routes", "port status:", "no ports"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("instance get output should include %q: %s", expected, output)
 		}
 	}
-	for _, unwanted := range []string{"appId:", "stackId:"} {
-		if strings.Contains(output, unwanted) {
-			t.Fatalf("instance get output should not include %q: %s", unwanted, output)
-		}
-	}
 }
 
-func TestInstanceGetUsesStackFromInstanceRelation(t *testing.T) {
+func TestEnvironmentStatusUsesStackFromEnvironmentRelation(t *testing.T) {
 	var out bytes.Buffer
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/app-instances/1":
+		case "/v1/app-environments/1":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"id":     1,
 				"name":   "prod",
@@ -8152,22 +8099,17 @@ func TestInstanceGetUsesStackFromInstanceRelation(t *testing.T) {
 	defer server.Close()
 	configureTestAPI(t, server.URL+"/v1")
 
-	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd := newAppEnvironmentCommand()
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"get", "1"})
+	cmd.SetArgs([]string{"status", "1"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
 
 	output := out.String()
-	for _, expected := range []string{"app:", "Drupal", "app id:", "11", "stack:", "Drupal Stack", "stack id:", "7", "service status:", "no services", "route status:", "no routes", "port status:", "no ports"} {
+	for _, expected := range []string{"service status:", "no services", "route status:", "no routes", "port status:", "no ports"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("instance get output should include %q: %s", expected, output)
-		}
-	}
-	for _, unwanted := range []string{"appId:", "stackId:"} {
-		if strings.Contains(output, unwanted) {
-			t.Fatalf("instance get output should not include %q: %s", unwanted, output)
 		}
 	}
 }
@@ -8421,15 +8363,15 @@ func executeInstanceListQuery(t *testing.T, args ...string) url.Values {
 	defer server.Close()
 	configureTestAPI(t, server.URL+"/v1")
 
-	cmd := newAppInstanceCommand("instance", "Manage app instances")
+	cmd := newAppEnvironmentCommand()
 	cmd.SetOut(io.Discard)
 	cmd.SetArgs(args)
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
 
-	if requestedPath != "/v1/app-instances" {
-		t.Fatalf("path = %q, want /v1/app-instances", requestedPath)
+	if requestedPath != "/v1/app-environments" {
+		t.Fatalf("path = %q, want /v1/app-environments", requestedPath)
 	}
 	return requestedQuery
 }

@@ -51,9 +51,8 @@ var (
 	appGetColumns                    = []string{"id", "name", "title", "status", "stack", "clusterApp", "instances", "createdAt", "updatedAt"}
 	appStatusColumns                 = []string{"id", "title", "status", "instances", "serviceStatus", "routeStatus", "latestBuild", "latestDeployment", "needs"}
 	instanceColumns                  = []string{"id", "name", "title", "status", "outdated", "autoUpdates", "app", "stack", "env", "cluster", "domain", "routingMode", "routingPending", "configurationReady", "configurationIssues"}
-	instanceListColumns              = append(append([]string{}, instanceColumns...), "lastDeployedAt")
 	instanceGetColumns               = append(append([]string{}, instanceColumns...), "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
-	instanceCICDSettingsColumns      = []string{"appInstanceId", "ciIntegrationId", "registryIntegrationId", "registryRepository"}
+	instanceCICDSettingsColumns      = []string{"appEnvironmentId", "ciIntegrationId", "registryIntegrationId", "registryRepository"}
 	instanceStatusColumns            = []string{"id", "title", "status", "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
 	serviceColumns                   = []string{"id", "name", "title", "type", "status", "version", "replicas", "scalability", "disabled", "main", "needsRebuild", "needsRedeploy", "stackState", "configurationReady", "configurationIssues", "buildSourceBoilerplate"}
 	appServiceEnvColumns             = []string{"id", "name", "value", "secret", "runtime", "build", "envType", "workload", "container", "source", "createdAt"}
@@ -100,7 +99,6 @@ func Commands() []*cobra.Command {
 		newOrgCommand(),
 		newMemberCommand(),
 		newProjectCommand(),
-		newEnvCommand(),
 		newAppEnvironmentCommand(),
 		newDatabaseCommand(),
 		newClusterCommand(),
@@ -111,7 +109,6 @@ func Commands() []*cobra.Command {
 		newStackCommand(),
 		newServiceCommand(),
 		newAppCommand(),
-		newAppInstanceCommand("instance", "Manage app instances"),
 		newAppServiceCommand("aps", []string{"app-service", "app-services"}, "Manage app services", instanceFilterFlag),
 		newAppRouteCommand("route", []string{"routes"}, "Manage app routes", instanceFilterFlag),
 		newAppPortCommand("port", []string{"ports"}, "Manage app ports", instanceFilterFlag),
@@ -413,161 +410,6 @@ func newProjectCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringArrayVar(&orgMembershipIDs, "org-membership", nil, "Organization membership ID to grant; repeatable or comma-separated")
 	cmd.Flags().StringArrayVar(&teamIDs, "team", nil, "Team ID to grant; repeatable or comma-separated")
 	cmd.Flags().StringVar(&role, "role", "", "Project role for granted members or teams")
-	return cmd
-}
-
-func newEnvCommand() *cobra.Command {
-	out := outputOptions{}
-	cmd := &cobra.Command{
-		Use:        "env",
-		Short:      "Manage environments",
-		Deprecated: "environment types are fixed; use the app environment commands instead",
-	}
-	addOutputFlag(cmd, &out)
-
-	var orgID string
-	listCmd := &cobra.Command{
-		Use:   "list",
-		Short: "List environments",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := newRESTClient()
-			if err != nil {
-				return err
-			}
-			resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
-			if err != nil {
-				return err
-			}
-			query := url.Values{"orgId": []string{resolvedOrgID}}
-			var result interface{}
-			if err := client.Get(cmd.Context(), "/envs", query, &result); err != nil {
-				return err
-			}
-			return printClientResult(cmd, client, out, result, envColumns)
-		},
-	}
-	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
-
-	getCmd := &cobra.Command{
-		Use:   "get ID",
-		Short: "Get environment",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return getAndPrint(cmd, out, "/envs/"+args[0], envColumns)
-		},
-	}
-
-	defaultToList(cmd, listCmd)
-	cmd.AddCommand(
-		listCmd,
-		getCmd,
-		newGetByNameCommand("get-by-name NAME", "Get environment by name", "/envs/by-name/%s", envColumns, out, true, false),
-		newEnvCreateCommand(out),
-		newEnvUpdateCommand(out),
-		newDeleteCommand("delete ID", "Delete environment", "/envs/", envColumns, out),
-	)
-	return cmd
-}
-
-func newEnvCreateCommand(out outputOptions) *cobra.Command {
-	body := bodyOptions{}
-	var orgID, name, title, envType string
-	cmd := &cobra.Command{
-		Use:   "create",
-		Short: "Create environment",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := newRESTClient()
-			if err != nil {
-				return err
-			}
-			requestBody, hasBody, err := readBody(body)
-			if err != nil {
-				return err
-			}
-			if !hasBody {
-				if err := requireFlag(name, "--name"); err != nil {
-					return err
-				}
-				if err := requireFlag(title, "--title"); err != nil {
-					return err
-				}
-				if err := requireFlag(envType, "--type"); err != nil {
-					return err
-				}
-				resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
-				if err != nil {
-					return err
-				}
-				orgIDNumber, err := strconv.Atoi(resolvedOrgID)
-				if err != nil {
-					return errors.WithStack(err)
-				}
-				requestBody = map[string]interface{}{
-					"orgId": orgIDNumber,
-					"name":  name,
-					"title": title,
-					"type":  envType,
-				}
-			}
-
-			var result interface{}
-			if err := client.Post(cmd.Context(), "/envs", nil, requestBody, &result); err != nil {
-				return err
-			}
-			return printClientResult(cmd, client, out, result, envColumns)
-		},
-	}
-	addBodyFlags(cmd, &body)
-	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
-	cmd.Flags().StringVar(&name, "name", "", "Environment machine name")
-	cmd.Flags().StringVar(&title, "title", "", "Environment title")
-	cmd.Flags().StringVar(&envType, "type", "", "Environment type: prod, staging, test, dev, or feature")
-	return cmd
-}
-
-func newEnvUpdateCommand(out outputOptions) *cobra.Command {
-	body := bodyOptions{}
-	var name, title, envType string
-	cmd := &cobra.Command{
-		Use:   "update ID",
-		Short: "Update environment",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := newRESTClient()
-			if err != nil {
-				return err
-			}
-			requestBody, hasBody, err := readBody(body)
-			if err != nil {
-				return err
-			}
-			if !hasBody {
-				if err := requireFlag(name, "--name"); err != nil {
-					return err
-				}
-				if err := requireFlag(title, "--title"); err != nil {
-					return err
-				}
-				if err := requireFlag(envType, "--type"); err != nil {
-					return err
-				}
-				requestBody = map[string]interface{}{
-					"name":  name,
-					"title": title,
-					"type":  envType,
-				}
-			}
-			var result interface{}
-			if err := client.Put(cmd.Context(), "/envs/"+args[0], nil, requestBody, &result); err != nil {
-				return err
-			}
-			return printClientResult(cmd, client, out, result, envColumns)
-		},
-	}
-	addBodyFlags(cmd, &body)
-	cmd.Flags().StringVar(&name, "name", "", "Environment machine name")
-	cmd.Flags().StringVar(&title, "title", "", "Environment title")
-	cmd.Flags().StringVar(&envType, "type", "", "Environment type: prod, staging, test, dev, or feature")
 	return cmd
 }
 
@@ -886,11 +728,11 @@ func newDatabaseUserDBsCommand(out outputOptions) *cobra.Command {
 
 func newDatabaseCreateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
-	var orgID, projectID, envID, envType, integrationKindID, name, title, dbType, version, machineType, region, zone, password, residedClusterID string
+	var orgID, projectID, envType, integrationKindID, name, title, dbType, version, machineType, region, zone, password, residedClusterID string
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create database",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := newRESTClient()
 			if err != nil {
 				return err
@@ -900,11 +742,8 @@ func newDatabaseCreateCommand(out outputOptions) *cobra.Command {
 				return err
 			}
 			if !hasBody {
-				if envID == "" && envType == "" {
-					return errors.New("one of --env-type or deprecated --env is required")
-				}
-				if envID != "" && envType != "" {
-					return errors.New("--env-type and --env cannot be combined")
+				if err := requireFlag(envType, "--env-type"); err != nil {
+					return err
 				}
 				if err := requireFlag(integrationKindID, "--integration-kind"); err != nil {
 					return err
@@ -936,15 +775,7 @@ func newDatabaseCreateCommand(out outputOptions) *cobra.Command {
 					"version":           version,
 					"machineType":       machineType,
 				}
-				if envType != "" {
-					values["envType"] = envType
-				} else {
-					envIDNumber, err := strconv.Atoi(envID)
-					if err != nil {
-						return errors.Wrap(err, "invalid --env")
-					}
-					values["envId"] = envIDNumber
-				}
+				values["envType"] = envType
 				resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
 				if err != nil {
 					return err
@@ -985,7 +816,6 @@ func newDatabaseCreateCommand(out outputOptions) *cobra.Command {
 	addBodyFlags(cmd, &body)
 	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
 	cmd.Flags().StringVar(&projectID, "project", "", "Project ID")
-	cmd.Flags().StringVar(&envID, "env", "", "Environment ID")
 	cmd.Flags().StringVar(&envType, "env-type", "", "Environment type: prod, test, staging, dev, or feature")
 	cmd.Flags().StringVar(&integrationKindID, "integration-kind", "", "Integration kind ID")
 	cmd.Flags().StringVar(&name, "name", "", "Database machine name")
@@ -1047,7 +877,7 @@ func newClusterCommand() *cobra.Command {
 	}
 	addOutputFlag(cmd, &out)
 
-	var orgID, projectIDs, integrationID, envID, envType string
+	var orgID, projectIDs, integrationID, envType string
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List clusters",
@@ -1063,7 +893,6 @@ func newClusterCommand() *cobra.Command {
 			query := url.Values{"orgId": []string{resolvedOrgID}}
 			addQuery(query, "projectIds", projectIDs)
 			addQuery(query, "integrationId", integrationID)
-			addQuery(query, "envId", envID)
 			addQuery(query, "envType", envType)
 			var result interface{}
 			if err := client.Get(cmd.Context(), "/clusters", query, &result); err != nil {
@@ -1075,7 +904,6 @@ func newClusterCommand() *cobra.Command {
 	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
 	listCmd.Flags().StringVar(&projectIDs, "project", "", "Project ID or comma-separated project IDs")
 	listCmd.Flags().StringVar(&integrationID, "integration", "", "Integration ID")
-	listCmd.Flags().StringVar(&envID, "env", "", "Deprecated environment ID filter")
 	listCmd.Flags().StringVar(&envType, "env-type", "", "Environment type filter")
 
 	getCmd := &cobra.Command{
@@ -1126,7 +954,7 @@ func newClusterInfraAppUpgradeChangelogCommand(out outputOptions) *cobra.Command
 			return printClientResult(cmd, client, out, result, clusterInfraAppChangelogColumns)
 		},
 	}
-	cmd.Flags().StringVar(&appInstanceID, "app-instance", "", "Limit the preview to one infrastructure app instance ID")
+	cmd.Flags().StringVar(&appInstanceID, "environment", "", "Limit the preview to one infrastructure app environment ID")
 	return cmd
 }
 
@@ -1331,7 +1159,7 @@ func clusterInfraAppInstancesByAppID(ctx context.Context, client *rest.Client, c
 		"clusterApp": []string{"true"},
 	}
 	var result interface{}
-	if err := client.Get(ctx, "/app-instances", query, &result); err != nil {
+	if err := client.Get(ctx, "/app-environments", query, &result); err != nil {
 		return nil, false
 	}
 
@@ -1371,7 +1199,7 @@ func enrichInfraAppRows(ctx context.Context, client *rest.Client, value interfac
 		"clusterApp": []string{"true"},
 	}
 	var result interface{}
-	if err := client.Get(ctx, "/app-instances", query, &result); err != nil {
+	if err := client.Get(ctx, "/app-environments", query, &result); err != nil {
 		return
 	}
 
@@ -1551,7 +1379,7 @@ func newIntegrationCommand() *cobra.Command {
 	}
 	addOutputFlag(cmd, &out)
 
-	var orgID, projectIDs, labels, envID, envType string
+	var orgID, projectIDs, labels, envType string
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List integrations",
@@ -1567,7 +1395,6 @@ func newIntegrationCommand() *cobra.Command {
 			query := url.Values{"orgId": []string{resolvedOrgID}}
 			addQuery(query, "projectIds", projectIDs)
 			addQuery(query, "labels", labels)
-			addQuery(query, "envId", envID)
 			addQuery(query, "envType", envType)
 			var result interface{}
 			if err := client.Get(cmd.Context(), "/integrations", query, &result); err != nil {
@@ -1579,7 +1406,6 @@ func newIntegrationCommand() *cobra.Command {
 	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
 	listCmd.Flags().StringVar(&projectIDs, "project", "", "Project ID or comma-separated project IDs")
 	listCmd.Flags().StringVar(&labels, "labels", "", "Comma-separated labels")
-	listCmd.Flags().StringVar(&envID, "env", "", "Deprecated environment ID filter")
 	listCmd.Flags().StringVar(&envType, "env-type", "", "Environment type filter")
 
 	getCmd := &cobra.Command{
@@ -2619,10 +2445,6 @@ func currentStackRevID(ctx context.Context, client *rest.Client, stackID string)
 
 func resolveAppID(ctx context.Context, client *rest.Client, app string, orgID string) (string, error) {
 	return resolveIDOrName(ctx, client, app, "--app", "/apps/by-name/%s", orgID, "id", "appId")
-}
-
-func resolveEnvID(ctx context.Context, client *rest.Client, env string, orgID string) (string, error) {
-	return resolveIDOrName(ctx, client, env, "--env", "/envs/by-name/%s", orgID, "id", "envId", "environmentId")
 }
 
 func resolveClusterID(ctx context.Context, client *rest.Client, cluster string, orgID string) (string, error) {
@@ -3830,7 +3652,6 @@ func newAppCommand() *cobra.Command {
 		newTitleUpdateCommand("update ID", "Update app", "/apps/", appColumns, out),
 		newDeleteCommand("delete ID", "Delete app", "/apps/", appColumns, out),
 	)
-	cmd.AddCommand(newAppInstanceCommand("instance", "Manage app instances"))
 	cmd.AddCommand(newAppEnvironmentCommand())
 	return cmd
 }
@@ -3838,12 +3659,12 @@ func newAppCommand() *cobra.Command {
 func newAppCreateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
 	wait := waitOptions{}
-	var orgID, projectID, env, environmentName, environmentTitle, environmentType, clusterID, stack, stackRevID, name, title, instanceName, instanceTitle, domain, ciIntegrationID, registryIntegrationID string
+	var orgID, projectID, environmentName, environmentTitle, environmentType, clusterID, stack, stackRevID, name, title, domain, ciIntegrationID, registryIntegrationID string
 	var deferInitialDeployment bool
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create app",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := newRESTClient()
 			if err != nil {
 				return err
@@ -3856,27 +3677,11 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 				if err := requireFlag(name, "--name"); err != nil {
 					return err
 				}
-				canonicalEnvironment := environmentName != "" || environmentTitle != "" || environmentType != ""
-				if canonicalEnvironment {
-					if env != "" || instanceName != "" || instanceTitle != "" {
-						return errors.New("canonical --environment-* flags cannot be combined with deprecated --env or --instance flags")
-					}
-					if err := requireFlag(environmentName, "--environment-name"); err != nil {
-						return err
-					}
-					if err := requireFlag(environmentType, "--environment-type"); err != nil {
-						return err
-					}
-				} else {
-					if err := requireFlag(instanceName, "--instance"); err != nil {
-						return err
-					}
-					if err := requireFlag(env, "--env"); err != nil {
-						return err
-					}
-					if err := requireFlag(clusterID, "--cluster"); err != nil {
-						return err
-					}
+				if err := requireFlag(environmentName, "--environment-name"); err != nil {
+					return err
+				}
+				if err := requireFlag(environmentType, "--environment-type"); err != nil {
+					return err
 				}
 				resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
 				if err != nil {
@@ -3888,21 +3693,9 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 				}
 				values := map[string]interface{}{"name": name}
 				addOptionalString(values, "title", title)
-				if canonicalEnvironment {
-					values["environmentName"] = environmentName
-					values["environmentType"] = environmentType
-					addOptionalString(values, "environmentTitle", environmentTitle)
-				} else {
-					resolvedEnvID, err := resolveEnvID(cmd.Context(), client, env, resolvedOrgID)
-					if err != nil {
-						return err
-					}
-					values["instanceName"] = instanceName
-					addOptionalString(values, "instanceTitle", instanceTitle)
-					if err := addOptionalInt(values, "envId", resolvedEnvID, "--env"); err != nil {
-						return err
-					}
-				}
+				values["environmentName"] = environmentName
+				values["environmentType"] = environmentType
+				addOptionalString(values, "environmentTitle", environmentTitle)
 				addOptionalString(values, "domain", domain)
 				if err := addOptionalInt(values, "orgId", resolvedOrgID, "--org"); err != nil {
 					return err
@@ -3953,7 +3746,6 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 	addWaitFlags(cmd, &wait)
 	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
 	cmd.Flags().StringVar(&projectID, "project", "", "Project ID")
-	cmd.Flags().StringVar(&env, "env", "", "Environment ID or name")
 	cmd.Flags().StringVar(&environmentName, "environment-name", "", "Initial app environment machine name")
 	cmd.Flags().StringVar(&environmentTitle, "environment-title", "", "Initial app environment title")
 	cmd.Flags().StringVar(&environmentType, "environment-type", "", "Initial app environment type: prod, test, staging, dev, or feature")
@@ -3962,14 +3754,10 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&stackRevID, "stack-rev", "", "Stack revision ID")
 	cmd.Flags().StringVar(&name, "name", "", "App machine name")
 	cmd.Flags().StringVar(&title, "title", "", "App title")
-	cmd.Flags().StringVar(&instanceName, "instance", "", "Initial app instance machine name")
-	cmd.Flags().StringVar(&instanceName, "instance-name", "", "Deprecated alias for --instance")
-	cmd.Flags().StringVar(&instanceTitle, "instance-title", "", "Initial app instance title")
-	cmd.Flags().StringVar(&domain, "domain", "", "Initial app instance domain")
+	cmd.Flags().StringVar(&domain, "domain", "", "Initial app environment domain")
 	cmd.Flags().StringVar(&ciIntegrationID, "ci-integration", "", "CI integration ID")
 	cmd.Flags().StringVar(&registryIntegrationID, "registry-integration", "", "Registry integration ID")
 	cmd.Flags().BoolVar(&deferInitialDeployment, "defer-initial-deployment", false, "Create the app without starting its initial deployment")
-	cmd.Flags().Bool("cluster-app", false, "Deprecated: use --cluster when creating the initial cluster app instance")
 	return cmd
 }
 
@@ -3985,7 +3773,7 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 	var clusterApp bool
 	listCmd := &cobra.Command{
 		Use:   "list",
-		Short: "List app instances",
+		Short: "List app environments",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := newRESTClient()
 			if err != nil {
@@ -4001,40 +3789,22 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 			addQuery(query, "clusterId", clusterID)
 			query.Set("clusterApp", strconv.FormatBool(clusterApp))
 			var result interface{}
-			if err := client.Get(cmd.Context(), "/app-instances", query, &result); err != nil {
+			if err := client.Get(cmd.Context(), "/app-environments", query, &result); err != nil {
 				return err
 			}
-			if outputFormat(cmd, out) != outputJSON {
-				enrichInstanceLastDeployedAt(cmd.Context(), client, responseRows(result))
-			}
-			return printClientResult(cmd, client, out, result, instanceListColumns)
+			return printClientResult(cmd, client, out, result, appEnvironmentColumns)
 		},
 	}
 	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
 	listCmd.Flags().StringVar(&projectIDs, "project", "", "Project ID or comma-separated project IDs")
 	listCmd.Flags().StringVar(&appID, "app", "", "App ID")
 	listCmd.Flags().StringVar(&clusterID, "cluster", "", "Cluster ID")
-	listCmd.Flags().BoolVar(&clusterApp, "cluster-app", false, "Filter cluster app instances")
+	listCmd.Flags().BoolVar(&clusterApp, "cluster-app", false, "Filter cluster app environments")
 
-	getCmd := &cobra.Command{
-		Use:   "get ID",
-		Short: "Get app instance",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := newRESTClient()
-			if err != nil {
-				return err
-			}
-			result, err := buildInstanceStatus(cmd.Context(), client, args[0], nil)
-			if err != nil {
-				return err
-			}
-			return printClientGetResult(cmd, client, out, result, instanceGetColumns)
-		},
-	}
+	getCmd := newGetCommand("get ID", "Get app environment", "/app-environments/", appEnvironmentColumns, out)
 	statusCmd := &cobra.Command{
 		Use:   "status ID",
-		Short: "Show app instance status",
+		Short: "Show app environment status",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := newRESTClient()
@@ -4056,31 +3826,39 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 		newAppInstanceGetByNameCommand(out),
 		statusCmd,
 		newAppInstanceCreateCommand(out),
-		newTitleUpdateCommand("update ID", "Update app instance", "/app-instances/", instanceColumns, out),
+		newTitleUpdateCommand("update ID", "Update app environment", "/app-environments/", appEnvironmentColumns, out),
 		newAppInstanceDeleteCommand(out),
 		newAppInstanceSettingsCommand(out),
+		newRawBodyPutCommand("maintenance-mode ID", "Update app environment maintenance mode", "/app-environments/%s/actions/maintenance-mode", operationColumns, out),
 		newAppInstanceCICDSettingsCommand(out),
 		newAppInstanceUpgradeStackCommand(out),
-		newGetCommand("upgrade-stack-changelog ID", "Preview app instance stack upgrade", "/app-instance-stack-upgrade-changelogs/", appInstanceStackChangelogColumns, out),
+		newRawBodyPostCommand("reconcile-stack ID", "Reconcile app environment stack", "/app-environments/%s/actions/reconcile-stack", operationColumns, out),
+		newGetCommand("upgrade-stack-changelog ID", "Preview app environment stack upgrade", "/app-environment-stack-upgrade-changelogs/", appInstanceStackChangelogColumns, out),
 		newAppAccessCommand(out),
 	)
 	cmd.AddCommand(newAppServiceCommand("service", []string{"services"}, "Manage app services", instanceFilterArg))
-	cmd.AddCommand(newAppRouteCommand("route", []string{"routes"}, "Manage app instance routes", instanceFilterArg))
-	cmd.AddCommand(newAppPortCommand("port", []string{"ports"}, "Manage app instance ports", instanceFilterArg))
-	cmd.AddCommand(newAppCertCommand("cert", []string{"certs", "certificate", "certificates"}, "Manage app instance certificates", instanceFilterArg))
+	cmd.AddCommand(newAppRouteCommand("route", []string{"routes"}, "Manage app environment routes", instanceFilterArg))
+	cmd.AddCommand(newAppPortCommand("port", []string{"ports"}, "Manage app environment ports", instanceFilterArg))
+	cmd.AddCommand(newAppCertCommand("cert", []string{"certs", "certificate", "certificates"}, "Manage app environment certificates", instanceFilterArg))
 	cmd.AddCommand(newInstanceBuildCommand(), newInstanceDeploymentCommand(), newInstanceBackupCommand(), newInstanceImportCommand())
+	return cmd
+}
+
+func newAppEnvironmentCommand() *cobra.Command {
+	cmd := newAppInstanceCommand("environment", "Manage app environments")
+	cmd.Aliases = []string{"environments", "app-environment", "app-environments"}
 	return cmd
 }
 
 func newAppAccessCommand(out outputOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "access",
-		Short: "Manage app instance access",
+		Short: "Manage app environment access",
 	}
 	cmd.AddCommand(
-		newGetCommand("get APP_INSTANCE_ID", "Get app instance access", "/app-instance-accesses/", appAccessColumns, out),
-		newRawBodyPostCommand("create APP_INSTANCE_ID", "Create app instance access", "/app-instance-accesses/%s", []string{"access", "taskId"}, out),
-		newRawBodyPostCommand("preflight", "Preflight app instance access", "/app-accesses/actions/preflight", []string{"valid"}, out),
+		newGetCommand("get ENVIRONMENT_ID", "Get app environment access", "/app-environment-accesses/", appAccessColumns, out),
+		newRawBodyPostCommand("create ENVIRONMENT_ID", "Create app environment access", "/app-environment-accesses/%s", []string{"access", "taskId"}, out),
+		newRawBodyPostCommand("preflight", "Preflight app environment access", "/app-accesses/actions/preflight", []string{"valid"}, out),
 		newRawBodyPutCommand("update ACCESS_ID", "Update app access", "/app-accesses/%s", []string{"access", "taskId"}, out),
 		newServiceChildDeleteCommand("Delete app access", "/app-accesses/%s", out),
 		newAppAccessCleanupsCommand(out),
@@ -4096,7 +3874,7 @@ func newAppAccessCleanupsCommand(out outputOptions) *cobra.Command {
 		Short: "List app-access cleanups",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if (appInstanceID == "") == (integrationID == "") {
-				return errors.New("exactly one of --app-instance or --integration is required")
+				return errors.New("exactly one of --environment or --integration is required")
 			}
 			query := url.Values{}
 			addQuery(query, "appInstanceId", appInstanceID)
@@ -4112,7 +3890,7 @@ func newAppAccessCleanupsCommand(out outputOptions) *cobra.Command {
 			return printClientResult(cmd, client, out, result, appAccessCleanupColumns)
 		},
 	}
-	cmd.Flags().StringVar(&appInstanceID, "app-instance", "", "App instance ID")
+	cmd.Flags().StringVar(&appInstanceID, "environment", "", "App environment ID")
 	cmd.Flags().StringVar(&integrationID, "integration", "", "Integration ID")
 	return cmd
 }
@@ -4120,12 +3898,12 @@ func newAppAccessCleanupsCommand(out outputOptions) *cobra.Command {
 func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
 	wait := waitOptions{}
-	var orgID, app, env, clusterID, stack, stackRevID, name, title, instanceName, instanceTitle, domain, region, zone, ciIntegrationID, registryIntegrationID string
+	var orgID, app, environmentType, clusterID, stack, stackRevID, name, title, domain, ciIntegrationID, registryIntegrationID string
 	var deferInitialDeployment bool
 	cmd := &cobra.Command{
 		Use:   "create",
-		Short: "Create app instance",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		Short: "Create app environment",
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			requestBody, hasBody, err := readBody(body)
 			if err != nil {
 				return err
@@ -4138,22 +3916,13 @@ func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 				if err := requireFlag(app, "--app"); err != nil {
 					return err
 				}
-				if err := requireFlag(env, "--env"); err != nil {
+				if err := requireFlag(name, "--name"); err != nil {
 					return err
 				}
-				if err := requireFlag(clusterID, "--cluster"); err != nil {
-					return err
-				}
-				resolvedInstanceName := firstScalar(instanceName, name)
-				resolvedInstanceTitle := firstScalar(instanceTitle, title)
-				if err := requireFlag(resolvedInstanceName, "--instance"); err != nil {
+				if err := requireFlag(environmentType, "--type"); err != nil {
 					return err
 				}
 				resolvedAppID, err := resolveAppID(cmd.Context(), client, app, orgID)
-				if err != nil {
-					return err
-				}
-				resolvedEnvID, err := resolveEnvID(cmd.Context(), client, env, orgID)
 				if err != nil {
 					return err
 				}
@@ -4161,50 +3930,46 @@ func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				resolvedClusterID, err := resolveClusterID(cmd.Context(), client, clusterID, orgID)
-				if err != nil {
-					return err
-				}
 				appIDNumber, err := strconv.Atoi(resolvedAppID)
 				if err != nil {
 					return errors.Wrap(err, "invalid --app")
 				}
-				envIDNumber, err := strconv.Atoi(resolvedEnvID)
-				if err != nil {
-					return errors.Wrap(err, "invalid --env")
-				}
-				clusterIDNumber, err := strconv.Atoi(resolvedClusterID)
-				if err != nil {
-					return errors.Wrap(err, "invalid --cluster")
-				}
 				values := map[string]interface{}{
-					"appId":        appIDNumber,
-					"envId":        envIDNumber,
-					"clusterId":    clusterIDNumber,
-					"instanceName": resolvedInstanceName,
+					"appId":                  appIDNumber,
+					"environmentName":        name,
+					"environmentType":        environmentType,
+					"deferInitialDeployment": deferInitialDeployment,
 				}
 				if err := addOptionalInt(values, "stackRevId", resolvedStackRevID, "--stack-rev"); err != nil {
 					return err
 				}
-				addOptionalString(values, "instanceTitle", resolvedInstanceTitle)
+				addOptionalString(values, "environmentTitle", title)
 				addOptionalString(values, "domain", domain)
+				if clusterID != "" {
+					resolvedClusterID, err := resolveClusterID(cmd.Context(), client, clusterID, orgID)
+					if err != nil {
+						return err
+					}
+					if err := addOptionalInt(values, "clusterId", resolvedClusterID, "--cluster"); err != nil {
+						return err
+					}
+				}
 				if err := addOptionalInt(values, "ciIntegrationId", ciIntegrationID, "--ci-integration"); err != nil {
 					return err
 				}
 				if err := addOptionalInt(values, "registryIntegrationId", registryIntegrationID, "--registry-integration"); err != nil {
 					return err
 				}
-				values["deferInitialDeployment"] = deferInitialDeployment
 				requestBody = values
 			}
 			var result interface{}
-			if err := client.Post(cmd.Context(), "/app-instances", nil, requestBody, &result); err != nil {
-				return errors.Wrap(err, "create app instance")
+			if err := client.Post(cmd.Context(), "/app-environments", nil, requestBody, &result); err != nil {
+				return errors.Wrap(err, "create app environment")
 			}
 			if handled, err := printAppInstanceCreateTaskLogs(cmd.Context(), cmd, client, out, result); handled || err != nil {
 				return err
 			}
-			columns := resourceOrOperationColumns(result, instanceColumns)
+			columns := resourceOrOperationColumns(result, appEnvironmentColumns)
 			if wait.wait && firstTaskID(result) != "" {
 				result, err = waitForTask(cmd.Context(), client, firstTaskID(result), wait.timeout)
 				if err != nil {
@@ -4219,31 +3984,24 @@ func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 	addWaitFlags(cmd, &wait)
 	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID for resolving names")
 	cmd.Flags().StringVar(&app, "app", "", "App ID or name")
-	cmd.Flags().StringVar(&env, "env", "", "Environment ID or name")
+	cmd.Flags().StringVar(&name, "name", "", "Environment machine name")
+	cmd.Flags().StringVar(&title, "title", "", "Environment title")
+	cmd.Flags().StringVar(&environmentType, "type", "", "Environment type: prod, test, staging, dev, or feature")
 	cmd.Flags().StringVar(&clusterID, "cluster", "", "Cluster ID or name")
 	cmd.Flags().StringVar(&stack, "stack", "", "Stack ID or name; uses the current revision")
 	cmd.Flags().StringVar(&stackRevID, "stack-rev", "", "Stack revision ID")
-	cmd.Flags().StringVar(&name, "name", "", "Deprecated alias for --instance")
-	cmd.Flags().StringVar(&title, "title", "", "Deprecated alias for --instance-title")
-	cmd.Flags().StringVar(&instanceName, "instance", "", "App instance machine name")
-	cmd.Flags().StringVar(&instanceName, "instance-name", "", "Deprecated alias for --instance")
-	cmd.Flags().StringVar(&instanceTitle, "instance-title", "", "App instance title")
-	cmd.Flags().StringVar(&domain, "domain", "", "App instance domain")
-	cmd.Flags().StringVar(&region, "region", "", "Deprecated")
-	cmd.Flags().StringVar(&zone, "zone", "", "Deprecated")
+	cmd.Flags().StringVar(&domain, "domain", "", "App environment domain")
 	cmd.Flags().StringVar(&ciIntegrationID, "ci-integration", "", "CI integration ID")
 	cmd.Flags().StringVar(&registryIntegrationID, "registry-integration", "", "Registry integration ID")
-	cmd.Flags().BoolVar(&deferInitialDeployment, "defer-initial-deployment", false, "Create the app instance without starting its initial deployment")
-	cmd.Flags().Bool("cluster-app", false, "Deprecated: cluster app status is inferred from --cluster")
-	_, _, _ = region, zone, title
+	cmd.Flags().BoolVar(&deferInitialDeployment, "defer-initial-deployment", false, "Create the app environment without starting its initial deployment")
 	return cmd
 }
 
 func newAppInstanceGetByNameCommand(out outputOptions) *cobra.Command {
 	var orgID string
 	cmd := &cobra.Command{
-		Use:   "get-by-name APP_NAME INSTANCE_NAME",
-		Short: "Get app instance by app and instance name",
+		Use:   "get-by-name APP_NAME ENVIRONMENT_NAME",
+		Short: "Get app environment by app and environment name",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := newRESTClient()
@@ -4253,10 +4011,10 @@ func newAppInstanceGetByNameCommand(out outputOptions) *cobra.Command {
 			query := url.Values{}
 			addQuery(query, "orgId", orgID)
 			var result interface{}
-			if err := client.Get(cmd.Context(), escapedPath("/app-instances/by-name/%s/%s", args[0], args[1]), query, &result); err != nil {
+			if err := client.Get(cmd.Context(), escapedPath("/app-environments/by-name/%s/%s", args[0], args[1]), query, &result); err != nil {
 				return err
 			}
-			return printClientGetResult(cmd, client, out, result, instanceGetColumns)
+			return printClientGetResult(cmd, client, out, result, appEnvironmentColumns)
 		},
 	}
 	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID")
@@ -4268,10 +4026,10 @@ func newAppInstanceDeleteCommand(out outputOptions) *cobra.Command {
 	wait := waitOptions{}
 	cmd := &cobra.Command{
 		Use:   "delete ID",
-		Short: "Delete app instance",
+		Short: "Delete app environment",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := confirm(cmd, yes, "Delete app instance?"); err != nil {
+			if err := confirm(cmd, yes, "Delete app environment?"); err != nil {
 				return err
 			}
 			client, err := newRESTClient()
@@ -4283,7 +4041,7 @@ func newAppInstanceDeleteCommand(out outputOptions) *cobra.Command {
 				query.Set("force", strconv.FormatBool(force))
 			}
 			var result interface{}
-			if err := client.Delete(cmd.Context(), "/app-instances/"+url.PathEscape(args[0]), query, &result); err != nil {
+			if err := client.Delete(cmd.Context(), "/app-environments/"+url.PathEscape(args[0]), query, &result); err != nil {
 				return err
 			}
 			resultColumns := operationColumns
@@ -4306,7 +4064,7 @@ func newAppInstanceDeleteCommand(out outputOptions) *cobra.Command {
 func newAppInstanceSettingsCommand(out outputOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "settings",
-		Short: "Manage app instance settings",
+		Short: "Manage app environment settings",
 	}
 	cmd.AddCommand(newAppInstanceSettingsUpdateCommand(out))
 	return cmd
@@ -4316,7 +4074,7 @@ func newAppInstanceSettingsUpdateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
 	cmd := &cobra.Command{
 		Use:   "update ID",
-		Short: "Update app instance settings",
+		Short: "Update app environment settings",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			requestBody, hasBody, err := readBody(body)
@@ -4346,10 +4104,10 @@ func newAppInstanceSettingsUpdateCommand(out outputOptions) *cobra.Command {
 				return err
 			}
 			var result interface{}
-			if err := client.Put(cmd.Context(), "/app-instances/settings/"+url.PathEscape(args[0]), nil, requestBody, &result); err != nil {
+			if err := client.Put(cmd.Context(), "/app-environments/settings/"+url.PathEscape(args[0]), nil, requestBody, &result); err != nil {
 				return err
 			}
-			return printClientResult(cmd, client, out, result, instanceColumns)
+			return printClientResult(cmd, client, out, result, appEnvironmentColumns)
 		},
 	}
 	addBodyFlags(cmd, &body)
@@ -4362,7 +4120,7 @@ func newAppInstanceSettingsUpdateCommand(out outputOptions) *cobra.Command {
 func newAppInstanceCICDSettingsCommand(out outputOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cicd-settings",
-		Short: "Manage app instance CI/CD settings",
+		Short: "Manage app environment CI/CD settings",
 	}
 	cmd.AddCommand(
 		newAppInstanceCICDSettingsGetCommand(out),
@@ -4374,7 +4132,7 @@ func newAppInstanceCICDSettingsCommand(out outputOptions) *cobra.Command {
 func newAppInstanceCICDSettingsGetCommand(out outputOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get ID",
-		Short: "Get app instance CI/CD settings",
+		Short: "Get app environment CI/CD settings",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := newRESTClient()
@@ -4382,7 +4140,7 @@ func newAppInstanceCICDSettingsGetCommand(out outputOptions) *cobra.Command {
 				return err
 			}
 			var result interface{}
-			if err := client.Get(cmd.Context(), "/app-instances/cicd-settings/"+url.PathEscape(args[0]), nil, &result); err != nil {
+			if err := client.Get(cmd.Context(), "/app-environments/cicd-settings/"+url.PathEscape(args[0]), nil, &result); err != nil {
 				return err
 			}
 			return printClientResult(cmd, client, out, result, instanceCICDSettingsColumns)
@@ -4395,7 +4153,7 @@ func newAppInstanceCICDSettingsUpdateCommand(out outputOptions) *cobra.Command {
 	var ciIntegrationID, registryIntegrationID string
 	cmd := &cobra.Command{
 		Use:   "update ID",
-		Short: "Update app instance CI/CD settings",
+		Short: "Update app environment CI/CD settings",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			requestBody, hasBody, err := readBody(body)
@@ -4423,7 +4181,7 @@ func newAppInstanceCICDSettingsUpdateCommand(out outputOptions) *cobra.Command {
 				return err
 			}
 			var result interface{}
-			if err := client.Put(cmd.Context(), "/app-instances/cicd-settings/"+url.PathEscape(args[0]), nil, requestBody, &result); err != nil {
+			if err := client.Put(cmd.Context(), "/app-environments/cicd-settings/"+url.PathEscape(args[0]), nil, requestBody, &result); err != nil {
 				return err
 			}
 			return printClientResult(cmd, client, out, result, instanceCICDSettingsColumns)
@@ -4440,7 +4198,7 @@ func newAppInstanceUpgradeStackCommand(out outputOptions) *cobra.Command {
 	wait := waitOptions{}
 	cmd := &cobra.Command{
 		Use:   "upgrade-stack ID",
-		Short: "Upgrade app instance stack",
+		Short: "Upgrade app environment stack",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			requestBody, hasBody, err := readBody(body)
@@ -4455,7 +4213,7 @@ func newAppInstanceUpgradeStackCommand(out outputOptions) *cobra.Command {
 				return err
 			}
 			var result interface{}
-			if err := client.Post(cmd.Context(), "/app-instances/"+url.PathEscape(args[0])+"/actions/upgrade-stack", nil, requestBody, &result); err != nil {
+			if err := client.Post(cmd.Context(), "/app-environments/"+url.PathEscape(args[0])+"/actions/upgrade-stack", nil, requestBody, &result); err != nil {
 				return err
 			}
 			resultColumns := operationColumns
@@ -4600,7 +4358,7 @@ func buildAppStatus(ctx context.Context, client *rest.Client, appID string) (map
 	query := url.Values{"appId": []string{appID}}
 	addQuery(query, "orgId", firstScalarPath(row, "orgId", "org.id"))
 	var instancesResult interface{}
-	if err := client.Get(ctx, "/app-instances", query, &instancesResult); err != nil {
+	if err := client.Get(ctx, "/app-environments", query, &instancesResult); err != nil {
 		return nil, err
 	}
 
@@ -4642,12 +4400,12 @@ func buildInstanceStatus(ctx context.Context, client *rest.Client, instanceID st
 	row := cloneRow(base)
 	if row == nil {
 		var instance interface{}
-		if err := client.Get(ctx, "/app-instances/"+instanceID, nil, &instance); err != nil {
+		if err := client.Get(ctx, "/app-environments/"+instanceID, nil, &instance); err != nil {
 			return nil, err
 		}
 		row = cloneFirstRow(normalizeItem(instance))
 		if row == nil {
-			return nil, errors.New("app instance response did not include an item")
+			return nil, errors.New("app environment response did not include an item")
 		}
 	}
 
@@ -4883,10 +4641,10 @@ func newInstanceBuildCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "build",
 		Aliases: []string{"builds"},
-		Short:   "Manage app instance builds",
+		Short:   "Manage app environment builds",
 	}
 	addOutputFlag(cmd, &out)
-	listCmd := newInstancePaginatedListCommand("list INSTANCE_ID", "List builds", "/app-builds", buildListColumns, out)
+	listCmd := newInstancePaginatedListCommand("list ENVIRONMENT_ID", "List builds", "/app-builds", buildListColumns, out)
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get build", "/app-builds/", buildColumns, out), newBuildDeployCommand(out))
 	return cmd
@@ -4897,7 +4655,7 @@ func newInstanceDeploymentCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "deployment",
 		Aliases: []string{"deployments"},
-		Short:   "Manage app instance deployments",
+		Short:   "Manage app environment deployments",
 	}
 	addOutputFlag(cmd, &out)
 
@@ -4920,7 +4678,7 @@ func newInstanceDeploymentCommand() *cobra.Command {
 	}
 	waitCmd.Flags().Duration("timeout", 10*time.Minute, "Maximum time to wait")
 
-	listCmd := newInstancePaginatedListCommand("list INSTANCE_ID", "List deployments", "/app-deployments", deploymentListColumns, out)
+	listCmd := newInstancePaginatedListCommand("list ENVIRONMENT_ID", "List deployments", "/app-deployments", deploymentListColumns, out)
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get deployment", "/app-deployments/", deploymentColumns, out), waitCmd, newDeploymentCreateCommand(out), newDeploymentRedeployCommand(out), newAppDeploymentCancelCommand(out))
 	return cmd
@@ -4931,10 +4689,10 @@ func newInstanceBackupCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "backup",
 		Aliases: []string{"backups"},
-		Short:   "Manage app instance backups",
+		Short:   "Manage app environment backups",
 	}
 	addOutputFlag(cmd, &out)
-	listCmd := newInstanceFilteredListCommand("list INSTANCE_ID", "List backups", "/backups", backupColumns, out, true)
+	listCmd := newInstanceFilteredListCommand("list ENVIRONMENT_ID", "List backups", "/backups", backupColumns, out, true)
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get backup", "/backups/", backupColumns, out), newBackupCreateCommand(out))
 	return cmd
@@ -4945,10 +4703,10 @@ func newInstanceImportCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "import",
 		Aliases: []string{"imports"},
-		Short:   "Manage app instance imports",
+		Short:   "Manage app environment imports",
 	}
 	addOutputFlag(cmd, &out)
-	listCmd := newInstanceFilteredListCommand("list INSTANCE_ID", "List imports", "/imports", importListColumns, out, false)
+	listCmd := newInstanceFilteredListCommand("list ENVIRONMENT_ID", "List imports", "/imports", importListColumns, out, false)
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get import", "/imports/", importColumns, out), newImportCreateCommand(out))
 	return cmd
@@ -5038,7 +4796,7 @@ func newAppServiceCommand(use string, aliases []string, short string, mode insta
 			if mode == instanceFilterArg {
 				instanceID = args[0]
 			}
-			if err := requireFlag(instanceID, "--instance"); err != nil {
+			if err := requireFlag(instanceID, "--environment"); err != nil {
 				return err
 			}
 			query := url.Values{"appInstanceId": []string{instanceID}}
@@ -5054,7 +4812,7 @@ func newAppServiceCommand(use string, aliases []string, short string, mode insta
 		},
 	}
 	if mode == instanceFilterFlag {
-		listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
+		listCmd.Flags().StringVarP(&instanceID, "environment", "e", "", "App environment ID")
 	}
 	defaultToList(cmd, listCmd)
 
@@ -5576,7 +5334,7 @@ func newAppRouteCommand(use string, aliases []string, short string, mode instanc
 			if mode == instanceFilterArg {
 				instanceID = args[0]
 			}
-			if err := requireFlag(instanceID, "--instance"); err != nil {
+			if err := requireFlag(instanceID, "--environment"); err != nil {
 				return err
 			}
 			query := url.Values{"appInstanceId": []string{instanceID}}
@@ -5592,7 +5350,7 @@ func newAppRouteCommand(use string, aliases []string, short string, mode instanc
 		},
 	}
 	if mode == instanceFilterFlag {
-		listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
+		listCmd.Flags().StringVarP(&instanceID, "environment", "e", "", "App environment ID")
 	}
 	defaultToList(cmd, listCmd)
 
@@ -5627,7 +5385,7 @@ func newAppPortCommand(use string, aliases []string, short string, mode instance
 			if mode == instanceFilterArg {
 				instanceID = args[0]
 			}
-			if err := requireFlag(instanceID, "--instance"); err != nil {
+			if err := requireFlag(instanceID, "--environment"); err != nil {
 				return err
 			}
 			query := url.Values{"appInstanceId": []string{instanceID}}
@@ -5643,7 +5401,7 @@ func newAppPortCommand(use string, aliases []string, short string, mode instance
 		},
 	}
 	if mode == instanceFilterFlag {
-		listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
+		listCmd.Flags().StringVarP(&instanceID, "environment", "e", "", "App environment ID")
 	}
 	defaultToList(cmd, listCmd)
 
@@ -5694,7 +5452,7 @@ func newAppCertCommand(use string, aliases []string, short string, mode instance
 	}
 	listCmd.Flags().StringVar(&orgID, "org", "", "Organization ID")
 	if mode == instanceFilterFlag {
-		listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
+		listCmd.Flags().StringVarP(&instanceID, "environment", "e", "", "App environment ID")
 	}
 	listCmd.Flags().StringVar(&routeID, "route", "", "App route ID")
 	listCmd.Flags().StringVar(&host, "host", "", "Certificate host")
@@ -5731,7 +5489,7 @@ func filterCerts(value interface{}, instanceID string, routeID string, host stri
 
 func instanceScopedListUse(base string, mode instanceFilterMode) string {
 	if mode == instanceFilterArg {
-		return base + " INSTANCE_ID"
+		return base + " ENVIRONMENT_ID"
 	}
 	return base
 }
@@ -5813,7 +5571,7 @@ func newAppRouteCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&serviceID, "service", "", "App service ID")
 	cmd.Flags().StringVar(&host, "host", "", "Route host")
 	cmd.Flags().IntVar(&port, "port", 0, "Service port")
-	cmd.Flags().BoolVar(&main, "main", false, "Make route the app instance main route")
+	cmd.Flags().BoolVar(&main, "main", false, "Make route the app environment main route")
 	cmd.Flags().BoolVar(&primary, "primary", false, "Make route primary for the service endpoint")
 	cmd.Flags().BoolVar(&letsencrypt, "letsencrypt", false, "Request Let's Encrypt certificate")
 	cmd.Flags().StringVar(&path, "path", "", "Route path")
@@ -5922,7 +5680,7 @@ func newBuildCommand() *cobra.Command {
 		Use:   "list",
 		Short: "List builds",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := requireFlag(instanceID, "--instance"); err != nil {
+			if err := requireFlag(instanceID, "--environment"); err != nil {
 				return err
 			}
 			query := url.Values{"appInstanceId": []string{instanceID}}
@@ -5943,7 +5701,7 @@ func newBuildCommand() *cobra.Command {
 			return printClientResult(cmd, client, out, result, buildListColumns)
 		},
 	}
-	listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
+	listCmd.Flags().StringVarP(&instanceID, "environment", "e", "", "App environment ID")
 	listCmd.Flags().IntVar(&page, "page", 0, "Page number")
 	listCmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
 	defaultToList(cmd, listCmd)
@@ -6059,7 +5817,7 @@ func newDeploymentCommand() *cobra.Command {
 		Use:   "list",
 		Short: "List deployments",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := requireFlag(instanceID, "--instance"); err != nil {
+			if err := requireFlag(instanceID, "--environment"); err != nil {
 				return err
 			}
 			query := url.Values{"appInstanceId": []string{instanceID}}
@@ -6080,7 +5838,7 @@ func newDeploymentCommand() *cobra.Command {
 			return printClientResult(cmd, client, out, result, deploymentListColumns)
 		},
 	}
-	listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
+	listCmd.Flags().StringVarP(&instanceID, "environment", "e", "", "App environment ID")
 	listCmd.Flags().IntVar(&page, "page", 0, "Page number")
 	listCmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
 	defaultToList(cmd, listCmd)
@@ -6420,7 +6178,7 @@ func newTaskCommand() *cobra.Command {
 	listCmd.Flags().StringVar(&names, "names", "", "Comma-separated exact task names")
 	listCmd.Flags().StringVar(&search, "search", "", "Search query")
 	listCmd.Flags().StringVar(&appID, "app", "", "App ID")
-	listCmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
+	listCmd.Flags().StringVarP(&instanceID, "environment", "e", "", "App environment ID")
 	listCmd.Flags().StringVar(&stackID, "stack", "", "Stack ID")
 	listCmd.Flags().StringVar(&databaseID, "database", "", "Database ID")
 	listCmd.Flags().StringVar(&clusterID, "cluster", "", "Cluster ID")
@@ -6898,7 +6656,7 @@ func newFilteredListCommand(use string, short string, path string, columns []str
 		Short: short,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if instanceID == "" && serviceID == "" && databaseID == "" && databaseDBID == "" {
-				return errors.New("one of --instance, --service, --database, or --database-db is required")
+				return errors.New("one of --environment, --service, --database, or --database-db is required")
 			}
 			query := url.Values{}
 			addQuery(query, "appInstanceId", instanceID)
@@ -6919,7 +6677,7 @@ func newFilteredListCommand(use string, short string, path string, columns []str
 			return printClientResult(cmd, client, out, result, columns)
 		},
 	}
-	cmd.Flags().StringVarP(&instanceID, "instance", "i", "", "App instance ID")
+	cmd.Flags().StringVarP(&instanceID, "environment", "e", "", "App environment ID")
 	cmd.Flags().StringVar(&serviceID, "service", "", "App service ID")
 	cmd.Flags().StringVar(&databaseID, "database", "", "Database ID")
 	cmd.Flags().StringVar(&databaseDBID, "database-db", "", "DB ID")
@@ -7028,7 +6786,7 @@ func enrichInstancesSummary(ctx context.Context, client *rest.Client, value inte
 	}
 
 	var result interface{}
-	if err := client.Get(ctx, "/app-instances", query, &result); err != nil {
+	if err := client.Get(ctx, "/app-environments", query, &result); err != nil {
 		return
 	}
 	instances := normalizeItems(result)
@@ -7076,7 +6834,7 @@ func enrichAppStacksFromInstances(ctx context.Context, client *rest.Client, valu
 	}
 
 	var result interface{}
-	if err := client.Get(ctx, "/app-instances", query, &result); err != nil {
+	if err := client.Get(ctx, "/app-environments", query, &result); err != nil {
 		return
 	}
 	instances := responseRows(result)

@@ -371,10 +371,10 @@ func TestImportPrefersMirrorAndFallsBackToServerAfterDefinitiveFailure(t *testin
 				status = "ERRORED"
 			}
 			writeTargetExecutionJSON(t, w, asyncTestImport(id, 20, 10, status, createdAt.(time.Time)))
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-instances/20":
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-environments/20":
 			writeTargetExecutionJSON(t, w, TargetAppInstance{
 				ID: 20, Name: "dev", Status: "OK", AppID: 1,
-				ClusterID: 2, EnvID: 3, StackID: 4, StackRevID: 5,
+				ClusterID: 2, EnvironmentType: "prod", StackID: 4, StackRevID: 5,
 			})
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())

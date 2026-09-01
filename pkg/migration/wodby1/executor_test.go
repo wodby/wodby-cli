@@ -1306,7 +1306,7 @@ func TestMigrationExecutorRunsMinimalCustomerLifecycle(t *testing.T) {
 	}
 	instance := TargetAppInstance{
 		ID: 20, Name: "prod", Title: "Production", Status: "OK",
-		AppID: 10, ClusterID: 3, EnvID: 4, StackID: 5, StackRevID: 12,
+		AppID: 10, ClusterID: 3, EnvironmentType: "prod", StackID: 5, StackRevID: 12,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	service := TargetAppService{
@@ -1346,9 +1346,9 @@ func TestMigrationExecutorRunsMinimalCustomerLifecycle(t *testing.T) {
 			}
 			appCreated = true
 			writeTargetExecutionJSON(t, w, app)
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-instances":
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-environments":
 			writeTargetExecutionJSON(t, w, []TargetAppInstance{instance})
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-instances/20":
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-environments/20":
 			writeTargetExecutionJSON(t, w, instance)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-services":
 			writeTargetExecutionJSON(t, w, []TargetAppService{service})
@@ -1427,7 +1427,7 @@ func TestMigrationExecutorRunsMinimalCustomerLifecycle(t *testing.T) {
 		Apps: []AppPlan{{
 			SourceUUID: "app-1", Name: "demo",
 			Instances: []InstancePlan{{
-				SourceUUID: "instance-1", Name: "prod", TargetEnvID: 4,
+				SourceUUID: "instance-1", Name: "prod", TargetEnvID: 1, TargetEnvType: "prod",
 				Stack: StackPlan{Target: "drupal", TargetID: 5, TargetRevID: 12},
 			}},
 		}},
@@ -1571,14 +1571,14 @@ func TestEnsureAppAndInstancesReusesExplicitTargetApp(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/apps/101":
 			writeTargetExecutionJSON(t, w, TargetApp{ID: 101, Name: "destination", Status: "OK", OrgID: 1})
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-instances":
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-environments":
 			writeTargetExecutionJSON(t, w, []TargetAppInstance{})
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/app-instances":
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/app-environments":
 			body := decodeTargetExecutionObject(t, r)
 			assertTargetExecutionNumber(t, body, "appId", 101)
 			assertTargetExecutionNumber(t, body, "stackRevId", 12)
 			writeTargetExecutionJSON(t, w, TargetAppInstance{
-				ID: 201, Name: "prod", AppID: 101, ClusterID: 3, EnvID: 4,
+				ID: 201, Name: "prod", AppID: 101, ClusterID: 3, EnvironmentType: "prod",
 				StackID: 5, StackRevID: 12,
 			})
 		default:
@@ -1609,7 +1609,7 @@ func TestEnsureAppAndInstancesReusesExplicitTargetApp(t *testing.T) {
 	plan := Plan{
 		Target: PlanTarget{OrgID: 1, ClusterID: 3, AppID: 101, AppName: "destination"},
 		Apps: []AppPlan{{Instances: []InstancePlan{{
-			SourceUUID: "instance-1", Name: "prod", TargetEnvID: 4,
+			SourceUUID: "instance-1", Name: "prod", TargetEnvID: 1, TargetEnvType: "prod",
 			Stack: StackPlan{TargetID: 5, TargetRevID: 12},
 		}}}},
 	}
@@ -1638,14 +1638,14 @@ func TestWaitAppInstanceOKWaitsForImportFinalization(t *testing.T) {
 	statuses := []string{"IMPORTING", "DEPLOYING", "OK"}
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/v1/app-instances/20" {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/app-environments/20" {
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
 		status := statuses[requests]
 		requests++
 		writeTargetExecutionJSON(t, w, TargetAppInstance{
 			ID: 20, Name: "dev", Status: status, AppID: 10,
-			ClusterID: 3, EnvID: 4, StackID: 5, StackRevID: 6,
+			ClusterID: 3, EnvironmentType: "prod", StackID: 5, StackRevID: 6,
 		})
 	}))
 	defer server.Close()
@@ -1777,10 +1777,10 @@ func TestEnsureTechnicalRouteAuthsCreatesScopedWodby2Auth(t *testing.T) {
 				ID: 41, AppInstanceID: 20, AppServiceID: input.AppServiceID,
 				AppRouteID: input.AppRouteID, Login: input.Login, Realm: input.Realm,
 			})
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-instances/20":
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-environments/20":
 			writeTargetExecutionJSON(t, w, TargetAppInstance{
 				ID: 20, Name: "dev", Status: "OK", AppID: 50, ClusterID: 60,
-				EnvID: 70, StackID: 80, StackRevID: 90,
+				EnvironmentType: "prod", StackID: 80, StackRevID: 90,
 			})
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())

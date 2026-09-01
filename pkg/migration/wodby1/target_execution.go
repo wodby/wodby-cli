@@ -822,21 +822,21 @@ type TargetApp struct {
 }
 
 type TargetAppInstance struct {
-	ID             int       `json:"id"`
-	Name           string    `json:"name"`
-	Title          string    `json:"title"`
-	Status         string    `json:"status"`
-	MainDomain     *string   `json:"mainDomain,omitempty"`
-	AppID          int       `json:"appId"`
-	ClusterID      int       `json:"clusterId"`
-	EnvID          int       `json:"envId"`
-	StackID        int       `json:"stackId"`
-	StackRevID     int       `json:"stackRevId"`
-	StackName      string    `json:"stackName"`
-	StackRevNumber int       `json:"stackRevNumber"`
-	StackVersion   string    `json:"stackVersion"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
+	ID              int       `json:"id"`
+	Name            string    `json:"name"`
+	Title           string    `json:"title"`
+	Status          string    `json:"status"`
+	MainDomain      *string   `json:"mainDomain,omitempty"`
+	AppID           int       `json:"appId"`
+	ClusterID       int       `json:"clusterId"`
+	EnvironmentType string    `json:"environmentType"`
+	StackID         int       `json:"stackId"`
+	StackRevID      int       `json:"stackRevId"`
+	StackName       string    `json:"stackName"`
+	StackRevNumber  int       `json:"stackRevNumber"`
+	StackVersion    string    `json:"stackVersion"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
 }
 
 // TargetCreateAppInput deliberately has no domain or services field. The
@@ -846,12 +846,12 @@ type TargetCreateAppInput struct {
 	OrgID                  int    `json:"orgId"`
 	Name                   string `json:"name"`
 	Title                  string `json:"title,omitempty"`
-	InstanceName           string `json:"instanceName"`
-	InstanceTitle          string `json:"instanceTitle,omitempty"`
+	InstanceName           string `json:"environmentName"`
+	InstanceTitle          string `json:"environmentTitle,omitempty"`
 	ProjectID              *int   `json:"projectId,omitempty"`
 	StackRevID             int    `json:"stackRevId"`
 	ClusterID              int    `json:"clusterId"`
-	EnvID                  int    `json:"envId"`
+	EnvironmentType        string `json:"environmentType"`
 	CIIntegrationID        *int   `json:"ciIntegrationId,omitempty"`
 	RegistryIntegrationID  *int   `json:"registryIntegrationId,omitempty"`
 	DeferInitialDeployment bool   `json:"deferInitialDeployment,omitempty"`
@@ -861,11 +861,11 @@ type TargetCreateAppInput struct {
 // applies its server-side technical-domain and stack-service defaults.
 type TargetCreateAppInstanceInput struct {
 	AppID                  int    `json:"appId"`
-	InstanceName           string `json:"instanceName"`
-	InstanceTitle          string `json:"instanceTitle,omitempty"`
+	InstanceName           string `json:"environmentName"`
+	InstanceTitle          string `json:"environmentTitle,omitempty"`
 	StackRevID             int    `json:"stackRevId"`
 	ClusterID              int    `json:"clusterId"`
-	EnvID                  int    `json:"envId"`
+	EnvironmentType        string `json:"environmentType"`
 	CIIntegrationID        *int   `json:"ciIntegrationId,omitempty"`
 	RegistryIntegrationID  *int   `json:"registryIntegrationId,omitempty"`
 	DeferInitialDeployment bool   `json:"deferInitialDeployment,omitempty"`
@@ -1825,7 +1825,7 @@ func (c *TargetClient) CreateAppInstance(ctx context.Context, input TargetCreate
 		return TargetAppInstance{}, err
 	}
 	var item TargetAppInstance
-	if err := c.client.Post(ctx, "/app-instances", nil, input, &item); err != nil {
+	if err := c.client.Post(ctx, "/app-environments", nil, input, &item); err != nil {
 		return TargetAppInstance{}, errors.Wrap(err, "create target Wodby 2 app instance")
 	}
 	if err := validateTargetAppInstance(item, input.AppID); err != nil {
@@ -1834,10 +1834,10 @@ func (c *TargetClient) CreateAppInstance(ctx context.Context, input TargetCreate
 	if item.Name != input.InstanceName {
 		return TargetAppInstance{}, errors.Errorf("created target Wodby 2 app instance name %q does not exactly match %q", item.Name, input.InstanceName)
 	}
-	if item.ClusterID != input.ClusterID || item.EnvID != input.EnvID || item.StackRevID != input.StackRevID {
+	if item.ClusterID != input.ClusterID || !strings.EqualFold(item.EnvironmentType, input.EnvironmentType) || item.StackRevID != input.StackRevID {
 		return TargetAppInstance{}, errors.Errorf(
-			"created target Wodby 2 app instance relationships do not match request (cluster=%d/%d env=%d/%d stackRev=%d/%d)",
-			item.ClusterID, input.ClusterID, item.EnvID, input.EnvID, item.StackRevID, input.StackRevID,
+			"created target Wodby 2 app environment relationships do not match request (cluster=%d/%d environmentType=%s/%s stackRev=%d/%d)",
+			item.ClusterID, input.ClusterID, item.EnvironmentType, input.EnvironmentType, item.StackRevID, input.StackRevID,
 		)
 	}
 	return item, nil
@@ -1848,7 +1848,7 @@ func (c *TargetClient) GetAppInstance(ctx context.Context, appInstanceID int) (T
 		return TargetAppInstance{}, err
 	}
 	var item TargetAppInstance
-	if err := c.client.Get(ctx, "/app-instances/"+strconv.Itoa(appInstanceID), nil, &item); err != nil {
+	if err := c.client.Get(ctx, "/app-environments/"+strconv.Itoa(appInstanceID), nil, &item); err != nil {
 		return TargetAppInstance{}, errors.Wrap(err, "get target Wodby 2 app instance")
 	}
 	if item.ID != appInstanceID {
@@ -1887,7 +1887,7 @@ func (c *TargetClient) ListOrgAppInstances(ctx context.Context, orgID int) ([]Ta
 
 func (c *TargetClient) listAppInstances(ctx context.Context, query url.Values, expectedAppID int) ([]TargetAppInstance, error) {
 	items := []TargetAppInstance{}
-	if err := c.client.Get(ctx, "/app-instances", query, &items); err != nil {
+	if err := c.client.Get(ctx, "/app-environments", query, &items); err != nil {
 		return nil, errors.Wrap(err, "list target Wodby 2 app instances")
 	}
 	for _, item := range items {
@@ -2822,7 +2822,6 @@ func validateTargetCreateAppInput(input TargetCreateAppInput) error {
 		"organization":   input.OrgID,
 		"stack revision": input.StackRevID,
 		"cluster":        input.ClusterID,
-		"environment":    input.EnvID,
 	} {
 		if err := targetRequirePositiveID(label, id); err != nil {
 			return err
@@ -2830,6 +2829,9 @@ func validateTargetCreateAppInput(input TargetCreateAppInput) error {
 	}
 	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.InstanceName) == "" {
 		return errors.New("target app and initial instance names are required")
+	}
+	if err := validateTargetEnvironmentType(input.EnvironmentType); err != nil {
+		return err
 	}
 	if err := targetValidateOptionalPositiveID("project", input.ProjectID); err != nil {
 		return err
@@ -2845,7 +2847,6 @@ func validateTargetCreateAppInstanceInput(input TargetCreateAppInstanceInput) er
 		"app":            input.AppID,
 		"stack revision": input.StackRevID,
 		"cluster":        input.ClusterID,
-		"environment":    input.EnvID,
 	} {
 		if err := targetRequirePositiveID(label, id); err != nil {
 			return err
@@ -2853,6 +2854,9 @@ func validateTargetCreateAppInstanceInput(input TargetCreateAppInstanceInput) er
 	}
 	if strings.TrimSpace(input.InstanceName) == "" {
 		return errors.New("target app instance name is required")
+	}
+	if err := validateTargetEnvironmentType(input.EnvironmentType); err != nil {
+		return err
 	}
 	if err := targetValidateOptionalNonNegativeID("CI integration", input.CIIntegrationID); err != nil {
 		return err
@@ -2881,7 +2885,6 @@ func validateTargetAppInstance(item TargetAppInstance, appID int) error {
 		"app instance":   item.ID,
 		"app":            item.AppID,
 		"cluster":        item.ClusterID,
-		"environment":    item.EnvID,
 		"stack":          item.StackID,
 		"stack revision": item.StackRevID,
 	} {
@@ -2895,7 +2898,19 @@ func validateTargetAppInstance(item TargetAppInstance, appID int) error {
 	if strings.TrimSpace(item.Name) == "" {
 		return errors.Errorf("target Wodby 2 app instance ID %d returned an empty name", item.ID)
 	}
+	if err := validateTargetEnvironmentType(item.EnvironmentType); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateTargetEnvironmentType(value string) error {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "prod", "test", "staging", "dev", "feature":
+		return nil
+	default:
+		return errors.Errorf("invalid target app environment type %q", value)
+	}
 }
 
 func validateTargetAppService(item TargetAppService, appInstanceID int) error {
@@ -3511,7 +3526,7 @@ func (c *TargetClient) DeleteAppInstance(ctx context.Context, appInstanceID int)
 		return TargetOperationResult{}, err
 	}
 	var result TargetOperationResult
-	if err := c.client.Delete(ctx, "/app-instances/"+strconv.Itoa(appInstanceID), nil, &result); err != nil {
+	if err := c.client.Delete(ctx, "/app-environments/"+strconv.Itoa(appInstanceID), nil, &result); err != nil {
 		return TargetOperationResult{}, errors.Wrap(err, "delete target Wodby 2 app instance")
 	}
 	if err := targetValidateOptionalPositiveID("app instance deletion task", result.TaskID); err != nil {

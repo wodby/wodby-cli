@@ -28,12 +28,16 @@ const (
 	TargetRoutePathExact      = "EXACT"
 	TargetRouteTLSModeCustom  = "CUSTOM"
 
-	TargetRouteSettingHTTPSRedirect   = "HTTPS_REDIRECT"
-	TargetRouteSettingNoIndex         = "NO_INDEX"
-	TargetRouteSettingRequestBodySize = "REQUEST_BODY_SIZE"
-	TargetRouteSettingSessionAffinity = "SESSION_AFFINITY"
-	TargetRouteSettingPathRewrite     = "PATH_REWRITE"
-	TargetRouteSettingHSTS            = "HSTS"
+	TargetRouteSettingHTTPSRedirect         = "HTTPS_REDIRECT"
+	TargetRouteSettingNoIndex               = "NO_INDEX"
+	TargetRouteSettingRequestBodySize       = "REQUEST_BODY_SIZE"
+	TargetRouteSettingSessionAffinity       = "SESSION_AFFINITY"
+	TargetRouteSettingPathRewrite           = "PATH_REWRITE"
+	TargetRouteSettingHSTS                  = "HSTS"
+	TargetRouteSettingRequestTimeout        = "REQUEST_TIMEOUT"
+	TargetRouteSettingBackendRequestTimeout = "BACKEND_REQUEST_TIMEOUT"
+	TargetRouteSettingRateLimitPerIP        = "RATE_LIMIT_PER_IP"
+	TargetRouteSettingRateLimitTotal        = "RATE_LIMIT_TOTAL"
 
 	TargetRouteSettingHSTSEnabled           = "enabled"
 	TargetRouteSettingHSTSIncludeSubdomains = "include_subdomains"
@@ -1826,13 +1830,13 @@ func (c *TargetClient) CreateAppInstance(ctx context.Context, input TargetCreate
 	}
 	var item TargetAppInstance
 	if err := c.client.Post(ctx, "/app-environments", nil, input, &item); err != nil {
-		return TargetAppInstance{}, errors.Wrap(err, "create target Wodby 2 app instance")
+		return TargetAppInstance{}, errors.Wrap(err, "create target Wodby 2 app environment")
 	}
 	if err := validateTargetAppInstance(item, input.AppID); err != nil {
 		return TargetAppInstance{}, err
 	}
 	if item.Name != input.InstanceName {
-		return TargetAppInstance{}, errors.Errorf("created target Wodby 2 app instance name %q does not exactly match %q", item.Name, input.InstanceName)
+		return TargetAppInstance{}, errors.Errorf("created target Wodby 2 app environment name %q does not exactly match %q", item.Name, input.InstanceName)
 	}
 	if item.ClusterID != input.ClusterID || !strings.EqualFold(item.EnvironmentType, input.EnvironmentType) || item.StackRevID != input.StackRevID {
 		return TargetAppInstance{}, errors.Errorf(
@@ -1844,15 +1848,15 @@ func (c *TargetClient) CreateAppInstance(ctx context.Context, input TargetCreate
 }
 
 func (c *TargetClient) GetAppInstance(ctx context.Context, appInstanceID int) (TargetAppInstance, error) {
-	if err := targetRequirePositiveID("app instance", appInstanceID); err != nil {
+	if err := targetRequirePositiveID("app environment", appInstanceID); err != nil {
 		return TargetAppInstance{}, err
 	}
 	var item TargetAppInstance
 	if err := c.client.Get(ctx, "/app-environments/"+strconv.Itoa(appInstanceID), nil, &item); err != nil {
-		return TargetAppInstance{}, errors.Wrap(err, "get target Wodby 2 app instance")
+		return TargetAppInstance{}, errors.Wrap(err, "get target Wodby 2 app environment")
 	}
 	if item.ID != appInstanceID {
-		return TargetAppInstance{}, targetUnexpectedID("app instance", item.ID, appInstanceID)
+		return TargetAppInstance{}, targetUnexpectedID("app environment", item.ID, appInstanceID)
 	}
 	if err := validateTargetAppInstance(item, 0); err != nil {
 		return TargetAppInstance{}, err
@@ -1873,7 +1877,7 @@ func (c *TargetClient) ListAppInstances(ctx context.Context, orgID, appID int) (
 	}, appID)
 }
 
-// ListOrgAppInstances returns every app instance visible to the caller in an
+// ListOrgAppInstances returns every app environment visible to the caller in an
 // organization. It lets preflight correlate generated migration stacks with
 // renamed target apps without issuing one request per app.
 func (c *TargetClient) ListOrgAppInstances(ctx context.Context, orgID int) ([]TargetAppInstance, error) {
@@ -1888,14 +1892,14 @@ func (c *TargetClient) ListOrgAppInstances(ctx context.Context, orgID int) ([]Ta
 func (c *TargetClient) listAppInstances(ctx context.Context, query url.Values, expectedAppID int) ([]TargetAppInstance, error) {
 	items := []TargetAppInstance{}
 	if err := c.client.Get(ctx, "/app-environments", query, &items); err != nil {
-		return nil, errors.Wrap(err, "list target Wodby 2 app instances")
+		return nil, errors.Wrap(err, "list target Wodby 2 app environments")
 	}
 	for _, item := range items {
 		if err := validateTargetAppInstance(item, expectedAppID); err != nil {
 			return nil, err
 		}
 		if expectedAppID == 0 && item.AppID <= 0 {
-			return nil, errors.New("target app instance returned an invalid app ID")
+			return nil, errors.New("target app environment returned an invalid app ID")
 		}
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -1911,7 +1915,7 @@ func (c *TargetClient) listAppInstances(ctx context.Context, query url.Values, e
 // organization and detects duplicate exact matches before resume adopts one.
 func (c *TargetClient) FindAppInstanceExact(ctx context.Context, orgID int, appName, instanceName string) (TargetAppInstance, bool, error) {
 	if strings.TrimSpace(instanceName) == "" {
-		return TargetAppInstance{}, false, errors.New("target app instance name is required")
+		return TargetAppInstance{}, false, errors.New("target app environment name is required")
 	}
 	app, found, err := c.FindAppExact(ctx, orgID, appName)
 	if err != nil || !found {
@@ -1933,12 +1937,12 @@ func (c *TargetClient) FindAppInstanceExact(ctx context.Context, orgID int, appN
 	case 1:
 		return matches[0], true, nil
 	default:
-		return TargetAppInstance{}, false, &TargetAmbiguousMatchError{Resource: "app instance", Name: appName + "/" + instanceName, Count: len(matches)}
+		return TargetAppInstance{}, false, &TargetAmbiguousMatchError{Resource: "app environment", Name: appName + "/" + instanceName, Count: len(matches)}
 	}
 }
 
 func (c *TargetClient) ListAppServices(ctx context.Context, appInstanceID int) ([]TargetAppService, error) {
-	query, err := targetRequiredQueryID("appInstanceId", "app instance", appInstanceID)
+	query, err := targetRequiredQueryID("appInstanceId", "app environment", appInstanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -2210,7 +2214,7 @@ func (c *TargetClient) UpdateAppServiceCronSchedule(ctx context.Context, schedul
 }
 
 func (c *TargetClient) ListAppPorts(ctx context.Context, appInstanceID int) ([]TargetAppPort, error) {
-	query, err := targetRequiredQueryID("appInstanceId", "app instance", appInstanceID)
+	query, err := targetRequiredQueryID("appInstanceId", "app environment", appInstanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -2259,7 +2263,7 @@ func (c *TargetClient) ListMatchingCustomCerts(ctx context.Context, orgID int, h
 }
 
 func (c *TargetClient) ListAppRoutes(ctx context.Context, appInstanceID int) ([]TargetAppRoute, error) {
-	query, err := targetRequiredQueryID("appInstanceId", "app instance", appInstanceID)
+	query, err := targetRequiredQueryID("appInstanceId", "app environment", appInstanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -2361,7 +2365,7 @@ func (c *TargetClient) SetAppRouteSetting(ctx context.Context, routeID int, name
 }
 
 func (c *TargetClient) ListAppAuths(ctx context.Context, appInstanceID int) ([]TargetAppAuth, error) {
-	query, err := targetRequiredQueryID("appInstanceId", "app instance", appInstanceID)
+	query, err := targetRequiredQueryID("appInstanceId", "app environment", appInstanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -2434,7 +2438,7 @@ func (c *TargetClient) ListImports(ctx context.Context, filters TargetImportFilt
 		label     string
 		id        *int
 	}{
-		{"appInstanceId", "app instance", filters.AppInstanceID},
+		{"appInstanceId", "app environment", filters.AppInstanceID},
 		{"appServiceId", "app service", filters.AppServiceID},
 		{"databaseId", "database", filters.DatabaseID},
 		{"databaseDbId", "database schema", filters.DatabaseDBID},
@@ -2535,10 +2539,10 @@ func (c *TargetClient) GetTask(ctx context.Context, taskID int) (TargetTask, err
 		return TargetTask{}, err
 	}
 	for label, id := range map[string]*int{
-		"organization": item.OrgID,
-		"app":          item.AppID,
-		"app instance": item.AppInstanceID,
-		"cluster":      item.ClusterID,
+		"organization":    item.OrgID,
+		"app":             item.AppID,
+		"app environment": item.AppInstanceID,
+		"cluster":         item.ClusterID,
 	} {
 		if err := targetValidateOptionalPositiveID(label, id); err != nil {
 			return TargetTask{}, err
@@ -2828,7 +2832,7 @@ func validateTargetCreateAppInput(input TargetCreateAppInput) error {
 		}
 	}
 	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.InstanceName) == "" {
-		return errors.New("target app and initial instance names are required")
+		return errors.New("target app and initial app environment names are required")
 	}
 	if err := validateTargetEnvironmentType(input.EnvironmentType); err != nil {
 		return err
@@ -2853,7 +2857,7 @@ func validateTargetCreateAppInstanceInput(input TargetCreateAppInstanceInput) er
 		}
 	}
 	if strings.TrimSpace(input.InstanceName) == "" {
-		return errors.New("target app instance name is required")
+		return errors.New("target app environment name is required")
 	}
 	if err := validateTargetEnvironmentType(input.EnvironmentType); err != nil {
 		return err
@@ -2882,21 +2886,21 @@ func validateTargetApp(item TargetApp, orgID int) error {
 
 func validateTargetAppInstance(item TargetAppInstance, appID int) error {
 	for label, id := range map[string]int{
-		"app instance":   item.ID,
-		"app":            item.AppID,
-		"cluster":        item.ClusterID,
-		"stack":          item.StackID,
-		"stack revision": item.StackRevID,
+		"app environment": item.ID,
+		"app":             item.AppID,
+		"cluster":         item.ClusterID,
+		"stack":           item.StackID,
+		"stack revision":  item.StackRevID,
 	} {
 		if err := targetRequirePositiveID(label, id); err != nil {
 			return err
 		}
 	}
 	if appID > 0 && item.AppID != appID {
-		return errors.Errorf("target Wodby 2 app instance ID %d belongs to app ID %d, expected %d", item.ID, item.AppID, appID)
+		return errors.Errorf("target Wodby 2 app environment ID %d belongs to app ID %d, expected %d", item.ID, item.AppID, appID)
 	}
 	if strings.TrimSpace(item.Name) == "" {
-		return errors.Errorf("target Wodby 2 app instance ID %d returned an empty name", item.ID)
+		return errors.Errorf("target Wodby 2 app environment ID %d returned an empty name", item.ID)
 	}
 	if err := validateTargetEnvironmentType(item.EnvironmentType); err != nil {
 		return err
@@ -2916,7 +2920,7 @@ func validateTargetEnvironmentType(value string) error {
 func validateTargetAppService(item TargetAppService, appInstanceID int) error {
 	for label, id := range map[string]int{
 		"app service":      item.ID,
-		"app instance":     item.AppInstanceID,
+		"app environment":  item.AppInstanceID,
 		"service revision": item.ServiceRevID,
 	} {
 		if err := targetRequirePositiveID(label, id); err != nil {
@@ -2924,7 +2928,7 @@ func validateTargetAppService(item TargetAppService, appInstanceID int) error {
 		}
 	}
 	if appInstanceID > 0 && item.AppInstanceID != appInstanceID {
-		return errors.Errorf("target Wodby 2 app service ID %d belongs to app instance ID %d, expected %d", item.ID, item.AppInstanceID, appInstanceID)
+		return errors.Errorf("target Wodby 2 app service ID %d belongs to app environment ID %d, expected %d", item.ID, item.AppInstanceID, appInstanceID)
 	}
 	if err := targetValidateOptionalPositiveID("parent app service", item.ParentAppServiceID); err != nil {
 		return err
@@ -3108,10 +3112,10 @@ func validateTargetAppServiceSetting(item TargetAppServiceSetting, appServiceID 
 
 func validateTargetAppPort(item TargetAppPort, appInstanceID int) error {
 	for label, id := range map[string]int{
-		"app port":     item.ID,
-		"app endpoint": item.AppEndpointID,
-		"app instance": item.AppInstanceID,
-		"app service":  item.AppServiceID,
+		"app port":        item.ID,
+		"app endpoint":    item.AppEndpointID,
+		"app environment": item.AppInstanceID,
+		"app service":     item.AppServiceID,
 	} {
 		if err := targetRequirePositiveID(label, id); err != nil {
 			return err
@@ -3121,7 +3125,7 @@ func validateTargetAppPort(item TargetAppPort, appInstanceID int) error {
 		return errors.Errorf("target app port ID %d returned invalid port number %d", item.ID, item.Number)
 	}
 	if appInstanceID > 0 && item.AppInstanceID != appInstanceID {
-		return errors.Errorf("target app port ID %d belongs to app instance ID %d, expected %d", item.ID, item.AppInstanceID, appInstanceID)
+		return errors.Errorf("target app port ID %d belongs to app environment ID %d, expected %d", item.ID, item.AppInstanceID, appInstanceID)
 	}
 	return nil
 }
@@ -3185,17 +3189,17 @@ func validateTargetRouteEnums(pathType, action *string) error {
 
 func validateTargetAppRoute(item TargetAppRoute, appInstanceID int) error {
 	for label, id := range map[string]int{
-		"app route":    item.ID,
-		"app instance": item.AppInstanceID,
-		"app service":  item.AppServiceID,
-		"app port":     item.PortID,
+		"app route":       item.ID,
+		"app environment": item.AppInstanceID,
+		"app service":     item.AppServiceID,
+		"app port":        item.PortID,
 	} {
 		if err := targetRequirePositiveID(label, id); err != nil {
 			return err
 		}
 	}
 	if appInstanceID > 0 && item.AppInstanceID != appInstanceID {
-		return errors.Errorf("target app route ID %d belongs to app instance ID %d, expected %d", item.ID, item.AppInstanceID, appInstanceID)
+		return errors.Errorf("target app route ID %d belongs to app environment ID %d, expected %d", item.ID, item.AppInstanceID, appInstanceID)
 	}
 	if strings.TrimSpace(item.Host) == "" {
 		return errors.Errorf("target app route ID %d returned an empty host", item.ID)
@@ -3215,7 +3219,7 @@ func validateTargetCert(item TargetCert, appInstanceID, appServiceID int) error 
 	if strings.TrimSpace(item.Issuer) == "" || strings.TrimSpace(item.Status) == "" {
 		return errors.Errorf("target certificate ID %d returned an empty issuer or status", item.ID)
 	}
-	if err := targetValidateOptionalPositiveID("certificate app instance", item.AppInstanceID); err != nil {
+	if err := targetValidateOptionalPositiveID("certificate app environment", item.AppInstanceID); err != nil {
 		return err
 	}
 	if err := targetValidateOptionalPositiveID("certificate app service", item.AppServiceID); err != nil {
@@ -3223,7 +3227,7 @@ func validateTargetCert(item TargetCert, appInstanceID, appServiceID int) error 
 	}
 	if appInstanceID > 0 && item.AppInstanceID != nil && *item.AppInstanceID != appInstanceID {
 		return errors.Errorf(
-			"target certificate ID %d belongs to app instance ID %d, expected %d",
+			"target certificate ID %d belongs to app environment ID %d, expected %d",
 			item.ID,
 			*item.AppInstanceID,
 			appInstanceID,
@@ -3243,7 +3247,7 @@ func validateTargetCert(item TargetCert, appInstanceID, appServiceID int) error 
 func validateTargetRouteSetting(item TargetAppRouteSetting, routeID int) error {
 	for label, id := range map[string]int{
 		"app route setting": item.ID,
-		"app instance":      item.AppInstanceID,
+		"app environment":   item.AppInstanceID,
 		"app route":         item.RouteID,
 	} {
 		if err := targetRequirePositiveID(label, id); err != nil {
@@ -3266,7 +3270,11 @@ func targetValidRouteSetting(name string) bool {
 		TargetRouteSettingRequestBodySize,
 		TargetRouteSettingSessionAffinity,
 		TargetRouteSettingPathRewrite,
-		TargetRouteSettingHSTS:
+		TargetRouteSettingHSTS,
+		TargetRouteSettingRequestTimeout,
+		TargetRouteSettingBackendRequestTimeout,
+		TargetRouteSettingRateLimitPerIP,
+		TargetRouteSettingRateLimitTotal:
 		return true
 	default:
 		return false
@@ -3274,7 +3282,7 @@ func targetValidRouteSetting(name string) bool {
 }
 
 func validateTargetCreateAuthInput(input TargetCreateAppAuthInput) error {
-	if err := targetRequirePositiveID("app instance", input.AppInstanceID); err != nil {
+	if err := targetRequirePositiveID("app environment", input.AppInstanceID); err != nil {
 		return err
 	}
 	if strings.TrimSpace(input.Login) == "" || strings.TrimSpace(input.Realm) == "" {
@@ -3300,11 +3308,11 @@ func validateTargetAppAuth(item TargetAppAuth, appInstanceID int) error {
 	if err := targetRequirePositiveID("app authentication entry", item.ID); err != nil {
 		return err
 	}
-	if err := targetRequirePositiveID("app instance", item.AppInstanceID); err != nil {
+	if err := targetRequirePositiveID("app environment", item.AppInstanceID); err != nil {
 		return err
 	}
 	if appInstanceID > 0 && item.AppInstanceID != appInstanceID {
-		return errors.Errorf("target app authentication entry ID %d belongs to app instance ID %d, expected %d", item.ID, item.AppInstanceID, appInstanceID)
+		return errors.Errorf("target app authentication entry ID %d belongs to app environment ID %d, expected %d", item.ID, item.AppInstanceID, appInstanceID)
 	}
 	if err := validateTargetAuthScope(item.AppServiceID, item.AppRouteID); err != nil {
 		return err
@@ -3320,7 +3328,7 @@ func validateTargetImport(item TargetImport, filters TargetImportFilters) error 
 		return err
 	}
 	for label, id := range map[string]*int{
-		"app instance":           item.AppInstanceID,
+		"app environment":        item.AppInstanceID,
 		"app service":            item.AppServiceID,
 		"database":               item.DatabaseID,
 		"database schema":        item.DatabaseDBID,
@@ -3337,7 +3345,7 @@ func validateTargetImport(item TargetImport, filters TargetImportFilters) error 
 		actual   *int
 		expected *int
 	}{
-		{"app instance", item.AppInstanceID, filters.AppInstanceID},
+		{"app environment", item.AppInstanceID, filters.AppInstanceID},
 		{"app service", item.AppServiceID, filters.AppServiceID},
 		{"database", item.DatabaseID, filters.DatabaseID},
 		{"database schema", item.DatabaseDBID, filters.DatabaseDBID},
@@ -3365,16 +3373,16 @@ func validateTargetBuilds(items []TargetAppBuild, appInstanceID int, allowedServ
 
 func validateTargetBuild(item TargetAppBuild, appInstanceID int, allowedServiceIDs map[int]bool) error {
 	for label, id := range map[string]int{
-		"app build":    item.ID,
-		"app instance": item.AppInstanceID,
-		"app service":  item.AppServiceID,
+		"app build":       item.ID,
+		"app environment": item.AppInstanceID,
+		"app service":     item.AppServiceID,
 	} {
 		if err := targetRequirePositiveID(label, id); err != nil {
 			return err
 		}
 	}
 	if appInstanceID > 0 && item.AppInstanceID != appInstanceID {
-		return errors.Errorf("target app build ID %d belongs to app instance ID %d, expected %d", item.ID, item.AppInstanceID, appInstanceID)
+		return errors.Errorf("target app build ID %d belongs to app environment ID %d, expected %d", item.ID, item.AppInstanceID, appInstanceID)
 	}
 	if allowedServiceIDs != nil && !allowedServiceIDs[item.AppServiceID] {
 		return errors.Errorf("target app build ID %d belongs to unrequested app service ID %d", item.ID, item.AppServiceID)
@@ -3397,11 +3405,11 @@ func validateTargetDeployment(item TargetAppDeployment, appInstanceID int, allow
 	if err := targetRequirePositiveID("app deployment", item.ID); err != nil {
 		return err
 	}
-	if err := targetRequirePositiveID("app instance", item.AppInstanceID); err != nil {
+	if err := targetRequirePositiveID("app environment", item.AppInstanceID); err != nil {
 		return err
 	}
 	if appInstanceID > 0 && item.AppInstanceID != appInstanceID {
-		return errors.Errorf("target app deployment ID %d belongs to app instance ID %d, expected %d", item.ID, item.AppInstanceID, appInstanceID)
+		return errors.Errorf("target app deployment ID %d belongs to app environment ID %d, expected %d", item.ID, item.AppInstanceID, appInstanceID)
 	}
 	if err := targetValidateOptionalPositiveID("task", item.TaskID); err != nil {
 		return err
@@ -3430,7 +3438,7 @@ func validateTargetDeployment(item TargetAppDeployment, appInstanceID int, allow
 }
 
 func targetPagedInstanceQuery(appInstanceID int, page TargetPageOptions) (url.Values, error) {
-	query, err := targetRequiredQueryID("appInstanceId", "app instance", appInstanceID)
+	query, err := targetRequiredQueryID("appInstanceId", "app environment", appInstanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -3503,7 +3511,7 @@ func targetEqualOptionalID(a, b *int) bool {
 	return *a == *b
 }
 
-// DeleteApp removes an app and, through Wodby 2, every app instance under it.
+// DeleteApp removes an app and, through Wodby 2, every app environment under it.
 // The returned task covers that whole cascade.
 func (c *TargetClient) DeleteApp(ctx context.Context, appID int) (TargetOperationResult, error) {
 	if err := targetRequirePositiveID("app", appID); err != nil {
@@ -3519,24 +3527,24 @@ func (c *TargetClient) DeleteApp(ctx context.Context, appID int) (TargetOperatio
 	return result, nil
 }
 
-// DeleteAppInstance removes a single app instance, used when the migration
+// DeleteAppInstance removes a single app environment, used when the migration
 // added instances to an app that already existed and must not be deleted.
 func (c *TargetClient) DeleteAppInstance(ctx context.Context, appInstanceID int) (TargetOperationResult, error) {
-	if err := targetRequirePositiveID("app instance", appInstanceID); err != nil {
+	if err := targetRequirePositiveID("app environment", appInstanceID); err != nil {
 		return TargetOperationResult{}, err
 	}
 	var result TargetOperationResult
 	if err := c.client.Delete(ctx, "/app-environments/"+strconv.Itoa(appInstanceID), nil, &result); err != nil {
-		return TargetOperationResult{}, errors.Wrap(err, "delete target Wodby 2 app instance")
+		return TargetOperationResult{}, errors.Wrap(err, "delete target Wodby 2 app environment")
 	}
-	if err := targetValidateOptionalPositiveID("app instance deletion task", result.TaskID); err != nil {
+	if err := targetValidateOptionalPositiveID("app environment deletion task", result.TaskID); err != nil {
 		return TargetOperationResult{}, err
 	}
 	return result, nil
 }
 
 // DeleteStack removes a stack the migration generated. Wodby 2 refuses while an
-// app instance still references it, which is why rollback deletes apps first.
+// app environment still references it, which is why rollback deletes apps first.
 func (c *TargetClient) DeleteStack(ctx context.Context, stackID int) (TargetOperationResult, error) {
 	if err := targetRequirePositiveID("stack", stackID); err != nil {
 		return TargetOperationResult{}, err

@@ -169,11 +169,11 @@ func (p RollbackPlan) describe(appName string, action string, continuing bool) s
 	}
 	fmt.Fprintf(&b, "%s will delete the following from Wodby 2:\n\n", action)
 	if p.AppID > 0 {
-		fmt.Fprintf(&b, "  app %q (ID %d) and every app instance, service, route, and imported\n", appName, p.AppID)
+		fmt.Fprintf(&b, "  app %q (ID %d) and every app environment, service, route, and imported\n", appName, p.AppID)
 		b.WriteString("    database and files under it\n")
 	}
 	for _, instance := range p.InstanceIDs {
-		fmt.Fprintf(&b, "  app instance ID %d and its imported data (the app itself is kept)\n", instance.ID)
+		fmt.Fprintf(&b, "  app environment ID %d and its imported data (the app itself is kept)\n", instance.ID)
 	}
 	if p.StackID > 0 {
 		fmt.Fprintf(&b, "  the stack this migration generated (ID %d)\n", p.StackID)
@@ -202,8 +202,8 @@ func (p RollbackPlan) describe(appName string, action string, continuing bool) s
 // Rollback deletes the target resources this migration created, in dependency
 // order, and removes the resume state once nothing is left behind.
 //
-// The order is forced by Wodby 2: an app instance holds the running services
-// and imported data, and a stack cannot be deleted while an app instance still
+// The order is forced by Wodby 2: an app environment holds the running services
+// and imported data, and a stack cannot be deleted while an app environment still
 // references its revision. Integrations go last because app services link to
 // them. Deleting the app cascades to its instances in one task, so instances
 // are deleted individually only when the app itself must be kept.
@@ -230,8 +230,8 @@ func (e *MigrationExecutor) Rollback(
 		}
 	}
 	for _, instance := range plan.InstanceIDs {
-		e.reportProgress("Step: delete target app instance ID %d.", instance.ID)
-		if err := e.deleteAndWait(ctx, "app instance", instance.ID, func(ctx context.Context) (TargetOperationResult, error) {
+		e.reportProgress("Step: delete target app environment ID %d.", instance.ID)
+		if err := e.deleteAndWait(ctx, "app environment", instance.ID, func(ctx context.Context) (TargetOperationResult, error) {
 			return e.target.DeleteAppInstance(ctx, instance.ID)
 		}); err != nil {
 			return err
@@ -291,7 +291,7 @@ func (e *MigrationExecutor) deleteAndWait(
 	return nil
 }
 
-// awaitInstancesGone blocks until no app instance from this migration still
+// awaitInstancesGone blocks until no app environment from this migration still
 // resolves, so the generated stack is no longer referenced.
 func (e *MigrationExecutor) awaitInstancesGone(ctx context.Context, plan RollbackPlan) error {
 	ids := make([]int, 0, len(plan.InstanceIDs))
@@ -301,7 +301,7 @@ func (e *MigrationExecutor) awaitInstancesGone(ctx context.Context, plan Rollbac
 	if len(ids) == 0 {
 		return nil
 	}
-	return e.poll(ctx, "app instance teardown", func(ctx context.Context) (bool, error) {
+	return e.poll(ctx, "app environment teardown", func(ctx context.Context) (bool, error) {
 		for _, id := range ids {
 			_, err := e.target.GetAppInstance(ctx, id)
 			if err == nil {

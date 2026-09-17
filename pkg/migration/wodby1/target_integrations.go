@@ -154,6 +154,19 @@ func (c *TargetClient) ResolveIntegration(ctx context.Context, input TargetResol
 	if input.OrgID <= 0 || input.ProviderID <= 0 || strings.TrimSpace(input.Name) == "" || len(input.Kinds) == 0 {
 		return TargetResolveIntegrationResult{}, errors.New("target integration requires an organization, provider, name, and kind")
 	}
+	// Plans retain their historical enum spelling; REST field scopes are lowercase.
+	// Copy the slice so preparing a request never changes the reviewed inputs.
+	input.FieldsInput = append([]TargetIntegrationFieldInput(nil), input.FieldsInput...)
+	for i, field := range input.FieldsInput {
+		if field.EnvType == nil {
+			continue
+		}
+		envType := strings.ToLower(strings.TrimSpace(*field.EnvType))
+		if _, ok := targetEnvironmentTypes(input.OrgID)[envType]; !ok {
+			return TargetResolveIntegrationResult{}, errors.Errorf("unsupported integration environment type %q", *field.EnvType)
+		}
+		input.FieldsInput[i].EnvType = &envType
+	}
 	var result TargetResolveIntegrationResult
 	if err := c.client.Post(ctx, "/integrations/actions/resolve", nil, input, &result); err != nil {
 		return TargetResolveIntegrationResult{}, errors.Wrap(err, "resolve target Wodby 2 integration")

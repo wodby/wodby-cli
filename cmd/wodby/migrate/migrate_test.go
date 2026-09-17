@@ -459,7 +459,7 @@ func TestWodby1InstanceCommandBlocksExistingTargetInstanceName(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "already contains instance") ||
 		!strings.Contains(output.String(), "will not overwrite or adopt it") {
-		t.Fatalf("missing target instance collision blocker:\n%s", output.String())
+		t.Fatalf("missing target app environment collision blocker:\n%s", output.String())
 	}
 }
 

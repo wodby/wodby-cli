@@ -188,7 +188,7 @@ func (e *MigrationExecutor) ensureTargetStackConfiguration(
 	if err != nil {
 		return PreparedMigration{}, err
 	}
-	e.reportProgress("Step: configure target stack %q (ID %d) before creating app instances.", current.Name, current.ID)
+	e.reportProgress("Step: configure target stack %q (ID %d) before creating app environments.", current.Name, current.ID)
 	if err := e.ensureStackEnvVars(ctx, state, current.ID, revisionID, prepared.StackConfiguration.EnvVars); err != nil {
 		return PreparedMigration{}, err
 	}

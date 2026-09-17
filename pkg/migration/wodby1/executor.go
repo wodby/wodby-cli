@@ -224,7 +224,7 @@ func (e *MigrationExecutor) Prepare(
 	if err != nil {
 		return MigrationPhaseResult{}, err
 	}
-	e.reportProgress("Step: create or resume the target app and app instances.")
+	e.reportProgress("Step: create or resume the target app and app environments.")
 
 	app, instances, err := e.ensureAppAndInstances(ctx, state, plan, prepared)
 	if err != nil {
@@ -247,7 +247,7 @@ func (e *MigrationExecutor) Prepare(
 	}
 	for _, item := range prepared.Instances {
 		instance := instances[item.Source.UUID]
-		e.reportProgress("Step: configure target instance %q (ID %d).", item.Source.Name, instance.ID)
+		e.reportProgress("Step: configure target app environment %q (ID %d).", item.Source.Name, instance.ID)
 		if err := e.prepareInstance(ctx, state, item, instance); err != nil {
 			recordFailure(item, "configuration", err)
 		}
@@ -257,7 +257,7 @@ func (e *MigrationExecutor) Prepare(
 			continue
 		}
 		instance := instances[item.Source.UUID]
-		e.reportProgress("Step: build and deploy target instance %q (ID %d).", item.Source.Name, instance.ID)
+		e.reportProgress("Step: build and deploy target app environment %q (ID %d).", item.Source.Name, instance.ID)
 		if err := e.ensureTechnicalDeployment(ctx, state, item, instance, "prepare_deploy"); err != nil {
 			recordFailure(item, "initial build and deployment", err)
 		}
@@ -271,7 +271,7 @@ func (e *MigrationExecutor) Prepare(
 		if !planHasProtectedTechnicalRoutes(instancePlan) {
 			continue
 		}
-		e.reportProgress("Step: migrate basic authentication to generated technical routes for target instance %q (ID %d).", item.Source.Name, instance.ID)
+		e.reportProgress("Step: migrate basic authentication to generated technical routes for target app environment %q (ID %d).", item.Source.Name, instance.ID)
 		if err := e.ensureTechnicalRouteAuths(ctx, state, item, instance, instancePlan); err != nil {
 			recordFailure(item, "technical route authentication", err)
 		}
@@ -286,10 +286,10 @@ func (e *MigrationExecutor) Prepare(
 			return MigrationPhaseResult{}, errors.New("migration plan is missing route inventory for an instance")
 		}
 		if !planHasCustomRoutes(instancePlan) {
-			e.reportProgress("No custom routes need to be created for target instance %q.", item.Source.Name)
+			e.reportProgress("No custom routes need to be created for target app environment %q.", item.Source.Name)
 			continue
 		}
-		e.reportProgress("Step: create custom routes for target instance %q (ID %d).", item.Source.Name, instance.ID)
+		e.reportProgress("Step: create custom routes for target app environment %q (ID %d).", item.Source.Name, instance.ID)
 		if err := e.ensureCustomRoutes(ctx, state, plan, item, instance); err != nil {
 			recordFailure(item, "custom routes", err)
 		}
@@ -301,10 +301,10 @@ func (e *MigrationExecutor) Prepare(
 		instance := instances[item.Source.UUID]
 		instancePlan := planInstance(plan, item.Source.UUID)
 		if !planHasCustomRoutes(instancePlan) {
-			e.reportProgress("No custom routes are staged for target instance %q; skipping the second deployment.", item.Source.Name)
+			e.reportProgress("No custom routes are staged for target app environment %q; skipping the second deployment.", item.Source.Name)
 			continue
 		}
-		e.reportProgress("Step: deploy staged routes for target instance %q (ID %d).", item.Source.Name, instance.ID)
+		e.reportProgress("Step: deploy staged routes for target app environment %q (ID %d).", item.Source.Name, instance.ID)
 		if err := e.ensureTechnicalDeployment(ctx, state, item, instance, "apply_deploy"); err != nil {
 			recordFailure(item, "route deployment", err)
 		}
@@ -315,7 +315,7 @@ func (e *MigrationExecutor) Prepare(
 		}
 		instance := instances[item.Source.UUID]
 		if err := e.waitAppInstanceOK(ctx, instance.ID, "finish target preparation"); err != nil {
-			recordFailure(item, "deployment readiness", errors.Wrap(err, "wait for target instance after deployment"))
+			recordFailure(item, "deployment readiness", errors.Wrap(err, "wait for target app environment after deployment"))
 		}
 	}
 	for _, item := range prepared.Instances {
@@ -473,7 +473,7 @@ func (e *MigrationExecutor) ensureGeneratedTargetStack(
 	if err := SaveMigrationState(e.statePath, state); err != nil {
 		return PreparedMigration{}, err
 	}
-	e.reportProgress("Generated target stack %q created (ID %d, revision ID %d); every app instance will use it.", generated.Name, generated.ID, generated.RevID)
+	e.reportProgress("Generated target stack %q created (ID %d, revision ID %d); every app environment will use it.", generated.Name, generated.ID, generated.RevID)
 	generated = e.nameGeneratedStackAfterApp(ctx, prepared, blueprint, generated)
 	return e.bindGeneratedStack(ctx, prepared, generated)
 }
@@ -826,7 +826,7 @@ func (e *MigrationExecutor) SyncData(
 		}
 		instanceState := state.Instances[item.SourceInstanceUUID]
 		if instanceState == nil || instanceState.TargetID <= 0 {
-			return MigrationPhaseResult{}, errors.New("migration state is missing a prepared target instance")
+			return MigrationPhaseResult{}, errors.New("migration state is missing a prepared target app environment")
 		}
 		if !importOperationSucceeded(instanceState, item.SourceInstanceUUID, item.Backup.Component) {
 			e.reportProgress("Refreshing the protected download URL for backup component %q...", item.Backup.Component)
@@ -837,7 +837,7 @@ func (e *MigrationExecutor) SyncData(
 			}
 		}
 		if err := e.waitAppInstanceOK(ctx, instanceState.TargetID, "start the next data import"); err != nil {
-			recordFailure(item.SourceInstanceUUID, item.Backup.Component, "target readiness before data import", errors.Wrap(err, "wait for target instance before data import"))
+			recordFailure(item.SourceInstanceUUID, item.Backup.Component, "target readiness before data import", errors.Wrap(err, "wait for target app environment before data import"))
 			continue
 		}
 		services, err := e.target.ListAppServices(ctx, instanceState.TargetID)
@@ -864,7 +864,7 @@ func (e *MigrationExecutor) SyncData(
 			instanceState.TargetID,
 			fmt.Sprintf("continue after the %q data import", item.Backup.Component),
 		); err != nil {
-			recordFailure(item.SourceInstanceUUID, item.Backup.Component, "target readiness after data import", errors.Wrap(err, "wait for target instance after data import"))
+			recordFailure(item.SourceInstanceUUID, item.Backup.Component, "target readiness after data import", errors.Wrap(err, "wait for target app environment after data import"))
 		}
 	}
 	if !failures.empty() {
@@ -969,11 +969,11 @@ func (e *MigrationExecutor) Finalize(
 	for _, item := range prepared.Instances {
 		instanceState := state.Instances[item.Source.UUID]
 		if instanceState == nil || instanceState.TargetID <= 0 {
-			return MigrationPhaseResult{}, errors.New("migration state is missing a prepared target instance")
+			return MigrationPhaseResult{}, errors.New("migration state is missing a prepared target app environment")
 		}
 		instance, err := e.target.GetAppInstance(ctx, instanceState.TargetID)
 		if err != nil {
-			return MigrationPhaseResult{}, errors.Wrap(err, "read target instance before final deployment")
+			return MigrationPhaseResult{}, errors.Wrap(err, "read target app environment before final deployment")
 		}
 		if err := e.ensureTechnicalDeployment(ctx, state, item, instance, "finalize_deploy"); err != nil {
 			return MigrationPhaseResult{}, err
@@ -1017,7 +1017,7 @@ func (e *MigrationExecutor) validateFinalizeReadiness(
 	for _, item := range prepared.Instances {
 		instanceState := state.Instances[item.Source.UUID]
 		if instanceState == nil || instanceState.TargetID <= 0 {
-			return errors.New("migration state is missing a prepared target instance")
+			return errors.New("migration state is missing a prepared target app environment")
 		}
 		if !item.SkipCode {
 			continue
@@ -1106,11 +1106,11 @@ func (e *MigrationExecutor) Verify(
 	for _, item := range prepared.Instances {
 		instanceState := state.Instances[item.Source.UUID]
 		if instanceState == nil || instanceState.TargetID <= 0 {
-			return MigrationPhaseResult{}, errors.New("migration state is missing a target instance")
+			return MigrationPhaseResult{}, errors.New("migration state is missing a target app environment")
 		}
 		instance, err := e.target.GetAppInstance(ctx, instanceState.TargetID)
 		if err != nil {
-			return MigrationPhaseResult{}, errors.Wrap(err, "verify target instance")
+			return MigrationPhaseResult{}, errors.Wrap(err, "verify target app environment")
 		}
 		instancePlan := planInstance(plan, item.Source.UUID)
 		if instancePlan == nil || instance.AppID != app.ID ||
@@ -1118,12 +1118,12 @@ func (e *MigrationExecutor) Verify(
 			!strings.EqualFold(instance.EnvironmentType, instancePlan.TargetEnvType) ||
 			instance.StackRevID != item.Stack.RevID ||
 			instance.Name != item.Source.Name {
-			return MigrationPhaseResult{}, errors.New("target instance relationships no longer match the approved migration")
+			return MigrationPhaseResult{}, errors.New("target app environment relationships no longer match the approved migration")
 		}
 		if err := e.verifyInstance(ctx, item, instance, instancePlan, instanceState); err != nil {
 			return MigrationPhaseResult{}, err
 		}
-		e.reportProgress("Verified target instance %q (ID %d).", instance.Name, instance.ID)
+		e.reportProgress("Verified target app environment %q (ID %d).", instance.Name, instance.ID)
 		if err := state.SetInstanceTarget(item.Source.UUID, instance.ID, MigrationResourceReady); err != nil {
 			return MigrationPhaseResult{}, err
 		}
@@ -1304,7 +1304,7 @@ func (e *MigrationExecutor) verifyCompletedImports(
 	for _, instance := range prepared.Instances {
 		resource := state.Instances[instance.Source.UUID]
 		if resource == nil || resource.TargetID <= 0 {
-			return errors.New("migration state is missing an imported target instance")
+			return errors.New("migration state is missing an imported target app environment")
 		}
 		services, err := e.target.ListAppServices(ctx, resource.TargetID)
 		if err != nil {
@@ -1381,7 +1381,7 @@ func (e *MigrationExecutor) ensureAppAndInstances(
 	initial := prepared.Instances[0]
 	initialPlan := planInstance(plan, initial.Source.UUID)
 	if initialPlan == nil {
-		return TargetApp{}, nil, errors.New("migration plan is missing the initial instance")
+		return TargetApp{}, nil, errors.New("migration plan is missing the initial app environment")
 	}
 	app, first, err := e.ensureApp(ctx, state, plan, prepared.App.App, initial, *initialPlan)
 	if err != nil {
@@ -1439,13 +1439,13 @@ func (e *MigrationExecutor) ensureApp(
 			return TargetApp{}, TargetAppInstance{}, err
 		}
 		if instanceState.TargetID > 0 && first.ID != instanceState.TargetID {
-			return TargetApp{}, TargetAppInstance{}, errors.New("target initial instance no longer matches migration state")
+			return TargetApp{}, TargetAppInstance{}, errors.New("target initial app environment no longer matches migration state")
 		}
 		if instanceState.TargetID == 0 {
 			if !hasInstanceOp ||
 				(instanceOp.Status != MigrationOperationIntent && instanceOp.Status != MigrationOperationAmbiguous) ||
 				!createdWithinOperation(first.CreatedAt, instanceOp) {
-				return TargetApp{}, TargetAppInstance{}, errors.New("target initial instance cannot be safely recovered from migration state")
+				return TargetApp{}, TargetAppInstance{}, errors.New("target initial app environment cannot be safely recovered from migration state")
 			}
 			if err := promoteInstanceOperationForRecovery(state, initial.Source.UUID, operation); err != nil {
 				return TargetApp{}, TargetAppInstance{}, err
@@ -1499,7 +1499,7 @@ func (e *MigrationExecutor) ensureApp(
 			instanceWindow = appWindow
 		}
 		if !createdWithinOperation(first.CreatedAt, instanceWindow) {
-			return TargetApp{}, TargetAppInstance{}, errors.New("existing target initial instance predates the recorded create operation and cannot be adopted")
+			return TargetApp{}, TargetAppInstance{}, errors.New("existing target initial app environment predates the recorded create operation and cannot be adopted")
 		}
 		if err := e.recordRecoveredApp(state, operation, app.ID, initial.Source.UUID, first.ID); err != nil {
 			return TargetApp{}, TargetAppInstance{}, err
@@ -1558,7 +1558,7 @@ func (e *MigrationExecutor) ensureApp(
 	}
 
 	e.reportProgress(
-		"Creating target app %q with initial instance %q in cluster ID %d (automatic initial deployment deferred)...",
+		"Creating target app %q with initial app environment %q in cluster ID %d (automatic initial deployment deferred)...",
 		createInput.Name,
 		createInput.InstanceName,
 		createInput.ClusterID,
@@ -1589,7 +1589,7 @@ func (e *MigrationExecutor) ensureApp(
 	if err != nil {
 		_ = state.MarkInstanceOperationAmbiguous(initial.Source.UUID, operation)
 		_ = SaveMigrationState(e.statePath, state)
-		return TargetApp{}, TargetAppInstance{}, errors.New("target app was created but its initial instance could not be identified; resume after inspecting the target")
+		return TargetApp{}, TargetAppInstance{}, errors.New("target app was created but its initial app environment could not be identified; resume after inspecting the target")
 	}
 	if err := state.MarkInstanceOperationSuccessWithIDs(initial.Source.UUID, operation, first.ID, 0); err != nil {
 		return TargetApp{}, TargetAppInstance{}, err
@@ -1600,7 +1600,7 @@ func (e *MigrationExecutor) ensureApp(
 	if err := SaveMigrationState(e.statePath, state); err != nil {
 		return TargetApp{}, TargetAppInstance{}, err
 	}
-	e.reportProgress("Initial target instance %q created (ID %d).", first.Name, first.ID)
+	e.reportProgress("Initial target app environment %q created (ID %d).", first.Name, first.ID)
 	return created, first, nil
 }
 
@@ -1619,7 +1619,7 @@ func (e *MigrationExecutor) ensureInstance(
 	}
 	targetInstances, err := e.target.ListAppInstances(ctx, plan.Target.OrgID, app.ID)
 	if err != nil {
-		return TargetAppInstance{}, errors.Wrap(err, "look up target app instance")
+		return TargetAppInstance{}, errors.Wrap(err, "look up target app environment")
 	}
 	foundInstance, found, err := findTargetAppInstanceExact(targetInstances, app.Name, prepared.Source.Name)
 	if err != nil {
@@ -1627,12 +1627,12 @@ func (e *MigrationExecutor) ensureInstance(
 	}
 	if resource.TargetID > 0 {
 		if !found || foundInstance.ID != resource.TargetID {
-			return TargetAppInstance{}, errors.New("target app instance no longer matches migration state")
+			return TargetAppInstance{}, errors.New("target app environment no longer matches migration state")
 		}
 		if err := validatePreparedInstance(foundInstance, app.ID, prepared, instancePlan, plan.Target.ClusterID); err != nil {
 			return TargetAppInstance{}, err
 		}
-		e.reportProgress("Resuming target instance %q (ID %d) from the saved migration state.", foundInstance.Name, foundInstance.ID)
+		e.reportProgress("Resuming target app environment %q (ID %d) from the saved migration state.", foundInstance.Name, foundInstance.ID)
 		return foundInstance, nil
 	}
 
@@ -1643,7 +1643,7 @@ func (e *MigrationExecutor) ensureInstance(
 			return TargetAppInstance{}, errors.New("target app already contains an instance with the migration name")
 		}
 		if !createdWithinOperation(foundInstance.CreatedAt, op) {
-			return TargetAppInstance{}, errors.New("existing target app instance predates the recorded create operation and cannot be adopted")
+			return TargetAppInstance{}, errors.New("existing target app environment predates the recorded create operation and cannot be adopted")
 		}
 		if err := validatePreparedInstance(foundInstance, app.ID, prepared, instancePlan, plan.Target.ClusterID); err != nil {
 			return TargetAppInstance{}, err
@@ -1660,13 +1660,13 @@ func (e *MigrationExecutor) ensureInstance(
 		if err := SaveMigrationState(e.statePath, state); err != nil {
 			return TargetAppInstance{}, err
 		}
-		e.reportProgress("Recovered target instance %q (ID %d) from the saved create operation.", foundInstance.Name, foundInstance.ID)
+		e.reportProgress("Recovered target app environment %q (ID %d) from the saved create operation.", foundInstance.Name, foundInstance.ID)
 		return foundInstance, nil
 	}
 	retryOperation := instanceAmbiguousRetryOperation(prepared.Source.UUID, operation)
 	if recoverable && !e.ambiguousRetryAuthorized(retryOperation) {
 		return TargetAppInstance{}, ambiguousRetryRequiredError(
-			"target app instance create result is ambiguous and no timestamp-bounded match was found",
+			"target app environment create result is ambiguous and no timestamp-bounded match was found",
 			retryOperation,
 		)
 	}
@@ -1694,14 +1694,14 @@ func (e *MigrationExecutor) ensureInstance(
 	if err := SaveMigrationState(e.statePath, state); err != nil {
 		return TargetAppInstance{}, err
 	}
-	e.reportProgress("Creating target instance %q in app %q (ID %d; automatic initial deployment deferred)...", input.InstanceName, app.Name, app.ID)
+	e.reportProgress("Creating target app environment %q in app %q (ID %d; automatic initial deployment deferred)...", input.InstanceName, app.Name, app.ID)
 	created, err := e.target.CreateAppInstance(ctx, input)
 	if err != nil {
 		return TargetAppInstance{}, e.recordInstanceCreationMutationError(
 			state,
 			prepared.Source.UUID,
 			operation,
-			"app instance creation",
+			"app environment creation",
 			err,
 		)
 	}
@@ -1714,7 +1714,7 @@ func (e *MigrationExecutor) ensureInstance(
 	if err := SaveMigrationState(e.statePath, state); err != nil {
 		return TargetAppInstance{}, err
 	}
-	e.reportProgress("Target instance %q created (ID %d).", created.Name, created.ID)
+	e.reportProgress("Target app environment %q created (ID %d).", created.Name, created.ID)
 	return created, nil
 }
 
@@ -1732,7 +1732,7 @@ func findTargetAppInstanceExact(items []TargetAppInstance, appName, instanceName
 		return matches[0], true, nil
 	default:
 		return TargetAppInstance{}, false, &TargetAmbiguousMatchError{
-			Resource: "app instance",
+			Resource: "app environment",
 			Name:     appName + "/" + instanceName,
 			Count:    len(matches),
 		}
@@ -1752,7 +1752,7 @@ func (e *MigrationExecutor) findExpectedInstance(
 		return TargetAppInstance{}, err
 	}
 	if !found {
-		return TargetAppInstance{}, errors.New("target app initial instance was not found")
+		return TargetAppInstance{}, errors.New("target app initial app environment was not found")
 	}
 	if err := validatePreparedInstance(item, app.ID, prepared, instancePlan, clusterID); err != nil {
 		return TargetAppInstance{}, err
@@ -1769,10 +1769,10 @@ func validatePreparedInstance(
 ) error {
 	if item.AppID != appID || item.Name != prepared.Source.Name ||
 		!strings.EqualFold(item.EnvironmentType, plan.TargetEnvType) || item.StackRevID != prepared.Stack.RevID {
-		return errors.New("target app instance relationships do not match the approved migration")
+		return errors.New("target app environment relationships do not match the approved migration")
 	}
 	if clusterID > 0 && item.ClusterID != clusterID {
-		return errors.New("target app instance cluster does not match the approved migration")
+		return errors.New("target app environment cluster does not match the approved migration")
 	}
 	return nil
 }
@@ -1891,7 +1891,7 @@ func (e *MigrationExecutor) prepareInstance(
 	for _, inspection := range prepared.StackServices {
 		target, ok := byName[inspection.StackService.Name]
 		if !ok {
-			return errors.Errorf("target instance is missing stack service %q", inspection.StackService.Name)
+			return errors.Errorf("target app environment is missing stack service %q", inspection.StackService.Name)
 		}
 		if target.ServiceRevID != inspection.StackService.ServiceRevID {
 			return errors.Errorf("target service %q revision no longer matches preflight", inspection.StackService.Name)
@@ -1914,7 +1914,7 @@ func (e *MigrationExecutor) prepareInstance(
 		}
 		target, ok := byName[mapping.Target.StackService.Name]
 		if !ok {
-			return errors.Errorf("target instance is missing mapped service %q", mapping.Target.StackService.Name)
+			return errors.Errorf("target app environment is missing mapped service %q", mapping.Target.StackService.Name)
 		}
 		if err := e.ensureServiceReplicas(ctx, state, prepared.Source.UUID, target, mapping.Replicas); err != nil {
 			return err
@@ -3132,7 +3132,7 @@ func technicalDeploymentInput(
 		if prepared.SkipCode {
 			return input, nil
 		}
-		return TargetCreateAppDeploymentInput{}, errors.New("target instance has no enabled services to deploy")
+		return TargetCreateAppDeploymentInput{}, errors.New("target app environment has no enabled services to deploy")
 	}
 	sort.Slice(input.Services, func(i, j int) bool {
 		return input.Services[i].AppServiceID < input.Services[j].AppServiceID
@@ -3568,7 +3568,7 @@ func (e *MigrationExecutor) ensureDeployment(
 	if err != nil || !run {
 		return err
 	}
-	e.reportProgress("Launching target deployment for app instance ID %d...", instanceID)
+	e.reportProgress("Launching target deployment for app environment ID %d...", instanceID)
 	deployment, err := e.target.CreateAppDeployment(ctx, input)
 	if err != nil {
 		return e.recordInstanceMutationError(state, sourceID, operation, "application deployment creation", err)
@@ -3755,7 +3755,7 @@ func (e *MigrationExecutor) ensureCustomRoutes(
 				return err
 			}
 			if err := e.waitAppInstanceOK(ctx, instance.ID, "apply custom route authentication"); err != nil {
-				return errors.Wrap(err, "wait for target instance after custom route authentication")
+				return errors.Wrap(err, "wait for target app environment after custom route authentication")
 			}
 		}
 	}
@@ -3802,7 +3802,7 @@ func (e *MigrationExecutor) ensureTechnicalRouteAuths(
 			return err
 		}
 		if err := e.waitAppInstanceOK(ctx, instance.ID, "apply technical route authentication"); err != nil {
-			return errors.Wrap(err, "wait for target instance after technical route authentication")
+			return errors.Wrap(err, "wait for target app environment after technical route authentication")
 		}
 	}
 	return nil
@@ -4298,7 +4298,7 @@ func (e *MigrationExecutor) ensureImport(
 			item.Backup.Component,
 		)
 		if err := e.waitAppInstanceOK(ctx, instanceID, "retry the data import from the Wodby 1 server"); err != nil {
-			return errors.Wrap(err, "wait for target instance before backup URL fallback")
+			return errors.Wrap(err, "wait for target app environment before backup URL fallback")
 		}
 	}
 
@@ -4715,6 +4715,10 @@ func (e *MigrationExecutor) waitDeployment(
 		}
 		switch strings.ToUpper(strings.TrimSpace(item.Status)) {
 		case "COMPLETED":
+			ready, err := deploymentPostDeploymentOutcome(item)
+			if err != nil || !ready {
+				return false, err
+			}
 			completed = item
 			return true, nil
 		case "CANCELED", "ERRORED":
@@ -4730,13 +4734,29 @@ func (e *MigrationExecutor) waitDeployment(
 	return completed, err
 }
 
+// deploymentPostDeploymentOutcome keeps rollout completion separate from the
+// repository scripts that run afterward. Unknown outcomes cannot authorize import
+// or cutover, even if the deployment itself is already marked completed.
+func deploymentPostDeploymentOutcome(item TargetAppDeployment) (bool, error) {
+	switch strings.ToUpper(strings.TrimSpace(item.PostDeploymentStatus)) {
+	case "COMPLETED", "NOT_APPLICABLE", "SKIPPED":
+		return true, nil
+	case "PENDING", "IN_PROGRESS":
+		return false, nil
+	case "FAILED", "CANCELED", "NOT_RUN":
+		return false, &TargetTerminalOperationError{Resource: "post-deployment scripts for deployment", ID: item.ID, Status: item.PostDeploymentStatus}
+	default:
+		return false, errors.Errorf("target deployment ID %d has unverified post-deployment status %q", item.ID, item.PostDeploymentStatus)
+	}
+}
+
 func (e *MigrationExecutor) waitAppInstanceOK(
 	ctx context.Context,
 	appInstanceID int,
 	nextAction string,
 ) error {
 	reportedStatus := ""
-	err := e.poll(ctx, "target app instance readiness", func(ctx context.Context) (bool, error) {
+	err := e.poll(ctx, "target app environment readiness", func(ctx context.Context) (bool, error) {
 		instance, err := e.target.GetAppInstance(ctx, appInstanceID)
 		if err != nil {
 			return false, err
@@ -4744,14 +4764,14 @@ func (e *MigrationExecutor) waitAppInstanceOK(
 		status := strings.ToUpper(strings.TrimSpace(instance.Status))
 		if status == "OK" {
 			if reportedStatus != "" {
-				e.reportProgress("Target app instance ID %d is OK; continuing.", appInstanceID)
+				e.reportProgress("Target app environment ID %d is OK; continuing.", appInstanceID)
 			}
 			return true, nil
 		}
 		switch status {
 		case "ERRORED", "DISABLED", "NA", "DELETING", "PAUSED":
 			return false, errors.Errorf(
-				"target app instance ID %d entered status %q and cannot %s",
+				"target app environment ID %d entered status %q and cannot %s",
 				appInstanceID,
 				instance.Status,
 				nextAction,
@@ -4759,7 +4779,7 @@ func (e *MigrationExecutor) waitAppInstanceOK(
 		}
 		if status != reportedStatus {
 			e.reportProgress(
-				"Target app instance ID %d is %q; waiting until it is OK to %s...",
+				"Target app environment ID %d is %q; waiting until it is OK to %s...",
 				appInstanceID,
 				instance.Status,
 				nextAction,
@@ -5052,7 +5072,7 @@ func (e *MigrationExecutor) verifyInstance(
 		return errors.New("migration verification state is incomplete")
 	}
 	if !strings.EqualFold(instance.Status, "OK") {
-		return errors.Errorf("target instance %q status is %q, expected OK", instance.Name, instance.Status)
+		return errors.Errorf("target app environment %q status is %q, expected OK", instance.Name, instance.Status)
 	}
 	services, err := e.target.ListAppServices(ctx, instance.ID)
 	if err != nil {
@@ -5097,6 +5117,22 @@ func (e *MigrationExecutor) verifyInstance(
 	}
 	if len(deploymentInput.Services) > 0 && !deploymentRecorded {
 		return errors.New("final target deployment is not recorded as complete")
+	}
+	// Re-read recorded deployments: older state can mark rollout success before
+	// the separate post-deployment task finishes or fails.
+	for _, stage := range []string{"finalize_deploy", "apply_deploy", "prepare_deploy"} {
+		op := resource.Operations[operationKey(stage, prepared.Source.UUID)]
+		if op.Status != MigrationOperationSucceeded {
+			continue
+		}
+		deployment, err := e.waitDeployment(ctx, op.TargetID)
+		if err != nil {
+			return errors.Wrap(err, "verify recorded target deployment")
+		}
+		if deployment.AppInstanceID != instance.ID {
+			return errors.New("recorded target deployment belongs to a different app environment")
+		}
+		break // Earlier preparation deployments may have been superseded.
 	}
 	if err := validateManuallyDeployedCodeServices(prepared, services); err != nil {
 		return err

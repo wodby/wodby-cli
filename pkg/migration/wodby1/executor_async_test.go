@@ -661,10 +661,11 @@ func asyncTestDeployment(
 	createdAt time.Time,
 ) TargetAppDeployment {
 	return TargetAppDeployment{
-		ID:            id,
-		Status:        status,
-		AppInstanceID: instanceID,
-		TaskID:        asyncTestIntPointer(taskID),
+		ID:                   id,
+		Status:               status,
+		PostDeploymentStatus: "not_applicable",
+		AppInstanceID:        instanceID,
+		TaskID:               asyncTestIntPointer(taskID),
 		AppServiceDeployments: []TargetAppServiceDeployment{{
 			ID:           1000 + id,
 			AppServiceID: 10,

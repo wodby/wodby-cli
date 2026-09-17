@@ -21,7 +21,7 @@ func (e *MigrationExecutor) ensureBackupPresets(
 	for _, item := range prepared.Instances {
 		instance, ok := instances[item.Source.UUID]
 		if !ok || instance.ID <= 0 {
-			return errors.Errorf("target instance for backup presets is missing for source %q", item.Source.UUID)
+			return errors.Errorf("target app environment for backup presets is missing for source %q", item.Source.UUID)
 		}
 		if err := e.ensureInstanceBackupPresets(ctx, state, item, instance); err != nil {
 			return err
@@ -50,9 +50,9 @@ func (e *MigrationExecutor) ensureInstanceBackupPresets(
 	}
 	capabilities := targetBackupCapabilities(item)
 	if len(capabilities) == 0 {
-		return errors.Errorf("target instance %q has no enabled service with a backup capability", item.Source.Name)
+		return errors.Errorf("target app environment %q has no enabled service with a backup capability", item.Source.Name)
 	}
-	e.reportProgress("Step: configure backup destination for target instance %q (ID %d).", item.Source.Name, instance.ID)
+	e.reportProgress("Step: configure backup destination for target app environment %q (ID %d).", item.Source.Name, instance.ID)
 	for _, capability := range capabilities {
 		service, ok := byName[capability.serviceName]
 		if !ok || service.ID <= 0 || service.Disabled {
@@ -244,7 +244,7 @@ func (e *MigrationExecutor) verifyBackupPresets(ctx context.Context, state *Migr
 		}
 		resource := state.Instances[instance.Source.UUID]
 		if resource == nil || resource.TargetID <= 0 {
-			return errors.Errorf("migration state is missing target instance for backup verification")
+			return errors.Errorf("migration state is missing target app environment for backup verification")
 		}
 		services, err := e.target.ListAppServices(ctx, resource.TargetID)
 		if err != nil {

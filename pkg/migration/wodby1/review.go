@@ -68,7 +68,7 @@ func PrintReview(w io.Writer, plan Plan, prepared ...PreparedMigration) {
 			printColoredSectionHeading(w, "  ", "Migrations", ansiGreen)
 			printReviewItemDetails(w, "    ", appMigrationItems, ansiGreen)
 			if sharedStack {
-				fmt.Fprintln(w, "    Target stack (shared by all instances):")
+				fmt.Fprintln(w, "    Target stack (shared by all app environments):")
 				printReviewTableColor(w, "      ", []string{"Action", "Wodby 1 stack", "Wodby 2 stack", "Revision"}, stackRows, ansiGreen)
 			}
 			printRepositoryMigration(w, "    ", plan, app.Repository, preparedApp)
@@ -78,11 +78,11 @@ func PrintReview(w io.Writer, plan Plan, prepared ...PreparedMigration) {
 				printReviewTableColor(w, "      ", []string{"Service", "Variable", "Value", "Applies to"}, stackEnvRows, ansiGreen)
 			}
 			if len(stackCapacityRows) != 0 {
-				fmt.Fprintln(w, "    Stack service capacity (shared by all instances):")
+				fmt.Fprintln(w, "    Stack service capacity (shared by all app environments):")
 				printReviewTableColor(w, "      ", []string{"Service", "Replicas", "Resources", "Target container"}, stackCapacityRows, ansiGreen)
 			}
 			if sharedCrons {
-				fmt.Fprintln(w, "    Cron jobs → cron schedules (shared by all instances):")
+				fmt.Fprintln(w, "    Cron jobs → cron schedules (shared by all app environments):")
 				printReviewTableColor(w, "      ", []string{"Source service", "Target service", "Title", "Schedule", "Command", "Target state"}, sharedCronRows, ansiGreen)
 			}
 		}
@@ -97,7 +97,7 @@ func PrintReview(w io.Writer, plan Plan, prepared ...PreparedMigration) {
 				w,
 				"\n  %s\n",
 				migrationColor(w, ansiBold+ansiCyan, fmt.Sprintf(
-					"Instance %d/%d: %s → %s (%s → %s)",
+					"Instance %d/%d: %s → app environment %s (%s → %s)",
 					instanceIndex+1,
 					len(app.Instances),
 					firstNonEmpty(instance.Title, instance.Name),
@@ -318,9 +318,9 @@ func preparedStackEnvVarReviewRows(configuration PreparedStackConfiguration) [][
 			if variable.Secret {
 				value = "protected value transferred in memory"
 			}
-			scope := "all instances"
+			scope := "all app environments"
 			if variable.EnvType != nil && strings.TrimSpace(*variable.EnvType) != "" {
-				scope = strings.ToUpper(strings.TrimSpace(*variable.EnvType)) + " instances"
+				scope = strings.ToUpper(strings.TrimSpace(*variable.EnvType)) + " app environments"
 			}
 			rows = append(rows, []string{serviceName, variable.Name, value, scope})
 		}

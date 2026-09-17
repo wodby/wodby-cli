@@ -19,7 +19,7 @@ const wodbyCIRepositoryURL = "https://github.com/wodby/wodby-ci/tree/2.0"
 type ExternalActionRequiredError struct {
 	// Instance is the source instance name the migration stopped on.
 	Instance string
-	// TargetInstanceID is the created Wodby 2 app instance.
+	// TargetInstanceID is the created Wodby 2 app environment.
 	TargetInstanceID int
 	// ServiceName and TargetServiceID identify the code service whose build is
 	// missing. TargetServiceID is what the pipeline must publish to.
@@ -107,7 +107,7 @@ func (e *ExternalActionRequiredError) NextSteps() string {
 
 	fmt.Fprintf(
 		&b,
-		"\nTarget app instance ID %d, code service %q app service ID %d.\n",
+		"\nTarget app environment ID %d, code service %q app service ID %d.\n",
 		e.TargetInstanceID, e.ServiceName, e.TargetServiceID,
 	)
 	b.WriteString("Nothing failed and nothing needs to be cleaned up; the migration is paused.\n")

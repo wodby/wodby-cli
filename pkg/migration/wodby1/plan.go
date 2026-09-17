@@ -750,7 +750,7 @@ func (p *Plan) AddReviewItems(items ...ReviewItem) error {
 func buildInstancePlan(plan *Plan, app App, instance Instance, opts PlanOptions, requireStatus bool) InstancePlan {
 	targetEnv, targetEnvType, ok := resolveTargetEnv(instance.Type, opts.TargetEnvMap)
 	if !ok {
-		plan.addReview(SeverityBlocking, app.Name, instance.Name, "env", fmt.Sprintf("source instance type %q has no default Wodby 2 env mapping; pass --target-env-map %s=TARGET_ENV", instance.Type, instance.Type))
+		plan.addReview(SeverityBlocking, app.Name, instance.Name, "env", fmt.Sprintf("source instance type %q needs a valid Wodby 2 environment type mapping; pass --target-env-map %s=prod|staging|test|dev|feature", instance.Type, instance.Type))
 	}
 
 	instancePlan := InstancePlan{
@@ -773,6 +773,11 @@ func buildInstancePlan(plan *Plan, app App, instance Instance, opts PlanOptions,
 			TargetID:        opts.TargetStackID,
 			ExplicitMapping: opts.TargetStackID > 0,
 		},
+	}
+	if ok && opts.TargetScope != nil {
+		if err := validateTargetClusterEnvironment(opts.TargetScope.Cluster, targetEnvType); err != nil {
+			plan.addReview(SeverityBlocking, app.Name, instance.Name, "target cluster environment type", err.Error())
+		}
 	}
 	addSourceStackCompatibilityReview(plan, app, instance, opts.AllowUnsupportedDrupal)
 	mappedStack, hasExplicitStack := scopedMapping(
@@ -1731,13 +1736,15 @@ func resolveTargetEnv(sourceType string, explicit map[string]string) (string, st
 	if !explicitMapping {
 		target, explicitMapping = explicit[strings.ToLower(sourceType)]
 	}
-	if explicitMapping && strings.TrimSpace(target) != "" {
+	if explicitMapping {
 		target = strings.TrimSpace(target)
-		envType := defaultEnvType(sourceType)
-		if envType == "" {
-			envType = defaultEnvType(target)
+		// Explicit mappings select the destination type, not a renamed source
+		// environment catalog entry. Only canonical Wodby 2 types are valid.
+		target = strings.ToLower(target)
+		if _, ok := targetEnvironmentTypes(0)[target]; !ok {
+			return "", "", false
 		}
-		return target, envType, true
+		return target, strings.ToUpper(target), true
 	}
 	envType := defaultEnvType(sourceType)
 	if envType == "" {

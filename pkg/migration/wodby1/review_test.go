@@ -123,18 +123,18 @@ func TestPrintReviewUsesTablesAndSeparateReviewSections(t *testing.T) {
 		"Item                   Count",
 		"App 1/1: Demo → demo",
 		"Migrations:",
-		"Target stack (shared by all instances):",
+		"Target stack (shared by all app environments):",
 		"Repository and CI:",
 		"connect  Wodby CI (default)  ID 44            acme/demo          exact match found  branch \"main\"  php",
-		"Instance 1/1: Dev → dev (dev → dev)",
+		"Instance 1/1: Dev → app environment dev (dev → dev)",
 		"create and configure  drupal         new from catalog drupal11  revision-4",
 		"setting php.docroot",
 		"Wodby 1 app docroot → \"web\"; already matches target",
 		"setting php.sitedir",
 		"Wodby 1 app site directory → \"test\"; set stack override",
 		"Stack service environment variables:",
-		"php      APP_MODE  \"development\"  DEV instances",
-		"Stack service capacity (shared by all instances):",
+		"php      APP_MODE  \"development\"  DEV app environments",
+		"Stack service capacity (shared by all app environments):",
 		"php      2         CPU request 250m  php/php",
 		"App-service capacity overrides:",
 		"mailhog         mailpit         -         memory limit 512Mi  mailpit/mailpit",
@@ -197,7 +197,7 @@ func TestPrintReviewUsesTablesAndSeparateReviewSections(t *testing.T) {
 	}
 
 	appIndex := strings.Index(text, "App 1/1: Demo → demo")
-	instanceIndex := strings.Index(text, "Instance 1/1: Dev → dev")
+	instanceIndex := strings.Index(text, "Instance 1/1: Dev → app environment dev")
 	warningsIndex := strings.Index(text, "Warnings (1):")
 	blockingIndex := strings.Index(text, "Blocking (1):")
 	if appIndex < 0 || instanceIndex <= appIndex || warningsIndex <= instanceIndex || blockingIndex <= warningsIndex {
@@ -306,7 +306,7 @@ func TestPrintReviewSeparatesMigrationAppAndInstanceScopes(t *testing.T) {
 		"App 1/1: demo → demo",
 		"app change  shared by instances",
 		"app blocker  blocks the app",
-		"Instance 1/1: dev → dev",
+		"Instance 1/1: dev → app environment dev",
 		"instance change  dev only",
 		"instance warning  review dev",
 	} {
@@ -316,7 +316,7 @@ func TestPrintReviewSeparatesMigrationAppAndInstanceScopes(t *testing.T) {
 	}
 	globalIndex := strings.Index(text, "Migration-wide")
 	appIndex := strings.Index(text, "App 1/1: demo → demo")
-	instanceIndex := strings.Index(text, "Instance 1/1: dev → dev")
+	instanceIndex := strings.Index(text, "Instance 1/1: dev → app environment dev")
 	if appIndex < 0 || instanceIndex <= appIndex || globalIndex <= instanceIndex {
 		t.Fatalf("scope hierarchy is out of order:\n%s", text)
 	}
@@ -339,7 +339,7 @@ func TestPrintReviewPlacesMigrationWideSectionAfterAllApps(t *testing.T) {
 	PrintReview(&output, plan)
 	text := output.String()
 	lastAppIndex := strings.Index(text, "App 2/2: second → second")
-	lastInstanceIndex := strings.Index(text, "Instance 1/1: prod → prod")
+	lastInstanceIndex := strings.Index(text, "Instance 1/1: prod → app environment prod")
 	globalIndex := strings.Index(text, "Migration-wide")
 	if lastAppIndex < 0 || lastInstanceIndex <= lastAppIndex || globalIndex <= lastInstanceIndex {
 		t.Fatalf("migration-wide section is not after every app and instance:\n%s", text)
@@ -369,7 +369,7 @@ func TestPrintReviewPromotesDetailsSharedByEveryInstance(t *testing.T) {
 		t.Fatalf("common instance detail was not promoted to app scope:\n%s", text)
 	}
 	appDetail := strings.Index(text, "All migrated instances: Wodby CI pipeline found")
-	prodInstance := strings.Index(text, "Instance 1/2: prod → prod")
+	prodInstance := strings.Index(text, "Instance 1/2: prod → app environment prod")
 	if appDetail < 0 || prodInstance <= appDetail {
 		t.Fatalf("promoted app detail is not before the instances:\n%s", text)
 	}

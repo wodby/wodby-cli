@@ -73,16 +73,18 @@ type TargetClusterCapabilities struct {
 }
 
 type TargetCluster struct {
-	ID             int                       `json:"id"`
-	Name           string                    `json:"name"`
-	Title          string                    `json:"title"`
-	Status         string                    `json:"status"`
-	OrgID          int                       `json:"orgId"`
-	OwnershipScope string                    `json:"ownershipScope"`
-	OwnerProjectID int                       `json:"ownerProjectId,omitempty"`
-	IPs            []string                  `json:"ips,omitempty"`
-	Hostname       *string                   `json:"hostname,omitempty"`
-	Capabilities   TargetClusterCapabilities `json:"capabilities"`
+	ID              int                       `json:"id"`
+	Name            string                    `json:"name"`
+	Title           string                    `json:"title"`
+	Status          string                    `json:"status"`
+	OrgID           int                       `json:"orgId"`
+	OwnershipScope  string                    `json:"ownershipScope"`
+	OwnerProjectID  int                       `json:"ownerProjectId,omitempty"`
+	IPs             []string                  `json:"ips,omitempty"`
+	Hostname        *string                   `json:"hostname,omitempty"`
+	Capabilities    TargetClusterCapabilities `json:"capabilities"`
+	EnvScope        string                    `json:"envScope"`
+	AllowedEnvTypes []string                  `json:"allowedEnvTypes"`
 }
 
 type TargetEnv struct {
@@ -735,5 +737,30 @@ func newTargetWrongOrgBlocker(resource string, selector string, actualOrgID int,
 		Selector:      selector,
 		ExpectedOrgID: expectedOrgID,
 		ActualOrgID:   actualOrgID,
+	}
+}
+
+// validateTargetClusterEnvironment checks the current type allowlist before
+// migration creates resources. Missing scope preserves older API compatibility;
+// an explicit selected or unknown policy is never treated as unrestricted.
+func validateTargetClusterEnvironment(cluster TargetCluster, envType string) error {
+	switch strings.ToLower(strings.TrimSpace(cluster.EnvScope)) {
+	case "", "all":
+		return nil
+	case "selected":
+		allowed := false
+		for _, value := range cluster.AllowedEnvTypes {
+			value = strings.ToLower(strings.TrimSpace(value))
+			if _, ok := targetEnvironmentTypes(0)[value]; !ok {
+				return errors.Errorf("target cluster %q returned unsupported allowed environment type %q", cluster.Name, value)
+			}
+			allowed = allowed || strings.EqualFold(value, envType)
+		}
+		if allowed {
+			return nil
+		}
+		return errors.Errorf("target cluster %q does not allow app environment type %q", cluster.Name, strings.ToLower(envType))
+	default:
+		return errors.Errorf("target cluster %q returned unsupported environment scope %q", cluster.Name, cluster.EnvScope)
 	}
 }

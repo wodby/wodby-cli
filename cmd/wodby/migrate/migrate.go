@@ -136,9 +136,9 @@ and rerun the same command with --verify to validate the completed migration.
 
 The migration exports only the selected
 instance and its parent app metadata, then creates a new Wodby 2 app containing
-that instance. Pass --target-app to add it to an existing Wodby 2 app instead;
+a matching app environment. Pass --target-app to add it to an existing Wodby 2 app instead;
 the CLI infers the app's shared stack when unambiguous and never adopts or
-overwrites an existing app instance. By default it imports the newest successful backup file for each
+overwrites an existing app environment. By default it imports the newest successful backup file for each
 required component shown in the preview. Use --source-backup BACKUP_UUID to pin
 all components to a different complete snapshot, or
 --skip-data to omit data. Changes made after the selected backup completed are
@@ -164,7 +164,7 @@ refuses once --verify has succeeded, because DNS then points at Wodby 2.`,
 		},
 	}
 	bindFlags(cmd, opts)
-	cmd.Flags().StringVar(&opts.targetApp, "target-app", "", "Existing Wodby 2 app ID or exact name to receive this instance")
+	cmd.Flags().StringVar(&opts.targetApp, "target-app", "", "Existing Wodby 2 app ID or exact name to receive the migrated app environment")
 	cmd.Flags().Lookup("source-backup").Usage = "Select a successful Wodby 1 BACKUP_UUID for this instance"
 	return cmd
 }
@@ -295,7 +295,7 @@ func bindFlags(cmd *cobra.Command, opts *options) {
 
 	cmd.Flags().StringVar(&opts.targetProject, "target-project", "", "Wodby 2 project ID or exact name (defaults to a project-owned cluster's owner; otherwise organization-owned)")
 	cmd.Flags().StringVar(&opts.targetCluster, "target-cluster", "", "Wodby 2 cluster ID or exact name")
-	cmd.Flags().StringArrayVar(&opts.targetEnvMap, "target-env-map", nil, "Source-to-target environment mapping (SOURCE=TARGET)")
+	cmd.Flags().StringArrayVar(&opts.targetEnvMap, "target-env-map", nil, "Map a Wodby 1 instance type to a Wodby 2 environment type (SOURCE=prod|staging|test|dev|feature)")
 	cmd.Flags().IntVar(&opts.targetStackID, "target-stack-id", 0, "Existing Wodby 2 stack ID override (managed Drupal/WordPress apps get a new catalog stack by default)")
 	cmd.Flags().StringArrayVar(&opts.targetStackMap, "target-stack-map", nil, "Source-to-target stack ID mapping ([APP/][INSTANCE/]SOURCE=TARGET_STACK_ID)")
 	cmd.Flags().StringArrayVar(&opts.targetServiceMap, "target-service-map", nil, "Source-to-target service mapping ([APP/][INSTANCE/]SOURCE=TARGET)")
@@ -609,11 +609,11 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 			return err
 		}
 		if resolvedApp.ClusterApp {
-			return errors.Errorf("target app %q (ID %d) is a cluster infrastructure app and cannot receive a migrated customer instance", resolvedApp.Name, resolvedApp.ID)
+			return errors.Errorf("target app %q (ID %d) is a cluster infrastructure app and cannot receive a migrated customer app environment", resolvedApp.Name, resolvedApp.ID)
 		}
 		status := strings.ToUpper(strings.TrimSpace(resolvedApp.Status))
 		if status != "OK" {
-			return errors.Errorf("target app %q (ID %d) has status %q and cannot receive a migrated instance", resolvedApp.Name, resolvedApp.ID, resolvedApp.Status)
+			return errors.Errorf("target app %q (ID %d) has status %q and cannot receive a migrated app environment", resolvedApp.Name, resolvedApp.ID, resolvedApp.Status)
 		}
 		switch strings.ToLower(strings.TrimSpace(resolvedApp.OwnershipScope)) {
 		case wodby1.TargetOwnershipScopeOrg:
@@ -647,7 +647,7 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 			stackIDs := targetAppStackIDs(instances)
 			switch len(stackIDs) {
 			case 0:
-				return errors.Errorf("target app %q (ID %d) has no app instances from which to infer a stack; provide --target-stack-id", resolvedApp.Name, resolvedApp.ID)
+				return errors.Errorf("target app %q (ID %d) has no app environments from which to infer a stack; provide --target-stack-id", resolvedApp.Name, resolvedApp.ID)
 			case 1:
 				targetStackID = stackIDs[0]
 			default:
@@ -657,7 +657,7 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 			return errors.Errorf("--target-stack-id %d is not used by target app %q (ID %d); choose one of %s", targetStackID, resolvedApp.Name, resolvedApp.ID, joinIntValues(stackIDs))
 		}
 		targetApp = &resolvedApp
-		preparation.CompleteStep(fmt.Sprintf("Existing target app %s (ID %d) will receive the new instance using stack ID %d.", resolvedApp.Name, resolvedApp.ID, targetStackID))
+		preparation.CompleteStep(fmt.Sprintf("Existing target app %s (ID %d) will receive the new app environment using stack ID %d.", resolvedApp.Name, resolvedApp.ID, targetStackID))
 	}
 
 	// The customer command transfers required credentials in memory. Wodby 1

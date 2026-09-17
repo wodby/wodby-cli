@@ -375,7 +375,7 @@ func TestAmbiguousRetryAcknowledgementCannotAuthorizeAnotherOperation(t *testing
 
 func TestAmbiguousRetryOperationIDsScopeAppAndInstances(t *testing.T) {
 	if got := appCreateAmbiguousRetryOperation("app-1"); got != "app:app-1:create" {
-		t.Fatalf("combined app and initial instance create acknowledgement = %q", got)
+		t.Fatalf("combined app and initial app environment create acknowledgement = %q", got)
 	}
 	if got := appCreateAmbiguousRetryOperation("app-2"); got == appCreateAmbiguousRetryOperation("app-1") {
 		t.Fatalf("app acknowledgement is not source-scoped: %q", got)
@@ -1370,7 +1370,8 @@ func TestMigrationExecutorRunsMinimalCustomerLifecycle(t *testing.T) {
 			deploymentID++
 			item := TargetAppDeployment{
 				ID: deploymentID, Status: "COMPLETED", AppInstanceID: instance.ID,
-				CreatedAt: now, UpdatedAt: now,
+				PostDeploymentStatus: "not_applicable",
+				CreatedAt:            now, UpdatedAt: now,
 				AppServiceDeployments: []TargetAppServiceDeployment{{
 					ID: deploymentID + 100, Status: "COMPLETED",
 					AppServiceID: service.ID, Force: true,
@@ -1473,6 +1474,14 @@ func TestMigrationExecutorRunsMinimalCustomerLifecycle(t *testing.T) {
 	if _, err := executor.Apply(ctx, export, plan, prepared); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
+	failed := deployments[deploymentID]
+	failed.PostDeploymentStatus = "failed"
+	deployments[deploymentID] = failed
+	if _, err := executor.Verify(ctx, export, plan, prepared, TargetCluster{ID: 3, OrgID: 1, Status: "OK", IPs: []string{"203.0.113.10"}}); err == nil || !strings.Contains(err.Error(), "post-deployment") {
+		t.Fatalf("verification accepted recorded rollout with failed scripts: %v", err)
+	}
+	failed.PostDeploymentStatus = "completed"
+	deployments[deploymentID] = failed
 	cluster := TargetCluster{
 		ID: 3, OrgID: 1, Status: "OK", IPs: []string{"203.0.113.10"},
 	}
@@ -1485,11 +1494,11 @@ func TestMigrationExecutorRunsMinimalCustomerLifecycle(t *testing.T) {
 	}
 	output := strings.Join(progress, "\n")
 	for _, expected := range []string{
-		`Creating target app "demo" with initial instance "prod"`,
+		`Creating target app "demo" with initial app environment "prod"`,
 		`Target app "demo" created (ID 10).`,
-		`Initial target instance "prod" created (ID 20).`,
+		`Initial target app environment "prod" created (ID 20).`,
 		`Service "nginx" (ID 21) is already enabled.`,
-		`Launching target deployment for app instance ID 20...`,
+		`Launching target deployment for app environment ID 20...`,
 		`Target deployment ID 31 completed.`,
 		`skipping the second deployment`,
 	} {

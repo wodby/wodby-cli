@@ -489,6 +489,10 @@ func preparedStackEnvVars(appName, targetName string, items []stackConfigService
 				findings = append(findings, stackConfigBlocker(appName, item.instance.Source.Name, "env var "+name, "protected source value is redacted; create a fresh Wodby 1 export with secret access before migration"))
 				continue
 			}
+			if variable.Value == "" {
+				findings = append(findings, stackConfigBlocker(appName, item.instance.Source.Name, "stack service "+targetName+" env var "+name, "Wodby 2 does not accept empty custom environment-variable values; configure a non-empty source value or explicitly remove the source override before migration"))
+				continue
+			}
 			observations[name] = append(observations[name], stackEnvObservation{
 				instanceID: item.instance.Source.UUID,
 				sourceName: item.source.Name,

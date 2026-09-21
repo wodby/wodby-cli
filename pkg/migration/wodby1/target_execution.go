@@ -625,7 +625,14 @@ type TargetStackServiceSetting struct {
 }
 
 type TargetServiceBuildCapability struct {
-	Connect bool `json:"connect"`
+	Connect      bool                            `json:"connect"`
+	Boilerplates []TargetServiceBuildBoilerplate `json:"boilerplates,omitempty"`
+}
+
+// TargetServiceBuildBoilerplate identifies a starter repository offered by the target service.
+type TargetServiceBuildBoilerplate struct {
+	Name    string `json:"name"`
+	Default bool   `json:"default"`
 }
 
 type TargetServiceImportCapability struct {

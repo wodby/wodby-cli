@@ -12,7 +12,7 @@ import (
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "wodby",
-		Short: "CLI client for Wodby 2.0",
+		Short: "CLI client for Wodby 2",
 	}
 
 	viper.SetEnvPrefix("wodby")

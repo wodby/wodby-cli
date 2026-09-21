@@ -19,7 +19,7 @@ const (
 	cliReferenceBaseURL = "https://wodby.com/docs/2.0/cli/"
 	faviconPath         = "../assets/images/favicon.svg"
 	siteName            = "Wodby Documentation"
-	indexDescription    = "Command-line reference for Wodby 2.0, including commands, options, aliases, and examples."
+	indexDescription    = "Command-line reference for Wodby 2, including commands, options, aliases, and examples."
 )
 
 type flagInfo struct {
@@ -487,7 +487,7 @@ var pageTemplate = template.Must(template.New("manual").Funcs(template.FuncMap{
   <section class="hero">
     <p class="eyebrow">CLI manual</p>
     <h1>Wodby CLI manual</h1>
-    <p class="lead">Command-line reference for Wodby 2.0.</p>
+    <p class="lead">Command-line reference for Wodby 2.</p>
   </section>
 
   <section class="section">

@@ -3,6 +3,7 @@ package wodby1
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -153,6 +154,40 @@ func (c *SourceClient) ExportServerWithBackups(ctx context.Context, uuid string,
 	)
 }
 
+// sourceExportAPIError explains known source failures while retaining diagnostic codes.
+// Unexpected response formats retain the bounded response body for troubleshooting.
+func sourceExportAPIError(statusCode int, status string, body []byte) error {
+	if len(body) > maxSourceErrorSize {
+		body = body[:maxSourceErrorSize]
+	}
+	var response struct {
+		Error struct {
+			Code       string `json:"code"`
+			Message    string `json:"message"`
+			Attributes struct {
+				Code string `json:"code"`
+			} `json:"attributes"`
+		} `json:"error"`
+	}
+	message := strings.TrimSpace(string(body))
+	if err := json.Unmarshal(body, &response); err == nil && strings.TrimSpace(response.Error.Message) != "" {
+		message = strings.TrimSpace(response.Error.Message)
+		if statusCode == http.StatusForbidden && response.Error.Attributes.Code == "migration_org_owner_or_admin_required" {
+			message = "source organization owner or admin access is required. Use --source-token with a Wodby 1 API token belonging to an owner or admin of the source organization"
+		}
+		if code := strings.TrimSpace(response.Error.Attributes.Code); code != "" {
+			message += " (code: " + code + ")"
+		}
+		if code := strings.TrimSpace(response.Error.Code); code != "" {
+			message += " (error ID: " + code + ")"
+		}
+	}
+	if message == "" {
+		return fmt.Errorf("Wodby 1 source export failed: %s", status)
+	}
+	return fmt.Errorf("Wodby 1 source export failed: %s: %s", status, message)
+}
+
 func sourceBackupQuery(backups SourceBackupSelection) url.Values {
 	query := url.Values{}
 	for instanceUUID, components := range backups {
@@ -194,7 +229,7 @@ func (c *SourceClient) getExport(
 ) (Export, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.resolve(path, query), nil)
 	if err != nil {
-		return Export{}, errors.WithStack(err)
+		return Export{}, errors.Wrap(err, "Wodby 1 source export failed")
 	}
 	req.Header.Set("Accept", "application/json")
 	if strings.TrimSpace(c.token) != "" {
@@ -205,34 +240,30 @@ func (c *SourceClient) getExport(
 	httpClient.Timeout = timeout
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return Export{}, errors.WithStack(err)
+		return Export{}, errors.Wrap(err, "Wodby 1 source export failed")
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSize+1))
 	if err != nil {
-		return Export{}, errors.WithStack(err)
+		return Export{}, errors.Wrap(err, "Wodby 1 source export failed")
 	}
 	if int64(len(body)) > maxSize {
-		return Export{}, errors.Errorf("source migration export exceeds the %d-byte safety limit", maxSize)
+		return Export{}, errors.Errorf("Wodby 1 source migration export exceeds the %d-byte safety limit", maxSize)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		errorBody := body
-		if len(errorBody) > maxSourceErrorSize {
-			errorBody = errorBody[:maxSourceErrorSize]
-		}
-		return Export{}, fmt.Errorf("source API request failed: %s: %s", resp.Status, strings.TrimSpace(string(errorBody)))
+		return Export{}, sourceExportAPIError(resp.StatusCode, resp.Status, body)
 	}
 
 	export, err := DecodeExport(body)
 	if err != nil {
-		return Export{}, errors.WithStack(err)
+		return Export{}, errors.Wrap(err, "Wodby 1 source export failed")
 	}
 	if err := export.ValidateSource(kind, uuid); err != nil {
 		return Export{}, err
 	}
 	if !export.SecretsIncluded {
-		return Export{}, errors.New("protected source migration export did not include required secrets")
+		return Export{}, errors.New("protected Wodby 1 source migration export did not include required secrets")
 	}
 	export.ConfigMAC, err = export.AuthenticatedConfigDigest(c.token)
 	if err != nil {

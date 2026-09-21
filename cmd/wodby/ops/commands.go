@@ -3840,7 +3840,7 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 	cmd.AddCommand(newAppRouteCommand("route", []string{"routes"}, "Manage app environment routes", instanceFilterArg))
 	cmd.AddCommand(newAppPortCommand("port", []string{"ports"}, "Manage app environment ports", instanceFilterArg))
 	cmd.AddCommand(newAppCertCommand("cert", []string{"certs", "certificate", "certificates"}, "Manage app environment certificates", instanceFilterArg))
-	cmd.AddCommand(newInstanceBuildCommand(), newInstanceDeploymentCommand(), newInstanceBackupCommand(), newInstanceImportCommand())
+	cmd.AddCommand(newInstanceBuildCommand(), newInstanceDeploymentCommand(), newInstanceBackupCommand(), newInstanceImportCommand(), newWorkspaceCommand(out))
 	return cmd
 }
 

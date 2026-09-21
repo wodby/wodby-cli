@@ -696,7 +696,7 @@ func (c *TargetClient) preflightWodbyCIPipelines(
 	findings := []ReviewItem{}
 	for _, instance := range app.Instances {
 		if strings.EqualFold(strings.TrimSpace(stringProperty(instance.Source.Properties, "deployment_type")), "ci") ||
-			!instance.UsesWodbyCI || instance.BuildSource == nil || instance.BuildSource.Input.GitRef == nil ||
+			!instance.UsesWodbyCI || instance.BuildSource == nil || instance.BuildSource.Input.BuildSourceType != TargetBuildSourceConnect || instance.BuildSource.Input.GitRef == nil ||
 			instance.BuildSource.Input.GitRefType == nil {
 			continue
 		}
@@ -1082,7 +1082,7 @@ func (c *TargetClient) preflightInstance(
 	buildSource, buildFindings := prepareBuildSource(app, source, repositoryPlan, inspections, effective, opts)
 	prepared.BuildSource = buildSource
 	findings = append(findings, buildFindings...)
-	if repositoryPlan != nil && buildSource != nil {
+	if buildSource != nil && (repositoryPlan != nil || buildSource.Input.BuildSourceType == TargetBuildSourcePublic) {
 		inspection := byName[buildSource.ServiceName]
 		if pinned {
 			if plan.BuildServiceID != inspection.StackService.ID ||
@@ -1095,7 +1095,7 @@ func (c *TargetClient) preflightInstance(
 				)
 			}
 		}
-		if repositoryPlan.TargetService == "" {
+		if repositoryPlan != nil && repositoryPlan.TargetService == "" {
 			repositoryPlan.TargetService = buildSource.ServiceName
 		}
 		plan.BuildServiceID = inspection.StackService.ID
@@ -1426,12 +1426,17 @@ func prepareBuildSource(
 	if opts.SkipCode {
 		return nil, nil
 	}
+	vanilla := strings.EqualFold(strings.TrimSpace(stringProperty(instance.Properties, "deployment_type")), "vanilla")
+	buildKind := "connect-build"
+	if vanilla {
+		buildKind = "boilerplate-build"
+	}
 	buildServices := make([]TargetStackServiceInspection, 0, 1)
 	for _, inspection := range inspections {
 		if isTargetServiceDerivative(inspection) ||
 			inspection.ServiceRevision.Manifest == nil ||
 			inspection.ServiceRevision.Manifest.Build == nil ||
-			!inspection.ServiceRevision.Manifest.Build.Connect ||
+			(!inspection.ServiceRevision.Manifest.Build.Connect && (!vanilla || len(inspection.ServiceRevision.Manifest.Build.Boilerplates) == 0)) ||
 			!effective[inspection.StackService.Name] {
 			continue
 		}
@@ -1455,12 +1460,17 @@ func prepareBuildSource(
 				App:      app.Name,
 				Instance: instance.Name,
 				Subject:  "repository target service",
-				Message:  fmt.Sprintf("target service %q is not an enabled connect-build service", serviceSelector),
+				Message:  fmt.Sprintf("target service %q is not an enabled %s service", serviceSelector, buildKind),
 			}}
 		}
 	} else if len(buildServices) == 1 {
 		selected = buildServices[0]
 	} else if len(buildServices) == 0 {
+		if vanilla {
+			return nil, []ReviewItem{{
+				Severity: SeverityBlocking, App: app.Name, Instance: instance.Name,
+				Subject: "application code", Message: "vanilla deployment requires an enabled target service with a default boilerplate"}}
+		}
 		return nil, nil
 	} else {
 		return nil, []ReviewItem{{
@@ -1468,8 +1478,41 @@ func prepareBuildSource(
 			App:      app.Name,
 			Instance: instance.Name,
 			Subject:  "repository target service",
-			Message:  fmt.Sprintf("target stack has %d enabled connect-build services; select one with --target-code-service", len(buildServices)),
+			Message:  fmt.Sprintf("target stack has %d enabled %s services; select one with --target-code-service", len(buildServices), buildKind),
 		}}
+	}
+
+	// Vanilla code comes from the target catalog, independently of any app-level Git repository.
+	if vanilla {
+		boilerplates := selected.ServiceRevision.Manifest.Build.Boilerplates
+		if len(boilerplates) == 0 {
+			return nil, []ReviewItem{{
+				Severity: SeverityBlocking, App: app.Name, Instance: instance.Name,
+				Subject: "application code", Message: fmt.Sprintf("target service %q has no default boilerplate for vanilla deployment", selected.StackService.Name)}}
+		}
+		boilerplate := boilerplates[0]
+		for _, candidate := range boilerplates {
+			if candidate.Default {
+				boilerplate = candidate
+				break
+			}
+		}
+		if strings.TrimSpace(boilerplate.Name) == "" {
+			return nil, []ReviewItem{{
+				Severity: SeverityBlocking, App: app.Name, Instance: instance.Name,
+				Subject: "application code", Message: "target default boilerplate has no name"}}
+		}
+		return &PreparedBuildSource{
+				ServiceName: selected.StackService.Name,
+				Input: TargetBuildSourceInput{
+					BuildSourceType: TargetBuildSourcePublic,
+					Boilerplate:     &boilerplate.Name,
+				},
+			}, []ReviewItem{{
+				Severity: SeverityMigration, App: app.Name, Instance: instance.Name,
+				Subject: "application code",
+				Message: fmt.Sprintf("vanilla deployment will use target service %q default boilerplate %q", selected.StackService.Name, boilerplate.Name),
+			}}
 	}
 
 	connected := app.Repository != nil && repositoryPlan != nil && repositoryPlan.Action == "connect" &&

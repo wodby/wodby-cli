@@ -43,6 +43,12 @@ export WODBY_CLI_LATEST_URL=$(curl -s https://api.github.com/repos/wodby/wodby-c
 wget -qO- "${WODBY_CLI_LATEST_URL}" | sudo tar xz -C /usr/local/bin
 ```
 
+## CI workflow
+
+Use `wodby ci build` to build images, `wodby ci push` to push them to the
+registry, and `wodby ci deploy` to start deployment. `wodby ci release` remains
+an alias for `wodby ci push`, with the same arguments and flags.
+
 ## Documentation
 
 See the [Wodby CLI documentation](https://wodby.com/docs/2.0/dev/cli/) for usage

@@ -67,11 +67,11 @@ var Cmd = &cobra.Command{
 			}
 		}
 		if !released {
-			return errors.New("No app services have been released to deploy")
+			return errors.New("No app service images have been pushed to deploy")
 		}
 
 		if len(opts.services) == 0 {
-			logger.Info("Deploying all released services")
+			logger.Info("Deploying all services with pushed images")
 		}
 		servicesToDeploy, err := deploymentServices(config.BuiltServices, opts.services)
 		if err != nil {
@@ -127,7 +127,7 @@ func deploymentServices(builtServices []types.BuiltService, serviceNames []strin
 
 			found = true
 			if !svc.Released {
-				return nil, errors.New(fmt.Sprintf("Service %s hasn't been released", svc.Name))
+				return nil, errors.New(fmt.Sprintf("Image for service %s hasn't been pushed", svc.Name))
 			}
 			servicesToDeploy = append(servicesToDeploy, &types.ServiceDeploymentInput{
 				Name:           svc.Name,

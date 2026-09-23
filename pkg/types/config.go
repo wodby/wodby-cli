@@ -25,6 +25,8 @@ type (
 		DockerfilePath string
 		// DockerfileHash is the SHA-256 of the Dockerfile that produced the image.
 		DockerfileHash string
-		Released       bool
+		// Released records a successful image push. Keep the persisted field name
+		// compatible with CI state written by older CLI versions.
+		Released bool
 	}
 )

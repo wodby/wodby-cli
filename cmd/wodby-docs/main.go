@@ -22,6 +22,11 @@ const (
 	indexDescription    = "Command-line reference for Wodby 2, including commands, options, aliases, and examples."
 )
 
+// Preserve published reference URLs when a command is renamed.
+var commandRedirects = map[string]string{
+	"wodby_ci_release.html": "wodby_ci_push.html",
+}
+
 type flagInfo struct {
 	Name       string
 	Usage      string
@@ -146,9 +151,35 @@ func generate(outDir string) error {
 	if err := writeSitemap(outDir, commands); err != nil {
 		return err
 	}
+	for from, to := range commandRedirects {
+		if _, err := os.Stat(filepath.Join(outDir, to)); err != nil {
+			return fmt.Errorf("redirect target %s: %w", to, err)
+		}
+		var content bytes.Buffer
+		if err := redirectTemplate.Execute(&content, struct{ Target, Canonical string }{to, canonicalURL(to)}); err != nil {
+			return err
+		}
+		if err := writeFile(outDir, from, content.Bytes()); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
+
+var redirectTemplate = template.Must(template.New("redirect").Parse(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Command renamed | Wodby CLI</title>
+  <link rel="canonical" href="{{.Canonical}}">
+  <meta http-equiv="refresh" content="0; url={{.Target}}">
+</head>
+<body>
+  <p>This command has been renamed. See the <a href="{{.Target}}">current command reference</a>.</p>
+</body>
+</html>
+`))
 
 func prepareCommand(cmd *cobra.Command) {
 	cmd.DisableAutoGenTag = true

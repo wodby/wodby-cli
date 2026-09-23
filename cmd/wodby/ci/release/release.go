@@ -44,8 +44,9 @@ type options struct {
 var opts options
 
 var Cmd = &cobra.Command{
-	Use:   "release [SERVICE...]",
-	Short: "Push images",
+	Use:     "push [SERVICE...]",
+	Aliases: []string{"release"},
+	Short:   "Push images to the registry",
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		opts.services = args
 
@@ -65,18 +66,18 @@ var Cmd = &cobra.Command{
 			return errors.WithStack(err)
 		}
 
-		logger := log.WithField("stage", "run")
+		logger := log.WithField("stage", "push")
 		log.SetOutput(os.Stdout)
 		if viper.GetBool("verbose") {
 			log.SetLevel(log.DebugLevel)
 		}
 		if config.BuiltServices == nil {
-			return errors.New("No app services have been built to release")
+			return errors.New("No app services have been built to push")
 		}
 
 		var servicesToRelease []types.BuiltService
 		if len(opts.services) == 0 {
-			logger.Info("Releasing all built services")
+			logger.Info("Pushing images for all built services")
 			servicesToRelease = config.BuiltServices
 		} else {
 			for _, serviceName := range opts.services {
@@ -96,7 +97,7 @@ var Cmd = &cobra.Command{
 
 		dockerClient := docker.NewClient()
 		for _, service := range servicesToRelease {
-			logger.Infof("Releasing service %s", service.Name)
+			logger.Infof("Pushing image for service %s", service.Name)
 			extraTags, err := releaseExtraTags(service.Image, config.AppBuild.GitRefType, config.AppBuild.GitRef, opts.latestBranch, opts.branchTag)
 			if err != nil {
 				return errors.WithStack(err)
@@ -112,7 +113,7 @@ var Cmd = &cobra.Command{
 				}
 				err = dockerClient.Push(extraTag)
 				if err != nil {
-					log.Error("[ERROR] Failed to release image. If you're using Wodby Docker Registry make sure you are within registry storage limits.")
+					log.Error("[ERROR] Failed to push image. If you're using Wodby Docker Registry make sure you are within registry storage limits.")
 					return errors.WithStack(err)
 				}
 			}

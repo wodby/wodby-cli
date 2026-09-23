@@ -13,7 +13,7 @@ The CLI major version must match the Wodby platform major version:
 
 | Wodby platform | CLI releases | Source branch | Status |
 | --- | --- | --- | --- |
-| Wodby 1 | [1.x](https://github.com/wodby/wodby-cli/releases/tag/1.0.0) | [`master`](https://github.com/wodby/wodby-cli/tree/master) | Maintenance |
+| Wodby 1 | [1.x](https://github.com/wodby/wodby-cli/releases/tag/1.0.9) | [`master`](https://github.com/wodby/wodby-cli/tree/master) | Maintenance |
 | Wodby 2 | [2.x](https://github.com/wodby/wodby-cli/releases/latest) | [`2.0`](https://github.com/wodby/wodby-cli/tree/2.0) | Active development |
 
 GitHub's **Latest** release tracks Wodby 2. Wodby 1 users should install an

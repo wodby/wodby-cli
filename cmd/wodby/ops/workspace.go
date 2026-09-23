@@ -2,6 +2,7 @@ package ops
 
 import (
 	"fmt"
+
 	"github.com/spf13/cobra"
 )
 
@@ -22,7 +23,7 @@ func newWorkspaceCommand(out outputOptions) *cobra.Command {
 		return printClientResult(cmd, client, out, result, []string{"ready", "reason", "host", "port", "username", "workingDirectory", "hostKeyFingerprint"})
 	}}
 	connection.Long = "Return SSH connection details without changing local files. Add your public key to your Wodby account, verify the host fingerprint, and connect with ssh -p PORT USER@HOST. Use the returned workingDirectory for your remote agent."
-	cmd.AddCommand(connection, newRawBodyPostCommand("eligibility", "Check stack service workspace capability (JSON body: stackRevId, disabledServiceIds)", "/workspace-eligibility", []string{"eligible", "reasons", "sourceStackServiceId", "consumerStackServiceIds"}, out))
+	cmd.AddCommand(connection, newRawBodyPostCommand("eligibility", "Check workspace support (JSON body: stackRevId, disabledServiceIds, optional clusterId)", "/workspace-eligibility", []string{"eligible", "reasons", "sourceStackServiceId", "consumerStackServiceIds"}, out))
 	for _, operation := range []string{"prepare", "restart", "pause", "resume"} {
 		cmd.AddCommand(newClusterActionCommand(operation+" ENVIRONMENT_ID", fmt.Sprintf("%s workspace (restart affects SSH sessions)", operation), "/workspaces/%s/actions/"+operation, out))
 	}

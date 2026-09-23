@@ -66,7 +66,7 @@ Available Commands:
         init WODBY_INSTANCE_UUID
         run COMMAND
         build SERVICE/IMAGE
-        release
+        push
         deploy
     help         Help about any command
     version      Shows Wodby CLI version
@@ -82,3 +82,7 @@ Flags:
 
 Use "wodby [command] --help" for more information about a command.
 ```
+
+Use `wodby ci build` to build images, `wodby ci push` to push them to the
+registry, and `wodby ci deploy` to deploy them. `wodby ci release` remains
+an alias for `wodby ci push`, with the same arguments and flags.

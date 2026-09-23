@@ -62,7 +62,7 @@ func (c *Client) BuildWithRedactions(dockerfile string, tags []string, context s
 }
 
 // buildCommand explicitly uses Buildx and loads the result into the Docker
-// image store because the release command pushes the locally built tags.
+// image store because the push command uploads the locally built tags.
 func buildCommand(dockerfile string, tags []string, context string, buildArgs map[string]string) *exec.Cmd {
 	args := []string{"buildx", "build", "--load"}
 

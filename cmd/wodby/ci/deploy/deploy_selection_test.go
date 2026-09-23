@@ -15,7 +15,7 @@ func TestDeploymentServices(t *testing.T) {
 		{Name: "node", Image: "registry.example.com/demo:node-1"},
 	}
 
-	t.Run("returns all released services by default", func(t *testing.T) {
+	t.Run("returns all services with pushed images by default", func(t *testing.T) {
 		got, err := deploymentServices(builtServices, nil)
 		if err != nil {
 			t.Fatalf("deploymentServices() error = %v", err)
@@ -32,7 +32,7 @@ func TestDeploymentServices(t *testing.T) {
 
 	t.Run("rejects unreleased requested service", func(t *testing.T) {
 		_, err := deploymentServices(builtServices, []string{"node"})
-		if err == nil || !strings.Contains(err.Error(), "hasn't been released") {
+		if err == nil || !strings.Contains(err.Error(), "hasn't been pushed") {
 			t.Fatalf("deploymentServices() error = %v, want unreleased error", err)
 		}
 	})

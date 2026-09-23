@@ -13,7 +13,7 @@ The CLI major version must match the Wodby platform major version:
 
 | Wodby platform | CLI releases | Source branch | Status |
 | --- | --- | --- | --- |
-| Wodby 1 | [1.x](https://github.com/wodby/wodby-cli/releases/tag/1.0.0) | [`master`](https://github.com/wodby/wodby-cli/tree/master) | Maintenance |
+| Wodby 1 | [1.x](https://github.com/wodby/wodby-cli/releases/tag/1.0.9) | [`master`](https://github.com/wodby/wodby-cli/tree/master) | Maintenance |
 | Wodby 2 | [2.x](https://github.com/wodby/wodby-cli/releases/latest) | [`2.0`](https://github.com/wodby/wodby-cli/tree/2.0) | Active development |
 
 GitHub's **Latest** release tracks Wodby 2. Wodby 1 users should install an
@@ -42,6 +42,12 @@ esac
 export WODBY_CLI_LATEST_URL=$(curl -s https://api.github.com/repos/wodby/wodby-cli/releases/latest | grep "${WODBY_CLI_OS}-${WODBY_CLI_ARCH}" | grep browser_download_url | cut -d '"' -f 4)
 wget -qO- "${WODBY_CLI_LATEST_URL}" | sudo tar xz -C /usr/local/bin
 ```
+
+## CI workflow
+
+Use `wodby ci build` to build images, `wodby ci push` to push them to the
+registry, and `wodby ci deploy` to start deployment. `wodby ci release` remains
+an alias for `wodby ci push`, with the same arguments and flags.
 
 ## Documentation
 

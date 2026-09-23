@@ -85,9 +85,30 @@ func TestGenerateWritesSitemap(t *testing.T) {
 		t.Fatalf("Glob() error = %v", err)
 	}
 
-	if got, want := strings.Count(sitemapXML, "<url>"), len(htmlFiles); got != want {
+	if got, want := strings.Count(sitemapXML, "<url>"), len(htmlFiles)-len(commandRedirects); got != want {
 		t.Fatalf("sitemap URL count = %d, want %d", got, want)
 	}
+	assertContains(t, sitemapXML, canonicalURL("wodby_ci_push.html"))
+	assertNotContains(t, sitemapXML, canonicalURL("wodby_ci_release.html"))
+}
+
+func TestGeneratePreservesReleaseReferenceURL(t *testing.T) {
+	dir := t.TempDir()
+	if err := generate(dir); err != nil {
+		t.Fatal(err)
+	}
+	redirect, err := os.ReadFile(filepath.Join(dir, "wodby_ci_release.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContains(t, string(redirect), `content="0; url=wodby_ci_push.html"`)
+	assertContains(t, string(redirect), `<link rel="canonical" href="https://wodby.com/docs/2.0/cli/wodby_ci_push.html">`)
+	push, err := os.ReadFile(filepath.Join(dir, "wodby_ci_push.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContains(t, string(push), `<h1>wodby ci push</h1>`)
+	assertContains(t, string(push), `<code>release</code>`)
 }
 
 func TestGenerateWritesCollapsibleCommandNav(t *testing.T) {

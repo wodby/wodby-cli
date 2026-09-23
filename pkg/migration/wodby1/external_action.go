@@ -98,7 +98,7 @@ func (e *ExternalActionRequiredError) NextSteps() string {
 	}
 	b.WriteString("  3. Run the pipeline once, through `wodby ci deploy`. The build only reaches\n")
 	b.WriteString("     COMPLETED after its deployment finishes; `wodby ci build` and\n")
-	b.WriteString("     `wodby ci release` alone leave it IN_PROGRESS and this step repeats.\n")
+	b.WriteString("     `wodby ci push` alone leave it IN_PROGRESS and this step repeats.\n")
 	if ref := strings.TrimSpace(e.GitRef); ref != "" {
 		fmt.Fprintf(&b, "     Build the reviewed Git ref %q; other refs are not adopted.\n", ref)
 	}

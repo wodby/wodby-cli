@@ -42,8 +42,9 @@ type options struct {
 var opts options
 
 var Cmd = &cobra.Command{
-	Use:   "release [service...]",
-	Short: "Push images",
+	Use:     "push [service...]",
+	Aliases: []string{"release"},
+	Short:   "Push images to the registry",
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		opts.services = args
 
@@ -67,7 +68,7 @@ var Cmd = &cobra.Command{
 		services := make(map[string]types.Service)
 
 		if len(opts.services) == 0 {
-			fmt.Println("Releasing all services")
+			fmt.Println("Pushing images for all services")
 			services = config.BuildConfig.Services
 		} else {
 			fmt.Println("Validating services")
@@ -98,10 +99,10 @@ var Cmd = &cobra.Command{
 		}
 
 		if len(services) == 0 {
-			return errors.New("No valid services have been found for release")
+			return errors.New("No valid services have been found to push")
 		}
 
-		// Releasing services.
+		// Pushing service images.
 		imagesMap := make(map[string]bool)
 
 		docker := docker.NewClient()

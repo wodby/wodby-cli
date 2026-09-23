@@ -15,11 +15,11 @@ The CLI major version must match the Wodby platform major version:
 
 | Wodby platform | CLI releases | Source branch | Status |
 | --- | --- | --- | --- |
-| Wodby 1 | [1.x](https://github.com/wodby/wodby-cli/releases/tag/1.0.3) | [`master`](https://github.com/wodby/wodby-cli/tree/master) | Maintenance |
+| Wodby 1 | [1.x](https://github.com/wodby/wodby-cli/releases/tag/1.0.9) | [`master`](https://github.com/wodby/wodby-cli/tree/master) | Maintenance |
 | Wodby 2 | [2.x](https://github.com/wodby/wodby-cli/releases/latest) | [`2.0`](https://github.com/wodby/wodby-cli/tree/2.0) | Active development |
 
 GitHub's **Latest** release tracks Wodby 2. Wodby 1 users should install an
-explicit 1.x release, currently [1.0.3](https://github.com/wodby/wodby-cli/releases/tag/1.0.3),
+explicit 1.x release, currently [1.0.9](https://github.com/wodby/wodby-cli/releases/tag/1.0.9),
 instead of using the `/releases/latest` URL.
 
 ## Install
@@ -39,13 +39,13 @@ case "$(uname -m)" in
   *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
 esac
 
-WODBY_CLI_VERSION=1.0.3
+WODBY_CLI_VERSION=1.0.9
 curl -fsSL "https://github.com/wodby/wodby-cli/releases/download/${WODBY_CLI_VERSION}/wodby-${WODBY_CLI_OS}-${WODBY_CLI_ARCH}.tar.gz" \
   | sudo tar xz -C /usr/local/bin
 ```
 
 Windows users can download the matching archive from the
-[1.0.3 release](https://github.com/wodby/wodby-cli/releases/tag/1.0.3).
+[1.0.9 release](https://github.com/wodby/wodby-cli/releases/tag/1.0.9).
 
 ## Usage
 
@@ -66,7 +66,7 @@ Available Commands:
         init WODBY_INSTANCE_UUID
         run COMMAND
         build SERVICE/IMAGE
-        release
+        push
         deploy
     help         Help about any command
     version      Shows Wodby CLI version
@@ -82,3 +82,7 @@ Flags:
 
 Use "wodby [command] --help" for more information about a command.
 ```
+
+Use `wodby ci build` to build images, `wodby ci push` to push them to the
+registry, and `wodby ci deploy` to deploy them. `wodby ci release` remains
+an alias for `wodby ci push`, with the same arguments and flags.

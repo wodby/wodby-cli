@@ -23,7 +23,7 @@ func mergePreparedStackAdditions(appName string, instances []PreparedInstance) (
 					appName,
 					instance.Source.Name,
 					"additional stack service "+addition.Name,
-					"app instances resolve different Wodby 2 service revisions for one shared stack",
+					"app environments resolve different Wodby 2 service revisions for one shared stack",
 				))
 				continue
 			}
@@ -429,7 +429,7 @@ func preparedStackVersionOptions(appName, targetName string, items []stackConfig
 				Severity: SeverityMigration,
 				App:      appName,
 				Subject:  "service " + targetName + " versions",
-				Message:  "source instances resolve different target versions; each version will be applied as an app-instance service override",
+				Message:  "source instances resolve different target versions; each version will be applied as an app environment service override",
 			}}, nil
 		}
 		selected = version

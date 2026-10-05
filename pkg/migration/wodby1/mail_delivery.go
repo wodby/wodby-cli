@@ -97,7 +97,7 @@ func prepareMailDeliveryLinks(app *PreparedAppMigration) []ReviewItem {
 			app.StackConfiguration.Services[serviceName] = configuration
 			findings = append(findings, ReviewItem{
 				Severity: SeverityMigration, App: app.App.App.Name, Subject: "mail delivery",
-				Message: fmt.Sprintf("all app instances use Wodby 2 mail service %q; stack service %q link %q will be set stack-wide", sharedTarget, serviceName, targetMailDeliveryLinkName),
+				Message: fmt.Sprintf("all app environments use Wodby 2 mail service %q; stack service %q link %q will be set stack-wide", sharedTarget, serviceName, targetMailDeliveryLinkName),
 			})
 			continue
 		}
@@ -110,7 +110,7 @@ func prepareMailDeliveryLinks(app *PreparedAppMigration) []ReviewItem {
 			findings = append(findings, ReviewItem{
 				Severity: SeverityMigration, App: app.App.App.Name, Instance: item.instanceName,
 				Subject: "mail delivery",
-				Message: fmt.Sprintf("target service %q link %q will use %q for this app instance", item.serviceName, targetMailDeliveryLinkName, item.linkedServiceName),
+				Message: fmt.Sprintf("target service %q link %q will use %q for this app environment", item.serviceName, targetMailDeliveryLinkName, item.linkedServiceName),
 			})
 		}
 	}

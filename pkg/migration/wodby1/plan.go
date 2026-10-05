@@ -561,7 +561,7 @@ func validateAppStackStrategy(plan *Plan, app *AppPlan) {
 			app.Name,
 			instance.Name,
 			"target stack strategy",
-			"app instances resolve to different target stacks; one stack must be reused by every instance in an app, so provide one compatible --target-stack-id or consistent scoped mappings",
+			"app environments resolve to different target stacks; one stack must be reused by every instance in an app, so provide one compatible --target-stack-id or consistent scoped mappings",
 		)
 	}
 }

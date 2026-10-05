@@ -560,7 +560,7 @@ func generatedStackBlueprint(plan Plan, prepared PreparedMigration) (TargetStack
 			continue
 		}
 		if instance.Stack.ID != blueprint.ID || instance.Stack.RevID != blueprint.RevID {
-			return TargetStack{}, false, errors.New("app instances do not share one reviewed catalog stack revision")
+			return TargetStack{}, false, errors.New("app environments do not share one reviewed catalog stack revision")
 		}
 	}
 	if found && (blueprint.ID <= 0 || blueprint.RevID <= 0 || !blueprint.Public) {

@@ -363,7 +363,7 @@ func (c *TargetClient) PreflightTarget(
 			} else {
 				targetInstances, listErr := c.ListAppInstances(ctx, plan.Target.OrgID, existingApp.ID)
 				if listErr != nil {
-					return PreparedMigration{}, errors.Wrap(listErr, "inspect selected target app instances")
+					return PreparedMigration{}, errors.Wrap(listErr, "inspect selected target app environments")
 				}
 				for _, sourceInstance := range appExport.Instances {
 					for _, targetInstance := range targetInstances {
@@ -385,7 +385,7 @@ func (c *TargetClient) PreflightTarget(
 				}
 				findings = append(findings, ReviewItem{
 					Severity: SeverityMigration, App: appExport.App.Name, Subject: "target app",
-					Message: fmt.Sprintf("existing Wodby 2 app %q (ID %d) will be reused; only the planned new app instance will be created", existingApp.Name, existingApp.ID),
+					Message: fmt.Sprintf("existing Wodby 2 app %q (ID %d) will be reused; only the planned new app environment will be created", existingApp.Name, existingApp.ID),
 				})
 			}
 		} else if appFound && existingApp.ID != allowedTargetAppID && !allowRecovery {
@@ -567,7 +567,7 @@ func (c *TargetClient) PreflightTarget(
 				Severity: SeverityConfirmation,
 				App:      appExport.App.Name,
 				Subject:  "existing target stack configuration",
-				Message:  "the selected existing target stack will receive a new published revision containing migrated replicas, resources, versions, variables, settings, schedules, and service links; existing app instances remain pinned to their current revisions and are not changed automatically",
+				Message:  "the selected existing target stack will receive a new published revision containing migrated replicas, resources, versions, variables, settings, schedules, and service links; existing app environments remain pinned to their current revisions and are not changed automatically",
 			})
 		}
 		prepared.Apps = append(prepared.Apps, preparedApp)

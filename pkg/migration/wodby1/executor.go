@@ -263,6 +263,16 @@ func (e *MigrationExecutor) Prepare(
 		}
 	}
 	for _, item := range prepared.Instances {
+		if failed[item.Source.UUID] || item.Workspace == nil {
+			continue
+		}
+		instance := instances[item.Source.UUID]
+		e.reportProgress("Step: set up the workspace of target app environment %q (ID %d).", item.Source.Name, instance.ID)
+		if err := e.waitWorkspaceReady(ctx, instance.ID); err != nil {
+			recordFailure(item, "workspace setup", err)
+		}
+	}
+	for _, item := range prepared.Instances {
 		if failed[item.Source.UUID] {
 			continue
 		}
@@ -1538,6 +1548,10 @@ func (e *MigrationExecutor) ensureApp(
 		CIIntegrationID:        &ciIntegrationID,
 		DeferInitialDeployment: true,
 	}
+	createInput.ExecutionMode, createInput.Workspace, createInput.ServiceOverrides, err = workspaceCreationInput(initial)
+	if err != nil {
+		return TargetApp{}, TargetAppInstance{}, err
+	}
 	if err := validateTargetCreateAppInput(createInput); err != nil {
 		return TargetApp{}, TargetAppInstance{}, err
 	}
@@ -1682,6 +1696,10 @@ func (e *MigrationExecutor) ensureInstance(
 		CIIntegrationID:        &ciIntegrationID,
 		DeferInitialDeployment: true,
 	}
+	input.ExecutionMode, input.Workspace, input.ServiceOverrides, err = workspaceCreationInput(prepared)
+	if err != nil {
+		return TargetAppInstance{}, err
+	}
 	if err := validateTargetCreateAppInstanceInput(input); err != nil {
 		return TargetAppInstance{}, err
 	}
@@ -1774,7 +1792,109 @@ func validatePreparedInstance(
 	if clusterID > 0 && item.ClusterID != clusterID {
 		return errors.New("target app environment cluster does not match the approved migration")
 	}
+	// An installation without workspace support ignores the request's
+	// workspace fields and would create a built environment instead.
+	if isWorkspace := strings.EqualFold(item.ExecutionMode, TargetExecutionModeWorkspace); isWorkspace != (prepared.Workspace != nil) {
+		if prepared.Workspace != nil {
+			return errors.New("target app environment is not a development workspace as the approved migration requires")
+		}
+		return errors.New("target app environment is a development workspace, which the approved migration does not plan")
+	}
+	if prepared.Workspace != nil && item.Workspace != nil && item.Workspace.Branch != prepared.Workspace.Branch {
+		return errors.Errorf("target workspace uses branch %q, expected %q", item.Workspace.Branch, prepared.Workspace.Branch)
+	}
 	return nil
+}
+
+// workspaceCreationInput returns the workspace part of an environment creation
+// request, or zero values for a standard environment. A workspace fixes its
+// repository and its code services at creation, so the request carries
+// everything prepareInstance would otherwise change on them afterwards: the
+// repository, the code services' versions and every service state that
+// differs from the stack revision's default.
+func workspaceCreationInput(prepared PreparedInstance) (string, *TargetNewWorkspaceInput, []TargetAppServiceOverrideInput, error) {
+	workspace := prepared.Workspace
+	if workspace == nil {
+		return "", nil, nil, nil
+	}
+	if prepared.BuildSource == nil || prepared.BuildSource.ServiceName != workspace.SourceServiceName ||
+		prepared.BuildSource.Input.BuildSourceType != TargetBuildSourceConnect {
+		return "", nil, nil, errors.New("workspace migration is missing its connected Git repository")
+	}
+	versions := map[string]string{}
+	for _, mapping := range prepared.Services {
+		if mapping.InstanceVersion != "" {
+			versions[mapping.Target.StackService.Name] = mapping.InstanceVersion
+		}
+	}
+	overrides := []TargetAppServiceOverrideInput{}
+	sourceFound := false
+	for _, inspection := range prepared.StackServices {
+		service := inspection.StackService
+		override := TargetAppServiceOverrideInput{ID: service.ID}
+		changed := false
+		if enabled, known := prepared.EffectiveState[service.Name]; known && enabled == service.Disabled {
+			disabled := !enabled
+			override.Disabled = &disabled
+			changed = true
+		}
+		if version := versions[service.Name]; version != "" && workspace.IsCodeService(service.Name) {
+			override.Version = &version
+			changed = true
+		}
+		if service.Name == workspace.SourceServiceName {
+			source := prepared.BuildSource.Input
+			override.BuildSource = &source
+			sourceFound = true
+			changed = true
+		}
+		if changed {
+			overrides = append(overrides, override)
+		}
+	}
+	if !sourceFound {
+		return "", nil, nil, errors.Errorf("target stack revision has no workspace code service %q", workspace.SourceServiceName)
+	}
+	sort.Slice(overrides, func(i, j int) bool { return overrides[i].ID < overrides[j].ID })
+	return TargetExecutionModeWorkspace, &TargetNewWorkspaceInput{Branch: workspace.Branch}, overrides, nil
+}
+
+// waitWorkspaceReady waits until Wodby 2 has cloned the repository and run the
+// service's preparation commands. Wodby 2 starts that setup itself after the
+// first deployment; code services run only once it has finished.
+func (e *MigrationExecutor) waitWorkspaceReady(ctx context.Context, appInstanceID int) error {
+	reported := ""
+	return e.poll(ctx, "target workspace setup", func(ctx context.Context) (bool, error) {
+		instance, err := e.target.GetAppInstance(ctx, appInstanceID)
+		if err != nil {
+			return false, err
+		}
+		workspace := instance.Workspace
+		if workspace == nil {
+			return false, errors.Errorf("target app environment ID %d reports no workspace state", appInstanceID)
+		}
+		state := strings.ToLower(strings.TrimSpace(workspace.PreparationState))
+		switch state {
+		case targetWorkspacePreparationReady:
+			if workspace.Initialized {
+				return true, nil
+			}
+		case "failed", "interrupted":
+			detail := strings.TrimSpace(workspace.Error)
+			if detail == "" {
+				detail = "see the workspace task in Wodby 2"
+			}
+			return false, errors.Errorf(
+				"workspace setup of target app environment ID %d %s: %s. Fix the cause, run `wodby app environment workspace prepare %d`, then rerun the same --apply command",
+				appInstanceID, state, detail, appInstanceID,
+			)
+		}
+		if state != reported {
+			e.reportProgress("Workspace of target app environment ID %d is being set up (%s)...", appInstanceID, firstNonEmpty(state, "queued"))
+			reported = state
+		}
+		return false, nil
+	})
 }
 
 const migrationRecoveryWindow = 5 * time.Minute
@@ -1916,8 +2036,11 @@ func (e *MigrationExecutor) prepareInstance(
 		if !ok {
 			return errors.Errorf("target app environment is missing mapped service %q", mapping.Target.StackService.Name)
 		}
-		if err := e.ensureServiceReplicas(ctx, state, prepared.Source.UUID, target, mapping.Replicas); err != nil {
-			return err
+		// A workspace runs its code services with one replica and rejects a change.
+		if !prepared.Workspace.IsCodeService(target.Name) {
+			if err := e.ensureServiceReplicas(ctx, state, prepared.Source.UUID, target, mapping.Replicas); err != nil {
+				return err
+			}
 		}
 		if err := e.ensureAppServiceResources(ctx, state, prepared.Source.UUID, target, mapping.Resources); err != nil {
 			return err
@@ -1950,7 +2073,7 @@ func (e *MigrationExecutor) prepareInstance(
 				target,
 				instanceSource,
 				mapping.Target,
-				prepared.DisableCronSchedules,
+				prepared.DisableCronSchedules || prepared.Workspace != nil,
 			); err != nil {
 				return err
 			}
@@ -1969,7 +2092,8 @@ func (e *MigrationExecutor) prepareInstance(
 			return err
 		}
 	}
-	if prepared.BuildSource != nil && strings.TrimSpace(prepared.BuildSource.Input.BuildSourceType) != "" {
+	// A workspace got its repository at creation and rejects a later change.
+	if prepared.Workspace == nil && prepared.BuildSource != nil && strings.TrimSpace(prepared.BuildSource.Input.BuildSourceType) != "" {
 		service, ok := byName[prepared.BuildSource.ServiceName]
 		if !ok {
 			return errors.New("target code service disappeared after preflight")
@@ -3056,7 +3180,8 @@ func (e *MigrationExecutor) ensureTechnicalDeployment(
 		return errors.Wrap(err, "list target services before deployment")
 	}
 	var build *TargetAppBuild
-	if prepared.BuildSource != nil {
+	// A workspace runs its checkout, so it is deployed without a build.
+	if prepared.BuildSource != nil && prepared.Workspace == nil {
 		service, err := exactAppService(services, prepared.BuildSource.ServiceName)
 		if err != nil {
 			return err
@@ -5146,7 +5271,11 @@ func (e *MigrationExecutor) verifyInstance(
 			return errors.Errorf("target service %q enabled state no longer matches the source", inspection.StackService.Name)
 		}
 	}
-	if prepared.BuildSource != nil && strings.TrimSpace(prepared.BuildSource.Input.BuildSourceType) != "" {
+	if prepared.Workspace != nil {
+		if err := verifyWorkspace(prepared, instance, byName); err != nil {
+			return err
+		}
+	} else if prepared.BuildSource != nil && strings.TrimSpace(prepared.BuildSource.Input.BuildSourceType) != "" {
 		service, ok := byName[prepared.BuildSource.ServiceName]
 		if !ok || !operationSucceeded(resource, operationKey("build_source", strconv.Itoa(service.ID))) {
 			return errors.New("target build source is not recorded as successfully reconciled")
@@ -5172,7 +5301,7 @@ func (e *MigrationExecutor) verifyInstance(
 				mapping.TargetVersion,
 			)
 		}
-		if mapping.Replicas != nil && service.Replicas != *mapping.Replicas {
+		if mapping.Replicas != nil && service.Replicas != *mapping.Replicas && !prepared.Workspace.IsCodeService(service.Name) {
 			return errors.Errorf("target service %q uses %d replicas, expected %d", service.Name, service.Replicas, *mapping.Replicas)
 		}
 		if mapping.Resources != nil {
@@ -5206,7 +5335,7 @@ func (e *MigrationExecutor) verifyInstance(
 				service.ID,
 				instanceSource,
 				mapping.Target,
-				prepared.DisableCronSchedules,
+				prepared.DisableCronSchedules || prepared.Workspace != nil,
 			); err != nil {
 				return err
 			}
@@ -5239,6 +5368,26 @@ func (e *MigrationExecutor) verifyInstance(
 		if !strings.EqualFold(imported.Status, "COMPLETED") {
 			return errors.Errorf("target data import ID %d status is %q", imported.ID, imported.Status)
 		}
+	}
+	return nil
+}
+
+// verifyWorkspace checks that the environment is still the planned workspace:
+// set up, on the reviewed branch, with its code in the reviewed service.
+func verifyWorkspace(prepared PreparedInstance, instance TargetAppInstance, services map[string]TargetAppService) error {
+	workspace := instance.Workspace
+	if !strings.EqualFold(instance.ExecutionMode, TargetExecutionModeWorkspace) || workspace == nil {
+		return errors.Errorf("target app environment %q is not a development workspace", instance.Name)
+	}
+	if workspace.Branch != prepared.Workspace.Branch {
+		return errors.Errorf("target workspace uses branch %q, expected %q", workspace.Branch, prepared.Workspace.Branch)
+	}
+	source, ok := services[prepared.Workspace.SourceServiceName]
+	if !ok || workspace.SourceAppServiceID != source.ID {
+		return errors.Errorf("target workspace code is not held by service %q", prepared.Workspace.SourceServiceName)
+	}
+	if !workspace.Initialized || !strings.EqualFold(workspace.PreparationState, targetWorkspacePreparationReady) {
+		return errors.Errorf("target workspace setup is %q, expected ready", workspace.PreparationState)
 	}
 	return nil
 }

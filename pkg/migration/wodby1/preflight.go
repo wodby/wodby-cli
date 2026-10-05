@@ -105,6 +105,26 @@ type PreparedInstance struct {
 	ExternalCIOnly       bool
 	ExternalCI           *PreparedExternalCI
 	ServiceLinks         []PreparedAppServiceLink
+	// Workspace is set when the instance is created as a development
+	// workspace: its code is checked out from Git instead of built by CI.
+	Workspace *PreparedWorkspace
+}
+
+// PreparedWorkspace holds what a workspace fixes at creation. Stack services
+// are kept by name because a generated target stack gets new IDs at apply.
+type PreparedWorkspace struct {
+	Branch string
+	// SourceServiceName is the service that holds the checkout.
+	SourceServiceName string
+	// CodeServiceNames are the source and the services that mount its code.
+	// Wodby 2 rejects version, state and replica changes to them after
+	// creation.
+	CodeServiceNames map[string]bool
+}
+
+// IsCodeService reports whether the workspace fixes the named target service.
+func (w *PreparedWorkspace) IsCodeService(name string) bool {
+	return w != nil && w.CodeServiceNames[name]
 }
 
 // PreparedExternalCI carries the third-party CI facts resolved while planning
@@ -477,6 +497,7 @@ func (c *TargetClient) PreflightTarget(
 				instancePlan,
 				plan.Target.OrgID,
 				plan.Target.ProjectID,
+				plan.Target.ClusterID,
 				appPlan.Repository,
 				opts,
 				plan.Target.OrgCapabilities != nil && !plan.Target.OrgCapabilities.CronSchedules,
@@ -504,6 +525,7 @@ func (c *TargetClient) PreflightTarget(
 				contextPlan,
 				plan.Target.OrgID,
 				plan.Target.ProjectID,
+				plan.Target.ClusterID,
 				appPlan.Repository,
 				opts,
 				plan.Target.OrgCapabilities != nil && !plan.Target.OrgCapabilities.CronSchedules,
@@ -840,6 +862,7 @@ func (c *TargetClient) preflightInstance(
 	plan *InstancePlan,
 	targetOrgID int,
 	targetProjectID int,
+	targetClusterID int,
 	repositoryPlan *RepositoryPlan,
 	opts TargetPreflightOptions,
 	disableCronSchedules bool,
@@ -1037,6 +1060,29 @@ func (c *TargetClient) preflightInstance(
 		}
 	}
 
+	if plan.Workspace != nil {
+		// A workspace has its own SSH runner, and Wodby 2 keeps the stack's
+		// SSH services disabled in it.
+		replaced := []string{}
+		for _, inspection := range inspections {
+			name := inspection.StackService.Name
+			if !strings.EqualFold(strings.TrimSpace(inspection.StackService.Type), "ssh") || !effective[name] {
+				continue
+			}
+			effective[name] = false
+			replaced = append(replaced, fmt.Sprintf("%q", name))
+		}
+		if len(replaced) != 0 {
+			findings = append(findings, ReviewItem{
+				Severity: SeverityMigration,
+				App:      app.Name,
+				Instance: source.Name,
+				Subject:  "workspace SSH access",
+				Message:  fmt.Sprintf("target SSH service(s) %s stay disabled; the workspace has its own SSH endpoint for its owner", strings.Join(replaced, ", ")),
+			})
+		}
+	}
+
 	prepared := PreparedInstance{
 		Source:               source,
 		SkipCode:             opts.SkipCode,
@@ -1100,6 +1146,17 @@ func (c *TargetClient) preflightInstance(
 		}
 		plan.BuildServiceID = inspection.StackService.ID
 		plan.BuildServiceRevID = inspection.StackService.ServiceRevID
+	}
+	if plan.Workspace != nil {
+		workspace, workspaceFindings, err := c.preflightWorkspace(ctx, app, source, plan, stack, inspections, effective, buildSource, targetClusterID)
+		if err != nil {
+			return PreparedInstance{}, nil, err
+		}
+		prepared.Workspace = workspace
+		// A workspace is never built, so neither Wodby CI nor a CI
+		// integration applies to it.
+		prepared.UsesWodbyCI = false
+		findings = append(findings, workspaceFindings...)
 	}
 
 	if !opts.SkipData {
@@ -1574,6 +1631,110 @@ func prepareBuildSource(
 			Subject:  "repository build source",
 			Message:  fmt.Sprintf("target service %q will build Git %s %q", selected.StackService.Name, strings.ToLower(gitRefType), gitRef),
 		}}
+}
+
+// preflightWorkspace checks that a direct-Git instance can become a workspace:
+// its repository is linked through a Git integration, it deploys a branch, and
+// Wodby 2 accepts the selected services and cluster. It returns nil with a
+// blocking finding when the instance cannot be one.
+func (c *TargetClient) preflightWorkspace(
+	ctx context.Context,
+	app App,
+	source Instance,
+	plan *InstancePlan,
+	stack TargetStack,
+	inspections []TargetStackServiceInspection,
+	effective map[string]bool,
+	buildSource *PreparedBuildSource,
+	targetClusterID int,
+) (*PreparedWorkspace, []ReviewItem, error) {
+	blocker := func(message string) (*PreparedWorkspace, []ReviewItem, error) {
+		return nil, []ReviewItem{{
+			Severity: SeverityBlocking, App: app.Name, Instance: source.Name,
+			Subject: "development workspace", Message: message,
+		}}, nil
+	}
+	// The plan already blocks any other deployment type and says why.
+	if !strings.EqualFold(stringProperty(source.Properties, "deployment_type"), "git") {
+		return nil, nil, nil
+	}
+	if buildSource == nil || buildSource.Input.BuildSourceType != TargetBuildSourceConnect ||
+		buildSource.Input.GitRef == nil || buildSource.Input.GitRefType == nil {
+		return blocker("a workspace needs the app's repository linked through a Wodby 2 Git integration; pass --target-git-integration-id (and --target-repository-name when the names differ), or migrate this instance without the workspace option")
+	}
+	branch := strings.TrimSpace(*buildSource.Input.GitRef)
+	if refType := *buildSource.Input.GitRefType; refType != TargetGitRefBranch {
+		return blocker(fmt.Sprintf(
+			"a workspace is created from a branch, but this instance deploys Git %s %q; pass --target-git-ref BRANCH with --target-git-ref-type branch, or migrate this instance without the workspace option",
+			strings.ToLower(refType), branch,
+		))
+	}
+
+	input := TargetWorkspaceEligibilityInput{StackRevID: stack.RevID, DisabledServiceIDs: []int{}}
+	if targetClusterID > 0 {
+		input.ClusterID = &targetClusterID
+	}
+	byID := make(map[int]string, len(inspections))
+	for _, inspection := range inspections {
+		// A service the migration adds to the stack has no ID in this revision yet.
+		if inspection.StackService.ID <= 0 {
+			continue
+		}
+		byID[inspection.StackService.ID] = inspection.StackService.Name
+		if !effective[inspection.StackService.Name] {
+			input.DisabledServiceIDs = append(input.DisabledServiceIDs, inspection.StackService.ID)
+		}
+	}
+	sort.Ints(input.DisabledServiceIDs)
+	eligibility, err := c.WorkspaceEligibility(ctx, input)
+	if err != nil {
+		var apiErr *rest.APIError
+		if errors.As(err, &apiErr) && (apiErr.StatusCode == 404 || apiErr.StatusCode == 405) {
+			return blocker("the target Wodby 2 installation does not support development workspaces; migrate this instance without the workspace option")
+		}
+		return nil, nil, errors.Wrapf(err, "check workspace support for %s/%s", app.Name, source.Name)
+	}
+	if !eligibility.Eligible {
+		reasons := strings.Join(eligibility.Reasons, "; ")
+		if reasons == "" {
+			reasons = "Wodby 2 gave no reason"
+		}
+		return blocker(fmt.Sprintf("target stack %q cannot run as a workspace on the selected cluster: %s. Migrate this instance without the workspace option to build it with CI instead", stack.Name, reasons))
+	}
+	sourceName := ""
+	if eligibility.SourceStackServiceID != nil {
+		sourceName = byID[*eligibility.SourceStackServiceID]
+	}
+	if sourceName == "" {
+		return blocker("Wodby 2 did not report which target service holds the workspace code")
+	}
+	if sourceName != buildSource.ServiceName {
+		return blocker(fmt.Sprintf("the workspace code belongs to target service %q, but the repository is mapped to %q; select the code service with --target-code-service %s", sourceName, buildSource.ServiceName, sourceName))
+	}
+	workspace := &PreparedWorkspace{
+		Branch:            branch,
+		SourceServiceName: sourceName,
+		CodeServiceNames:  map[string]bool{sourceName: true},
+	}
+	consumers := []string{}
+	for _, id := range eligibility.ConsumerStackServiceIDs {
+		name := byID[id]
+		if name == "" || workspace.CodeServiceNames[name] {
+			continue
+		}
+		workspace.CodeServiceNames[name] = true
+		consumers = append(consumers, fmt.Sprintf("%q", name))
+	}
+	sort.Strings(consumers)
+	plan.Workspace.Branch = branch
+	message := fmt.Sprintf("target service %q will hold a checkout of Git branch %q", sourceName, branch)
+	if len(consumers) != 0 {
+		message += "; " + strings.Join(consumers, ", ") + " mount it"
+	}
+	return workspace, []ReviewItem{{
+		Severity: SeverityMigration, App: app.Name, Instance: source.Name,
+		Subject: "development workspace", Message: message,
+	}}, nil
 }
 
 func resolveImportDestination(

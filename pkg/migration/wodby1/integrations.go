@@ -114,6 +114,9 @@ func (c *TargetClient) prepareCIIntegration(ctx context.Context, app *PreparedAp
 	configurationFindings := externalCIConfigurationFindings(*app)
 	if target.CIIntegrationID > 0 {
 		for index := range app.Instances {
+			if app.Instances[index].Workspace != nil {
+				continue
+			}
 			app.Instances[index].CIIntegrationID = target.CIIntegrationID
 			app.Instances[index].UsesWodbyCI = false
 			app.Instances[index].ExternalCIOnly = true
@@ -122,6 +125,9 @@ func (c *TargetClient) prepareCIIntegration(ctx context.Context, app *PreparedAp
 	}
 	usesCustomCI := false
 	for index := range app.Instances {
+		if app.Instances[index].Workspace != nil {
+			continue
+		}
 		if app.Instances[index].SkipCode {
 			app.Instances[index].UsesWodbyCI = false
 			continue

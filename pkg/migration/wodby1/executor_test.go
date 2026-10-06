@@ -1257,11 +1257,18 @@ func TestTargetRouteCertificateMustBeLetsEncryptAndReady(t *testing.T) {
 	if err != nil || !ready {
 		t.Fatalf("ready certificate = %v, %v", ready, err)
 	}
-	route.Cert.Issuer = "custom"
-	if _, err := targetRouteCertificateReady(route, true, false, 0); err == nil {
-		t.Fatal("custom certificate issuer should not satisfy planned Let's Encrypt route")
+	// A certificate waits as pending until DNS reaches Wodby 2.
+	route.Cert.Status = "PENDING"
+	if ready, err := targetRouteCertificateReady(route, true, false, 0); err != nil || ready {
+		t.Fatalf("pending certificate = %v, %v; want not ready", ready, err)
 	}
-	route.Cert = &TargetCert{ID: 7, Issuer: "custom", Status: "OK", DNSNames: []string{"*.example.com"}}
+	route.Cert.Status = "OK"
+	route.Cert.Custom = true
+	if _, err := targetRouteCertificateReady(route, true, false, 0); err == nil {
+		t.Fatal("an uploaded certificate should not satisfy a planned Let's Encrypt route")
+	}
+	// An uploaded certificate reports its certificate authority as the issuer.
+	route.Cert = &TargetCert{ID: 7, Custom: true, Issuer: "Example Trust CA", Status: "OK", DNSNames: []string{"*.example.com"}}
 	ready, err = targetRouteCertificateReady(route, true, true, 7)
 	if err != nil || !ready {
 		t.Fatalf("mapped custom certificate = %v, %v", ready, err)
@@ -1749,10 +1756,42 @@ func TestProtectedTechnicalAuthTargetsRejectsMissingGeneratedRoute(t *testing.T)
 		plan,
 		[]TargetAppService{{ID: 10, Name: "nginx"}},
 		[]TargetAppPort{{ID: 20, AppServiceID: 10, Number: 80}},
-		[]TargetAppRoute{{ID: 30, Technical: true, AppServiceID: 10, PortID: 20}},
+		[]TargetAppRoute{{ID: 30, Technical: true, AppServiceID: 10, PortID: 21}},
 	)
-	if err == nil || !strings.Contains(err.Error(), "root technical route") {
+	if err == nil || !strings.Contains(err.Error(), "technical route corresponding") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// Wodby 1 keeps its primary flag on the custom domain, and Wodby 2 moves its
+// main flag there once the custom route exists. Neither may leave a generated
+// technical route without the source's basic auth.
+func TestProtectedTechnicalAuthTargetsIgnoreWherePrimarySits(t *testing.T) {
+	port := 80
+	prepared := PreparedInstance{Services: map[string]PreparedService{
+		"nginx": {Target: TargetStackServiceInspection{StackService: TargetStackService{Name: "nginx"}}},
+	}}
+	plan := &InstancePlan{Routes: []RoutePlan{
+		{Host: "dev.demo.wodby.cloud", Service: "nginx", PortNumber: &port, Action: "skip_technical", BasicAuth: true},
+		{Host: "example.com", Service: "nginx", PortNumber: &port, Action: "create_backend", Primary: true},
+	}}
+	services := []TargetAppService{{ID: 10, Name: "nginx"}}
+	ports := []TargetAppPort{{ID: 20, AppServiceID: 10, Number: 80}}
+	for name, routes := range map[string][]TargetAppRoute{
+		"before the custom route exists": {
+			{ID: 30, Technical: true, AppServiceID: 10, PortID: 20},
+			{ID: 31, Technical: true, Main: true, Primary: true, AppServiceID: 10, PortID: 20},
+		},
+		"after the custom route took the main flag": {
+			{ID: 30, Technical: true, AppServiceID: 10, PortID: 20},
+			{ID: 31, Technical: true, AppServiceID: 10, PortID: 20},
+			{ID: 32, Host: "example.com", Main: true, Primary: true, AppServiceID: 10, PortID: 20},
+		},
+	} {
+		targets, err := protectedTechnicalAuthTargets(prepared, plan, services, ports, routes)
+		if err != nil || len(targets) != 2 || targets[0].ID != 30 || targets[1].ID != 31 {
+			t.Fatalf("%s: targets = %#v, err = %v", name, targets, err)
+		}
 	}
 }
 

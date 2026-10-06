@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/pkg/errors"
+	"github.com/wodby/wodby-cli/pkg/api/rest"
 )
 
 const (
@@ -113,6 +116,24 @@ func (c *TargetClient) prepareCIIntegration(ctx context.Context, app *PreparedAp
 	}
 	configurationFindings := externalCIConfigurationFindings(*app)
 	if target.CIIntegrationID > 0 {
+		// Without this check a mistyped ID is first rejected when the app is
+		// created, after the stack and integrations already exist.
+		integration, err := c.GetIntegration(ctx, target.CIIntegrationID)
+		var apiErr *rest.APIError
+		switch {
+		case errors.As(err, &apiErr) && (apiErr.StatusCode == 404 || apiErr.StatusCode == 403):
+			configurationFindings = append(configurationFindings, ReviewItem{
+				Severity: SeverityBlocking, App: app.App.App.Name, Subject: "CI integration",
+				Message: fmt.Sprintf("--target-ci-integration-id %d is not an integration the target API key can use", target.CIIntegrationID),
+			})
+		case err != nil:
+			return nil, nil, err
+		case integration.OrgID != target.OrgID:
+			configurationFindings = append(configurationFindings, ReviewItem{
+				Severity: SeverityBlocking, App: app.App.App.Name, Subject: "CI integration",
+				Message: fmt.Sprintf("--target-ci-integration-id %d belongs to another organization", target.CIIntegrationID),
+			})
+		}
 		for index := range app.Instances {
 			app.Instances[index].CIIntegrationID = target.CIIntegrationID
 			app.Instances[index].UsesWodbyCI = false

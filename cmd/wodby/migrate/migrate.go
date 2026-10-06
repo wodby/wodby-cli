@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -341,6 +342,10 @@ func restartCommandSuggestion(cmd *cobra.Command, sourceKind string, sourceID st
 	cmd.Flags().Visit(func(flag *pflag.Flag) {
 		switch flag.Name {
 		case "apply", "verify", "restart", "rollback", "source-token":
+			return
+		// Visit also walks the root command's flags, which carry the
+		// Wodby 2 credentials.
+		case "api-key", "access-token":
 			return
 		}
 		name := "--" + flag.Name
@@ -1085,6 +1090,12 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 	if err != nil {
 		return err
 	}
+	if opts.rollback {
+		if !stateExists {
+			return errors.Errorf("no server migration state found for %s; there is nothing this migration created to roll back", sourceID)
+		}
+		return runServerMigrationRollback(cmd, opts, sourceID, planPath, statePaths)
+	}
 	if opts.verify && !stateExists {
 		return errors.Errorf("no applied server migration state found for %s; run the same command with --apply first", sourceID)
 	}
@@ -1720,10 +1731,10 @@ func sameStringMap(left, right map[string]string) bool {
 	return true
 }
 
+// sameSourceBackupSelection reports whether every requested snapshot is the one
+// the applied plan pinned. The request lists only the instances the operator
+// overrode, while the plan pins every instance that has imports.
 func sameSourceBackupSelection(left, right wodby1.SourceBackupSelection) bool {
-	if len(left) != len(right) {
-		return false
-	}
 	for instanceID, leftComponents := range left {
 		rightComponents, found := right[instanceID]
 		if !found {
@@ -1876,7 +1887,8 @@ func ensureArtifactDirectories(planPath, statePath string) error {
 	if err != nil {
 		return errors.WithStack(err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
+	// Windows reports 0777 for every directory; access there follows the ACL.
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || (runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0) {
 		return errors.Errorf("temporary Wodby migration directory %s must be a private directory with no group or other permissions", defaultDir)
 	}
 	for _, dir := range []string{filepath.Dir(planPath), filepath.Dir(statePath)} {
@@ -2409,6 +2421,9 @@ func runMigrationRollback(
 	if err != nil {
 		return err
 	}
+	if err := verifyRollbackTarget(cmd.Context(), targetClient, opts, state); err != nil {
+		return err
+	}
 	executor, err := wodby1.NewMigrationExecutor(targetClient, wodby1.MigrationExecutorOptions{
 		StatePath:        statePath,
 		PollInterval:     opts.pollInterval,
@@ -2427,6 +2442,115 @@ func runMigrationRollback(
 	}
 	fmt.Fprintln(w, cliColor(w, cliColorGreen, "\nRollback completed."))
 	fmt.Fprintf(w, "Removed the resume state at %s; Wodby 1 was not touched.\n", statePath)
+	return nil
+}
+
+// verifyRollbackTarget confirms that the configured API key and cluster are the
+// ones the migration was applied to. Rollback deletes by ID and reads a missing
+// resource as already deleted, so on another organization or endpoint it would
+// delete nothing, report success and discard the only record of what exists.
+func verifyRollbackTarget(ctx context.Context, targetClient *wodby1.TargetClient, opts *options, state *wodby1.MigrationState) error {
+	scope, err := targetClient.DiscoverTargetScope(ctx, wodby1.TargetScopeSelectors{
+		Project: opts.targetProject,
+		Cluster: opts.targetCluster,
+	})
+	if err != nil {
+		return errors.Wrap(err, "verify the rollback target")
+	}
+	if scope.Org.ID != state.Target.OrgID || scope.Cluster.ID != state.Target.ClusterID {
+		return errors.Errorf(
+			"cannot roll back: the current target resolves to organization ID %d and cluster ID %d, but the migration was applied to organization ID %d and cluster ID %d; use the original API key, API URL and --target-cluster. No Wodby 2 resource was deleted",
+			scope.Org.ID, scope.Cluster.ID, state.Target.OrgID, state.Target.ClusterID,
+		)
+	}
+	return nil
+}
+
+// runServerMigrationRollback rolls back every app of a server migration. It
+// plans all of them first, so one app that cannot be rolled back stops the
+// command before anything is deleted.
+func runServerMigrationRollback(cmd *cobra.Command, opts *options, sourceID, planPath string, statePaths []string) (runErr error) {
+	appNames := map[string]string{}
+	if reviewed, err := wodby1.LoadReviewedPlan(planPath); err == nil {
+		for _, app := range reviewed.Apps {
+			appNames[app.SourceUUID] = app.Name
+		}
+	}
+	type appRollback struct {
+		statePath string
+		state     *wodby1.MigrationState
+		plan      wodby1.RollbackPlan
+		name      string
+	}
+	rollbacks := make([]appRollback, 0, len(statePaths))
+	for _, path := range statePaths {
+		// Hold every lock until the end so a concurrent --apply cannot race
+		// the deletions.
+		stateLock, err := wodby1.AcquireMigrationStateLock(path)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if err := stateLock.Close(); runErr == nil && err != nil {
+				runErr = err
+			}
+		}()
+		state, err := wodby1.InspectMigrationState(path)
+		if err != nil {
+			return errors.Wrap(err, "inspect server app migration state")
+		}
+		name := appNames[state.Source.ID]
+		if name == "" {
+			name = state.Source.ID
+		}
+		plan, err := wodby1.PlanRollback(state)
+		if err != nil {
+			return errors.Wrapf(err, "app %s cannot be rolled back; no Wodby 2 resource was deleted", name)
+		}
+		rollbacks = append(rollbacks, appRollback{statePath: path, state: state, plan: plan, name: name})
+	}
+
+	w := cmd.OutOrStdout()
+	fmt.Fprintln(w, cliColor(w, cliColorBold+cliColorRed, "\nServer migration rollback"))
+	for _, item := range rollbacks {
+		fmt.Fprintln(w)
+		fmt.Fprint(w, item.plan.Describe(item.name))
+	}
+	if err := confirmRollback(cmd, opts.yes, sourceID); err != nil {
+		return err
+	}
+	targetClient, err := wodby1.NewTargetClient(types.APIConfig{
+		Endpoint: strings.TrimSpace(viper.GetString("api_base_url")),
+		Key:      strings.TrimSpace(viper.GetString("api_key")),
+	})
+	if err != nil {
+		return err
+	}
+	for _, item := range rollbacks {
+		if err := verifyRollbackTarget(cmd.Context(), targetClient, opts, item.state); err != nil {
+			return err
+		}
+	}
+	for _, item := range rollbacks {
+		executor, err := wodby1.NewMigrationExecutor(targetClient, wodby1.MigrationExecutorOptions{
+			StatePath:        item.statePath,
+			PollInterval:     opts.pollInterval,
+			OperationTimeout: opts.waitTimeout,
+			Progress:         migrationProgressReporter(cmd),
+		})
+		if err != nil {
+			return err
+		}
+		if err := executor.Rollback(cmd.Context(), item.state, item.plan, item.name); err != nil {
+			return errors.Wrapf(
+				err,
+				"rollback of app %s stopped; inspect Wodby 2 and rerun the same --rollback command to continue (state: %s)",
+				item.name, item.statePath,
+			)
+		}
+	}
+	fmt.Fprintln(w, cliColor(w, cliColorGreen, "\nRollback completed."))
+	fmt.Fprintf(w, "Removed the resume state of %d app(s); Wodby 1 was not touched.\n", len(rollbacks))
 	return nil
 }
 
@@ -2472,6 +2596,10 @@ func runMigrationRestartCleanupLocked(
 // confirmRollback requires the app name to be typed back. Rollback destroys
 // imported data, so a bare y/N is too easy to answer on the wrong terminal.
 func confirmRollback(cmd *cobra.Command, approved bool, appName string) error {
+	// An empty name would turn Enter into approval.
+	if strings.TrimSpace(appName) == "" {
+		return errors.New("rollback cannot be confirmed because the saved plan names no app; no Wodby 2 resource was deleted")
+	}
 	if approved {
 		fmt.Fprintln(cmd.OutOrStdout(), cliColor(cmd.OutOrStdout(), cliColorGreen, "Rollback approved with --yes."))
 		return nil
@@ -2479,7 +2607,7 @@ func confirmRollback(cmd *cobra.Command, approved bool, appName string) error {
 	if planOutputJSON(cmd) {
 		return errors.New("--output json requires --yes when rolling a migration back")
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Type the app name %q to confirm: ", appName)
+	fmt.Fprintf(cmd.OutOrStdout(), "Type %q to confirm: ", appName)
 	line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return errors.Wrap(err, "read rollback confirmation")
@@ -2923,17 +3051,22 @@ func printServerMigrationResult(
 		encoder.SetIndent("", "  ")
 		return errors.WithStack(encoder.Encode(output))
 	}
-	failed := 0
+	// A paused app waits for a third-party CI build and carries the next step
+	// in its error text; it has not failed.
+	failed, paused := 0, 0
 	for _, app := range apps {
-		if app.Error != "" {
+		switch {
+		case app.Status == pausedMigrationStatus:
+			paused++
+		case app.Error != "":
 			failed++
 		}
 	}
 	color := cliColorGreen
 	message := fmt.Sprintf("Server migration %s completed for %d app(s).", action, len(apps))
-	if failed != 0 {
+	if failed != 0 || paused != 0 {
 		color = cliColorOrange
-		message = fmt.Sprintf("Server migration %s processed %d app(s): %d succeeded, %d failed.", action, len(apps), len(apps)-failed, failed)
+		message = fmt.Sprintf("Server migration %s processed %d app(s): %d succeeded, %d paused, %d failed.", action, len(apps), len(apps)-failed-paused, paused, failed)
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), cliColor(cmd.OutOrStdout(), color, message))
 	for _, app := range apps {
@@ -2945,7 +3078,11 @@ func printServerMigrationResult(
 			fmt.Fprintf(cmd.OutOrStdout(), "  Error: %s\n", app.Error)
 		}
 	}
-	printImportStatuses(cmd, plan, "completed")
+	// The import table describes the whole plan, so it is shown as completed
+	// only when every app finished.
+	if failed == 0 && paused == 0 {
+		printImportStatuses(cmd, plan, "completed")
+	}
 	if action == "apply" {
 		fmt.Fprintln(cmd.OutOrStdout(), "Test every app using its Wodby 2 technical route before changing DNS.")
 		fmt.Fprintln(cmd.OutOrStdout(), "After DNS points to Wodby 2, rerun the same command with --verify.")

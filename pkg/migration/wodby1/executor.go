@@ -1733,6 +1733,15 @@ func (e *MigrationExecutor) ensureInstance(
 		return TargetAppInstance{}, err
 	}
 	e.reportProgress("Target app environment %q created (ID %d).", created.Name, created.ID)
+	// The environment is recorded first so rollback can remove it. An
+	// installation that ignores the workspace fields creates a built
+	// environment, which must be reported here and not after a deployment.
+	if prepared.Workspace != nil && !strings.EqualFold(created.ExecutionMode, TargetExecutionModeWorkspace) {
+		return TargetAppInstance{}, errors.Errorf(
+			"target app environment %q (ID %d) was created as a standard environment, not a development workspace; roll the migration back with --rollback and migrate this instance without the workspace option",
+			created.Name, created.ID,
+		)
+	}
 	return created, nil
 }
 
@@ -1856,7 +1865,9 @@ func workspaceCreationInput(prepared PreparedInstance) (string, *TargetNewWorksp
 		return "", nil, nil, errors.Errorf("target stack revision has no workspace code service %q", workspace.SourceServiceName)
 	}
 	sort.Slice(overrides, func(i, j int) bool { return overrides[i].ID < overrides[j].ID })
-	return TargetExecutionModeWorkspace, &TargetNewWorkspaceInput{Branch: workspace.Branch}, overrides, nil
+	return TargetExecutionModeWorkspace, &TargetNewWorkspaceInput{
+		Branch: workspace.Branch, StorageClassName: workspace.StorageClass, StorageServiceName: workspace.StorageService,
+	}, overrides, nil
 }
 
 // waitWorkspaceReady waits until Wodby 2 has cloned the repository and run the

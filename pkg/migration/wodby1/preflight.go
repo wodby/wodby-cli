@@ -114,6 +114,10 @@ type PreparedInstance struct {
 // are kept by name because a generated target stack gets new IDs at apply.
 type PreparedWorkspace struct {
 	Branch string
+	// StorageClass or StorageService select where the code and home volumes
+	// live. Both empty means the cluster's default storage class.
+	StorageClass   string
+	StorageService string
 	// SourceServiceName is the service that holds the checkout.
 	SourceServiceName string
 	// CodeServiceNames are the source and the services that mount its code.
@@ -674,6 +678,10 @@ func (c *TargetClient) targetServiceCapacityFindings(
 				if enabled {
 					additional++
 				}
+			}
+			// A workspace's SSH runner is billed as one more service.
+			if instance.Workspace != nil {
+				additional++
 			}
 		}
 	}
@@ -1711,10 +1719,15 @@ func (c *TargetClient) preflightWorkspace(
 	if sourceName != buildSource.ServiceName {
 		return blocker(fmt.Sprintf("the workspace code belongs to target service %q, but the repository is mapped to %q; select the code service with --target-code-service %s", sourceName, buildSource.ServiceName, sourceName))
 	}
+	if name := plan.Workspace.StorageService; name != "" && !effective[name] {
+		return blocker(fmt.Sprintf("--workspace-storage-service %q is not an enabled service of target stack %q", name, stack.Name))
+	}
 	workspace := &PreparedWorkspace{
 		Branch:            branch,
 		SourceServiceName: sourceName,
 		CodeServiceNames:  map[string]bool{sourceName: true},
+		StorageClass:      plan.Workspace.StorageClass,
+		StorageService:    plan.Workspace.StorageService,
 	}
 	consumers := []string{}
 	for _, id := range eligibility.ConsumerStackServiceIDs {

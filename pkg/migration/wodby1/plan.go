@@ -49,6 +49,10 @@ type PlanOptions struct {
 	// WorkspaceInstances holds the UUIDs of the direct-Git source instances
 	// to create as development workspaces instead of built environments.
 	WorkspaceInstances map[string]bool
+	// WorkspaceStorageClass and WorkspaceStorageService choose the storage of
+	// every workspace in this migration. At most one may be set.
+	WorkspaceStorageClass   string
+	WorkspaceStorageService string
 }
 
 type RepositoryTargetPlan struct {
@@ -191,6 +195,10 @@ type InstancePlan struct {
 // resolves it together with the repository.
 type WorkspacePlan struct {
 	Branch string `json:"branch,omitempty"`
+	// StorageClass and StorageService record the reviewed storage choice;
+	// both empty means the cluster's default storage class.
+	StorageClass   string `json:"storageClass,omitempty"`
+	StorageService string `json:"storageService,omitempty"`
 }
 
 type StackPlan struct {
@@ -793,7 +801,10 @@ func buildInstancePlan(plan *Plan, app App, instance Instance, opts PlanOptions,
 		}
 	}
 	if opts.WorkspaceInstances[instance.UUID] {
-		instancePlan.Workspace = &WorkspacePlan{}
+		instancePlan.Workspace = &WorkspacePlan{
+			StorageClass:   strings.TrimSpace(opts.WorkspaceStorageClass),
+			StorageService: strings.TrimSpace(opts.WorkspaceStorageService),
+		}
 		reviewWorkspaceInstance(plan, app, instance, opts)
 	}
 	addSourceStackCompatibilityReview(plan, app, instance, opts.AllowUnsupportedDrupal)
@@ -976,7 +987,8 @@ func reviewWorkspaceInstance(plan *Plan, app App, instance Instance, opts PlanOp
 		"this instance will become a Wodby 2 development workspace instead of an environment built by CI."+
 			" The code is checked out from the Git repository onto a persistent volume and is edited over SSH or with Wodby Agent."+
 			" The workspace belongs to the user of the target API key and only they can change it."+
-			" Code services run one replica, scheduled jobs stay disabled, pushes to the repository do not deploy, and post-deployment scripts do not run")
+			" Code services run one replica, scheduled jobs stay disabled, pushes to the repository do not deploy, and post-deployment scripts do not run."+
+			" The workspace is cloned from the repository: changes on the Wodby 1 server that were not committed and pushed are not carried over")
 }
 
 func selectedBackupWarning(backups []Backup) string {
@@ -1178,7 +1190,9 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 				continue
 			}
 			targetState := "enabled"
-			if opts.TargetScope == nil || opts.TargetScope.Org.Capabilities == nil {
+			if opts.WorkspaceInstances[instance.UUID] {
+				targetState = "disabled in a development workspace"
+			} else if opts.TargetScope == nil || opts.TargetScope.Org.Capabilities == nil {
 				targetState = "pending subscription capability check"
 			} else if !opts.TargetScope.Org.Capabilities.CronSchedules {
 				targetState = "disabled by target subscription"

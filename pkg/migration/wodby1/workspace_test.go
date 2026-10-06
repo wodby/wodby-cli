@@ -194,6 +194,54 @@ func TestPreflightWorkspaceBlockers(t *testing.T) {
 	}
 }
 
+// The storage choice travels from the options through the reviewed plan into
+// the creation request, the cron schedules are shown as disabled, and the
+// capacity check counts the workspace's SSH runner.
+func TestWorkspaceStorageCapacityAndCronPlan(t *testing.T) {
+	export := preflightFixtureExport(true)
+	export.Apps[0].Instances[0].Services = []Service{
+		{Name: "php", Enabled: true, CronJobs: []CronJob{{Title: "cron", Crontab: "0 * * * *", Command: "drush cron", Enabled: true}}},
+		{Name: "nginx", Enabled: true},
+	}
+	api := newPreflightTargetAPI(t, workspaceCatalog(eligibleWorkspace()))
+	options := preflightOwnerPlanOptions()
+	options.Repository = RepositoryTargetPlan{GitIntegrationID: 44}
+	options.WorkspaceInstances = map[string]bool{"inst-1": true}
+	options.WorkspaceStorageClass = "fast"
+	plan := preflightBuildPlan(t, export, options)
+	prepared, err := api.client.PreflightTarget(context.Background(), export, &plan, TargetPreflightOptions{SkipData: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blockers := workspaceBlockers(plan); len(blockers) != 0 {
+		t.Fatalf("unexpected blockers: %q", blockers)
+	}
+	_, input, _, err := workspaceCreationInput(prepared.Instances[0])
+	if err != nil || input.StorageClassName != "fast" || input.StorageServiceName != "" {
+		t.Fatalf("workspace storage = %#v, %v", input, err)
+	}
+	for _, service := range plan.Apps[0].Instances[0].Services {
+		for _, cron := range service.CronSchedules {
+			if cron.TargetState != "disabled in a development workspace" {
+				t.Fatalf("cron target state = %q", cron.TargetState)
+			}
+		}
+	}
+	// php and nginx are enabled, and the runner is one more billed service.
+	if len(api.capacityAdditional) != 1 || api.capacityAdditional[0] != 3 {
+		t.Fatalf("capacity requests = %v, want one for 3 services", api.capacityAdditional)
+	}
+
+	options.WorkspaceStorageClass, options.WorkspaceStorageService = "", "files"
+	plan = preflightBuildPlan(t, export, options)
+	if _, err := api.client.PreflightTarget(context.Background(), export, &plan, TargetPreflightOptions{SkipData: true}); err != nil {
+		t.Fatal(err)
+	}
+	if blockers := strings.Join(workspaceBlockers(plan), "\n"); !strings.Contains(blockers, "--workspace-storage-service") {
+		t.Fatalf("an unknown storage service must block the preview:\n%s", blockers)
+	}
+}
+
 func TestPlanWithoutWorkspaceKeepsItsContent(t *testing.T) {
 	export := preflightFixtureExport(true)
 	plain := preflightBuildPlan(t, export, preflightOwnerPlanOptions())

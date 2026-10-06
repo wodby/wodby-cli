@@ -875,7 +875,9 @@ type TargetWorkspace struct {
 // TargetNewWorkspaceInput leaves storage to the cluster's default storage
 // class and the volume sizes to the API defaults.
 type TargetNewWorkspaceInput struct {
-	Branch string `json:"branch"`
+	Branch             string `json:"branch"`
+	StorageClassName   string `json:"storageClassName,omitempty"`
+	StorageServiceName string `json:"storageServiceName,omitempty"`
 }
 
 // TargetAppServiceOverrideInput changes one stack service's creation defaults.
@@ -2953,6 +2955,9 @@ func validateTargetWorkspaceCreation(mode string, workspace *TargetNewWorkspaceI
 	}
 	if workspace == nil || strings.TrimSpace(workspace.Branch) == "" {
 		return errors.New("target workspace requires a branch")
+	}
+	if workspace.StorageClassName != "" && workspace.StorageServiceName != "" {
+		return errors.New("target workspace takes a storage class or a storage service, not both")
 	}
 	connected := false
 	seen := map[int]bool{}

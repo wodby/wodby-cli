@@ -67,6 +67,8 @@ type options struct {
 	excludeInstances       []string
 	workspace              bool
 	workspaceInstances     []string
+	workspaceStorageClass  string
+	workspaceStorageSvc    string
 
 	stateFile      string
 	pollInterval   time.Duration
@@ -302,6 +304,13 @@ succeeded, because DNS then points at Wodby 2.`,
 // to migrate as development workspaces. An instance migration selects its only
 // instance with --workspace; app and server migrations name instances.
 func resolveWorkspaceInstances(export wodby1.Export, sourceKind string, opts *options) (map[string]bool, error) {
+	class, service := strings.TrimSpace(opts.workspaceStorageClass), strings.TrimSpace(opts.workspaceStorageSvc)
+	if class != "" && service != "" {
+		return nil, errors.New("--workspace-storage-class and --workspace-storage-service cannot be used together")
+	}
+	if (class != "" || service != "") && !opts.workspace && len(opts.workspaceInstances) == 0 {
+		return nil, errors.New("workspace storage options need an instance selected as a development workspace")
+	}
 	if opts.workspace {
 		result := map[string]bool{}
 		for _, app := range export.AppExports() {
@@ -349,6 +358,8 @@ func bindFlags(cmd *cobra.Command, opts *options) {
 	cmd.Flags().StringVar(&opts.targetGitRef, "target-git-ref", "", "Git branch, tag, or commit to build (defaults to the source ref)")
 	cmd.Flags().StringVar(&opts.targetGitRefType, "target-git-ref-type", "", "Git ref type: branch, tag, or commit")
 
+	cmd.Flags().StringVar(&opts.workspaceStorageClass, "workspace-storage-class", "", "Storage class for the code and home volumes of development workspaces (defaults to the cluster's default storage class)")
+	cmd.Flags().StringVar(&opts.workspaceStorageSvc, "workspace-storage-service", "", "Enabled storage service of the target stack that holds the code and home volumes of development workspaces instead of a storage class")
 	cmd.Flags().BoolVar(&opts.skipCode, "skip-code", false, "Intentionally omit repository/build-source migration")
 	cmd.Flags().BoolVar(&opts.skipData, "skip-data", false, "Intentionally omit database and files imports")
 	cmd.Flags().StringArrayVar(&opts.sourceBackups, "source-backup", nil, "Select a successful Wodby 1 backup (BACKUP_UUID for an instance, INSTANCE=BACKUP_UUID for an app, APP/INSTANCE=BACKUP_UUID for a server; repeatable)")
@@ -793,12 +804,14 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 			RepositoryName:   strings.TrimSpace(opts.targetRepositoryName),
 			Service:          strings.TrimSpace(opts.targetCodeService),
 		},
-		SkipCode:               opts.skipCode,
-		SkipData:               opts.skipData,
-		RequireData:            !opts.skipData,
-		AllowUnsupportedDrupal: opts.allowUnsupportedDrupal,
-		Selection:              &selection,
-		WorkspaceInstances:     workspaceInstances,
+		SkipCode:                opts.skipCode,
+		SkipData:                opts.skipData,
+		RequireData:             !opts.skipData,
+		AllowUnsupportedDrupal:  opts.allowUnsupportedDrupal,
+		Selection:               &selection,
+		WorkspaceInstances:      workspaceInstances,
+		WorkspaceStorageClass:   opts.workspaceStorageClass,
+		WorkspaceStorageService: opts.workspaceStorageSvc,
 	})
 	if err != nil {
 		return err
@@ -1327,13 +1340,15 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 			RepositoryName:   strings.TrimSpace(opts.targetRepositoryName),
 			Service:          strings.TrimSpace(opts.targetCodeService),
 		},
-		RepositoryByApp:        repositoryMap,
-		SkipCode:               opts.skipCode,
-		SkipData:               opts.skipData,
-		RequireData:            !opts.skipData,
-		AllowUnsupportedDrupal: opts.allowUnsupportedDrupal,
-		Selection:              &selection,
-		WorkspaceInstances:     workspaceInstances,
+		RepositoryByApp:         repositoryMap,
+		SkipCode:                opts.skipCode,
+		SkipData:                opts.skipData,
+		RequireData:             !opts.skipData,
+		AllowUnsupportedDrupal:  opts.allowUnsupportedDrupal,
+		Selection:               &selection,
+		WorkspaceInstances:      workspaceInstances,
+		WorkspaceStorageClass:   opts.workspaceStorageClass,
+		WorkspaceStorageService: opts.workspaceStorageSvc,
 	})
 	if err != nil {
 		return err

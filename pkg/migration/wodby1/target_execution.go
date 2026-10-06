@@ -833,21 +833,77 @@ type TargetApp struct {
 }
 
 type TargetAppInstance struct {
-	ID              int       `json:"id"`
-	Name            string    `json:"name"`
-	Title           string    `json:"title"`
-	Status          string    `json:"status"`
-	MainDomain      *string   `json:"mainDomain,omitempty"`
-	AppID           int       `json:"appId"`
-	ClusterID       int       `json:"clusterId"`
-	EnvironmentType string    `json:"environmentType"`
-	StackID         int       `json:"stackId"`
-	StackRevID      int       `json:"stackRevId"`
-	StackName       string    `json:"stackName"`
-	StackRevNumber  int       `json:"stackRevNumber"`
-	StackVersion    string    `json:"stackVersion"`
-	CreatedAt       time.Time `json:"createdAt"`
-	UpdatedAt       time.Time `json:"updatedAt"`
+	ID              int     `json:"id"`
+	Name            string  `json:"name"`
+	Title           string  `json:"title"`
+	Status          string  `json:"status"`
+	MainDomain      *string `json:"mainDomain,omitempty"`
+	AppID           int     `json:"appId"`
+	ClusterID       int     `json:"clusterId"`
+	EnvironmentType string  `json:"environmentType"`
+	StackID         int     `json:"stackId"`
+	StackRevID      int     `json:"stackRevId"`
+	StackName       string  `json:"stackName"`
+	StackRevNumber  int     `json:"stackRevNumber"`
+	StackVersion    string  `json:"stackVersion"`
+	// ExecutionMode is empty on installations that predate workspaces, which
+	// means a standard environment.
+	ExecutionMode string           `json:"executionMode,omitempty"`
+	Workspace     *TargetWorkspace `json:"workspace,omitempty"`
+	CreatedAt     time.Time        `json:"createdAt"`
+	UpdatedAt     time.Time        `json:"updatedAt"`
+}
+
+const (
+	TargetExecutionModeWorkspace = "workspace"
+
+	targetWorkspacePreparationReady = "ready"
+)
+
+// TargetWorkspace is the lifecycle state Wodby 2 reports for a development
+// workspace environment. It carries no credentials.
+type TargetWorkspace struct {
+	SourceAppServiceID int    `json:"sourceAppServiceId"`
+	RunnerState        string `json:"runnerState"`
+	PreparationState   string `json:"preparationState"`
+	BaseRef            string `json:"baseRef"`
+	Branch             string `json:"branch"`
+	Initialized        bool   `json:"initialized"`
+	Error              string `json:"error"`
+}
+
+// TargetNewWorkspaceInput leaves storage to the cluster's default storage
+// class and the volume sizes to the API defaults.
+type TargetNewWorkspaceInput struct {
+	Branch             string `json:"branch"`
+	StorageClassName   string `json:"storageClassName,omitempty"`
+	StorageServiceName string `json:"storageServiceName,omitempty"`
+}
+
+// TargetAppServiceOverrideInput changes one stack service's creation defaults.
+// A workspace fixes its repository and the version and state of its code
+// services at creation, so the migration sends them here instead of updating
+// the services afterwards.
+type TargetAppServiceOverrideInput struct {
+	ID          int                     `json:"id"`
+	Disabled    *bool                   `json:"disabled,omitempty"`
+	Version     *string                 `json:"version,omitempty"`
+	BuildSource *TargetBuildSourceInput `json:"buildSource,omitempty"`
+}
+
+type TargetWorkspaceEligibilityInput struct {
+	StackRevID         int   `json:"stackRevId"`
+	ClusterID          *int  `json:"clusterId,omitempty"`
+	DisabledServiceIDs []int `json:"disabledServiceIds"`
+}
+
+// TargetWorkspaceEligibility reports whether the selected services can run as
+// a workspace and which stack services hold or mount its code.
+type TargetWorkspaceEligibility struct {
+	Eligible                bool     `json:"eligible"`
+	Reasons                 []string `json:"reasons,omitempty"`
+	SourceStackServiceID    *int     `json:"sourceStackServiceId,omitempty"`
+	ConsumerStackServiceIDs []int    `json:"consumerStackServiceIds,omitempty"`
 }
 
 // TargetCreateAppInput deliberately has no domain or services field. The
@@ -866,6 +922,11 @@ type TargetCreateAppInput struct {
 	CIIntegrationID        *int   `json:"ciIntegrationId,omitempty"`
 	RegistryIntegrationID  *int   `json:"registryIntegrationId,omitempty"`
 	DeferInitialDeployment bool   `json:"deferInitialDeployment,omitempty"`
+	// The workspace fields stay unset for a standard environment, so its
+	// request is unchanged.
+	ExecutionMode    string                          `json:"executionMode,omitempty"`
+	Workspace        *TargetNewWorkspaceInput        `json:"workspace,omitempty"`
+	ServiceOverrides []TargetAppServiceOverrideInput `json:"serviceOverrides,omitempty"`
 }
 
 // TargetCreateAppInstanceInput also omits domain and services so Wodby 2
@@ -880,6 +941,11 @@ type TargetCreateAppInstanceInput struct {
 	CIIntegrationID        *int   `json:"ciIntegrationId,omitempty"`
 	RegistryIntegrationID  *int   `json:"registryIntegrationId,omitempty"`
 	DeferInitialDeployment bool   `json:"deferInitialDeployment,omitempty"`
+	// The workspace fields stay unset for a standard environment, so its
+	// request is unchanged.
+	ExecutionMode    string                          `json:"executionMode,omitempty"`
+	Workspace        *TargetNewWorkspaceInput        `json:"workspace,omitempty"`
+	ServiceOverrides []TargetAppServiceOverrideInput `json:"serviceOverrides,omitempty"`
 }
 
 type TargetAppService struct {
@@ -1852,6 +1918,25 @@ func (c *TargetClient) CreateAppInstance(ctx context.Context, input TargetCreate
 		)
 	}
 	return item, nil
+}
+
+// WorkspaceEligibility asks Wodby 2 whether the stack revision's enabled
+// services can run as a development workspace on the cluster. It reads only.
+func (c *TargetClient) WorkspaceEligibility(ctx context.Context, input TargetWorkspaceEligibilityInput) (TargetWorkspaceEligibility, error) {
+	if err := targetRequirePositiveID("stack revision", input.StackRevID); err != nil {
+		return TargetWorkspaceEligibility{}, err
+	}
+	if err := targetValidateOptionalPositiveID("cluster", input.ClusterID); err != nil {
+		return TargetWorkspaceEligibility{}, err
+	}
+	if input.DisabledServiceIDs == nil {
+		input.DisabledServiceIDs = []int{}
+	}
+	var result TargetWorkspaceEligibility
+	if err := c.client.Post(ctx, "/workspace-eligibility", nil, input, &result); err != nil {
+		return TargetWorkspaceEligibility{}, errors.Wrap(err, "check target Wodby 2 workspace eligibility")
+	}
+	return result, nil
 }
 
 func (c *TargetClient) GetAppInstance(ctx context.Context, appInstanceID int) (TargetAppInstance, error) {
@@ -2850,7 +2935,52 @@ func validateTargetCreateAppInput(input TargetCreateAppInput) error {
 	if err := targetValidateOptionalNonNegativeID("CI integration", input.CIIntegrationID); err != nil {
 		return err
 	}
+	if err := validateTargetWorkspaceCreation(input.ExecutionMode, input.Workspace, input.ServiceOverrides); err != nil {
+		return err
+	}
 	return targetValidateOptionalPositiveID("registry integration", input.RegistryIntegrationID)
+}
+
+// validateTargetWorkspaceCreation keeps the workspace fields consistent: they
+// are sent together, and a workspace always names its branch and repository.
+func validateTargetWorkspaceCreation(mode string, workspace *TargetNewWorkspaceInput, overrides []TargetAppServiceOverrideInput) error {
+	if mode == "" {
+		if workspace != nil || len(overrides) != 0 {
+			return errors.New("target workspace settings require workspace execution mode")
+		}
+		return nil
+	}
+	if mode != TargetExecutionModeWorkspace {
+		return errors.Errorf("unsupported target execution mode %q", mode)
+	}
+	if workspace == nil || strings.TrimSpace(workspace.Branch) == "" {
+		return errors.New("target workspace requires a branch")
+	}
+	if workspace.StorageClassName != "" && workspace.StorageServiceName != "" {
+		return errors.New("target workspace takes a storage class or a storage service, not both")
+	}
+	connected := false
+	seen := map[int]bool{}
+	for _, override := range overrides {
+		if err := targetRequirePositiveID("workspace stack service", override.ID); err != nil {
+			return err
+		}
+		if seen[override.ID] {
+			return errors.Errorf("target workspace names stack service ID %d more than once", override.ID)
+		}
+		seen[override.ID] = true
+		if override.BuildSource == nil {
+			continue
+		}
+		if override.BuildSource.BuildSourceType != TargetBuildSourceConnect {
+			return errors.New("target workspace requires a connected Git repository")
+		}
+		connected = true
+	}
+	if !connected {
+		return errors.New("target workspace requires a connected Git repository")
+	}
+	return nil
 }
 
 func validateTargetCreateAppInstanceInput(input TargetCreateAppInstanceInput) error {
@@ -2870,6 +3000,9 @@ func validateTargetCreateAppInstanceInput(input TargetCreateAppInstanceInput) er
 		return err
 	}
 	if err := targetValidateOptionalNonNegativeID("CI integration", input.CIIntegrationID); err != nil {
+		return err
+	}
+	if err := validateTargetWorkspaceCreation(input.ExecutionMode, input.Workspace, input.ServiceOverrides); err != nil {
 		return err
 	}
 	return targetValidateOptionalPositiveID("registry integration", input.RegistryIntegrationID)

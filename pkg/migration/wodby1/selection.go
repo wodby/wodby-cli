@@ -106,6 +106,21 @@ func SelectExport(export Export, sourceKind string, excludeApps, excludeInstance
 	return filtered, selection, nil
 }
 
+// ResolveWorkspaceInstances turns workspace selectors into the UUIDs of the
+// selected source instances. Selectors follow the --exclude-instance rules: a
+// UUID, an instance name for one app, or APP/INSTANCE for a server.
+func ResolveWorkspaceInstances(export Export, sourceKind string, selectors []string) (map[string]bool, error) {
+	result := map[string]bool{}
+	for _, raw := range uniqueSelectors(selectors) {
+		_, instance, err := resolveSelectedInstance(export.AppExports(), sourceKind, raw)
+		if err != nil {
+			return nil, fmt.Errorf("resolve --workspace-instance %q: %w", raw, err)
+		}
+		result[instance.UUID] = true
+	}
+	return result, nil
+}
+
 // ApplySourceSelection reapplies a reviewed plan's UUID selection to a fresh
 // source export. Missing apps or instances are treated as source drift.
 func ApplySourceSelection(export Export, selection SourceSelection, authKey string) (Export, error) {

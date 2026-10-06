@@ -46,6 +46,13 @@ type PlanOptions struct {
 	RequireData                   bool
 	AllowUnsupportedDrupal        bool
 	Selection                     *SourceSelection
+	// WorkspaceInstances holds the UUIDs of the direct-Git source instances
+	// to create as development workspaces instead of built environments.
+	WorkspaceInstances map[string]bool
+	// WorkspaceStorageClass and WorkspaceStorageService choose the storage of
+	// every workspace in this migration. At most one may be set.
+	WorkspaceStorageClass   string
+	WorkspaceStorageService string
 }
 
 type RepositoryTargetPlan struct {
@@ -178,6 +185,20 @@ type InstancePlan struct {
 	CronJobs          int           `json:"cronJobs"`
 	EnvVars           int           `json:"envVars"`
 	Imports           []ImportPlan  `json:"imports"`
+	// Workspace is set only for an instance migrated as a development
+	// workspace, so plans without one keep their content and hash.
+	Workspace *WorkspacePlan `json:"workspace,omitempty"`
+}
+
+// WorkspacePlan records the reviewed workspace choice for one instance. The
+// branch is the one the Wodby 1 instance deployed from; target preflight
+// resolves it together with the repository.
+type WorkspacePlan struct {
+	Branch string `json:"branch,omitempty"`
+	// StorageClass and StorageService record the reviewed storage choice;
+	// both empty means the cluster's default storage class.
+	StorageClass   string `json:"storageClass,omitempty"`
+	StorageService string `json:"storageService,omitempty"`
 }
 
 type StackPlan struct {
@@ -779,6 +800,13 @@ func buildInstancePlan(plan *Plan, app App, instance Instance, opts PlanOptions,
 			plan.addReview(SeverityBlocking, app.Name, instance.Name, "target cluster environment type", err.Error())
 		}
 	}
+	if opts.WorkspaceInstances[instance.UUID] {
+		instancePlan.Workspace = &WorkspacePlan{
+			StorageClass:   strings.TrimSpace(opts.WorkspaceStorageClass),
+			StorageService: strings.TrimSpace(opts.WorkspaceStorageService),
+		}
+		reviewWorkspaceInstance(plan, app, instance, opts)
+	}
 	addSourceStackCompatibilityReview(plan, app, instance, opts.AllowUnsupportedDrupal)
 	mappedStack, hasExplicitStack := scopedMapping(
 		opts.TargetStackMap,
@@ -931,6 +959,36 @@ func buildInstancePlan(plan *Plan, app App, instance Instance, opts PlanOptions,
 		}
 	}
 	return instancePlan
+}
+
+// reviewWorkspaceInstance checks what the source alone decides about a
+// workspace migration and tells the reviewer how the result differs from a
+// built environment. Target preflight checks the repository, branch and
+// service support.
+func reviewWorkspaceInstance(plan *Plan, app App, instance Instance, opts PlanOptions) {
+	const subject = "development workspace"
+	deploymentType := strings.ToLower(strings.TrimSpace(stringProperty(instance.Properties, "deployment_type")))
+	if deploymentType != "git" {
+		plan.addReview(SeverityBlocking, app.Name, instance.Name, subject, fmt.Sprintf(
+			"only Wodby 1 instances with direct Git deployment can become a workspace; this instance uses deployment type %q. Migrate it without the workspace option",
+			deploymentType,
+		))
+		return
+	}
+	if opts.SkipCode {
+		plan.addReview(SeverityBlocking, app.Name, instance.Name, subject, "a workspace is created from the Git repository; remove --skip-code or migrate this instance without the workspace option")
+		return
+	}
+	if app.Repository == nil {
+		plan.addReview(SeverityBlocking, app.Name, instance.Name, subject, "the Wodby 1 app has no connected Git repository to create a workspace from")
+		return
+	}
+	plan.addReview(SeverityConfirmation, app.Name, instance.Name, subject,
+		"this instance will become a Wodby 2 development workspace instead of an environment built by CI."+
+			" The code is checked out from the Git repository onto a persistent volume and is edited over SSH or with Wodby Agent."+
+			" The workspace belongs to the user of the target API key and only they can change it."+
+			" Code services run one replica, scheduled jobs stay disabled, pushes to the repository do not deploy, and post-deployment scripts do not run."+
+			" The workspace is cloned from the repository: changes on the Wodby 1 server that were not committed and pushed are not carried over")
 }
 
 func selectedBackupWarning(backups []Backup) string {
@@ -1132,7 +1190,9 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 				continue
 			}
 			targetState := "enabled"
-			if opts.TargetScope == nil || opts.TargetScope.Org.Capabilities == nil {
+			if opts.WorkspaceInstances[instance.UUID] {
+				targetState = "disabled in a development workspace"
+			} else if opts.TargetScope == nil || opts.TargetScope.Org.Capabilities == nil {
 				targetState = "pending subscription capability check"
 			} else if !opts.TargetScope.Org.Capabilities.CronSchedules {
 				targetState = "disabled by target subscription"

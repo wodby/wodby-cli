@@ -1468,6 +1468,9 @@ type preflightTargetCatalog struct {
 	stackServices      map[int][]TargetStackService
 	revisions          map[int]TargetServiceRevision
 	capacityDecision   *TargetAppServiceCapacityPreflight
+	// workspaceEligibility is the answer to a workspace check; nil models an
+	// installation without workspace support.
+	workspaceEligibility *TargetWorkspaceEligibility
 }
 
 type preflightTargetAPI struct {
@@ -1475,6 +1478,7 @@ type preflightTargetAPI struct {
 	mu                 sync.Mutex
 	paths              []string
 	capacityAdditional []int
+	workspaceChecks    []TargetWorkspaceEligibilityInput
 }
 
 func newPreflightTargetAPI(t *testing.T, catalog preflightTargetCatalog) *preflightTargetAPI {
@@ -1504,6 +1508,22 @@ func newPreflightTargetAPI(t *testing.T, catalog preflightTargetCatalog) *prefli
 				decision = *catalog.capacityDecision
 			}
 			preflightWriteJSON(w, decision)
+			return
+		}
+		if request.Method == http.MethodPost && request.URL.Path == "/v1/workspace-eligibility" {
+			if catalog.workspaceEligibility == nil {
+				http.NotFound(w, request)
+				return
+			}
+			var input TargetWorkspaceEligibilityInput
+			if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+				http.Error(w, "invalid workspace eligibility request", http.StatusBadRequest)
+				return
+			}
+			api.mu.Lock()
+			api.workspaceChecks = append(api.workspaceChecks, input)
+			api.mu.Unlock()
+			preflightWriteJSON(w, catalog.workspaceEligibility)
 			return
 		}
 		if request.Method != http.MethodGet {

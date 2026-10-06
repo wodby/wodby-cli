@@ -65,6 +65,10 @@ type options struct {
 	addMissingServices     bool
 	excludeApps            []string
 	excludeInstances       []string
+	workspace              bool
+	workspaceInstances     []string
+	workspaceStorageClass  string
+	workspaceStorageSvc    string
 
 	stateFile      string
 	pollInterval   time.Duration
@@ -133,6 +137,9 @@ func newWodby1InstanceCommand() *cobra.Command {
 read-only preview. Add --apply to create the target and import data, then test
 the target using its technical route. Change DNS only after testing succeeds,
 and rerun the same command with --verify to validate the completed migration.
+Add --workspace to create an instance that uses direct Git deployment as a
+development workspace: its code is checked out from the linked Git repository
+instead of being built by CI. The preview reports why an instance cannot be one.
 
 The migration exports only the selected
 instance and its parent app metadata, then creates a new Wodby 2 app containing
@@ -165,6 +172,7 @@ refuses once --verify has succeeded, because DNS then points at Wodby 2.`,
 	}
 	bindFlags(cmd, opts)
 	cmd.Flags().StringVar(&opts.targetApp, "target-app", "", "Existing Wodby 2 app ID or exact name to receive the migrated app environment")
+	cmd.Flags().BoolVar(&opts.workspace, "workspace", false, "Create this direct-Git instance as a Wodby 2 development workspace instead of an environment built by CI")
 	cmd.Flags().Lookup("source-backup").Usage = "Select a successful Wodby 1 BACKUP_UUID for this instance"
 	return cmd
 }
@@ -183,6 +191,9 @@ reported per app while remaining apps continue. A shared
 repository by name; use --target-repository-map for per-app integrations or
 repository-name overrides. A missing repository match falls back to unlinked
 Custom CI. Use --skip-code only to omit code migration intentionally.
+Use repeatable --workspace-instance APP/INSTANCE values to create instances that
+use direct Git deployment as development workspaces: their code is checked out
+from the linked Git repository instead of being built by CI.
 By default, the newest successful file for each required backup component is selected.
 Use repeatable --source-backup APP/INSTANCE=BACKUP_UUID values to override
 individual snapshots, or --skip-data to omit data. Changes after each selected
@@ -221,6 +232,12 @@ refuses once --verify has succeeded, because DNS then points at Wodby 2.`,
 		"Exclude an instance by UUID or APP/INSTANCE (repeatable)",
 	)
 	cmd.Flags().StringArrayVar(
+		&opts.workspaceInstances,
+		"workspace-instance",
+		nil,
+		"Create a direct-Git instance, by UUID or APP/INSTANCE, as a Wodby 2 development workspace instead of an environment built by CI (repeatable)",
+	)
+	cmd.Flags().StringArrayVar(
 		&opts.targetRepositoryMap,
 		"target-repository-map",
 		nil,
@@ -242,6 +259,9 @@ command with --verify after DNS cutover. By default, the newest successful file
 for each required backup component is selected. Use repeatable --source-backup
 INSTANCE=BACKUP_UUID values to pin all components to explicit complete
 snapshots, or --skip-data to omit data.
+Use repeatable --workspace-instance INSTANCE values to create instances that use
+direct Git deployment as development workspaces: their code is checked out from
+the linked Git repository instead of being built by CI.
 Changes after each selected backup completed are not migrated. If a target mutation is ambiguous, inspect Wodby 2 and pass
 --retry-ambiguous only with the exact operation ID printed by the command. When
 state exists, --apply preserves the saved plan and continues completed work;
@@ -271,7 +291,36 @@ succeeded, because DNS then points at Wodby 2.`,
 		nil,
 		"Exclude an instance by exact UUID or name (repeatable)",
 	)
+	cmd.Flags().StringArrayVar(
+		&opts.workspaceInstances,
+		"workspace-instance",
+		nil,
+		"Create a direct-Git instance, by exact UUID or name, as a Wodby 2 development workspace instead of an environment built by CI (repeatable)",
+	)
 	return cmd
+}
+
+// resolveWorkspaceInstances returns the UUIDs of the selected source instances
+// to migrate as development workspaces. An instance migration selects its only
+// instance with --workspace; app and server migrations name instances.
+func resolveWorkspaceInstances(export wodby1.Export, sourceKind string, opts *options) (map[string]bool, error) {
+	class, service := strings.TrimSpace(opts.workspaceStorageClass), strings.TrimSpace(opts.workspaceStorageSvc)
+	if class != "" && service != "" {
+		return nil, errors.New("--workspace-storage-class and --workspace-storage-service cannot be used together")
+	}
+	if (class != "" || service != "") && !opts.workspace && len(opts.workspaceInstances) == 0 {
+		return nil, errors.New("workspace storage options need an instance selected as a development workspace")
+	}
+	if opts.workspace {
+		result := map[string]bool{}
+		for _, app := range export.AppExports() {
+			for _, instance := range app.Instances {
+				result[instance.UUID] = true
+			}
+		}
+		return result, nil
+	}
+	return wodby1.ResolveWorkspaceInstances(export, sourceKind, opts.workspaceInstances)
 }
 
 func defaultOptions() *options {
@@ -309,6 +358,8 @@ func bindFlags(cmd *cobra.Command, opts *options) {
 	cmd.Flags().StringVar(&opts.targetGitRef, "target-git-ref", "", "Git branch, tag, or commit to build (defaults to the source ref)")
 	cmd.Flags().StringVar(&opts.targetGitRefType, "target-git-ref-type", "", "Git ref type: branch, tag, or commit")
 
+	cmd.Flags().StringVar(&opts.workspaceStorageClass, "workspace-storage-class", "", "Storage class for the code and home volumes of development workspaces (defaults to the cluster's default storage class)")
+	cmd.Flags().StringVar(&opts.workspaceStorageSvc, "workspace-storage-service", "", "Enabled storage service of the target stack that holds the code and home volumes of development workspaces instead of a storage class")
 	cmd.Flags().BoolVar(&opts.skipCode, "skip-code", false, "Intentionally omit repository/build-source migration")
 	cmd.Flags().BoolVar(&opts.skipData, "skip-data", false, "Intentionally omit database and files imports")
 	cmd.Flags().StringArrayVar(&opts.sourceBackups, "source-backup", nil, "Select a successful Wodby 1 backup (BACKUP_UUID for an instance, INSTANCE=BACKUP_UUID for an app, APP/INSTANCE=BACKUP_UUID for a server; repeatable)")
@@ -705,6 +756,10 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 	if err != nil {
 		return err
 	}
+	workspaceInstances, err := resolveWorkspaceInstances(export, sourceKind, opts)
+	if err != nil {
+		return err
+	}
 	backupSelection, err = wodby1.ExportSourceBackups(export)
 	if err != nil {
 		return err
@@ -749,11 +804,14 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 			RepositoryName:   strings.TrimSpace(opts.targetRepositoryName),
 			Service:          strings.TrimSpace(opts.targetCodeService),
 		},
-		SkipCode:               opts.skipCode,
-		SkipData:               opts.skipData,
-		RequireData:            !opts.skipData,
-		AllowUnsupportedDrupal: opts.allowUnsupportedDrupal,
-		Selection:              &selection,
+		SkipCode:                opts.skipCode,
+		SkipData:                opts.skipData,
+		RequireData:             !opts.skipData,
+		AllowUnsupportedDrupal:  opts.allowUnsupportedDrupal,
+		Selection:               &selection,
+		WorkspaceInstances:      workspaceInstances,
+		WorkspaceStorageClass:   opts.workspaceStorageClass,
+		WorkspaceStorageService: opts.workspaceStorageSvc,
 	})
 	if err != nil {
 		return err
@@ -1229,6 +1287,10 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 	if err != nil {
 		return err
 	}
+	workspaceInstances, err := resolveWorkspaceInstances(export, "server", opts)
+	if err != nil {
+		return err
+	}
 	backupSelection, err = wodby1.ExportSourceBackups(export)
 	if err != nil {
 		return err
@@ -1278,12 +1340,15 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 			RepositoryName:   strings.TrimSpace(opts.targetRepositoryName),
 			Service:          strings.TrimSpace(opts.targetCodeService),
 		},
-		RepositoryByApp:        repositoryMap,
-		SkipCode:               opts.skipCode,
-		SkipData:               opts.skipData,
-		RequireData:            !opts.skipData,
-		AllowUnsupportedDrupal: opts.allowUnsupportedDrupal,
-		Selection:              &selection,
+		RepositoryByApp:         repositoryMap,
+		SkipCode:                opts.skipCode,
+		SkipData:                opts.skipData,
+		RequireData:             !opts.skipData,
+		AllowUnsupportedDrupal:  opts.allowUnsupportedDrupal,
+		Selection:               &selection,
+		WorkspaceInstances:      workspaceInstances,
+		WorkspaceStorageClass:   opts.workspaceStorageClass,
+		WorkspaceStorageService: opts.workspaceStorageSvc,
 	})
 	if err != nil {
 		return err

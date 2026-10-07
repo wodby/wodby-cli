@@ -1081,6 +1081,10 @@ func (c *TargetClient) preflightInstance(
 	}
 	buildSource, buildFindings := prepareBuildSource(app, source, repositoryPlan, inspections, effective, opts)
 	prepared.BuildSource = buildSource
+	plan.GitRef, plan.GitRefType = "", ""
+	if strings.TrimSpace(opts.GitRef) != "" && buildSource != nil && buildSource.Input.GitRef != nil && buildSource.Input.GitRefType != nil {
+		plan.GitRef, plan.GitRefType = *buildSource.Input.GitRef, *buildSource.Input.GitRefType
+	}
 	findings = append(findings, buildFindings...)
 	if buildSource != nil && (repositoryPlan != nil || buildSource.Input.BuildSourceType == TargetBuildSourcePublic) {
 		inspection := byName[buildSource.ServiceName]
@@ -1295,7 +1299,11 @@ func (c *TargetClient) resolvePreflightStackRevision(
 				plan.CatalogName,
 			)
 		}
-		if plan.TargetRevID > 0 && stack.RevID != plan.TargetRevID {
+		if plan.TargetRevID > 0 {
+			// The caller reads the manifest only for an unpinned stack, so a
+			// pinned one must carry its own. Without it the second preflight
+			// resolves service versions against service defaults instead of
+			// the reviewed stack revision.
 			revision, err := c.GetStackRevision(ctx, plan.TargetRevID)
 			if err != nil {
 				return TargetStack{}, err
@@ -1303,8 +1311,11 @@ func (c *TargetClient) resolvePreflightStackRevision(
 			if revision.StackID != stack.ID {
 				return TargetStack{}, errors.Errorf("reviewed catalog revision ID %d does not belong to catalog stack ID %d", revision.ID, stack.ID)
 			}
-			stack.RevID = revision.ID
-			stack.LatestRevNumber = revision.Number
+			if stack.RevID != revision.ID {
+				stack.RevID = revision.ID
+				stack.LatestRevNumber = revision.Number
+			}
+			stack.RevisionManifest = revision.Manifest
 		}
 		return stack, nil
 	}

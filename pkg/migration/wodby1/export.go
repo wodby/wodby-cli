@@ -738,6 +738,12 @@ func normalizeConfigDigestExport(export *Export) {
 		for instanceIndex := range app.Instances {
 			normalizeConfigDigestInstance(&app.Instances[instanceIndex])
 		}
+		// Context instances are read-only siblings. Their deploys and
+		// maintenance mode must not change the digest any more than the
+		// migrated instances' do.
+		for instanceIndex := range app.ContextInstances {
+			normalizeConfigDigestInstance(&app.ContextInstances[instanceIndex])
+		}
 	}
 	for instanceIndex := range export.Instances {
 		normalizeConfigDigestInstance(&export.Instances[instanceIndex])
@@ -772,6 +778,12 @@ func canonicalizeAppExport(appExport *AppExport) {
 	}
 	sort.SliceStable(appExport.Instances, func(i, j int) bool {
 		return canonicalJSON(appExport.Instances[i]) < canonicalJSON(appExport.Instances[j])
+	})
+	for i := range appExport.ContextInstances {
+		canonicalizeInstance(&appExport.ContextInstances[i])
+	}
+	sort.SliceStable(appExport.ContextInstances, func(i, j int) bool {
+		return canonicalJSON(appExport.ContextInstances[i]) < canonicalJSON(appExport.ContextInstances[j])
 	})
 }
 

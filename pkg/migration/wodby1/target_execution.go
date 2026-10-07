@@ -2258,8 +2258,9 @@ func (c *TargetClient) ListMatchingCustomCerts(ctx context.Context, orgID int, h
 		if err := validateTargetCert(item, 0, 0); err != nil {
 			return nil, err
 		}
-		if !item.Custom || !strings.EqualFold(strings.TrimSpace(item.Issuer), "custom") ||
-			!strings.EqualFold(strings.TrimSpace(item.Status), "OK") {
+		// An uploaded certificate reports its certificate authority as the
+		// issuer; the custom flag is what identifies it.
+		if !item.Custom || !strings.EqualFold(strings.TrimSpace(item.Status), "OK") {
 			return nil, errors.Errorf("target certificate ID %d returned by the custom certificate hostname filter is not active custom TLS", item.ID)
 		}
 		if len(item.DNSNames) == 0 {

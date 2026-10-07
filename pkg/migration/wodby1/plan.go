@@ -178,6 +178,11 @@ type InstancePlan struct {
 	CronJobs          int           `json:"cronJobs"`
 	EnvVars           int           `json:"envVars"`
 	Imports           []ImportPlan  `json:"imports"`
+	// GitRef and GitRefType record a --target-git-ref override, so a resumed
+	// run that omits or changes it is reported as drift instead of building
+	// another ref. They stay empty when the source ref is used.
+	GitRef     string `json:"gitRef,omitempty"`
+	GitRefType string `json:"gitRefType,omitempty"`
 }
 
 type StackPlan struct {
@@ -538,6 +543,7 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 	}
 	validateTargetOrgFeatures(&plan, opts.TargetScope)
 
+	reviewUnmatchedMappings(&plan, export, opts)
 	sortReview(plan.Review)
 	plan.computeSummary()
 	plan.PlanHash, err = plan.contentDigest()
@@ -545,6 +551,95 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 		return Plan{}, fmt.Errorf("compute migration plan digest: %w", err)
 	}
 	return plan, nil
+}
+
+// reviewUnmatchedMappings blocks a mapping option whose key names nothing in the
+// source. Such an entry would otherwise be dropped without a word and the
+// migration would continue with the automatic choice the operator meant to
+// override, for example after a typo in an app, instance or service name.
+func reviewUnmatchedMappings(plan *Plan, export Export, opts PlanOptions) {
+	type scoped struct {
+		flag    string
+		mapping map[string]string
+		sources func(Instance) []string
+	}
+	services := func(instance Instance) []string {
+		names := make([]string, 0, len(instance.Services))
+		for _, service := range instance.Services {
+			names = append(names, service.Name)
+		}
+		return names
+	}
+	options := []scoped{
+		{"--target-stack-map", opts.TargetStackMap, func(instance Instance) []string { return []string{instance.Stack.Name} }},
+		{"--target-service-map", opts.TargetServiceMap, services},
+		{"--target-version-map", opts.TargetVersionMap, services},
+		{"--target-import-map", opts.TargetImportMap, func(instance Instance) []string {
+			components := make([]string, 0, len(instance.Backups))
+			for _, backup := range instance.Backups {
+				components = append(components, backup.Component)
+			}
+			return components
+		}},
+	}
+	apps := export.AppExports()
+	for _, option := range options {
+		if len(option.mapping) == 0 {
+			continue
+		}
+		// The same key forms scopedMapping accepts, for every source.
+		known := map[string]bool{}
+		add := func(parts ...string) {
+			known[strings.ToLower(strings.TrimSpace(strings.Join(parts, "/")))] = true
+		}
+		for _, app := range apps {
+			instances := append(append([]Instance(nil), app.Instances...), app.ContextInstances...)
+			for _, instance := range instances {
+				add(instance.UUID)
+				add(instance.Name)
+				for _, source := range option.sources(instance) {
+					for _, appKey := range []string{app.App.UUID, app.App.Name} {
+						add(appKey, instance.UUID, source)
+						add(appKey, instance.Name, source)
+						add(appKey, source)
+					}
+					add(instance.UUID, source)
+					add(instance.Name, source)
+					add(source)
+				}
+			}
+		}
+		keys := make([]string, 0, len(option.mapping))
+		for key := range option.mapping {
+			if !known[strings.ToLower(strings.TrimSpace(key))] {
+				keys = append(keys, key)
+			}
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			plan.addReview(SeverityBlocking, "", "", option.flag, fmt.Sprintf("mapping key %q matches no app, instance or source in this migration; check the spelling or remove it", key))
+		}
+	}
+	if len(opts.TargetEnvMap) != 0 {
+		types := map[string]bool{}
+		for _, app := range apps {
+			for _, instance := range append(append([]Instance(nil), app.Instances...), app.ContextInstances...) {
+				types[strings.ToLower(strings.TrimSpace(instance.Type))] = true
+			}
+		}
+		keys := make([]string, 0, len(opts.TargetEnvMap))
+		for key := range opts.TargetEnvMap {
+			if !types[strings.ToLower(strings.TrimSpace(key))] {
+				keys = append(keys, key)
+			}
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			// A warning only: one environment mapping is often reused for
+			// sources that do not have every instance type.
+			plan.addReview(SeverityServiceWarning, "", "", "--target-env-map", fmt.Sprintf("no source instance has type %q, so this mapping has no effect; check the spelling", key))
+		}
+	}
 }
 
 func validateAppStackStrategy(plan *Plan, app *AppPlan) {
@@ -607,6 +702,9 @@ func (p Plan) contentDigest() (string, error) {
 	}
 	for appIndex := range canonical.Apps {
 		canonical.Apps[appIndex].SourceUpdated = 0
+		for contextIndex := range canonical.Apps[appIndex].ContextInstances {
+			canonical.Apps[appIndex].ContextInstances[contextIndex].SourceUpdated = 0
+		}
 		for instanceIndex := range canonical.Apps[appIndex].Instances {
 			canonical.Apps[appIndex].Instances[instanceIndex].SourceUpdated = 0
 			for importIndex := range canonical.Apps[appIndex].Instances[instanceIndex].Imports {
@@ -1579,7 +1677,7 @@ func buildRoutePlan(plan *Plan, app App, instance Instance, domain Domain, basic
 		PortNumber:      domain.PortNumber,
 		NeedsPortID:     domain.Service != "" && domain.PortNumber != nil,
 		BasicAuth:       basicAuth && domain.Protected,
-		Redirect:        domain.RedirectToWWW || domain.RedirectNonWWW || domain.RedirectTarget != "",
+		Redirect:        domainRedirects(domain),
 		RedirectToWWW:   domain.RedirectToWWW,
 		RedirectNonWWW:  domain.RedirectNonWWW,
 		RedirectTarget:  domain.RedirectTarget,
@@ -1693,6 +1791,19 @@ func buildRoutePlan(plan *Plan, app App, instance Instance, domain Domain, basic
 		return routePlan.Settings[i].Value < routePlan.Settings[j].Value
 	})
 	return routePlan
+}
+
+// domainRedirects reports whether Wodby 1 redirects the domain. Its www
+// options act only in one direction: "redirect to www" does nothing on a host
+// that already starts with www, and "redirect to non-www" nothing on one that
+// does not. Such a domain serves the app, and a redirect route for it would
+// point at itself.
+func domainRedirects(domain Domain) bool {
+	if strings.TrimSpace(domain.RedirectTarget) != "" {
+		return true
+	}
+	hasWWW := strings.HasPrefix(domain.Name, "www.")
+	return (domain.RedirectToWWW && !hasWWW) || (domain.RedirectNonWWW && hasWWW)
 }
 
 func validateInstanceRoutes(plan *Plan, app App, instance Instance, routes []RoutePlan) {

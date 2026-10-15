@@ -114,6 +114,8 @@ type PreparedInstance struct {
 // are kept by name because a generated target stack gets new IDs at apply.
 type PreparedWorkspace struct {
 	Branch string
+	// BaseRef is the Git ref the working branch starts from.
+	BaseRef string
 	// StorageClass or StorageService select where the code and home volumes
 	// live. Both empty means the cluster's default storage class.
 	StorageClass   string
@@ -1681,13 +1683,12 @@ func (c *TargetClient) preflightWorkspace(
 		buildSource.Input.GitRef == nil || buildSource.Input.GitRefType == nil {
 		return blocker("a workspace needs the app's repository linked through a Wodby 2 Git integration; pass --target-git-integration-id (and --target-repository-name when the names differ), or migrate this instance without the workspace option")
 	}
-	branch := strings.TrimSpace(*buildSource.Input.GitRef)
-	if refType := *buildSource.Input.GitRefType; refType != TargetGitRefBranch {
-		return blocker(fmt.Sprintf(
-			"a workspace is created from a branch, but this instance deploys Git %s %q; pass --target-git-ref BRANCH with --target-git-ref-type branch, or migrate this instance without the workspace option",
-			strings.ToLower(refType), branch,
-		))
-	}
+	// The workspace starts its own working branch from the ref the Wodby 1
+	// instance deployed, as a workspace created in the dashboard does, so a
+	// tag or a commit works as well as a branch.
+	baseRef := strings.TrimSpace(*buildSource.Input.GitRef)
+	baseRefType := *buildSource.Input.GitRefType
+	branch := workspaceBranchName(source.UUID)
 
 	input := TargetWorkspaceEligibilityInput{StackRevID: stack.RevID, DisabledServiceIDs: []int{}}
 	if targetClusterID > 0 {
@@ -1735,6 +1736,7 @@ func (c *TargetClient) preflightWorkspace(
 	}
 	workspace := &PreparedWorkspace{
 		Branch:            branch,
+		BaseRef:           baseRef,
 		SourceServiceName: sourceName,
 		CodeServiceNames:  map[string]bool{sourceName: true},
 		StorageClass:      plan.Workspace.StorageClass,
@@ -1751,7 +1753,11 @@ func (c *TargetClient) preflightWorkspace(
 	}
 	sort.Strings(consumers)
 	plan.Workspace.Branch = branch
-	message := fmt.Sprintf("target service %q will hold a checkout of Git branch %q", sourceName, branch)
+	plan.Workspace.BaseRef = baseRef
+	message := fmt.Sprintf(
+		"target service %q will hold a checkout on new branch %q, started from Git %s %q",
+		sourceName, branch, strings.ToLower(baseRefType), baseRef,
+	)
 	if len(consumers) != 0 {
 		message += "; " + strings.Join(consumers, ", ") + " mount it"
 	}
@@ -1759,6 +1765,14 @@ func (c *TargetClient) preflightWorkspace(
 		Severity: SeverityMigration, App: app.Name, Instance: source.Name,
 		Subject: "development workspace", Message: message,
 	}}, nil
+}
+
+// workspaceBranchName names the workspace's working branch the way the
+// dashboard does, "wodby/workspace-" and eight hexadecimal characters. They
+// come from the source instance so the name stays the same on every run of the
+// migration and in its reviewed plan.
+func workspaceBranchName(sourceInstanceUUID string) string {
+	return "wodby/workspace-" + shortDigest("workspace-branch", sourceInstanceUUID)[:8]
 }
 
 func resolveImportDestination(

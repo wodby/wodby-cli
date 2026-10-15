@@ -74,11 +74,15 @@ func TestPreflightWorkspaceInstance(t *testing.T) {
 	}
 	instance := prepared.Instances[0]
 	workspace := instance.Workspace
-	if workspace == nil || workspace.Branch != "main" || workspace.SourceServiceName != "php" ||
+	branch := workspaceBranchName("inst-1")
+	if !strings.HasPrefix(branch, "wodby/workspace-") || len(branch) != len("wodby/workspace-")+8 {
+		t.Fatalf("working branch = %q", branch)
+	}
+	if workspace == nil || workspace.Branch != branch || workspace.BaseRef != "main" || workspace.SourceServiceName != "php" ||
 		!reflect.DeepEqual(workspace.CodeServiceNames, map[string]bool{"php": true, "nginx": true}) {
 		t.Fatalf("workspace = %#v", workspace)
 	}
-	if planned := plan.Apps[0].Instances[0].Workspace; planned == nil || planned.Branch != "main" {
+	if planned := plan.Apps[0].Instances[0].Workspace; planned == nil || planned.Branch != branch || planned.BaseRef != "main" {
 		t.Fatalf("planned workspace = %#v", planned)
 	}
 	// A workspace is not built: no CI of any kind, and no pipeline check.
@@ -115,7 +119,7 @@ func TestPreflightWorkspaceInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mode != TargetExecutionModeWorkspace || input == nil || input.Branch != "main" {
+	if mode != TargetExecutionModeWorkspace || input == nil || input.Branch != branch {
 		t.Fatalf("creation mode = %q, workspace = %#v", mode, input)
 	}
 	if len(overrides) != 2 || overrides[0].ID != 11 || overrides[1].ID != 13 {
@@ -153,9 +157,6 @@ func TestPreflightWorkspaceBlockers(t *testing.T) {
 		{name: "code held by another service", repository: true, integration: 44,
 			eligibility: &TargetWorkspaceEligibility{Eligible: true, SourceStackServiceID: &otherSource},
 			want:        "--target-code-service nginx"},
-		{name: "tag deployment", repository: true, integration: 44, eligibility: eligibleWorkspace(),
-			properties: map[string]interface{}{"deployment_type": "git", "git_target_value": "v1.2", "git_target_type": "tag"},
-			want:       "created from a branch"},
 		{name: "repository not linked", repository: true, eligibility: eligibleWorkspace(),
 			want: "--target-git-integration-id"},
 		{name: "no source repository", eligibility: eligibleWorkspace(),
@@ -397,9 +398,9 @@ func TestMigrationExecutorCreatesWorkspace(t *testing.T) {
 	deployments := map[int]TargetAppDeployment{}
 	app := TargetApp{ID: 10, Name: "demo", Title: "Demo", OrgID: 1, CreatedAt: now, UpdatedAt: now}
 	setup := []TargetWorkspace{
-		{SourceAppServiceID: 21, Branch: "main", PreparationState: "pending"},
-		{SourceAppServiceID: 21, Branch: "main", PreparationState: "running"},
-		{SourceAppServiceID: 21, Branch: "main", PreparationState: "ready", Initialized: true},
+		{SourceAppServiceID: 21, Branch: "wodby/workspace-0a1b2c3d", BaseRef: "main", PreparationState: "pending"},
+		{SourceAppServiceID: 21, Branch: "wodby/workspace-0a1b2c3d", BaseRef: "main", PreparationState: "running"},
+		{SourceAppServiceID: 21, Branch: "wodby/workspace-0a1b2c3d", BaseRef: "main", PreparationState: "ready", Initialized: true},
 	}
 	setupPolls := 0
 	instance := func(workspace TargetWorkspace) TargetAppInstance {
@@ -435,7 +436,7 @@ func TestMigrationExecutorCreatesWorkspace(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatal(err)
 			}
-			if body.ExecutionMode != "workspace" || body.Workspace == nil || body.Workspace.Branch != "main" || !body.DeferInitialDeployment {
+			if body.ExecutionMode != "workspace" || body.Workspace == nil || body.Workspace.Branch != "wodby/workspace-0a1b2c3d" || !body.DeferInitialDeployment {
 				t.Fatalf("workspace creation body = %#v", body)
 			}
 			if len(body.ServiceOverrides) != 1 || body.ServiceOverrides[0].ID != 11 || body.ServiceOverrides[0].BuildSource == nil ||
@@ -519,7 +520,7 @@ func TestMigrationExecutorCreatesWorkspace(t *testing.T) {
 			Instances: []InstancePlan{{
 				SourceUUID: "instance-1", Name: "dev", TargetEnvID: 1, TargetEnvType: "dev",
 				Stack:     StackPlan{Target: "drupal", TargetID: 5, TargetRevID: 12},
-				Workspace: &WorkspacePlan{Branch: "main"},
+				Workspace: &WorkspacePlan{Branch: "wodby/workspace-0a1b2c3d", BaseRef: "main"},
 			}},
 		}},
 		Status: "target_scope_validated",
@@ -545,7 +546,7 @@ func TestMigrationExecutorCreatesWorkspace(t *testing.T) {
 			BuildSource: &PreparedBuildSource{ServiceName: "php", Input: TargetBuildSourceInput{
 				BuildSourceType: TargetBuildSourceConnect, IntegrationID: &integration, RemoteGitRepoID: &repo, GitRef: &ref, GitRefType: &refType,
 			}},
-			Workspace: &PreparedWorkspace{Branch: "main", SourceServiceName: "php", CodeServiceNames: map[string]bool{"php": true}},
+			Workspace: &PreparedWorkspace{Branch: "wodby/workspace-0a1b2c3d", BaseRef: "main", SourceServiceName: "php", CodeServiceNames: map[string]bool{"php": true}},
 		}},
 	}
 	client, err := NewTargetClient(types.APIConfig{Endpoint: server.URL + "/v1"})
@@ -582,5 +583,33 @@ func TestMigrationExecutorCreatesWorkspace(t *testing.T) {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("progress output does not contain %q:\n%s", expected, output)
 		}
+	}
+}
+
+// A workspace starts its own branch, so the Wodby 1 instance may deploy a tag
+// or a commit; the working branch starts from it.
+func TestPreflightWorkspaceStartsFromATag(t *testing.T) {
+	export := preflightFixtureExport(true)
+	source := &export.Apps[0].Instances[0]
+	source.Services = []Service{{Name: "php", Enabled: true}, {Name: "nginx", Enabled: true}}
+	source.Properties = map[string]interface{}{"deployment_type": "git", "git_target_value": "v1.2", "git_target_type": "tag"}
+	api := newPreflightTargetAPI(t, workspaceCatalog(eligibleWorkspace()))
+	options := preflightOwnerPlanOptions()
+	options.Repository = RepositoryTargetPlan{GitIntegrationID: 44}
+	options.WorkspaceInstances = map[string]bool{"inst-1": true}
+	plan := preflightBuildPlan(t, export, options)
+	prepared, err := api.client.PreflightTarget(context.Background(), export, &plan, TargetPreflightOptions{SkipData: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blockers := workspaceBlockers(plan); len(blockers) != 0 {
+		t.Fatalf("unexpected blockers: %q", blockers)
+	}
+	workspace := prepared.Instances[0].Workspace
+	if workspace == nil || workspace.BaseRef != "v1.2" || workspace.Branch != workspaceBranchName("inst-1") {
+		t.Fatalf("workspace = %#v", workspace)
+	}
+	if *prepared.Instances[0].BuildSource.Input.GitRefType != TargetGitRefTag {
+		t.Fatalf("the repository must keep the tag as its ref: %#v", prepared.Instances[0].BuildSource.Input)
 	}
 }

@@ -263,6 +263,15 @@ type BackupConfig struct {
 	SecretAccessKey string `json:"secret_access_key,omitempty"`
 	Secret          bool   `json:"secret,omitempty"`
 	SecretRedacted  bool   `json:"secret_redacted,omitempty"`
+	// Schedules are Wodby 1's per-component automatic backup schedules, keyed
+	// "db" and "files". They apply only while Enabled is true.
+	Schedules map[string]BackupComponentSchedule `json:"schedules,omitempty"`
+}
+
+// BackupComponentSchedule is one component's automatic backup schedule.
+type BackupComponentSchedule struct {
+	Enabled bool   `json:"enabled"`
+	Crontab string `json:"crontab,omitempty"`
 }
 
 type Server struct {

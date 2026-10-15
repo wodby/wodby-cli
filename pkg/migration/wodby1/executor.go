@@ -2667,6 +2667,7 @@ func (e *MigrationExecutor) ensureServiceCrons(
 		if strings.TrimSpace(cron.Crontab) == "" || strings.TrimSpace(cron.Command) == "" {
 			return errors.New("source application cron requires both schedule and command")
 		}
+		cron.Crontab = migratedCrontab(cron.Crontab)
 		command := migratedEnvironmentReferences(cron.Command)
 		name := "w1-" + shortDigest(sourceID, source.Name, strconv.Itoa(index), cron.Crontab, command)
 		matches := byName[name]
@@ -5580,6 +5581,7 @@ func (e *MigrationExecutor) verifyServiceCrons(
 		if !cron.Enabled || cron.Classification == "source_only_infrastructure" {
 			continue
 		}
+		cron.Crontab = migratedCrontab(cron.Crontab)
 		command := migratedEnvironmentReferences(cron.Command)
 		name := "w1-" + shortDigest(sourceID, source.Name, strconv.Itoa(index), cron.Crontab, command)
 		matches := byName[name]

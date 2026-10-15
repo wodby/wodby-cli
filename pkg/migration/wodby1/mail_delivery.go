@@ -117,26 +117,39 @@ func prepareMailDeliveryLinks(app *PreparedAppMigration) []ReviewItem {
 	return findings
 }
 
+// sourceMailServiceProperty reads mail_service. Wodby 1 exports null or an empty
+// string when no mail service was ever selected; both mean "not set", so the
+// legacy php_mail_catcher setting still decides. valid is false only for a
+// value of another type.
+func sourceMailServiceProperty(instance Instance) (service string, set bool, valid bool) {
+	raw, found := instance.Properties["mail_service"]
+	if !found || raw == nil {
+		return "", false, true
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return "", false, false
+	}
+	value = strings.TrimSpace(value)
+	return value, value != "", true
+}
+
 func selectedSourceMailService(instance Instance) (string, bool, error) {
-	if raw, found := instance.Properties["mail_service"]; found {
-		service, ok := raw.(string)
-		if !ok {
-			return "", false, fmt.Errorf("source mail_service must be a service name")
-		}
-		service = strings.ToLower(strings.TrimSpace(service))
+	if service, set, valid := sourceMailServiceProperty(instance); !valid {
+		return "", false, fmt.Errorf("source mail_service must be a service name")
+	} else if set {
+		service = strings.ToLower(service)
 		switch service {
 		case "mailhog", "opensmtpd":
 			if !sourceServiceEnabled(instance.Services, service) {
 				return "", false, fmt.Errorf("selected Wodby 1 mail service %q is not enabled", service)
 			}
 			return service, true, nil
-		case "":
-			return "", false, nil
 		default:
 			return "", false, fmt.Errorf("unsupported Wodby 1 mail_service %q; expected opensmtpd or mailhog", service)
 		}
 	}
-	if raw, found := instance.Properties["php_mail_catcher"]; found {
+	if raw, found := instance.Properties["php_mail_catcher"]; found && raw != nil {
 		enabled, ok := raw.(bool)
 		if !ok {
 			return "", false, fmt.Errorf("source php_mail_catcher must be a boolean")

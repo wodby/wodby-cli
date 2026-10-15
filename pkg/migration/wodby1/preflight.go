@@ -231,6 +231,15 @@ type PreparedBackupDestination struct {
 	Auto           bool
 	Disabled       bool
 	TimeZone       string
+	// DisabledBackups names the target backup capabilities whose Wodby 1
+	// component has its automatic schedule turned off.
+	DisabledBackups map[string]bool
+}
+
+// presetDisabled reports whether the preset for a backup capability is
+// created disabled.
+func (d PreparedBackupDestination) presetDisabled(backupName string) bool {
+	return d.Disabled || d.DisabledBackups[backupName]
 }
 
 type PreparedStackEnvVar struct {
@@ -1091,6 +1100,8 @@ func (c *TargetClient) preflightInstance(
 		}
 	}
 
+	findings = append(findings, reconcileRoutePorts(app, source, plan, preparedServices)...)
+
 	prepared := PreparedInstance{
 		Source:               source,
 		SkipCode:             opts.SkipCode,
@@ -1218,6 +1229,7 @@ func (c *TargetClient) preflightInstance(
 				}
 			}
 		}
+		findings = append(findings, missingFilesBackupFindings(app, source, plan, inspections, effective, prepared.ImportByComponent)...)
 	}
 	certificateFindings, err := c.resolveCustomRouteCertificates(ctx, app, source, plan, targetOrgID, pinned)
 	if err != nil {
@@ -1759,6 +1771,108 @@ func (c *TargetClient) preflightWorkspace(
 		Severity: SeverityMigration, App: app.Name, Instance: source.Name,
 		Subject: "development workspace", Message: message,
 	}}, nil
+}
+
+// reconcileRoutePorts checks that every route the migration creates or protects
+// uses a port the mapped Wodby 2 service exposes. A replacement service can
+// listen elsewhere: Wodby 1 serves the MailHog UI on port 80, while Mailpit
+// serves it on 8025. Such a route moves to the target service's one public
+// HTTP port; when there is no single such port, the preview blocks instead of
+// letting apply fail after the target was created.
+func reconcileRoutePorts(app App, source Instance, plan *InstancePlan, services map[string]PreparedService) []ReviewItem {
+	findings := []ReviewItem{}
+	for index := range plan.Routes {
+		route := &plan.Routes[index]
+		used := route.Action == "create_backend" || route.Action == "create_redirect" ||
+			(route.Action == "skip_technical" && route.BasicAuth)
+		if !used || route.Service == "" || route.PortNumber == nil {
+			continue
+		}
+		mapping, ok := services[route.Service]
+		if !ok || mapping.Target.ServiceRevision.Manifest == nil || len(mapping.Target.ServiceRevision.Manifest.Endpoints) == 0 {
+			continue
+		}
+		candidates := []TargetServicePort{}
+		exposed := false
+		for _, endpoint := range mapping.Target.ServiceRevision.Manifest.Endpoints {
+			for _, port := range endpoint.Ports {
+				if port.Number == *route.PortNumber {
+					exposed = true
+				}
+				protocol := strings.ToLower(strings.TrimSpace(port.Protocol))
+				if !port.Private && port.Number > 0 && (protocol == "" || protocol == "http") {
+					candidates = append(candidates, port)
+				}
+			}
+		}
+		if exposed {
+			continue
+		}
+		if len(candidates) > 1 {
+			main := []TargetServicePort{}
+			for _, port := range candidates {
+				if port.Main {
+					main = append(main, port)
+				}
+			}
+			candidates = main
+		}
+		target := mapping.Target.StackService.Name
+		if len(candidates) != 1 {
+			findings = append(findings, ReviewItem{
+				Severity: SeverityBlocking, App: app.Name, Instance: source.Name, Subject: "route " + route.Host,
+				Message: fmt.Sprintf("Wodby 1 routes this domain to port %d of service %q, but target service %q does not expose that port and has no single public HTTP port to use instead", *route.PortNumber, route.Service, target),
+			})
+			continue
+		}
+		previous := *route.PortNumber
+		number := candidates[0].Number
+		route.PortNumber = &number
+		findings = append(findings, ReviewItem{
+			Severity: SeverityMigration, App: app.Name, Instance: source.Name, Subject: "route " + route.Host,
+			Message: fmt.Sprintf("Wodby 1 routes this domain to port %d of service %q; target service %q serves it on port %d", previous, route.Service, target, number),
+		})
+	}
+	return findings
+}
+
+// missingFilesBackupFindings warns when the selected backups hold a database but
+// no files although the target can import files. Wodby 1 can turn off
+// automatic files backups per instance, so the newest backups often contain the
+// database only, and the migration would then move no uploaded files at all.
+func missingFilesBackupFindings(
+	app App,
+	source Instance,
+	plan *InstancePlan,
+	inspections []TargetStackServiceInspection,
+	effective map[string]bool,
+	imports map[string]PreparedImport,
+) []ReviewItem {
+	if len(plan.Imports) == 0 {
+		return nil
+	}
+	if _, found := imports["files"]; found {
+		return nil
+	}
+	for _, item := range plan.Imports {
+		if item.Component == "files" {
+			return nil
+		}
+	}
+	for _, inspection := range inspections {
+		if !effective[inspection.StackService.Name] || inspection.ServiceRevision.Manifest == nil {
+			continue
+		}
+		for _, capability := range inspection.ServiceRevision.Manifest.Imports {
+			if capability.Name == "files" {
+				return []ReviewItem{{
+					Severity: SeverityConfirmation, App: app.Name, Instance: source.Name, Subject: "files backup",
+					Message: "the selected Wodby 1 backups contain no files, so uploaded files will not be migrated; create a Wodby 1 backup that includes files and rerun the preview, or move the files yourself",
+				}}
+			}
+		}
+	}
+	return nil
 }
 
 func resolveImportDestination(

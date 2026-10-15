@@ -47,6 +47,50 @@ func migratedEnvironmentReferences(value string) string {
 	return strings.NewReplacer(wodby1EnvironmentReferenceReplacements...).Replace(value)
 }
 
+// migratedCrontab returns a Wodby 1 cron schedule in the form Wodby 2 accepts.
+// Wodby 1 allows 7 for Sunday in the day-of-week field, which Wodby 2's parser
+// rejects, so it becomes 0; a range ending at 7 ends at 6 and adds 0.
+// Any other schedule is returned exactly as given, so names derived from it stay
+// the same for migrations already in progress; the target validates it.
+func migratedCrontab(value string) string {
+	fields := strings.Fields(value)
+	if len(fields) != 5 || !strings.Contains(fields[4], "7") {
+		return value
+	}
+	items := strings.Split(fields[4], ",")
+	result := make([]string, 0, len(items)+1)
+	addSunday := false
+	for _, item := range items {
+		switch {
+		case item == "7":
+			addSunday = true
+		case strings.HasSuffix(item, "-7") && !strings.Contains(item, "/"):
+			start := strings.TrimSuffix(item, "-7")
+			if start == "7" || start == "0" {
+				result = append(result, "*")
+				continue
+			}
+			result = append(result, start+"-6")
+			addSunday = true
+		default:
+			result = append(result, item)
+		}
+	}
+	if addSunday {
+		hasSunday := false
+		for _, item := range result {
+			if item == "0" || item == "*" {
+				hasSunday = true
+			}
+		}
+		if !hasSunday {
+			result = append(result, "0")
+		}
+	}
+	fields[4] = strings.Join(result, ",")
+	return strings.Join(fields, " ")
+}
+
 func isWodby1GeneratedEnvironmentName(name string) bool {
 	return wodby1GeneratedEnvironmentNames[strings.ToUpper(strings.TrimSpace(name))]
 }

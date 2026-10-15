@@ -1301,7 +1301,7 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 			}
 			servicePlan.CronSchedules = append(servicePlan.CronSchedules, CronSchedulePlan{
 				Title:       firstNonEmpty(strings.TrimSpace(cron.Title), "Migrated Wodby 1 cron"),
-				Schedule:    strings.TrimSpace(cron.Crontab),
+				Schedule:    strings.TrimSpace(migratedCrontab(cron.Crontab)),
 				Command:     migratedEnvironmentReferences(strings.TrimSpace(cron.Command)),
 				TargetState: targetState,
 			})
@@ -1594,11 +1594,10 @@ func validateInstanceProperties(plan *Plan, app App, instance Instance, serviceT
 	validateCacheServiceToggleProperty(plan, app, instance, "cache_redis", "redis", serviceTargets)
 	validateCacheServiceToggleProperty(plan, app, instance, "cache_valkey", "valkey", serviceTargets)
 
-	if raw, found := instance.Properties["mail_service"]; found {
-		service, ok := raw.(string)
-		if !ok {
+	if service, set, valid := sourceMailServiceProperty(instance); !valid || set {
+		if !valid {
 			plan.addReview(SeverityBlocking, app.Name, instance.Name, "instance property mail_service", "source property must be a service name")
-		} else if service = strings.TrimSpace(service); service != "" {
+		} else {
 			if !sourceServiceEnabled(instance.Services, service) {
 				plan.addReview(SeverityBlocking, app.Name, instance.Name, "mail service", fmt.Sprintf("source mail service %q is not present as an enabled exported service", service))
 			} else if targetService := strings.TrimSpace(serviceTargets[strings.ToLower(service)]); targetService == "" {
@@ -1607,7 +1606,7 @@ func validateInstanceProperties(plan *Plan, app App, instance Instance, serviceT
 				plan.addReview(SeverityMigration, app.Name, instance.Name, "mail service", fmt.Sprintf("source mail service %q will map to Wodby 2 service %q", service, targetService))
 			}
 		}
-	} else if raw, found := instance.Properties["php_mail_catcher"]; found {
+	} else if raw, found := instance.Properties["php_mail_catcher"]; found && raw != nil {
 		enabled, ok := raw.(bool)
 		if !ok {
 			plan.addReview(SeverityBlocking, app.Name, instance.Name, "instance property php_mail_catcher", "source property must be a boolean")
@@ -1665,7 +1664,8 @@ func validateCacheServiceToggleProperty(
 		return
 	}
 	raw, found := instance.Properties[property]
-	if !found {
+	// Wodby 1 exports null for a setting that was never saved.
+	if !found || raw == nil {
 		return
 	}
 	enabled, ok := raw.(bool)

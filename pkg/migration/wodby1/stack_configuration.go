@@ -656,13 +656,14 @@ func preparedStackCrons(appName, targetName string, items []stackConfigServiceIn
 				title = "Migrated Wodby 1 cron"
 			}
 			command := migratedEnvironmentReferences(cron.Command)
-			name := "w1-" + shortDigest(targetName, title, cron.Crontab, command)
+			crontab := migratedCrontab(cron.Crontab)
+			name := "w1-" + shortDigest(targetName, title, crontab, command)
 			observations[name] = append(observations[name], stackCronObservation{
 				instanceID: item.instance.Source.UUID,
 				sourceName: item.source.Name,
 				envType:    envType,
 				cron: PreparedStackCronSchedule{
-					Name: name, Title: title, Crontab: cron.Crontab, Command: command,
+					Name: name, Title: title, Crontab: crontab, Command: command,
 					Disabled: item.instance.DisableCronSchedules,
 				},
 				sourceCron: cron,
@@ -729,7 +730,7 @@ func overridesForCron(overrides map[instanceServiceConfigKey][]CronJob, name, ta
 			if title == "" {
 				title = "Migrated Wodby 1 cron"
 			}
-			if "w1-"+shortDigest(targetName, title, cron.Crontab, migratedEnvironmentReferences(cron.Command)) == name {
+			if "w1-"+shortDigest(targetName, title, migratedCrontab(cron.Crontab), migratedEnvironmentReferences(cron.Command)) == name {
 				result = append(result, cron)
 			}
 		}

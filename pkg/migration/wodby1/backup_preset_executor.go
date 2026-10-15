@@ -190,7 +190,7 @@ func migrationBackupPresetInput(serviceID int, backupName string, destination Pr
 	input := TargetCreateBackupPresetInput{
 		AppServiceID: &serviceID, BackupName: &backupName,
 		IntegrationID: destination.IntegrationID, Bucket: destination.Bucket,
-		Disabled: destination.Disabled, Override: false, Auto: &auto,
+		Disabled: destination.presetDisabled(backupName), Override: false, Auto: &auto,
 	}
 	if auto {
 		duration := 3

@@ -761,6 +761,21 @@ type TargetServiceManifest struct {
 	Options       []TargetServiceOption                `json:"options,omitempty"`
 	Settings      []TargetServiceSettingCapability     `json:"settings,omitempty"`
 	Links         []TargetServiceLinkCapability        `json:"links,omitempty"`
+	Endpoints     []TargetServiceEndpoint              `json:"endpoints,omitempty"`
+}
+
+// TargetServiceEndpoint lists the ports a service exposes to routes.
+type TargetServiceEndpoint struct {
+	Name  string              `json:"name"`
+	Ports []TargetServicePort `json:"ports,omitempty"`
+}
+
+type TargetServicePort struct {
+	Name     string `json:"name,omitempty"`
+	Number   int    `json:"number,omitempty"`
+	Main     bool   `json:"main,omitempty"`
+	Private  bool   `json:"private,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
 }
 
 type TargetServiceWorkload struct {

@@ -600,6 +600,7 @@ func (c *TargetClient) prepareBackupIntegrations(ctx context.Context, app *Prepa
 					Message: message,
 				})
 			}
+			findings = append(findings, applyBackupComponentSchedules(app.App.App.Name, instance.Source.Name, *config, destination)...)
 		case "aws_s3", "aws-s3", "s3":
 			if !autoBackups {
 				findings = append(findings, stackConfigBlocker(app.App.App.Name, instance.Source.Name, "backup destination", "the source uses an S3 backup destination, but target backup presets require the automatic-backups feature; upgrade the target subscription or migrate this preset manually"))
@@ -637,6 +638,7 @@ func (c *TargetClient) prepareBackupIntegrations(ctx context.Context, app *Prepa
 			})
 			destination.IntegrationKey = key
 			destination.Bucket = strings.TrimSpace(config.Bucket)
+			findings = append(findings, applyBackupComponentSchedules(app.App.App.Name, instance.Source.Name, *config, destination)...)
 			findings = append(findings, ReviewItem{
 				Severity: SeverityMigration, App: app.App.App.Name, Instance: instance.Source.Name, Subject: "backup destination",
 				Message: "the AWS S3 credentials will be resolved server-side and reused when they match an existing integration; the backup preset will use the target organization's default 02:00-05:00 window",
@@ -648,6 +650,76 @@ func (c *TargetClient) prepareBackupIntegrations(ctx context.Context, app *Prepa
 		instance.BackupDestination = destination
 	}
 	return prepared, findings, nil
+}
+
+// backupComponentCapabilities maps a Wodby 1 backup component to the backup
+// capability names Wodby 2 services use for the same data.
+var backupComponentCapabilities = map[string][]string{
+	"db":    {"database", "db"},
+	"files": {"files"},
+}
+
+// applyBackupComponentSchedules carries Wodby 1's per-component automatic
+// backup schedules over where Wodby 2 can represent them. A component whose
+// schedule is off gets a disabled preset. Wodby 2 runs an automatic preset
+// once a day in its time window, so a schedule that runs more often or at
+// another time is reported for review instead.
+func applyBackupComponentSchedules(appName, instanceName string, config BackupConfig, destination *PreparedBackupDestination) []ReviewItem {
+	if !config.Enabled || !destination.Auto || len(config.Schedules) == 0 {
+		return nil
+	}
+	findings := []ReviewItem{}
+	components := make([]string, 0, len(config.Schedules))
+	for component := range config.Schedules {
+		components = append(components, component)
+	}
+	sort.Strings(components)
+	for _, component := range components {
+		schedule := config.Schedules[component]
+		label := component
+		if component == "db" {
+			label = "database"
+		}
+		if !schedule.Enabled {
+			if destination.DisabledBackups == nil {
+				destination.DisabledBackups = map[string]bool{}
+			}
+			for _, capability := range backupComponentCapabilities[component] {
+				destination.DisabledBackups[capability] = true
+			}
+			findings = append(findings, ReviewItem{
+				Severity: SeverityMigration, App: appName, Instance: instanceName, Subject: "automatic backups",
+				Message: fmt.Sprintf("Wodby 1 does not back up %s automatically for this instance, so its target preset will be created disabled", label),
+			})
+			continue
+		}
+		crontab := strings.Join(strings.Fields(schedule.Crontab), " ")
+		if crontab == "" {
+			continue
+		}
+		fields := strings.Fields(crontab)
+		daily := len(fields) == 5 && fields[2] == "*" && fields[3] == "*" && fields[4] == "*" &&
+			isPlainNumber(fields[0]) && isPlainNumber(fields[1])
+		if !daily {
+			findings = append(findings, ReviewItem{
+				Severity: SeverityServiceWarning, App: appName, Instance: instanceName, Subject: "automatic backups",
+				Message: fmt.Sprintf("Wodby 1 backs up %s on schedule %q; Wodby 2 runs automatic backups once a day in the 02:00-05:00 window, so review the target preset and create additional backups if you need them more often", label, crontab),
+			})
+		}
+	}
+	return findings
+}
+
+func isPlainNumber(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func sameIntegrationPlans(left, right []IntegrationPlan) bool {

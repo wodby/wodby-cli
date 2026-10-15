@@ -159,6 +159,8 @@ func TestPreflightTargetResolvesOfficialStackServicesAndRehashesPlan(t *testing.
 	wantPaths := []string{
 		"/v1/apps",
 		"/v1/integrations/44/options/remote-git-repos",
+		"/v1/integrations/44",
+		"/v1/provider-revisions/900",
 		"/v1/stacks/7",
 		"/v1/stack-revisions/71",
 		"/v1/stack-revisions/71/services",
@@ -1471,6 +1473,9 @@ type preflightTargetCatalog struct {
 	// workspaceEligibility is the answer to a workspace check; nil models an
 	// installation without workspace support.
 	workspaceEligibility *TargetWorkspaceEligibility
+	// gitProvider is the provider of every Git integration; empty means
+	// GitLab.
+	gitProvider string
 }
 
 type preflightTargetAPI struct {
@@ -1531,6 +1536,20 @@ func newPreflightTargetAPI(t *testing.T, catalog preflightTargetCatalog) *prefli
 			return
 		}
 		switch {
+		case strings.HasPrefix(request.URL.Path, "/v1/integrations/") &&
+			!strings.Contains(strings.TrimPrefix(request.URL.Path, "/v1/integrations/"), "/"):
+			integrationID, err := strconv.Atoi(strings.TrimPrefix(request.URL.Path, "/v1/integrations/"))
+			if err != nil {
+				http.Error(w, "invalid integration ID", http.StatusBadRequest)
+				return
+			}
+			preflightWriteJSON(w, TargetIntegration{ID: integrationID, OrgID: 8, ProviderRevID: 900, Title: "Git"})
+		case request.URL.Path == "/v1/provider-revisions/900":
+			provider := catalog.gitProvider
+			if provider == "" {
+				provider = "gitlab"
+			}
+			preflightWriteJSON(w, TargetProviderRevision{ID: 900, Name: provider, ProviderID: 90})
 		case request.URL.Path == "/v1/providers/by-name/custom-ci":
 			preflightWriteJSON(w, TargetProvider{ID: 501, RevID: 502, Name: "custom-ci", Title: "Custom CI"})
 		case request.URL.Path == "/v1/catalog/stacks":
@@ -1886,7 +1905,7 @@ func preflightFixtureExport(withRepository bool) Export {
 	if withRepository {
 		app.Repository = &Repository{
 			UUID: "repo-1", Title: "Example repository",
-			URL: "https://git.example.test/acme/example.git", Status: "ok",
+			URL: "https://gitlab.com/acme/example.git", Status: "ok",
 		}
 	}
 	return Export{

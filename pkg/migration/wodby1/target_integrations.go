@@ -136,6 +136,28 @@ func (c *TargetClient) GetProviderByName(ctx context.Context, name string) (Targ
 	return item, nil
 }
 
+// TargetProviderRevision is one revision of a provider; its name is the
+// provider's name.
+type TargetProviderRevision struct {
+	ID         int    `json:"id"`
+	Name       string `json:"name"`
+	ProviderID int    `json:"providerId"`
+}
+
+func (c *TargetClient) GetProviderRevision(ctx context.Context, id int) (TargetProviderRevision, error) {
+	if id <= 0 {
+		return TargetProviderRevision{}, errors.New("target provider revision ID must be positive")
+	}
+	var item TargetProviderRevision
+	if err := c.client.Get(ctx, "/provider-revisions/"+strconv.Itoa(id), nil, &item); err != nil {
+		return TargetProviderRevision{}, errors.Wrap(err, "get target Wodby 2 provider revision")
+	}
+	if item.ID != id || strings.TrimSpace(item.Name) == "" {
+		return TargetProviderRevision{}, errors.New("target Wodby 2 returned an invalid provider revision")
+	}
+	return item, nil
+}
+
 func (c *TargetClient) CreateVariableProvider(ctx context.Context, input TargetCreateVariableProviderInput) (TargetProvider, error) {
 	if input.OrgID <= 0 || strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Title) == "" || len(input.Fields) == 0 {
 		return TargetProvider{}, errors.New("target variable provider requires an organization, name, title, and fields")

@@ -5473,6 +5473,9 @@ func verifyWorkspace(prepared PreparedInstance, instance TargetAppInstance, serv
 	if workspace.Branch != prepared.Workspace.Branch {
 		return errors.Errorf("target workspace uses branch %q, expected %q", workspace.Branch, prepared.Workspace.Branch)
 	}
+	if workspace.BaseRef != prepared.Workspace.BaseRef {
+		return errors.Errorf("target workspace started from Git ref %q, expected %q", workspace.BaseRef, prepared.Workspace.BaseRef)
+	}
 	source, ok := services[prepared.Workspace.SourceServiceName]
 	if !ok || workspace.SourceAppServiceID != source.ID {
 		return errors.Errorf("target workspace code is not held by service %q", prepared.Workspace.SourceServiceName)

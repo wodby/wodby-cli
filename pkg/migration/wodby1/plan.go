@@ -199,7 +199,10 @@ type InstancePlan struct {
 // branch is the one the Wodby 1 instance deployed from; target preflight
 // resolves it together with the repository.
 type WorkspacePlan struct {
-	Branch string `json:"branch,omitempty"`
+	// Branch is the new working branch; BaseRef is the ref the Wodby 1
+	// instance deployed, which the branch starts from.
+	Branch  string `json:"branch,omitempty"`
+	BaseRef string `json:"baseRef,omitempty"`
 	// StorageClass and StorageService record the reviewed storage choice;
 	// both empty means the cluster's default storage class.
 	StorageClass   string `json:"storageClass,omitempty"`
@@ -1083,7 +1086,8 @@ func reviewWorkspaceInstance(plan *Plan, app App, instance Instance, opts PlanOp
 	}
 	plan.addReview(SeverityConfirmation, app.Name, instance.Name, subject,
 		"this instance will become a Wodby 2 development workspace instead of an app environment built by CI."+
-			" The code is checked out from the Git repository onto a persistent volume and is edited over SSH or with Wodby Agent."+
+			" The code is checked out from the Git repository onto a persistent volume, on a new working branch started from the ref the instance deployed, and is edited over SSH or with Wodby Agent."+
+			" Push that branch and open a pull request to deliver changes."+
 			" The workspace belongs to the user of the target API key and only they can change it."+
 			" Code services run one replica, scheduled jobs stay disabled, pushes to the repository do not deploy, and post-deployment scripts do not run."+
 			" The workspace is cloned from the repository: changes on the Wodby 1 server that were not committed and pushed are not carried over")

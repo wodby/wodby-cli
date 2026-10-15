@@ -637,3 +637,51 @@ func TestDecodeExportV2DomainAndRedactionFields(t *testing.T) {
 		t.Fatalf("cron = %#v", cron)
 	}
 }
+
+func TestSourceExportErrorsIdentifyWodby1(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want string
+		status           int
+	}{
+		{"owner permission", `{"error":{"code":"error-123","message":"Failed to authorize","attributes":{"action":"wodby1_migration_export","code":"migration_org_owner_or_admin_required"}}}`, "source organization owner or admin access is required", http.StatusForbidden},
+		{"other forbidden", `{"error":{"code":"error-456","message":"Access denied","attributes":{"code":"other_permission"}}}`, "Access denied (code: other_permission) (error ID: error-456)", http.StatusForbidden},
+		{"unauthenticated", `{"error":{"message":"Invalid API key"}}`, "Invalid API key", http.StatusUnauthorized},
+		{"plain text", "upstream unavailable", "upstream unavailable", http.StatusBadGateway},
+		{"malformed JSON", `{"error":`, `{"error":`, http.StatusInternalServerError},
+		{"empty", "", "503 Service Unavailable", http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			client, err := NewSourceClient(server.URL, testSourceToken)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, export := range []func(context.Context, string) (Export, error){client.ExportApp, client.ExportInstance, client.ExportServer} {
+				_, err := export(context.Background(), "source-1")
+				if err == nil || !strings.Contains(err.Error(), "Wodby 1 source export failed:") || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("error = %v", err)
+				}
+				if tc.name == "owner permission" {
+					for _, want := range []string{"403 Forbidden", "--source-token", "migration_org_owner_or_admin_required", "error-123"} {
+						if !strings.Contains(err.Error(), want) {
+							t.Fatalf("missing %q: %v", want, err)
+						}
+					}
+				} else if strings.Contains(err.Error(), "owner or admin") {
+					t.Fatalf("incorrect permission guidance: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestSourceExportErrorBodyIsBounded(t *testing.T) {
+	err := sourceExportAPIError(http.StatusBadGateway, "502 Bad Gateway", []byte(strings.Repeat("x", maxSourceErrorSize)+"unbounded-tail"))
+	if strings.Contains(err.Error(), "unbounded-tail") {
+		t.Fatalf("unbounded error: %v", err)
+	}
+}

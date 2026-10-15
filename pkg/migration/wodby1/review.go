@@ -695,9 +695,22 @@ func preparedHasCodeStrategy(prepared PreparedMigration) bool {
 func preparedCISummary(plan Plan, prepared PreparedMigration) string {
 	usesWodbyCI := false
 	usesExternalCI := false
+	workspaces := 0
 	for _, instance := range prepared.Instances {
+		if instance.Workspace != nil {
+			workspaces++
+			continue
+		}
 		usesWodbyCI = usesWodbyCI || instance.UsesWodbyCI
 		usesExternalCI = usesExternalCI || instance.ExternalCIOnly
+	}
+	// A workspace runs its Git checkout and is never built.
+	if workspaces != 0 && workspaces == len(prepared.Instances) {
+		return "none (development workspace)"
+	}
+	if workspaces != 0 {
+		prepared.Instances = builtInstances(prepared.Instances)
+		return preparedCISummary(plan, prepared) + "; none for workspaces"
 	}
 	if usesWodbyCI && usesExternalCI {
 		return "Wodby CI and Custom CI (per instance)"
@@ -709,6 +722,18 @@ func preparedCISummary(plan Plan, prepared PreparedMigration) string {
 		return "Custom CI (automatic)"
 	}
 	return "Wodby CI (default)"
+}
+
+// builtInstances returns the instances that are built by CI, which excludes
+// development workspaces.
+func builtInstances(instances []PreparedInstance) []PreparedInstance {
+	result := make([]PreparedInstance, 0, len(instances))
+	for _, instance := range instances {
+		if instance.Workspace == nil {
+			result = append(result, instance)
+		}
+	}
+	return result
 }
 
 func preparedBuildServiceSummary(prepared PreparedMigration) string {

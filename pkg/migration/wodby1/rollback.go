@@ -30,6 +30,18 @@ type RollbackPlan struct {
 	SkippedIntegrations []int
 	// ReusedIntegrations were resolved to integrations that already existed.
 	ReusedIntegrations []int
+	// TeardownInstanceIDs are the app environments that go away with the app.
+	// They are not deleted one by one, but the generated stack stays
+	// referenced until their teardown has finished.
+	TeardownInstanceIDs []int
+	// VariableProviderIDs are custom variable providers the migration
+	// resolved. Rollback keeps them: several apps of a server migration share
+	// one, and the state does not record which app created it.
+	VariableProviderIDs []int
+	// ChangedExistingStack reports configuration this migration wrote to a
+	// stack that existed before it. Those changes are a new stack revision
+	// and are not reverted.
+	ChangedExistingStack bool
 }
 
 type RollbackInstance struct {
@@ -91,6 +103,13 @@ func PlanRollback(state *MigrationState) (RollbackPlan, error) {
 			plan.InstanceIDs = append(plan.InstanceIDs, RollbackInstance{ID: instance.TargetID, Name: sourceID})
 		}
 		sort.Slice(plan.InstanceIDs, func(i, j int) bool { return plan.InstanceIDs[i].ID < plan.InstanceIDs[j].ID })
+	} else {
+		for _, instance := range state.Instances {
+			if instance != nil && instance.TargetID > 0 {
+				plan.TeardownInstanceIDs = append(plan.TeardownInstanceIDs, instance.TargetID)
+			}
+		}
+		sort.Ints(plan.TeardownInstanceIDs)
 	}
 	if operation, ok := state.App.Operations[generatedStackOperation]; ok &&
 		operation.Status == MigrationOperationSucceeded && operation.TargetID > 0 {
@@ -114,6 +133,18 @@ func PlanRollback(state *MigrationState) (RollbackPlan, error) {
 			plan.ReusedIntegrations = append(plan.ReusedIntegrations, operation.TargetID)
 		}
 	}
+	for name, operation := range state.App.Operations {
+		if operation.Status != MigrationOperationSucceeded {
+			continue
+		}
+		if strings.HasPrefix(name, "variable_provider.") && operation.TargetID > 0 {
+			plan.VariableProviderIDs = append(plan.VariableProviderIDs, operation.TargetID)
+		}
+		if strings.HasPrefix(name, "stack_") && name != generatedStackOperation && plan.StackID == 0 {
+			plan.ChangedExistingStack = true
+		}
+	}
+	sort.Ints(plan.VariableProviderIDs)
 	sort.Ints(plan.IntegrationIDs)
 	sort.Ints(plan.SkippedIntegrations)
 	sort.Ints(plan.ReusedIntegrations)
@@ -160,6 +191,7 @@ func (p RollbackPlan) describe(appName string, action string, continuing bool) s
 	var b strings.Builder
 	if !p.DeletesResources() {
 		b.WriteString("No migration-created Wodby 2 resources need to be deleted.\n")
+		b.WriteString(p.describeKept())
 		if continuing {
 			b.WriteString("The saved local migration state will be replaced before the fresh migration starts.\n")
 		} else {
@@ -192,9 +224,29 @@ func (p RollbackPlan) describe(appName string, action string, continuing bool) s
 			len(p.SkippedIntegrations), p.SkippedIntegrations,
 		)
 	}
+	b.WriteString(p.describeKept())
 	b.WriteString("\nThis deletion cannot be undone. Wodby 1 is not touched.\n")
 	if continuing {
 		b.WriteString("After cleanup, the fresh migration plan will be saved and applied.\n")
+	}
+	return b.String()
+}
+
+// describeKept lists what the migration wrote to Wodby 2 and rollback leaves in
+// place, so the operator can remove it by hand instead of finding it later.
+func (p RollbackPlan) describeKept() string {
+	var b strings.Builder
+	if len(p.VariableProviderIDs) != 0 {
+		fmt.Fprintf(
+			&b,
+			"\nKept: custom variable provider ID(s) %v used for shared variables.\n"+
+				"Remove them by hand if no other migrated app uses them.\n",
+			p.VariableProviderIDs,
+		)
+	}
+	if p.ChangedExistingStack {
+		b.WriteString("\nKept: the configuration this migration added to the existing target stack.\n" +
+			"It was published as a new stack revision and is not reverted.\n")
 	}
 	return b.String()
 }
@@ -294,7 +346,8 @@ func (e *MigrationExecutor) deleteAndWait(
 // awaitInstancesGone blocks until no app environment from this migration still
 // resolves, so the generated stack is no longer referenced.
 func (e *MigrationExecutor) awaitInstancesGone(ctx context.Context, plan RollbackPlan) error {
-	ids := make([]int, 0, len(plan.InstanceIDs))
+	// Deleting the app tears its environments down without listing them.
+	ids := append([]int(nil), plan.TeardownInstanceIDs...)
 	for _, instance := range plan.InstanceIDs {
 		ids = append(ids, instance.ID)
 	}

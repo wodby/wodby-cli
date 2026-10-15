@@ -360,8 +360,13 @@ func (e *MigrationExecutor) ensureStackServiceLinks(
 		matchesDesired := len(matches) == 1 && matches[0].LinkedStackServiceID == target.StackService.ID
 		operation := operationKey("stack_link", service.Name, link.Name)
 		run, err := e.beginStackConfigurationMutation(state, operation, matchesDesired, service.ID)
-		if err != nil || !run {
+		if err != nil {
 			return err
+		}
+		// An item that is already applied must not end the loop: the items
+		// after it may still be missing, for example on a resumed run.
+		if !run {
+			continue
 		}
 		e.reportProgress("  Setting stack service %q link %q to service %q...", service.Name, link.Name, target.StackService.Name)
 		if err := e.target.SetStackServiceLink(ctx, service.ID, link.Name, target.StackService.ID); err != nil {
@@ -408,8 +413,13 @@ func (e *MigrationExecutor) ensureStackServiceSettings(ctx context.Context, stat
 	for _, name := range names {
 		operation := operationKey("stack_setting", service.Name, name)
 		run, err := e.beginStackConfigurationMutation(state, operation, current[name] == desired[name], service.ID)
-		if err != nil || !run {
+		if err != nil {
 			return err
+		}
+		// An item that is already applied must not end the loop: the items
+		// after it may still be missing, for example on a resumed run.
+		if !run {
+			continue
 		}
 		e.reportProgress("  Applying setting %q to stack service %q...", name, service.Name)
 		if err := e.target.SetStackServiceSetting(ctx, service.ID, name, desired[name]); err != nil {
@@ -441,8 +451,13 @@ func (e *MigrationExecutor) ensureStackServiceEnvVars(ctx context.Context, state
 			matchesValue = false
 		}
 		run, err := e.beginStackConfigurationMutation(state, operation, matchesValue, service.ID)
-		if err != nil || !run {
+		if err != nil {
 			return err
+		}
+		// An item that is already applied must not end the loop: the items
+		// after it may still be missing, for example on a resumed run.
+		if !run {
+			continue
 		}
 		if len(matches) == 1 {
 			e.reportProgress("  Updating stack environment variable %q%s on service %q...", variable.Name, stackEnvScopeLabel(variable.EnvType), service.Name)
@@ -490,8 +505,13 @@ func (e *MigrationExecutor) ensureStackEnvVars(ctx context.Context, state *Migra
 			matchesValue = false
 		}
 		run, err := e.beginStackConfigurationMutation(state, operation, matchesValue, stackID)
-		if err != nil || !run {
+		if err != nil {
 			return err
+		}
+		// An item that is already applied must not end the loop: the items
+		// after it may still be missing, for example on a resumed run.
+		if !run {
+			continue
 		}
 		if len(matches) == 1 {
 			e.reportProgress("  Updating stack-wide environment variable %q%s...", variable.Name, stackEnvScopeLabel(variable.EnvType))
@@ -533,8 +553,13 @@ func (e *MigrationExecutor) ensureStackServiceCronSchedules(ctx context.Context,
 		operation := operationKey("stack_cron", service.Name, cron.Name, optionalStringValue(cron.EnvType))
 		matchesValue := len(matches) == 1 && stackCronScheduleMatches(matches[0], cron)
 		run, err := e.beginStackConfigurationMutation(state, operation, matchesValue, service.ID)
-		if err != nil || !run {
+		if err != nil {
 			return err
+		}
+		// An item that is already applied must not end the loop: the items
+		// after it may still be missing, for example on a resumed run.
+		if !run {
+			continue
 		}
 		if len(matches) == 1 {
 			e.reportProgress("  Updating stack cron schedule %q%s on service %q...", cron.Title, stackEnvScopeLabel(cron.EnvType), service.Name)
@@ -588,8 +613,13 @@ func (e *MigrationExecutor) ensureStackServiceIntegrations(ctx context.Context, 
 		}
 		operation := operationKey("stack_integration", service.Name, link.Name)
 		run, err := e.beginStackConfigurationMutation(state, operation, len(matches) == 1, service.ID)
-		if err != nil || !run {
+		if err != nil {
 			return err
+		}
+		// An item that is already applied must not end the loop: the items
+		// after it may still be missing, for example on a resumed run.
+		if !run {
+			continue
 		}
 		e.reportProgress("  Attaching integration ID %d as %q on stack service %q...", link.IntegrationID, link.Name, service.Name)
 		created, err := e.target.CreateStackServiceIntegration(ctx, service.ID, TargetCreateStackServiceIntegrationInput{

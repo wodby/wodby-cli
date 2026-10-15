@@ -1439,7 +1439,7 @@ func TestMigrationProgressReporterFormatsProcessSteps(t *testing.T) {
 	report("Starting resumable migration apply.")
 	report("Preflight: validate and pin the selected source backup before target changes.")
 	report("Apply preflight passed; target changes may begin.")
-	report("Step: create or resume the target app and app instances.")
+	report("Step: create or resume the target app and app environments.")
 	report("Target app created.")
 
 	text := output.String()
@@ -1447,7 +1447,7 @@ func TestMigrationProgressReporterFormatsProcessSteps(t *testing.T) {
 		"Migration process",
 		"Step 1: validate and pin the selected source backup before target changes",
 		"  Apply preflight passed; target changes may begin.",
-		"Step 2: create or resume the target app and app instances",
+		"Step 2: create or resume the target app and app environments",
 		"  Target app created.",
 	}
 	previous := -1

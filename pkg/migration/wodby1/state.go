@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"time"
 )
@@ -347,7 +348,7 @@ func removeMigrationState(path string, expected MigrationStateIdentity, deletedT
 	if err != nil {
 		return fmt.Errorf("open migration state directory for sync: %w", err)
 	}
-	syncErr := directory.Sync()
+	syncErr := syncDirectory(directory)
 	closeErr := directory.Close()
 	if syncErr != nil {
 		return fmt.Errorf("sync migration state directory: %w", syncErr)
@@ -443,7 +444,7 @@ func SaveMigrationState(path string, state *MigrationState) error {
 	if err != nil {
 		return fmt.Errorf("open migration state directory for sync: %w", err)
 	}
-	syncErr := directory.Sync()
+	syncErr := syncDirectory(directory)
 	closeErr := directory.Close()
 	if syncErr != nil {
 		return fmt.Errorf("sync migration state directory: %w", syncErr)
@@ -1071,7 +1072,7 @@ func loadMigrationStateFile(path string) (*MigrationState, fs.FileInfo, error) {
 	if !os.SameFile(linkInfo, info) {
 		return nil, nil, ErrMigrationStateConcurrentUpdate
 	}
-	if info.Mode().Perm() != migrationStateFileMode {
+	if !privateFileMode(info.Mode()) {
 		return nil, nil, ErrMigrationStateInsecure
 	}
 	if info.Size() > maxMigrationStateBytes {
@@ -1127,7 +1128,7 @@ func verifyMigrationStateTargetUnchanged(path string, previous fs.FileInfo) erro
 	}
 	if current.Mode()&os.ModeSymlink != 0 ||
 		!current.Mode().IsRegular() ||
-		current.Mode().Perm() != migrationStateFileMode ||
+		!privateFileMode(current.Mode()) ||
 		!os.SameFile(previous, current) ||
 		current.Size() != previous.Size() ||
 		!current.ModTime().Equal(previous.ModTime()) {
@@ -1138,4 +1139,25 @@ func verifyMigrationStateTargetUnchanged(path string, previous fs.FileInfo) erro
 
 func invalidStateError(message string) error {
 	return fmt.Errorf("%w: %s", ErrMigrationStateInvalid, message)
+}
+
+// privateFileMode reports whether a file is readable by its owner only. Windows
+// has no owner, group and other permission bits: Go reports 0666 or 0444 for
+// every file there, and access is governed by the ACL the file inherits from
+// the user's own directory, so the check applies to Unix permissions only.
+func privateFileMode(mode os.FileMode) bool {
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	return mode.Perm() == migrationStateFileMode
+}
+
+// syncDirectory makes a rename or removal in the directory durable. Windows
+// cannot flush a directory handle and reports an error for the attempt; NTFS
+// journals the metadata change itself.
+func syncDirectory(directory *os.File) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	return directory.Sync()
 }

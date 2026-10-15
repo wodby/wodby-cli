@@ -32,7 +32,7 @@ func AcquireMigrationStateLock(statePath string) (*MigrationStateLock, error) {
 	if err != nil {
 		return closeOnError(fmt.Errorf("inspect migration state lock: %w", err))
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != migrationStateFileMode {
+	if !info.Mode().IsRegular() || !privateFileMode(info.Mode()) {
 		return closeOnError(ErrMigrationStateInsecure)
 	}
 	if err := lockMigrationStateFile(file); err != nil {

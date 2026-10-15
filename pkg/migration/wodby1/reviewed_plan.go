@@ -59,7 +59,7 @@ func LoadReviewedPlan(path string) (Plan, error) {
 	if !os.SameFile(linkInfo, info) {
 		return Plan{}, fmt.Errorf("%w: plan file changed while opening", ErrMigrationPlanInvalid)
 	}
-	if info.Mode().Perm() != migrationStateFileMode {
+	if !privateFileMode(info.Mode()) {
 		return Plan{}, ErrMigrationPlanInsecure
 	}
 	if info.Size() > maxMigrationPlanBytes {
@@ -287,6 +287,26 @@ func pinReviewedApp(current *AppPlan, reviewed AppPlan) error {
 		reviewedInstance, found := reviewedInstances[instance.SourceUUID]
 		if !found {
 			return currentPlanDriftError("source instance set changed")
+		}
+		if err := pinReviewedInstance(instance, reviewedInstance); err != nil {
+			return err
+		}
+	}
+	// Context instances are part of the reviewed plan too. Unpinned, they
+	// would follow the catalog's newest stack revision and a new revision
+	// would be reported as drift on every resume.
+	reviewedContext := make(map[string]InstancePlan, len(reviewed.ContextInstances))
+	for _, instance := range reviewed.ContextInstances {
+		reviewedContext[instance.SourceUUID] = instance
+	}
+	if len(current.ContextInstances) != len(reviewedContext) {
+		return currentPlanDriftError("source context instance set changed")
+	}
+	for index := range current.ContextInstances {
+		instance := &current.ContextInstances[index]
+		reviewedInstance, found := reviewedContext[instance.SourceUUID]
+		if !found {
+			return currentPlanDriftError("source context instance set changed")
 		}
 		if err := pinReviewedInstance(instance, reviewedInstance); err != nil {
 			return err

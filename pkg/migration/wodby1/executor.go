@@ -177,7 +177,10 @@ func (e *MigrationExecutor) Apply(
 		e.reportProgress("Apply preflight passed; target changes may begin.")
 	}
 	switch state.Phase {
-	case MigrationPhasePlan, MigrationPhasePrepare:
+	// A verification that failed leaves the phase at verify. Apply repeats its
+	// idempotent steps from there, so what verification reported can be
+	// repaired and verified again.
+	case MigrationPhasePlan, MigrationPhasePrepare, MigrationPhaseVerify:
 		if _, err := e.Prepare(ctx, export, plan, prepared); err != nil {
 			return MigrationPhaseResult{}, err
 		}
@@ -420,7 +423,8 @@ func (e *MigrationExecutor) ensureGeneratedTargetStack(
 		}
 		recovered := make([]TargetStack, 0, 1)
 		for _, candidate := range matches {
-			if createdWithinOperation(candidate.CreatedAt, operation) {
+			if createdWithinOperation(candidate.CreatedAt, operation) &&
+				generatedStackMayBelongTo(candidate, blueprint, prepared.App.App) {
 				recovered = append(recovered, candidate)
 			}
 		}
@@ -486,6 +490,34 @@ func (e *MigrationExecutor) ensureGeneratedTargetStack(
 	e.reportProgress("Generated target stack %q created (ID %d, revision ID %d); every app environment will use it.", generated.Name, generated.ID, generated.RevID)
 	generated = e.nameGeneratedStackAfterApp(ctx, prepared, blueprint, generated)
 	return e.bindGeneratedStack(ctx, prepared, generated)
+}
+
+// generatedStackMayBelongTo rejects a copy of the catalog stack that another
+// app's migration has already named. A server migration copies the same
+// catalog revision for several apps within minutes, so the creation time alone
+// could hand one app the stack of another. A copy still under the name it
+// inherits from the catalog ("drupal11", "drupal11-2", ...) stays a candidate.
+func generatedStackMayBelongTo(candidate, blueprint TargetStack, app App) bool {
+	if candidate.Name == generatedStackNaming(blueprint, app).Name {
+		return true
+	}
+	suffix, inherited := strings.CutPrefix(candidate.Name, blueprint.Name)
+	if !inherited {
+		return false
+	}
+	if suffix == "" {
+		return true
+	}
+	number, numbered := strings.CutPrefix(suffix, "-")
+	if !numbered || number == "" {
+		return false
+	}
+	for _, r := range number {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // nameGeneratedStackAfterApp renames the duplicated stack from the catalog name
@@ -570,7 +602,7 @@ func generatedStackBlueprint(plan Plan, prepared PreparedMigration) (TargetStack
 			continue
 		}
 		if instance.Stack.ID != blueprint.ID || instance.Stack.RevID != blueprint.RevID {
-			return TargetStack{}, false, errors.New("app instances do not share one reviewed catalog stack revision")
+			return TargetStack{}, false, errors.New("app environments do not share one reviewed catalog stack revision")
 		}
 	}
 	if found && (blueprint.ID <= 0 || blueprint.RevID <= 0 || !blueprint.Public) {
@@ -840,11 +872,14 @@ func (e *MigrationExecutor) SyncData(
 		}
 		if !importOperationSucceeded(instanceState, item.SourceInstanceUUID, item.Backup.Component) {
 			e.reportProgress("Refreshing the protected download URL for backup component %q...", item.Backup.Component)
-			item, err = e.refreshDataImport(ctx, item, prepared, plan, digest)
+			// Keep item on failure: the refresh returns an empty value with
+			// its error, and the failure belongs to this instance.
+			refreshed, err := e.refreshDataImport(ctx, item, prepared, plan, digest)
 			if err != nil {
 				recordFailure(item.SourceInstanceUUID, item.Backup.Component, "source backup refresh", err)
 				continue
 			}
+			item = refreshed
 		}
 		if err := e.waitAppInstanceOK(ctx, instanceState.TargetID, "start the next data import"); err != nil {
 			recordFailure(item.SourceInstanceUUID, item.Backup.Component, "target readiness before data import", errors.Wrap(err, "wait for target app environment before data import"))
@@ -1244,7 +1279,16 @@ func (e *MigrationExecutor) startPhase(state *MigrationState, phase MigrationPha
 		return errors.New("completed migration cannot execute another phase")
 	}
 	if phaseRank(phase) < phaseRank(state.Phase) {
-		return errors.Errorf("migration state is already past phase %q", phase)
+		if state.Phase != MigrationPhaseVerify {
+			return errors.Errorf("migration state is already past phase %q", phase)
+		}
+		// Repairing after a failed verification keeps the verify phase:
+		// verification starts only once DNS resolves to Wodby 2, and rollback
+		// must stay refused from then on.
+		if err := state.SetStatus(MigrationStatusRunning); err != nil {
+			return err
+		}
+		return SaveMigrationState(e.statePath, state)
 	}
 	if err := state.SetPhase(phase); err != nil {
 		return err
@@ -1738,7 +1782,7 @@ func (e *MigrationExecutor) ensureInstance(
 	// environment, which must be reported here and not after a deployment.
 	if prepared.Workspace != nil && !strings.EqualFold(created.ExecutionMode, TargetExecutionModeWorkspace) {
 		return TargetAppInstance{}, errors.Errorf(
-			"target app environment %q (ID %d) was created as a standard environment, not a development workspace; roll the migration back with --rollback and migrate this instance without the workspace option",
+			"target app environment %q (ID %d) was created as a standard app environment, not a development workspace; roll the migration back with --rollback and migrate this instance without the workspace option",
 			created.Name, created.ID,
 		)
 	}
@@ -2437,8 +2481,12 @@ func (e *MigrationExecutor) ensureServiceEnvironment(
 				continue
 			}
 			run, err := e.beginInstanceMutation(state, sourceID, operation, false)
-			if err != nil || !run {
+			if err != nil {
 				return err
+			}
+			// Keep going: a recorded step must not hide the items after it.
+			if !run {
+				continue
 			}
 			e.reportProgress("Updating environment variable %q on service %q...", variable.Name, service.Name)
 			value := desiredValue
@@ -2464,8 +2512,12 @@ func (e *MigrationExecutor) ensureServiceEnvironment(
 		}
 
 		run, err := e.beginInstanceMutation(state, sourceID, operation, false)
-		if err != nil || !run {
+		if err != nil {
 			return err
+		}
+		// Keep going: a recorded step must not hide the items after it.
+		if !run {
+			continue
 		}
 		e.reportProgress("Creating environment variable %q on service %q...", variable.Name, service.Name)
 		created, err := e.target.CreateAppServiceEnvVar(ctx, service.ID, TargetCreateAppServiceEnvVarInput{
@@ -2538,8 +2590,12 @@ func (e *MigrationExecutor) ensureServiceSettings(
 			continue
 		}
 		run, err := e.beginInstanceMutation(state, sourceID, operation, false)
-		if err != nil || !run {
+		if err != nil {
 			return err
+		}
+		// Keep going: a recorded step must not hide the items after it.
+		if !run {
+			continue
 		}
 		e.reportProgress("Applying setting %q on service %q...", name, service.Name)
 		updated, err := e.target.SetAppServiceSetting(ctx, service.ID, name, value)
@@ -2633,8 +2689,12 @@ func (e *MigrationExecutor) ensureServiceCrons(
 				continue
 			}
 			run, err := e.beginInstanceMutation(state, sourceID, operation, false)
-			if err != nil || !run {
+			if err != nil {
 				return err
+			}
+			// Keep going: a recorded step must not hide the items after it.
+			if !run {
+				continue
 			}
 			e.reportProgress("Updating cron schedule %q on service %q...", title, service.Name)
 			if _, err := e.target.UpdateAppServiceCronSchedule(ctx, item.ID, TargetUpdateAppServiceCronScheduleInput{
@@ -2652,8 +2712,12 @@ func (e *MigrationExecutor) ensureServiceCrons(
 			continue
 		}
 		run, err := e.beginInstanceMutation(state, sourceID, operation, false)
-		if err != nil || !run {
+		if err != nil {
 			return err
+		}
+		// Keep going: a recorded step must not hide the items after it.
+		if !run {
+			continue
 		}
 		e.reportProgress("Creating cron schedule %q on service %q...", title, service.Name)
 		created, err := e.target.CreateAppServiceCronSchedule(ctx, service.ID, TargetCreateAppServiceCronScheduleInput{
@@ -2719,8 +2783,12 @@ func (e *MigrationExecutor) disableDefaultPHPCronSchedules(
 			continue
 		}
 		run, err := e.beginInstanceMutation(state, sourceID, operation, false)
-		if err != nil || !run {
+		if err != nil {
 			return err
+		}
+		// Keep going: a recorded step must not hide the items after it.
+		if !run {
+			continue
 		}
 		e.reportProgress("Disabling default cron schedule %q on service %q...", item.Title, service.Name)
 		disabled := true
@@ -3982,20 +4050,21 @@ func protectedTechnicalAuthTargets(
 		if err != nil {
 			return nil, errors.Wrapf(err, "map protected technical route %q", source.Host)
 		}
+		// Every generated technical route of the service and port is
+		// protected. Wodby 1's primary flag cannot pick one of them: it
+		// usually sits on a custom domain, and Wodby 2 moves its main flag to
+		// the custom primary route once that exists, so matching the two left
+		// the root technical route open and later failed verification.
 		matched := 0
 		for _, route := range routes {
-			if !route.Technical || route.AppServiceID != service.ID || route.PortID != port.ID || route.Main != source.Primary {
+			if !route.Technical || route.AppServiceID != service.ID || route.PortID != port.ID {
 				continue
 			}
 			targets[route.ID] = route
 			matched++
 		}
 		if matched == 0 {
-			role := "service"
-			if source.Primary {
-				role = "root"
-			}
-			return nil, errors.Errorf("generated target %s technical route corresponding to %q was not found", role, source.Host)
+			return nil, errors.Errorf("generated target technical route corresponding to %q was not found", source.Host)
 		}
 	}
 	result := make([]TargetAppRoute, 0, len(targets))
@@ -4127,7 +4196,10 @@ func (e *MigrationExecutor) ensureRoute(
 		status := 301
 		input.RedirectScheme = &scheme
 		input.RedirectHost = &host
-		input.RedirectPath = &redirectPath
+		// Without a path the redirect keeps the request's path and query.
+		if redirectPath != "" {
+			input.RedirectPath = &redirectPath
+		}
 		input.RedirectStatusCode = &status
 	}
 	if err := validateTargetCreateRouteInput(input); err != nil {
@@ -4182,7 +4254,7 @@ func matchingRoutes(
 				if err != nil ||
 					item.RedirectScheme == nil || *item.RedirectScheme != scheme ||
 					item.RedirectHost == nil || *item.RedirectHost != host ||
-					item.RedirectPath == nil || *item.RedirectPath != redirectPath ||
+					optionalStringValue(item.RedirectPath) != redirectPath ||
 					item.RedirectStatusCode == nil || *item.RedirectStatusCode != 301 {
 					continue
 				}
@@ -4199,7 +4271,10 @@ func routeRedirectTarget(plan RoutePlan) (string, string, string, error) {
 		scheme = "http"
 	}
 	host := strings.TrimSpace(plan.RedirectTarget)
-	path := "/"
+	// Wodby 2 replaces the whole request path with a redirect path, so one is
+	// returned only when the source target names it. A host-only redirect,
+	// such as Wodby 1's www options, keeps the path the visitor asked for.
+	path := ""
 	if host != "" && strings.Contains(host, "://") {
 		parsed, err := url.Parse(host)
 		if err != nil || parsed.Hostname() == "" || parsed.User != nil {
@@ -5129,16 +5204,20 @@ func targetRouteCertificateReady(route TargetAppRoute, required, custom bool, ta
 	if route.Cert == nil {
 		return false, nil
 	}
-	wantedIssuer := "letsencrypt"
-	if custom {
-		wantedIssuer = "custom"
+	// An uploaded certificate reports its certificate authority as the
+	// issuer, so only the custom flag tells it apart from a managed one.
+	if custom != route.Cert.Custom {
+		wanted := "a managed Let's Encrypt"
+		if custom {
+			wanted = "an uploaded custom"
+		}
+		return false, errors.Errorf("target custom route %q does not use %s certificate (issuer %q)", route.Host, wanted, route.Cert.Issuer)
 	}
-	if !strings.EqualFold(strings.TrimSpace(route.Cert.Issuer), wantedIssuer) {
+	if !custom && !strings.EqualFold(strings.TrimSpace(route.Cert.Issuer), "letsencrypt") {
 		return false, errors.Errorf(
-			"target custom route %q certificate issuer is %q, expected %s",
+			"target custom route %q certificate issuer is %q, expected letsencrypt",
 			route.Host,
 			route.Cert.Issuer,
-			wantedIssuer,
 		)
 	}
 	if custom && targetCertID > 0 && route.Cert.ID != targetCertID {
@@ -5159,7 +5238,8 @@ func targetRouteCertificateReady(route TargetAppRoute, required, custom bool, ta
 	switch strings.ToUpper(strings.TrimSpace(route.Cert.Status)) {
 	case "OK":
 		return true, nil
-	case "CREATING", "RENEWING":
+	// A Let's Encrypt certificate stays pending until DNS reaches Wodby 2.
+	case "CREATING", "RENEWING", "PENDING":
 		return false, nil
 	case "ERRORED", "EXPIRED", "REVOKED", "DELETING":
 		return false, errors.Errorf(

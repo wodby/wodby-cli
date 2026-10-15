@@ -23,7 +23,7 @@ func mergePreparedStackAdditions(appName string, instances []PreparedInstance) (
 					appName,
 					instance.Source.Name,
 					"additional stack service "+addition.Name,
-					"app instances resolve different Wodby 2 service revisions for one shared stack",
+					"app environments resolve different Wodby 2 service revisions for one shared stack",
 				))
 				continue
 			}
@@ -322,6 +322,11 @@ func prepareDrupalAppSettings(app PreparedAppMigration, configuration *PreparedS
 		)}
 	}
 	docroot := strings.TrimSpace(*app.App.App.Docroot)
+	// Wodby 2 removes a setting override that is set to an empty value, which
+	// brings back the service default. "." names the repository root instead.
+	if docroot == "" {
+		docroot = "."
+	}
 	if len(docroot) > 128 || !wodby1AppDocrootPattern.MatchString(docroot) || strings.Contains(docroot, "..") || strings.HasPrefix(docroot, "/") {
 		return []ReviewItem{stackConfigBlocker(app.App.App.Name, "", "Drupal app docroot", fmt.Sprintf("source app docroot %q is not a safe relative path", docroot))}
 	}
@@ -429,7 +434,7 @@ func preparedStackVersionOptions(appName, targetName string, items []stackConfig
 				Severity: SeverityMigration,
 				App:      appName,
 				Subject:  "service " + targetName + " versions",
-				Message:  "source instances resolve different target versions; each version will be applied as an app-instance service override",
+				Message:  "source instances resolve different target versions; each version will be applied as an app environment service override",
 			}}, nil
 		}
 		selected = version

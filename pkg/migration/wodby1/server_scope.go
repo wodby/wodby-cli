@@ -103,9 +103,14 @@ func ScopeServerMigrationApp(
 	if err != nil {
 		return Export{}, Plan{}, PreparedMigration{}, fmt.Errorf("compute app-scoped plan configuration digest: %w", err)
 	}
-	childPlan.Source.BackupDigest, err = childExport.BackupDigest()
-	if err != nil {
-		return Export{}, Plan{}, PreparedMigration{}, fmt.Errorf("compute app-scoped plan backup digest: %w", err)
+	// A plan without a backup digest skips data, as BuildPlan records it. Its
+	// identity must not follow the source backups, or the first new Wodby 1
+	// backup would make the app impossible to resume.
+	if plan.Source.BackupDigest != "" {
+		childPlan.Source.BackupDigest, err = childExport.BackupDigest()
+		if err != nil {
+			return Export{}, Plan{}, PreparedMigration{}, fmt.Errorf("compute app-scoped plan backup digest: %w", err)
+		}
 	}
 	childPlan.Selection = SourceSelection{IncludedApps: []SelectedApp{selectedApp(childExport.AppExports()[0])}}
 	for _, excluded := range plan.Selection.ExcludedInstances {

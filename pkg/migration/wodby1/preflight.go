@@ -3,6 +3,7 @@ package wodby1
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -861,6 +862,15 @@ func (c *TargetClient) resolveRepositoryPlan(
 			),
 		}}, nil
 	}
+	if !plan.ExplicitName {
+		finding, err := c.repositoryHostFinding(ctx, app, plan)
+		if err != nil {
+			return nil, err
+		}
+		if finding != nil {
+			return []ReviewItem{*finding}, nil
+		}
+	}
 	resolvedID := strings.TrimSpace(matches[0].ID)
 	if pinnedID := strings.TrimSpace(plan.RemoteGitRepoID); pinnedID != "" && pinnedID != resolvedID {
 		return nil, errors.Errorf(
@@ -872,6 +882,79 @@ func (c *TargetClient) resolveRepositoryPlan(
 	}
 	plan.RemoteGitRepoID = resolvedID
 	return nil, nil
+}
+
+// gitProviderHosts are the hosts of the hosted Git services Wodby 2 integrates
+// with. A GitLab integration can also point at a self-hosted server, whose
+// address the Wodby 2 API does not return.
+var gitProviderHosts = map[string]string{
+	"github":    "github.com",
+	"gitlab":    "gitlab.com",
+	"bitbucket": "bitbucket.org",
+}
+
+// repositoryHostFinding blocks a repository matched only by its name when the
+// Wodby 1 repository lives on another Git host than the Wodby 2 integration.
+// A repository with the same owner and name on another host can be a
+// different repository, and linking it would build the wrong code. Naming the
+// repository explicitly confirms the choice.
+func (c *TargetClient) repositoryHostFinding(ctx context.Context, app App, plan *RepositoryPlan) (*ReviewItem, error) {
+	sourceHost := repositoryHost(plan.URL)
+	integration, err := c.GetIntegration(ctx, plan.GitIntegrationID)
+	if err != nil {
+		return nil, errors.Wrap(err, "read the target Git integration")
+	}
+	revision, err := c.GetProviderRevision(ctx, integration.ProviderRevID)
+	if err != nil {
+		return nil, errors.Wrap(err, "read the target Git integration's provider")
+	}
+	providerHost, known := gitProviderHosts[strings.ToLower(strings.TrimSpace(revision.Name))]
+	if !known || (sourceHost != "" && sourceHost == providerHost) {
+		return nil, nil
+	}
+	where := fmt.Sprintf("on %s", providerHost)
+	if revision.Name == "gitlab" {
+		where = fmt.Sprintf("on %s or a self-hosted GitLab server whose address Wodby 2 does not report", providerHost)
+	}
+	source := "an unrecognized Git host"
+	if sourceHost != "" {
+		source = sourceHost
+	}
+	plan.RemoteGitRepoID = ""
+	return &ReviewItem{
+		Severity: SeverityBlocking,
+		App:      app.Name,
+		Subject:  "repository",
+		Message: fmt.Sprintf(
+			"the Wodby 1 repository is on %s, but Wodby 2 Git integration ID %d connects to repositories %s, so repository %q found there may be a different one. If it is the same repository, confirm it with --target-repository-name %s (or --target-repository-map %s=%d:%s in a server migration); otherwise select an integration for %s",
+			source, plan.GitIntegrationID, where, plan.RepositoryName, plan.RepositoryName, app.Name, plan.GitIntegrationID, plan.RepositoryName, source,
+		),
+	}, nil
+}
+
+// repositoryHost returns the lowercase host name of a repository URL in SCP
+// (git@host:path), ssh:// or http(s):// form, without user or port.
+func repositoryHost(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if strings.Contains(value, "://") {
+		parsed, err := url.Parse(value)
+		if err != nil {
+			return ""
+		}
+		return strings.ToLower(parsed.Hostname())
+	}
+	separator := strings.Index(value, ":")
+	if separator <= 0 {
+		return ""
+	}
+	host := value[:separator]
+	if at := strings.LastIndex(host, "@"); at >= 0 {
+		host = host[at+1:]
+	}
+	return strings.ToLower(host)
 }
 
 func (c *TargetClient) preflightInstance(

@@ -163,7 +163,11 @@ type RepositoryPlan struct {
 	TargetService       string `json:"targetService,omitempty"`
 	GitIntegrationID    int    `json:"gitIntegrationId,omitempty"`
 	RepositoryName      string `json:"repositoryName,omitempty"`
-	RemoteGitRepoID     string `json:"remoteGitRepoId,omitempty"`
+	// ExplicitName records that the operator named the target repository
+	// instead of the CLI deriving the name from the Wodby 1 URL. It confirms
+	// a repository on another Git host.
+	ExplicitName    bool   `json:"explicitName,omitempty"`
+	RemoteGitRepoID string `json:"remoteGitRepoId,omitempty"`
 }
 
 type InstancePlan struct {
@@ -513,6 +517,7 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 				TargetService:       strings.TrimSpace(repositoryTarget.Service),
 				GitIntegrationID:    repositoryTarget.GitIntegrationID,
 				RepositoryName:      repositoryName,
+				ExplicitName:        strings.TrimSpace(repositoryTarget.RepositoryName) != "",
 			}
 			switch {
 			case opts.SkipCode:

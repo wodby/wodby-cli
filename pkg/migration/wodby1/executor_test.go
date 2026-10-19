@@ -1484,8 +1484,11 @@ func TestMigrationExecutorRunsMinimalCustomerLifecycle(t *testing.T) {
 	failed := deployments[deploymentID]
 	failed.PostDeploymentStatus = "failed"
 	deployments[deploymentID] = failed
-	if _, err := executor.Verify(ctx, export, plan, prepared, TargetCluster{ID: 3, OrgID: 1, Status: "OK", IPs: []string{"203.0.113.10"}}); err == nil || !strings.Contains(err.Error(), "post-deployment") {
-		t.Fatalf("verification accepted recorded rollout with failed scripts: %v", err)
+	if _, err := executor.Verify(ctx, export, plan, prepared, TargetCluster{ID: 3, OrgID: 1, Status: "OK", IPs: []string{"203.0.113.10"}}); err != nil {
+		t.Fatalf("verification stopped on failed post-deployment scripts: %v", err)
+	}
+	if !strings.Contains(strings.Join(progress, "\n"), "Warning: post-deployment scripts for deployment ID 31 ended with status \"failed\"") {
+		t.Fatalf("verification did not warn about failed scripts: %q", progress)
 	}
 	failed.PostDeploymentStatus = "completed"
 	deployments[deploymentID] = failed

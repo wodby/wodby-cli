@@ -4931,6 +4931,12 @@ func (e *MigrationExecutor) waitDeployment(
 			if err != nil || !ready {
 				return false, err
 			}
+			if status, failed := postDeploymentScriptsFailed(item); failed {
+				e.reportProgress(
+					"Warning: post-deployment scripts for deployment ID %d ended with status %q; the migration continues. Check the deployment logs in Wodby 2.",
+					item.ID, status,
+				)
+			}
 			completed = item
 			return true, nil
 		case "CANCELED", "ERRORED":
@@ -4947,18 +4953,31 @@ func (e *MigrationExecutor) waitDeployment(
 }
 
 // deploymentPostDeploymentOutcome keeps rollout completion separate from the
-// repository scripts that run afterward. Unknown outcomes cannot authorize import
-// or cutover, even if the deployment itself is already marked completed.
+// repository scripts that run afterward. The migration waits for the scripts to
+// finish, but their failure does not stop it: the first deployment runs before
+// the data import, so scripts such as `drush deploy` fail on the empty
+// database, and the deployed code and imported data come from the same Wodby 1
+// site. Unknown outcomes still cannot authorize import or cutover.
 func deploymentPostDeploymentOutcome(item TargetAppDeployment) (bool, error) {
 	switch strings.ToUpper(strings.TrimSpace(item.PostDeploymentStatus)) {
-	case "COMPLETED", "NOT_APPLICABLE", "SKIPPED":
+	case "COMPLETED", "NOT_APPLICABLE", "SKIPPED", "FAILED", "CANCELED", "NOT_RUN":
 		return true, nil
 	case "PENDING", "IN_PROGRESS":
 		return false, nil
-	case "FAILED", "CANCELED", "NOT_RUN":
-		return false, &TargetTerminalOperationError{Resource: "post-deployment scripts for deployment", ID: item.ID, Status: item.PostDeploymentStatus}
 	default:
 		return false, errors.Errorf("target deployment ID %d has unverified post-deployment status %q", item.ID, item.PostDeploymentStatus)
+	}
+}
+
+// postDeploymentScriptsFailed reports a finished deployment whose
+// post-deployment scripts failed, were canceled or did not run.
+func postDeploymentScriptsFailed(item TargetAppDeployment) (string, bool) {
+	status := strings.ToUpper(strings.TrimSpace(item.PostDeploymentStatus))
+	switch status {
+	case "FAILED", "CANCELED", "NOT_RUN":
+		return strings.ToLower(status), true
+	default:
+		return "", false
 	}
 }
 

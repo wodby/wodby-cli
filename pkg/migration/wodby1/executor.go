@@ -1165,6 +1165,9 @@ func (e *MigrationExecutor) Verify(
 			instance.Name != item.Source.Name {
 			return MigrationPhaseResult{}, errors.New("target app environment relationships no longer match the approved migration")
 		}
+		if err := e.cutOverMigratedCrons(ctx, state, item, instance); err != nil {
+			return MigrationPhaseResult{}, err
+		}
 		if err := e.verifyInstance(ctx, item, instance, instancePlan, instanceState); err != nil {
 			return MigrationPhaseResult{}, err
 		}
@@ -2128,10 +2131,17 @@ func (e *MigrationExecutor) prepareInstance(
 				target,
 				instanceSource,
 				mapping.Target,
-				prepared.DisableCronSchedules || prepared.Workspace != nil,
+				migratedCronsDisabled(prepared) || !migratedCronsCutOver(state, prepared.Source.UUID),
 			); err != nil {
 				return err
 			}
+		}
+	}
+	// Schedules from the shared stack were created with the app environment.
+	// Keep every migrated one disabled until the DNS cutover.
+	if !migratedCronsCutOver(state, prepared.Source.UUID) {
+		if err := e.setMigratedCronSchedules(ctx, state, prepared, services, true, "cron_stage"); err != nil {
+			return err
 		}
 	}
 	for _, link := range prepared.ServiceLinks {
@@ -2735,6 +2745,135 @@ func (e *MigrationExecutor) ensureServiceCrons(
 			return err
 		}
 		e.reportProgress("Cron schedule %q on service %q created (ID %d).", title, service.Name, created.ID)
+	}
+	return nil
+}
+
+// migratedCronCutoverPrefix marks the cron schedules this migration created:
+// both stack and app environment schedules are named "w1-" plus a digest.
+const migratedCronCutoverPrefix = "w1-"
+
+// migratedCronsDisabled reports whether migrated cron schedules stay disabled
+// even after the cutover: without the cron feature, or in a workspace.
+func migratedCronsDisabled(prepared PreparedInstance) bool {
+	return prepared.DisableCronSchedules || prepared.Workspace != nil
+}
+
+// migratedCronsCutOver reports whether --verify has switched the instance's
+// migrated cron schedules to their planned state. Until then they stay
+// disabled: Wodby 1 still serves the site, and jobs such as mail, payments
+// or external syncs must not run on both platforms during acceptance.
+func migratedCronsCutOver(state *MigrationState, sourceID string) bool {
+	return operationSucceeded(state.Instances[sourceID], operationKey("cron_cutover", sourceID))
+}
+
+// cutOverMigratedCrons switches the migrated cron schedules of an app
+// environment to their planned state once DNS points to Wodby 2.
+func (e *MigrationExecutor) cutOverMigratedCrons(
+	ctx context.Context,
+	state *MigrationState,
+	prepared PreparedInstance,
+	instance TargetAppInstance,
+) error {
+	if migratedCronsCutOver(state, prepared.Source.UUID) {
+		return nil
+	}
+	services, err := e.target.ListAppServices(ctx, instance.ID)
+	if err != nil {
+		return errors.Wrap(err, "list target app services for the cron cutover")
+	}
+	if err := e.setMigratedCronSchedules(ctx, state, prepared, services, migratedCronsDisabled(prepared), "cron_cutover"); err != nil {
+		return err
+	}
+	if err := e.recordObservedInstanceOperation(state, prepared.Source.UUID, operationKey("cron_cutover", prepared.Source.UUID), instance.ID, 0); err != nil {
+		return err
+	}
+	return SaveMigrationState(e.statePath, state)
+}
+
+// cronServices returns the app environment's services that can run migrated
+// cron schedules: enabled ones that are not derivatives, which Wodby 2 gives
+// no cron schedules.
+func cronServices(prepared PreparedInstance, services []TargetAppService) []TargetAppService {
+	result := []TargetAppService{}
+	for _, service := range services {
+		if service.ParentAppServiceID == nil && prepared.EffectiveState[service.Name] {
+			result = append(result, service)
+		}
+	}
+	return result
+}
+
+// setMigratedCronSchedules sets the disabled state of every migrated cron
+// schedule of the app environment's services.
+func (e *MigrationExecutor) setMigratedCronSchedules(
+	ctx context.Context,
+	state *MigrationState,
+	prepared PreparedInstance,
+	services []TargetAppService,
+	disabled bool,
+	stage string,
+) error {
+	sourceID := prepared.Source.UUID
+	for _, service := range cronServices(prepared, services) {
+		items, err := e.target.ListAppServiceCronSchedules(ctx, service.ID)
+		if err != nil {
+			return errors.Wrap(err, "list target service cron schedules")
+		}
+		for _, item := range items {
+			if !strings.HasPrefix(item.Name, migratedCronCutoverPrefix) {
+				continue
+			}
+			operation := operationKey(stage, strconv.Itoa(service.ID), item.Name)
+			if item.Disabled == disabled {
+				if err := e.recordObservedInstanceOperation(state, sourceID, operation, item.ID, 0); err != nil {
+					return err
+				}
+				continue
+			}
+			run, err := e.beginInstanceMutation(state, sourceID, operation, false)
+			if err != nil {
+				return err
+			}
+			// Keep going: a recorded step must not hide the items after it.
+			if !run {
+				continue
+			}
+			updated, err := e.target.UpdateAppServiceCronSchedule(ctx, item.ID, TargetUpdateAppServiceCronScheduleInput{Disabled: &disabled})
+			if err != nil {
+				return e.recordInstanceMutationError(state, sourceID, operation, "cron schedule update", err)
+			}
+			if updated.Disabled != disabled || updated.AppServiceID != service.ID || updated.Name != item.Name {
+				return errors.Errorf("updated cron schedule %q does not match the requested state", item.Name)
+			}
+			if err := e.completeInstanceMutation(state, sourceID, operation, updated.ID, 0); err != nil {
+				return err
+			}
+			if disabled {
+				e.reportProgress("Cron schedule %q on service %q stays disabled until --verify confirms the DNS cutover.", item.Title, service.Name)
+			} else {
+				e.reportProgress("Cron schedule %q on service %q enabled after the DNS cutover.", item.Title, service.Name)
+			}
+		}
+	}
+	return nil
+}
+
+// verifyMigratedCronSchedules checks that every migrated cron schedule,
+// including those from the shared stack, has its planned state.
+func (e *MigrationExecutor) verifyMigratedCronSchedules(ctx context.Context, prepared PreparedInstance, services []TargetAppService) error {
+	disabled := migratedCronsDisabled(prepared)
+	for _, service := range cronServices(prepared, services) {
+		items, err := e.target.ListAppServiceCronSchedules(ctx, service.ID)
+		if err != nil {
+			return errors.Wrap(err, "verify target cron schedules")
+		}
+		for _, item := range items {
+			if strings.HasPrefix(item.Name, migratedCronCutoverPrefix) && item.Disabled != disabled {
+				return errors.Errorf("target cron schedule %q on service %q is %s, expected %s",
+					item.Title, service.Name, enabledStateLabel(!item.Disabled), enabledStateLabel(!disabled))
+			}
+		}
 	}
 	return nil
 }
@@ -5446,11 +5585,14 @@ func (e *MigrationExecutor) verifyInstance(
 				service.ID,
 				instanceSource,
 				mapping.Target,
-				prepared.DisableCronSchedules || prepared.Workspace != nil,
+				migratedCronsDisabled(prepared),
 			); err != nil {
 				return err
 			}
 		}
+	}
+	if err := e.verifyMigratedCronSchedules(ctx, prepared, services); err != nil {
+		return err
 	}
 	if err := e.verifyRoutes(ctx, prepared, instance.ID, plan); err != nil {
 		return err

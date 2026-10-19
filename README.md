@@ -73,6 +73,7 @@ For a workspace environment, inspect its state and SSH connection information:
 ```sh
 wodby app environment workspace get ENVIRONMENT_ID
 wodby app environment workspace connection ENVIRONMENT_ID
+wodby app environment workspace git-status ENVIRONMENT_ID
 wodby app environment workspace prepare ENVIRONMENT_ID
 wodby app environment workspace restart ENVIRONMENT_ID
 wodby app environment workspace pause ENVIRONMENT_ID
@@ -82,6 +83,8 @@ wodby app environment workspace resume ENVIRONMENT_ID
 `restart` restarts the SSH runner and ends existing SSH sessions. Preparation can
 be retried without resetting the checkout. Connection information includes the
 host fingerprint and working directory; it does not modify local SSH config.
+`git-status` shows the checkout's branch, HEAD commit and uncommitted changes;
+use `-o json` to list the changed files.
 Register your SSH public key in Wodby, verify the fingerprint, and use the returned
 host, port and username with SSH or your agent's remote-connection support.
 Workspace creation uses the normal create command's JSON body with

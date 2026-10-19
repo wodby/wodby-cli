@@ -105,6 +105,7 @@ func Commands() []*cobra.Command {
 		newIntegrationCommand(),
 		newIntegrationKindCommand(),
 		newProviderCommand(),
+		newGitRepoCommand(),
 		newHelmCommand(),
 		newStackCommand(),
 		newServiceCommand(),
@@ -150,6 +151,7 @@ func newOrgCommand() *cobra.Command {
 		newGetCommand("get ID", "Get organization", "/orgs/", orgColumns, out),
 		newOrgUpdateCommand(out),
 	)
+	addOrgRESTCommands(cmd, out)
 
 	return cmd
 }
@@ -290,6 +292,7 @@ func newMemberCommand() *cobra.Command {
 
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd)
+	addMemberRESTCommands(cmd, out)
 	return cmd
 }
 
@@ -1433,6 +1436,7 @@ func newIntegrationCommand() *cobra.Command {
 		newIntegrationOptionsCommand(out),
 		newDeleteCommand("delete ID", "Delete integration", "/integrations/", integrationColumns, out),
 	)
+	addIntegrationRESTCommands(cmd, out)
 	return cmd
 }
 
@@ -1731,6 +1735,7 @@ func newProviderCommand() *cobra.Command {
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, newProviderGetCommand(out))
 	addProviderCommands(cmd, out)
+	addProviderRESTCommands(cmd, out)
 	return cmd
 }
 
@@ -1878,6 +1883,7 @@ func newStackCommand() *cobra.Command {
 		newStackSyncOriginCommand(out),
 		newStackServiceCommand(out),
 	)
+	addStackRESTCommands(cmd, out)
 	return cmd
 }
 
@@ -3492,6 +3498,7 @@ func newServiceCommand() *cobra.Command {
 		newGetCommand("revision ID", "Get service revision", "/service-revisions/", serviceRevisionColumns, out),
 		newServiceOptionsCommand(out),
 	)
+	addServiceRESTCommands(cmd, out)
 	return cmd
 }
 
@@ -3841,6 +3848,7 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 	cmd.AddCommand(newAppPortCommand("port", []string{"ports"}, "Manage app environment ports", instanceFilterArg))
 	cmd.AddCommand(newAppCertCommand("cert", []string{"certs", "certificate", "certificates"}, "Manage app environment certificates", instanceFilterArg))
 	cmd.AddCommand(newInstanceBuildCommand(), newInstanceDeploymentCommand(), newInstanceBackupCommand(), newInstanceImportCommand(), newWorkspaceCommand(out))
+	addEnvironmentRESTCommands(cmd, out)
 	return cmd
 }
 
@@ -4695,6 +4703,7 @@ func newInstanceBackupCommand() *cobra.Command {
 	listCmd := newInstanceFilteredListCommand("list ENVIRONMENT_ID", "List backups", "/backups", backupColumns, out, true)
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get backup", "/backups/", backupColumns, out), newBackupCreateCommand(out))
+	addBackupRESTCommands(cmd, out)
 	return cmd
 }
 
@@ -5364,6 +5373,7 @@ func newAppRouteCommand(use string, aliases []string, short string, mode instanc
 	}
 
 	cmd.AddCommand(listCmd, getCmd, newAppRouteCreateCommand(out), newAppRouteUpdateCommand(out), newDeleteCommand("delete ID", "Delete app route", "/app-routes/", routeColumns, out))
+	addRouteRESTCommands(cmd, out)
 	return cmd
 }
 
@@ -5463,6 +5473,7 @@ func newAppCertCommand(use string, aliases []string, short string, mode instance
 		listCmd,
 		newGetCommand("get ID", "Get app certificate", "/certs/", certColumns, out),
 	)
+	addCertRESTCommands(cmd, out)
 	return cmd
 }
 
@@ -5984,6 +5995,7 @@ func newBackupCommand() *cobra.Command {
 	listCmd := newFilteredListCommand("list", "List backups", "/backups", backupColumns, out, true)
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get backup", "/backups/", backupColumns, out), newBackupCreateCommand(out))
+	addBackupRESTCommands(cmd, out)
 	return cmd
 }
 
@@ -6494,6 +6506,7 @@ func newTaskStepCommand(out outputOptions) *cobra.Command {
 	}
 
 	cmd.AddCommand(listCmd, getCmd, logsCmd)
+	addTaskStepRESTCommands(cmd, out)
 	return cmd
 }
 

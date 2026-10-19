@@ -27,5 +27,6 @@ func newWorkspaceCommand(out outputOptions) *cobra.Command {
 	for _, operation := range []string{"prepare", "restart", "pause", "resume"} {
 		cmd.AddCommand(newClusterActionCommand(operation+" ENVIRONMENT_ID", fmt.Sprintf("%s workspace (restart affects SSH sessions)", operation), "/workspaces/%s/actions/"+operation, out))
 	}
+	addWorkspaceRESTCommands(cmd, out)
 	return cmd
 }

@@ -932,6 +932,10 @@ func formatColumnValue(row map[string]interface{}, column string) string {
 		if isTimeColumn(column) {
 			return formatDisplayTime(row[column])
 		}
+		// A dotted column such as plan.name reads a nested field.
+		if strings.Contains(column, ".") {
+			return formatValue(valueAtPath(row, column))
+		}
 		return formatValue(row[column])
 	}
 }

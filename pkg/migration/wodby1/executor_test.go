@@ -1321,8 +1321,28 @@ func TestMigrationExecutorRunsMinimalCustomerLifecycle(t *testing.T) {
 		ServiceRevID: 101, CreatedAt: now, UpdatedAt: now,
 	}
 	deployments := map[int]TargetAppDeployment{}
+	// Wodby 2 creates the stack's migrated schedule enabled with the app
+	// environment; another schedule must be left alone.
+	crons := map[int]*TargetAppServiceCronSchedule{
+		40: {ID: 40, AppServiceID: 21, Name: "w1-0123456789abcdef", Title: "Migrated", Crontab: "0 * * * *", Command: "drush cron"},
+		41: {ID: 41, AppServiceID: 21, Name: "custom", Title: "Custom", Crontab: "0 * * * *", Command: "true"},
+	}
+	cronDisabledAtDeploy := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-services/21/cron-schedules":
+			writeTargetExecutionJSON(t, w, []TargetAppServiceCronSchedule{*crons[40], *crons[41]})
+		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/v1/app-service-cron-schedules/"):
+			id, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/v1/app-service-cron-schedules/"))
+			if err != nil || crons[id] == nil {
+				t.Fatalf("unexpected cron update: %s", r.URL.Path)
+			}
+			var body TargetUpdateAppServiceCronScheduleInput
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Disabled == nil {
+				t.Fatalf("cron update body = %#v, err = %v", body, err)
+			}
+			crons[id].Disabled = *body.Disabled
+			writeTargetExecutionJSON(t, w, *crons[id])
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/stacks/5":
 			writeTargetExecutionJSON(t, w, TargetStack{ID: 5, Name: "drupal", Status: "OK", RevID: 12, OrgID: 1})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/stack-revisions/12":
@@ -1366,6 +1386,7 @@ func TestMigrationExecutorRunsMinimalCustomerLifecycle(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-auths":
 			writeTargetExecutionJSON(t, w, []TargetAppAuth{})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/app-deployments":
+			cronDisabledAtDeploy = crons[40].Disabled
 			var body TargetCreateAppDeploymentInput
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatal(err)
@@ -1481,6 +1502,10 @@ func TestMigrationExecutorRunsMinimalCustomerLifecycle(t *testing.T) {
 	if _, err := executor.Apply(ctx, export, plan, prepared); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
+	if !cronDisabledAtDeploy || !crons[40].Disabled || crons[41].Disabled {
+		t.Fatalf("after apply: migrated cron disabled at deploy = %t, now = %t; other cron disabled = %t",
+			cronDisabledAtDeploy, crons[40].Disabled, crons[41].Disabled)
+	}
 	failed := deployments[deploymentID]
 	failed.PostDeploymentStatus = "failed"
 	deployments[deploymentID] = failed
@@ -1501,6 +1526,9 @@ func TestMigrationExecutorRunsMinimalCustomerLifecycle(t *testing.T) {
 	}
 	if result.State.Status != MigrationStatusComplete || deploymentID != 31 {
 		t.Fatalf("result status=%q deployments=%d", result.State.Status, deploymentID-30)
+	}
+	if crons[40].Disabled || crons[41].Disabled {
+		t.Fatalf("after verify: migrated cron disabled = %t, other cron disabled = %t", crons[40].Disabled, crons[41].Disabled)
 	}
 	output := strings.Join(progress, "\n")
 	for _, expected := range []string{
@@ -2089,5 +2117,63 @@ func TestGeneratedStackRenameFailureLeavesTheMigrationUsable(t *testing.T) {
 	// The stack is already created and usable; only its label is cosmetic.
 	if got != generated {
 		t.Fatalf("a failed rename must keep the created stack: %#v", got)
+	}
+}
+
+// After --verify enabled the migrated schedules, a later --apply (for example
+// to repair what verification reported) must not disable them again.
+func TestPrepareInstanceKeepsMigratedCronEnabledAfterCutover(t *testing.T) {
+	for _, cutOver := range []bool{false, true} {
+		t.Run(map[bool]string{false: "before cutover", true: "after cutover"}[cutOver], func(t *testing.T) {
+			updates := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/app-services":
+					writeTargetExecutionJSON(t, w, []TargetAppService{
+						{ID: 10, Name: "php", AppInstanceID: 20, ServiceRevID: 101},
+						{ID: 12, Name: "php-sshd", AppInstanceID: 20, ServiceRevID: 101, ParentAppServiceID: intPointer(10)},
+					})
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/app-services/10/cron-schedules":
+					writeTargetExecutionJSON(t, w, []TargetAppServiceCronSchedule{{
+						ID: 40, AppServiceID: 10, Name: "w1-0123456789abcdef", Title: "Migrated",
+						Crontab: "0 * * * *", Command: "drush cron",
+					}})
+				case r.Method == http.MethodPut && r.URL.Path == "/v1/app-service-cron-schedules/40":
+					updates++
+					writeTargetExecutionJSON(t, w, TargetAppServiceCronSchedule{
+						ID: 40, AppServiceID: 10, Name: "w1-0123456789abcdef", Title: "Migrated", Disabled: true,
+					})
+				default:
+					t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+				}
+			}))
+			defer server.Close()
+
+			state, statePath := newExecutorTestState(t)
+			if cutOver {
+				operation := operationKey("cron_cutover", "instance-1")
+				if err := state.MarkInstanceOperationIntent("instance-1", operation); err != nil {
+					t.Fatal(err)
+				}
+				if err := state.MarkInstanceOperationSuccessWithIDs("instance-1", operation, 20, 0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), statePath: statePath}
+			inspection := TargetStackServiceInspection{StackService: TargetStackService{ID: 11, Name: "php", ServiceRevID: 101}}
+			sshd := TargetStackServiceInspection{StackService: TargetStackService{ID: 13, Name: "php-sshd", ServiceRevID: 101}}
+			err := executor.prepareInstance(context.Background(), state, PreparedInstance{
+				Source:         Instance{UUID: "instance-1"},
+				StackServices:  []TargetStackServiceInspection{inspection, sshd},
+				Services:       map[string]PreparedService{},
+				EffectiveState: map[string]bool{"php": true, "php-sshd": true},
+			}, TargetAppInstance{ID: 20})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := map[bool]int{false: 1, true: 0}[cutOver]; updates != want {
+				t.Fatalf("cron updates = %d, want %d", updates, want)
+			}
+		})
 	}
 }

@@ -1570,7 +1570,7 @@ func TestBuildPlanDescribesCreatedCronScheduleState(t *testing.T) {
 		{
 			name:        "enabled",
 			cronAllowed: true,
-			message:     `1 Wodby 2 cron schedule will be added to target service "php" in enabled state`,
+			message:     `1 Wodby 2 cron schedule will be added to target service "php" in disabled state and enabled by --verify once DNS points to Wodby 2`,
 		},
 		{
 			name:         "disabled by subscription",
@@ -1613,7 +1613,7 @@ func TestBuildPlanDescribesCreatedCronScheduleState(t *testing.T) {
 				schedules[0].Schedule != "0 * * * *" || schedules[0].Command != "drush cron" {
 				t.Fatalf("cron schedule details = %#v", schedules)
 			}
-			wantState := "enabled"
+			wantState := "enabled by --verify after the DNS cutover"
 			if !test.cronAllowed {
 				wantState = "disabled by target subscription"
 			}

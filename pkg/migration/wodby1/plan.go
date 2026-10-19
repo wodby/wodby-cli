@@ -1296,7 +1296,7 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 				plan.addReview(SeverityBlocking, app.Name, instance.Name, "cron "+firstNonEmpty(cron.Title, cron.Crontab), "enabled source cron requires both a schedule and command")
 				continue
 			}
-			targetState := "enabled"
+			targetState := "enabled by --verify after the DNS cutover"
 			if opts.WorkspaceInstances[instance.UUID] {
 				targetState = "disabled in a development workspace"
 			} else if opts.TargetScope == nil || opts.TargetScope.Org.Capabilities == nil {
@@ -1329,9 +1329,13 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 			noun,
 			servicePlan.TargetName,
 		)
-		if opts.TargetScope != nil && opts.TargetScope.Org.Capabilities != nil {
+		if opts.WorkspaceInstances[instance.UUID] {
+			message += " in disabled state because scheduled jobs do not run in a development workspace"
+		} else if opts.TargetScope != nil && opts.TargetScope.Org.Capabilities != nil {
 			if opts.TargetScope.Org.Capabilities.CronSchedules {
-				message += " in enabled state"
+				// Jobs such as mail or payments must not run on both platforms
+				// while Wodby 1 still serves the site.
+				message += " in disabled state and enabled by --verify once DNS points to Wodby 2"
 			} else {
 				message += " in disabled state because the target subscription does not allow cron execution"
 			}

@@ -458,6 +458,13 @@ func TestMigrationExecutorCreatesWorkspace(t *testing.T) {
 			writeTargetExecutionJSON(t, w, instance(state))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-services":
 			writeTargetExecutionJSON(t, w, []TargetAppService{service})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-services/21/cron-schedules":
+			// Wodby 2 creates a workspace's schedules disabled; the migration
+			// must keep them so, even after the DNS cutover.
+			writeTargetExecutionJSON(t, w, []TargetAppServiceCronSchedule{{
+				ID: 40, AppServiceID: 21, Name: "w1-0123456789abcdef", Title: "Migrated",
+				Crontab: "0 * * * *", Command: "drush cron", Disabled: true,
+			}})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-ports":
 			writeTargetExecutionJSON(t, w, []TargetAppPort{})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-routes":

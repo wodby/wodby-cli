@@ -60,16 +60,19 @@ func TestResolveIntegrationUsesCanonicalEnvironmentTypes(t *testing.T) {
 
 func TestMigrationWaitsForPostDeploymentOutcome(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		statuses []string
-		wantErr  bool
+		name        string
+		statuses    []string
+		wantErr     bool
+		wantWarning bool
 	}{
 		{name: "scripts finish after rollout", statuses: []string{"pending", "in_progress", "completed"}},
 		{name: "no scripts", statuses: []string{"not_applicable"}},
 		{name: "intentionally skipped", statuses: []string{"skipped"}},
-		{name: "failed scripts", statuses: []string{"failed"}, wantErr: true},
-		{name: "canceled scripts", statuses: []string{"canceled"}, wantErr: true},
-		{name: "scripts not run", statuses: []string{"not_run"}, wantErr: true},
+		// The first deployment runs before the data import, so scripts such
+		// as drush deploy fail on the empty database. That must not stop it.
+		{name: "failed scripts", statuses: []string{"in_progress", "failed"}, wantWarning: true},
+		{name: "canceled scripts", statuses: []string{"canceled"}, wantWarning: true},
+		{name: "scripts not run", statuses: []string{"not_run"}, wantWarning: true},
 		{name: "unknown outcome", statuses: []string{"unknown"}, wantErr: true},
 		{name: "missing outcome", statuses: []string{""}, wantErr: true},
 		{name: "future outcome", statuses: []string{"other"}, wantErr: true},
@@ -88,9 +91,15 @@ func TestMigrationWaitsForPostDeploymentOutcome(t *testing.T) {
 			}))
 			defer server.Close()
 			executor := newAsyncTestExecutor(t, server.URL, t.TempDir()+"/state.json", time.Second)
+			progress := []string{}
+			executor.progress = func(message string) { progress = append(progress, message) }
 			_, err := executor.waitDeployment(context.Background(), 30)
 			if (err != nil) != test.wantErr || reads != len(test.statuses) {
 				t.Fatalf("reads=%d err=%v", reads, err)
+			}
+			warned := strings.Contains(strings.Join(progress, "\n"), "Warning: post-deployment scripts for deployment ID 30")
+			if warned != test.wantWarning {
+				t.Fatalf("warning = %t, want %t; progress = %q", warned, test.wantWarning, progress)
 			}
 		})
 	}
@@ -144,7 +153,7 @@ func TestResumeRechecksPreviouslySuccessfulDeploymentScripts(t *testing.T) {
 			executor := newAsyncTestExecutor(t, server.URL, path, time.Second)
 			err := executor.ensureDeployment(context.Background(), state, "instance-1", 20, operation,
 				TargetCreateAppDeploymentInput{Services: []TargetAppServiceDeploymentInput{{AppServiceID: 10, Force: true}}})
-			if (err != nil) != (status == "failed") || reads != 1 {
+			if err != nil || reads != 1 {
 				t.Fatalf("reads=%d err=%v", reads, err)
 			}
 		})

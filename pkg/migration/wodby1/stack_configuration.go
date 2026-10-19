@@ -208,7 +208,9 @@ func prepareGotenbergEndpoint(app PreparedAppMigration, configuration *PreparedS
 
 	expectedByEnv := map[string]map[string]bool{}
 	observations := map[string][]stackEnvObservation{}
-	for _, instance := range app.Instances {
+	// Context instances decide the split too, so migrating one instance at a
+	// time writes the same stack value as migrating the whole app.
+	for _, instance := range append(append([]PreparedInstance(nil), app.Instances...), app.ContextInstances...) {
 		family := sourceStackFamily(instance.Source.Stack)
 		if !strings.HasPrefix(family, "drupal") && !strings.HasPrefix(family, "wordpress") {
 			return nil

@@ -151,7 +151,7 @@ required component shown in the preview. Use --source-backup BACKUP_UUID to pin
 all components to a different complete snapshot, or
 --skip-data to omit data. Changes made after the selected backup completed are
 not migrated. Apply is resumable and stores its plan and state in the system
-temporary directory. When state exists, the same --apply command preserves the saved plan
+temporary directory, or next to --state-file when it is set. When state exists, the same --apply command preserves the saved plan
 and continues completed work. --apply --restart replaces the saved plan. If the
 migration already changed Wodby 2, the CLI first shows and confirms removal of
 only the resources recorded as created by this migration; pre-existing target
@@ -244,7 +244,7 @@ refuses once --verify has succeeded, because DNS then points at Wodby 2.`,
 		nil,
 		"Per-app Git target (APP=GIT_INTEGRATION_ID[:REPOSITORY_NAME[:SERVICE]])",
 	)
-	cmd.Flags().Lookup("state-file").Usage = "Base path for secure per-app resume-state files (defaults to the system temporary directory)"
+	cmd.Flags().Lookup("state-file").Usage = "Base path for secure per-app resume-state files; the plan is kept next to it (defaults to the system temporary directory)"
 	return cmd
 }
 
@@ -377,7 +377,7 @@ func bindFlags(cmd *cobra.Command, opts *options) {
 		"Add mapped services missing from the target stack when an exact Wodby 2 service is available",
 	)
 
-	cmd.Flags().StringVar(&opts.stateFile, "state-file", "", "Secure resume-state path (defaults to the system temporary directory)")
+	cmd.Flags().StringVar(&opts.stateFile, "state-file", "", "Secure resume-state path; the plan is kept next to it (defaults to the system temporary directory)")
 	cmd.Flags().DurationVar(&opts.pollInterval, "poll-interval", 2*time.Second, "Target operation polling interval")
 	cmd.Flags().DurationVar(&opts.waitTimeout, "wait-timeout", 30*time.Minute, "Timeout for each target operation")
 	cmd.Flags().StringVar(&opts.retryAmbiguous, "retry-ambiguous", "", "Retry exactly one inspected ambiguous operation ID")
@@ -1916,6 +1916,23 @@ func artifactPaths(sourceKind, sourceID, statePath string) (string, string, erro
 	planPath := filepath.Join(dir, base+".migration-plan.json")
 	if strings.TrimSpace(statePath) == "" {
 		statePath = filepath.Join(dir, base+".migration-state.json")
+	} else {
+		// Keep the plan with an explicit state file. Resume, verify and
+		// rollback need both, and the temporary directory can be cleared,
+		// for example on reboot. A plan written by an earlier version in the
+		// temporary directory is still used until it is replaced.
+		explicitPlan := explicitStatePlanPath(statePath)
+		legacyExists, err := artifactExists(planPath)
+		if err != nil {
+			return "", "", err
+		}
+		explicitExists, err := artifactExists(explicitPlan)
+		if err != nil {
+			return "", "", err
+		}
+		if explicitExists || !legacyExists {
+			planPath = explicitPlan
+		}
 	}
 	planPath = filepath.Clean(planPath)
 	statePath = filepath.Clean(statePath)
@@ -1924,14 +1941,14 @@ func artifactPaths(sourceKind, sourceID, statePath string) (string, string, erro
 		return "", "", err
 	}
 	if same {
-		return "", "", errors.New("--state-file must not resolve to the temporary migration plan path")
+		return "", "", errors.New("--state-file must not resolve to the migration plan path")
 	}
 	sameLock, err := sameArtifactPath(planPath, statePath+".lock")
 	if err != nil {
 		return "", "", err
 	}
 	if sameLock {
-		return "", "", errors.New("temporary migration plan must not resolve to the migration state lock path")
+		return "", "", errors.New("migration plan must not resolve to the migration state lock path")
 	}
 	return planPath, statePath, nil
 }
@@ -1965,6 +1982,16 @@ func ensureArtifactDirectories(planPath, statePath string) error {
 		}
 	}
 	return nil
+}
+
+// explicitStatePlanPath names the plan stored next to an explicit state file:
+// "migration.json" keeps its plan in "migration.plan.json".
+func explicitStatePlanPath(statePath string) string {
+	ext := filepath.Ext(statePath)
+	if ext == "" {
+		return statePath + ".plan.json"
+	}
+	return strings.TrimSuffix(statePath, ext) + ".plan" + ext
 }
 
 func artifactExists(path string) (bool, error) {

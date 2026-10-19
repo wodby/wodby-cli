@@ -667,6 +667,33 @@ func preparedMigrationUsesLegacyWodby1EnvVars(prepared PreparedMigration) bool {
 	return false
 }
 
+// instanceServiceCapacity is the number of billed app services an instance
+// needs at its peak. A standard environment is created with the stack's
+// default service states and only then enabled and disabled as planned, and
+// Wodby 2 checks the limit at both steps, so the larger count applies. A
+// workspace is created with its planned states and adds its SSH runner.
+func instanceServiceCapacity(instance PreparedInstance) int {
+	planned := 0
+	for _, enabled := range instance.EffectiveState {
+		if enabled {
+			planned++
+		}
+	}
+	if instance.Workspace != nil {
+		return planned + 1
+	}
+	created := len(instance.StackAdditions)
+	for _, inspection := range instance.StackServices {
+		if !inspection.StackService.Disabled {
+			created++
+		}
+	}
+	if created > planned {
+		return created
+	}
+	return planned
+}
+
 func (c *TargetClient) targetServiceCapacityFindings(
 	ctx context.Context,
 	plan *Plan,
@@ -686,15 +713,7 @@ func (c *TargetClient) targetServiceCapacityFindings(
 	additional := 0
 	for _, app := range prepared.Apps {
 		for _, instance := range app.Instances {
-			for _, enabled := range instance.EffectiveState {
-				if enabled {
-					additional++
-				}
-			}
-			// A workspace's SSH runner is billed as one more service.
-			if instance.Workspace != nil {
-				additional++
-			}
+			additional += instanceServiceCapacity(instance)
 		}
 	}
 	decision, err := c.PreflightAppServiceCapacity(ctx, plan.Target.OrgID, additional)

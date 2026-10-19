@@ -88,6 +88,15 @@ func prepareMailDeliveryLinks(app *PreparedAppMigration) []ReviewItem {
 				break
 			}
 		}
+		// A stack-wide link would also apply to the app's other instances
+		// once they are migrated, so they have to select the same service.
+		for index := range app.ContextInstances {
+			if !stackWide {
+				break
+			}
+			target, ok := contextMailDeliveryTarget(app.ContextInstances[index], serviceName)
+			stackWide = ok && target == sharedTarget
+		}
 		if stackWide {
 			configuration := app.StackConfiguration.Services[serviceName]
 			configuration.Links = append(configuration.Links, PreparedStackServiceLink{
@@ -115,6 +124,25 @@ func prepareMailDeliveryLinks(app *PreparedAppMigration) []ReviewItem {
 		}
 	}
 	return findings
+}
+
+// contextMailDeliveryTarget returns the Wodby 2 mail service a context
+// instance would link from serviceName, if it selects one.
+func contextMailDeliveryTarget(instance PreparedInstance, serviceName string) (string, bool) {
+	sourceMail, found, err := selectedSourceMailService(instance.Source)
+	if err != nil || !found {
+		return "", false
+	}
+	mapping, ok := instance.Services[sourceMail]
+	if !ok || strings.TrimSpace(mapping.Target.StackService.Name) == "" {
+		return "", false
+	}
+	for _, name := range targetSendmailLinkServices(instance) {
+		if name == serviceName {
+			return mapping.Target.StackService.Name, true
+		}
+	}
+	return "", false
 }
 
 // sourceMailServiceProperty reads mail_service. Wodby 1 exports null or an empty

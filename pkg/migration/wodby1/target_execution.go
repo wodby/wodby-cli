@@ -135,17 +135,20 @@ func (c *TargetClient) ResolvePublicStackExact(ctx context.Context, name string)
 	if err := c.client.Get(ctx, "/catalog/stacks", nil, &items); err != nil {
 		return TargetStack{}, errors.Wrap(err, "list public Wodby 2 catalog stacks")
 	}
+	// Only the requested stack is validated: the catalog lists every public
+	// stack, and one that is updating elsewhere must not stop this migration.
 	matches := make([]TargetStack, 0, 1)
 	for _, item := range items {
+		if item.Name != name {
+			continue
+		}
 		if err := validateTargetStack(item); err != nil {
 			return TargetStack{}, err
 		}
 		if !item.Public {
 			return TargetStack{}, errors.Errorf("catalog endpoint returned non-public stack %q", item.Name)
 		}
-		if item.Name == name {
-			matches = append(matches, item)
-		}
+		matches = append(matches, item)
 	}
 	switch len(matches) {
 	case 0:
@@ -1505,11 +1508,11 @@ func (c *TargetClient) FindGeneratedStacksByOrigin(
 	}
 	matches := make([]TargetStack, 0, 1)
 	for _, item := range items {
-		if err := validateTargetStack(item); err != nil {
-			return nil, err
-		}
 		if item.OrgID != orgID || item.Public || item.OriginStackRevID == nil || *item.OriginStackRevID != originRevisionID {
 			continue
+		}
+		if err := validateTargetStack(item); err != nil {
+			return nil, err
 		}
 		matches = append(matches, item)
 	}

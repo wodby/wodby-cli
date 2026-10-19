@@ -43,8 +43,40 @@ var wodby1GeneratedEnvironmentNames = map[string]bool{
 // migratedEnvironmentReferences updates references in customer-defined values
 // and commands to the equivalent Wodby 2 runtime variables. Wodby-generated
 // definitions themselves are not copied; the target platform supplies them.
+// Only whole names are replaced, so APP_BUILD_NUMBER or MYAPP_BUILD_NUM keep
+// their names.
 func migratedEnvironmentReferences(value string) string {
-	return strings.NewReplacer(wodby1EnvironmentReferenceReplacements...).Replace(value)
+	for index := 0; index+1 < len(wodby1EnvironmentReferenceReplacements); index += 2 {
+		value = replaceWholeName(value, wodby1EnvironmentReferenceReplacements[index], wodby1EnvironmentReferenceReplacements[index+1])
+	}
+	return value
+}
+
+// replaceWholeName replaces name where it is not part of a longer variable
+// name, that is, not next to a letter, digit or underscore.
+func replaceWholeName(value, name, replacement string) string {
+	nameChar := func(b byte) bool {
+		return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+	}
+	var result strings.Builder
+	position := 0
+	for {
+		found := strings.Index(value[position:], name)
+		if found < 0 {
+			result.WriteString(value[position:])
+			return result.String()
+		}
+		index := position + found
+		end := index + len(name)
+		whole := (index == 0 || !nameChar(value[index-1])) && (end == len(value) || !nameChar(value[end]))
+		result.WriteString(value[position:index])
+		if whole {
+			result.WriteString(replacement)
+		} else {
+			result.WriteString(name)
+		}
+		position = end
+	}
 }
 
 // migratedCrontab returns a Wodby 1 cron schedule in the form Wodby 2 accepts.

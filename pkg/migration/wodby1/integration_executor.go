@@ -38,8 +38,14 @@ func (e *MigrationExecutor) ensureTargetIntegrations(
 		if err != nil {
 			return PreparedMigration{}, err
 		}
-		if provider.ID != item.ProviderID || provider.RevID != item.ProviderRevID {
+		// Wodby 2 publishes compatible provider revisions and moves existing
+		// integrations to them, so only another provider is a change.
+		if provider.ID != item.ProviderID {
 			return PreparedMigration{}, errors.Errorf("target provider %q changed after the migration plan was reviewed", item.ProviderName)
+		}
+		if provider.RevID != item.ProviderRevID {
+			e.reportProgress("  Provider %q has a newer revision (ID %d) than the reviewed plan (ID %d); using it.", item.ProviderName, provider.RevID, item.ProviderRevID)
+			item.ProviderRevID = provider.RevID
 		}
 		operation := operationKey("integration_resolve", item.Key)
 		if current, exists := state.App.Operations[operation]; exists && current.Status == MigrationOperationSucceeded {
@@ -50,7 +56,11 @@ func (e *MigrationExecutor) ensureTargetIntegrations(
 			if err != nil {
 				return PreparedMigration{}, errors.Wrapf(err, "read saved target integration %q", item.Key)
 			}
-			if existing.OrgID != plan.Target.OrgID || existing.ProviderRevID != item.ProviderRevID || !sameOptionalString(existing.Scope, item.Scope) {
+			sameProvider, err := e.integrationUsesProvider(ctx, existing, item.ProviderID, item.ProviderRevID)
+			if err != nil {
+				return PreparedMigration{}, err
+			}
+			if existing.OrgID != plan.Target.OrgID || !sameProvider || !sameOptionalString(existing.Scope, item.Scope) {
 				return PreparedMigration{}, errors.Errorf("saved target integration %q no longer matches the reviewed organization and scope", item.Key)
 			}
 			item.TargetID = existing.ID
@@ -238,6 +248,20 @@ func bindPreparedIntegrationIDs(prepared *PreparedMigration, resolved map[string
 	return nil
 }
 
+// integrationUsesProvider reports whether an integration still belongs to the
+// reviewed provider. Its revision may be newer: Wodby 2 upgrades integrations
+// to compatible provider revisions on its own.
+func (e *MigrationExecutor) integrationUsesProvider(ctx context.Context, integration TargetIntegration, providerID, reviewedRevID int) (bool, error) {
+	if integration.ProviderRevID == reviewedRevID {
+		return true, nil
+	}
+	revision, err := e.target.GetProviderRevision(ctx, integration.ProviderRevID)
+	if err != nil {
+		return false, errors.Wrapf(err, "read the provider of target integration ID %d", integration.ID)
+	}
+	return revision.ProviderID == providerID, nil
+}
+
 func (e *MigrationExecutor) verifyTargetIntegrations(ctx context.Context, state *MigrationState, plan Plan, prepared PreparedMigration) error {
 	for _, desired := range prepared.Integrations {
 		operation := state.App.Operations[operationKey("integration_resolve", desired.Key)]
@@ -248,7 +272,11 @@ func (e *MigrationExecutor) verifyTargetIntegrations(ctx context.Context, state 
 		if err != nil {
 			return err
 		}
-		if actual.OrgID != plan.Target.OrgID || actual.ProviderRevID != desired.ProviderRevID || !sameOptionalString(actual.Scope, desired.Scope) {
+		sameProvider, err := e.integrationUsesProvider(ctx, actual, desired.ProviderID, desired.ProviderRevID)
+		if err != nil {
+			return err
+		}
+		if actual.OrgID != plan.Target.OrgID || !sameProvider || !sameOptionalString(actual.Scope, desired.Scope) {
 			return errors.Errorf("target integration %q no longer matches the migration target", desired.Key)
 		}
 	}

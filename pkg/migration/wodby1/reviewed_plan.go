@@ -240,6 +240,11 @@ func RestoreReviewedPlanForResume(current *Plan, reviewed Plan) error {
 		return err
 	}
 	if currentDigest != reviewedDigest {
+		// The configuration fingerprint is keyed with the Wodby 1 token, so a
+		// different token looks exactly like changed source configuration.
+		if current.Source.ConfigDigest != reviewed.Source.ConfigDigest {
+			return currentPlanDriftError("the Wodby 1 source configuration changed, or WODBY1_SOURCE_TOKEN is not the token used when the migration was applied; the configuration fingerprint is computed with that token, so rerun with the original token if the source did not change")
+		}
 		return currentPlanDriftError("executable migration actions changed")
 	}
 	restored, err := cloneMigrationPlan(reviewed)
@@ -403,6 +408,7 @@ func pinReviewedInstance(current *InstancePlan, reviewed InstancePlan) error {
 		}
 		service.TargetVersion = reviewedService.TargetVersion
 		service.VersionAction = reviewedService.VersionAction
+		pinReviewedCronStates(service, reviewedService)
 		if reviewedService.AddToStack {
 			if reviewedService.CatalogServiceID <= 0 || reviewedService.CatalogServiceRevID <= 0 ||
 				reviewedService.TargetID != 0 || reviewedService.TargetServiceRevID != 0 {
@@ -518,6 +524,21 @@ func normalizedImportComponent(component string) string {
 
 func invalidPlanError(message string) error {
 	return fmt.Errorf("%w: %s", ErrMigrationPlanInvalid, message)
+}
+
+// pinReviewedCronStates keeps the reviewed target state of each cron schedule.
+// The state follows the organization's cron capability, which a resume pins to
+// the reviewed value; upgrading the plan in between must not count as drift.
+func pinReviewedCronStates(current *ServicePlan, reviewed ServicePlan) {
+	for index := range current.CronSchedules {
+		schedule := &current.CronSchedules[index]
+		for _, item := range reviewed.CronSchedules {
+			if item.Title == schedule.Title && item.Schedule == schedule.Schedule && item.Command == schedule.Command {
+				schedule.TargetState = item.TargetState
+				break
+			}
+		}
+	}
 }
 
 func currentPlanDriftError(message string) error {

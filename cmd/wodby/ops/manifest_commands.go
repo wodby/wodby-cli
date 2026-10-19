@@ -116,6 +116,7 @@ func manifestRequestBody(cmd *cobra.Command, args []string, opts manifestFileOpt
 	if len(files) > 0 {
 		body["files"] = files
 	}
+	addAvailableToAllProjects(cmd, body)
 	return body, nil
 }
 

@@ -98,6 +98,7 @@ func Commands() []*cobra.Command {
 		newUserCommand(),
 		newOrgCommand(),
 		newMemberCommand(),
+		newTeamCommand(),
 		newProjectCommand(),
 		newAppEnvironmentCommand(),
 		newDatabaseCommand(),
@@ -153,6 +154,7 @@ func newOrgCommand() *cobra.Command {
 	)
 	addOrgRESTCommands(cmd, out)
 	addOrgSettingsCommands(cmd, out)
+	addOrgRemainingCommands(cmd, out)
 
 	return cmd
 }
@@ -294,6 +296,7 @@ func newMemberCommand() *cobra.Command {
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd)
 	addMemberRESTCommands(cmd, out)
+	addMemberRemainingCommands(cmd, out)
 	return cmd
 }
 
@@ -346,6 +349,7 @@ func newProjectCommand() *cobra.Command {
 		newTitleUpdateCommand("update ID", "Update project", "/projects/", projectColumns, out),
 		newDeleteCommand("delete ID", "Delete project", "/projects/", projectColumns, out),
 	)
+	addProjectRemainingCommands(cmd, out)
 	return cmd
 }
 
@@ -937,6 +941,7 @@ func newClusterCommand() *cobra.Command {
 		newClusterDeleteCommand(out),
 	)
 	addSharingCommand(cmd, "cluster", "/clusters/sharing/%s", true, out)
+	addClusterRemainingCommands(cmd, out)
 	return cmd
 }
 
@@ -1745,6 +1750,7 @@ func newProviderCommand() *cobra.Command {
 	cmd.AddCommand(listCmd, newProviderGetCommand(out))
 	addProviderCommands(cmd, out)
 	addProviderRESTCommands(cmd, out)
+	addProviderRemainingCommands(cmd, out)
 	addSharingCommand(cmd, "provider", "/providers/sharing/%s", false, out)
 	return cmd
 }
@@ -1895,6 +1901,7 @@ func newStackCommand() *cobra.Command {
 	)
 	addStackRESTCommands(cmd, out)
 	addStackUpdateCommands(cmd, out)
+	addStackRemainingCommands(cmd, out)
 	addSharingCommand(cmd, "stack", "/stacks/sharing/%s", true, out)
 	return cmd
 }
@@ -3514,6 +3521,7 @@ func newServiceCommand() *cobra.Command {
 		newServiceOptionsCommand(out),
 	)
 	addServiceRESTCommands(cmd, out)
+	addServiceRemainingCommands(cmd, out)
 	addSharingCommand(cmd, "service", "/services/sharing/%s", true, out)
 	return cmd
 }
@@ -3868,6 +3876,7 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 	addEnvironmentRESTCommands(cmd, out)
 	addEnvironmentMigrationCommands(cmd, out)
 	addEnvironmentRouteSettingsCommands(cmd, out)
+	addEnvironmentRemainingCommands(cmd, out)
 	return cmd
 }
 
@@ -4733,6 +4742,7 @@ func newInstanceBackupCommand() *cobra.Command {
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get backup", "/backups/", backupColumns, out), newBackupCreateCommand(out))
 	addBackupRESTCommands(cmd, out)
+	addBackupRemainingCommands(cmd, out)
 	return cmd
 }
 
@@ -4885,6 +4895,7 @@ func newAppServiceCommand(use string, aliases []string, short string, mode insta
 		newAppServiceLogStreamCommand(out),
 		newAppServiceBackupOptionDefaultsCommand(out),
 	)
+	addAppServiceRemainingCommands(cmd, out)
 	return cmd
 }
 
@@ -5455,6 +5466,7 @@ func newAppPortCommand(use string, aliases []string, short string, mode instance
 	}
 
 	cmd.AddCommand(listCmd, getCmd)
+	addPortRemainingCommands(cmd, out)
 	return cmd
 }
 
@@ -6027,6 +6039,7 @@ func newBackupCommand() *cobra.Command {
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get backup", "/backups/", backupColumns, out), newBackupCreateCommand(out))
 	addBackupRESTCommands(cmd, out)
+	addBackupRemainingCommands(cmd, out)
 	return cmd
 }
 

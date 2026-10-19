@@ -336,6 +336,11 @@ func addEnvironmentRouteSettingsCommands(cmd *cobra.Command, out outputOptions) 
 }
 
 func newRouteSettingsReplaceCommand(use string, short string, pathPattern string, out outputOptions) *cobra.Command {
+	return newSettingsReplaceCommand(use, short, pathPattern, routeSettingColumns, "REQUEST_TIMEOUT=120", out)
+}
+
+// newSettingsReplaceCommand replaces a complete NAME=VALUE setting list at pathPattern.
+func newSettingsReplaceCommand(use string, short string, pathPattern string, columns []string, example string, out outputOptions) *cobra.Command {
 	body := bodyOptions{}
 	var settings []string
 	var none bool
@@ -370,11 +375,11 @@ func newRouteSettingsReplaceCommand(use string, short string, pathPattern string
 			if err := client.Put(cmd.Context(), escapedPath(pathPattern, args[0]), nil, requestBody, &result); err != nil {
 				return err
 			}
-			return printClientResult(cmd, client, out, result, routeSettingColumns)
+			return printClientResult(cmd, client, out, result, columns)
 		},
 	}
 	addBodyFlags(cmd, &body)
-	cmd.Flags().StringArrayVar(&settings, "setting", nil, "Setting as NAME=VALUE, such as REQUEST_TIMEOUT=120; repeat for each setting")
+	cmd.Flags().StringArrayVar(&settings, "setting", nil, "Setting as NAME=VALUE, such as "+example+"; repeat for each setting")
 	cmd.Flags().BoolVar(&none, "none", false, "Remove every setting")
 	return cmd
 }

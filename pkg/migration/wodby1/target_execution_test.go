@@ -1325,3 +1325,40 @@ func assertTargetExecutionPageQuery(t *testing.T, query url.Values, instance, pa
 		t.Fatalf("query = %q", query.Encode())
 	}
 }
+
+// The catalog and stack search list other stacks too; one that is updating
+// must not stop a migration that does not use it.
+func TestTargetClientIgnoresUnrelatedStacksThatAreNotReady(t *testing.T) {
+	origin := 71
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/catalog/stacks":
+			writeTargetExecutionJSON(t, w, []TargetStack{
+				{ID: 7, Name: "drupal11", Status: "OK", Public: true, RevID: 71, OrgID: 1},
+				{ID: 8, Name: "wordpress", Status: "UPDATING", Public: true, RevID: 81, OrgID: 1},
+			})
+		case "/v1/stacks":
+			writeTargetExecutionJSON(t, w, TargetStacksResponse{TotalCount: 2, Items: []TargetStack{
+				{ID: 17, Name: "acme/drupal11", Status: "OK", RevID: 171, OrgID: 8, OriginStackRevID: &origin},
+				{ID: 18, Name: "acme/drupal11-other", Status: "UPDATING", RevID: 181, OrgID: 8},
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := mustTargetExecutionClient(t, server.URL)
+	stack, err := client.ResolvePublicStackExact(context.Background(), "drupal11")
+	if err != nil || stack.ID != 7 {
+		t.Fatalf("public stack = %#v, err = %v", stack, err)
+	}
+	if _, err := client.ResolvePublicStackExact(context.Background(), "wordpress"); err == nil ||
+		!strings.Contains(err.Error(), `has status "UPDATING"`) {
+		t.Fatalf("requested stack that is not ready: err = %v", err)
+	}
+	matches, err := client.FindGeneratedStacksByOrigin(context.Background(), 8, 9, "drupal11", 71)
+	if err != nil || len(matches) != 1 || matches[0].ID != 17 {
+		t.Fatalf("generated stacks = %#v, err = %v", matches, err)
+	}
+}

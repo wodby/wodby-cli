@@ -47,15 +47,20 @@ func prepareServiceCapacity(appName, instanceName string, source Service, target
 }
 
 // promoteSharedServiceCapacity moves capacity to the shared stack when every
-// migrated instance maps the same target service and uses the same value. Any
+// instance of the app, migrated or read for context, maps the same target
+// service and uses the same value. Any
 // drift remains an app-service override on the affected instance.
 func promoteSharedServiceCapacity(app *PreparedAppMigration, configuration *PreparedStackConfiguration) {
 	if app == nil || configuration == nil || len(app.Instances) == 0 {
 		return
 	}
+	// The app's other instances, read only for context, count too: a value
+	// promoted to the stack would also apply to them once they are migrated
+	// into this app. Their indexes follow the migrated instances'.
+	all := append(append([]PreparedInstance(nil), app.Instances...), app.ContextInstances...)
 	byTarget := map[string][]capacityServiceRef{}
-	for instanceIndex := range app.Instances {
-		for sourceName, service := range app.Instances[instanceIndex].Services {
+	for instanceIndex := range all {
+		for sourceName, service := range all[instanceIndex].Services {
 			name := service.Target.StackService.Name
 			if strings.TrimSpace(name) == "" {
 				continue
@@ -66,7 +71,7 @@ func promoteSharedServiceCapacity(app *PreparedAppMigration, configuration *Prep
 	for targetName, refs := range byTarget {
 		// A stack-level value would affect every instance. Keep overrides at
 		// instance level unless this target service occurs exactly once in each.
-		if len(refs) != len(app.Instances) || !capacityRefsCoverInstances(refs, len(app.Instances)) {
+		if len(refs) != len(all) || !capacityRefsCoverInstances(refs, len(all)) {
 			continue
 		}
 		serviceConfig := configuration.Services[targetName]
@@ -76,6 +81,9 @@ func promoteSharedServiceCapacity(app *PreparedAppMigration, configuration *Prep
 		if sharedReplicas(refs) {
 			serviceConfig.Replicas = cloneInt(refs[0].service.Replicas)
 			for _, ref := range refs {
+				if ref.instanceIndex >= len(app.Instances) {
+					continue
+				}
 				service := app.Instances[ref.instanceIndex].Services[ref.sourceName]
 				service.Replicas = nil
 				app.Instances[ref.instanceIndex].Services[ref.sourceName] = service
@@ -84,6 +92,9 @@ func promoteSharedServiceCapacity(app *PreparedAppMigration, configuration *Prep
 		if sharedResources(refs) {
 			serviceConfig.Resources = clonePreparedServiceResources(refs[0].service.Resources)
 			for _, ref := range refs {
+				if ref.instanceIndex >= len(app.Instances) {
+					continue
+				}
 				service := app.Instances[ref.instanceIndex].Services[ref.sourceName]
 				service.Resources = nil
 				app.Instances[ref.instanceIndex].Services[ref.sourceName] = service

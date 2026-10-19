@@ -100,3 +100,20 @@ func TestGeneratedAndManagedDefaultWodbyVariablesAreNotReportedAsCustomerBlocker
 		}
 	}
 }
+
+func TestMigratedEnvironmentReferencesReplaceOnlyWholeNames(t *testing.T) {
+	cases := map[string]string{
+		"$APP_BUILD_NUM":                  "$WODBY_BUILD_NUMBER",
+		"${APP_BUILD_NUM}-x":              "${WODBY_BUILD_NUMBER}-x",
+		"APP_BUILD_NUM APP_BUILD_NUM":     "WODBY_BUILD_NUMBER WODBY_BUILD_NUMBER",
+		"$APP_BUILD_NUMBER":               "$APP_BUILD_NUMBER",
+		"$MYAPP_BUILD_NUM":                "$MYAPP_BUILD_NUM",
+		"$MYAPP_BUILD_NUM $APP_BUILD_NUM": "$MYAPP_BUILD_NUM $WODBY_BUILD_NUMBER",
+		"APP_BUILD_NUM2":                  "APP_BUILD_NUM2",
+	}
+	for input, want := range cases {
+		if got := migratedEnvironmentReferences(input); got != want {
+			t.Errorf("migratedEnvironmentReferences(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

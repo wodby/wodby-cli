@@ -130,3 +130,52 @@ func capacityTestTarget(name string) TargetStackServiceInspection {
 		}},
 	}
 }
+
+// A standard environment starts with the stack's default service states and
+// is only then changed as planned, so the larger count is what the limit sees.
+func TestInstanceServiceCapacityCountsTheLargerOfCreatedAndPlanned(t *testing.T) {
+	stackServices := []TargetStackServiceInspection{
+		{StackService: TargetStackService{Name: "php"}},
+		{StackService: TargetStackService{Name: "nginx"}},
+		{StackService: TargetStackService{Name: "mariadb"}},
+		{StackService: TargetStackService{Name: "redis"}},
+		{StackService: TargetStackService{Name: "solr", Disabled: true}},
+	}
+	for _, tc := range []struct {
+		name     string
+		instance PreparedInstance
+		want     int
+	}{
+		{
+			name: "stack defaults enable more than the plan keeps",
+			instance: PreparedInstance{
+				StackServices:  stackServices,
+				EffectiveState: map[string]bool{"php": true, "nginx": true, "mariadb": true, "redis": false},
+			},
+			want: 4,
+		},
+		{
+			name: "plan enables a service disabled by default",
+			instance: PreparedInstance{
+				StackServices:  stackServices,
+				EffectiveState: map[string]bool{"php": true, "nginx": true, "mariadb": true, "redis": true, "solr": true},
+			},
+			want: 5,
+		},
+		{
+			name: "workspace is created with planned states and its SSH runner",
+			instance: PreparedInstance{
+				StackServices:  stackServices,
+				EffectiveState: map[string]bool{"php": true, "nginx": true, "mariadb": true, "redis": false},
+				Workspace:      &PreparedWorkspace{},
+			},
+			want: 4,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := instanceServiceCapacity(tc.instance); got != tc.want {
+				t.Fatalf("instanceServiceCapacity() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

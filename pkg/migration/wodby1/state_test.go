@@ -320,8 +320,17 @@ func TestMigrationStateBackupDigestCanChangeWithoutChangingIdentity(t *testing.T
 
 	configChanged := identity
 	configChanged.Source.ConfigDigest = strings.Repeat("e", 64)
-	if _, err := LoadMigrationState(path, configChanged); !errors.Is(err, ErrMigrationStateIdentityMismatch) {
+	if _, err := LoadMigrationState(path, configChanged); !errors.Is(err, ErrMigrationStateIdentityMismatch) ||
+		!strings.Contains(err.Error(), "WODBY1_SOURCE_TOKEN") {
 		t.Fatalf("config identity mismatch error = %v", err)
+	}
+	// The token hint is only for a fingerprint change; any other identity
+	// difference keeps the plain error.
+	otherChanged := configChanged
+	otherChanged.Target.ProjectID++
+	if _, err := LoadMigrationState(path, otherChanged); !errors.Is(err, ErrMigrationStateIdentityMismatch) ||
+		strings.Contains(err.Error(), "WODBY1_SOURCE_TOKEN") {
+		t.Fatalf("other identity mismatch error = %v", err)
 	}
 	if err := reloaded.SetBackupDigest("https://storage.example/signed?token=secret"); !errors.Is(err, ErrMigrationStateInvalid) {
 		t.Fatalf("signed backup digest error = %v", err)

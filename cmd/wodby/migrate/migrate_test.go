@@ -2115,9 +2115,68 @@ func TestArtifactPathsRejectPlanAndStateCollision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A plan left in the temporary directory by an earlier version is still
+	// used, so a state file must not point at it.
+	if err := os.MkdirAll(filepath.Dir(planPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planPath, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := artifactPaths("app", "app-1", planPath); err == nil ||
-		!strings.Contains(err.Error(), "temporary migration plan path") {
+		!strings.Contains(err.Error(), "migration plan path") {
 		t.Fatalf("artifactPaths() error = %v", err)
+	}
+}
+
+func TestArtifactPathsKeepPlanNextToExplicitStateFile(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "migration.json")
+	planPath, gotState, err := artifactPaths("instance", "instance-1", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotState != statePath || planPath != filepath.Join(dir, "migration.plan.json") {
+		t.Fatalf("artifact paths = %q, %q", planPath, gotState)
+	}
+	if got := explicitStatePlanPath(filepath.Join(dir, "migration")); got != filepath.Join(dir, "migration.plan.json") {
+		t.Fatalf("plan path without extension = %q", got)
+	}
+}
+
+func TestArtifactPathsResumeLegacyTemporaryPlan(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	legacyPlan, _, err := artifactPaths("instance", "instance-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(legacyPlan), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPlan, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "migration.json")
+	planPath, _, err := artifactPaths("instance", "instance-1", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planPath != legacyPlan {
+		t.Fatalf("plan path = %q, want legacy %q", planPath, legacyPlan)
+	}
+	// Once the plan exists next to the state file, it wins.
+	explicitPlan := filepath.Join(dir, "migration.plan.json")
+	if err := os.WriteFile(explicitPlan, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	planPath, _, err = artifactPaths("instance", "instance-1", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planPath != explicitPlan {
+		t.Fatalf("plan path = %q, want %q", planPath, explicitPlan)
 	}
 }
 

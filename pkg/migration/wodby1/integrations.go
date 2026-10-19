@@ -105,6 +105,11 @@ func (c *TargetClient) prepareAppIntegrations(
 	if len(existingBase) != 0 && !sameIntegrationPlans(existingBase, planned) {
 		return nil, currentPlanDriftError("target integration mapping changed")
 	}
+	// A reviewed plan keeps its provider revisions. A newer compatible
+	// revision published since then is not a change to the migration.
+	if len(existingBase) != 0 {
+		planned = existingBase
+	}
 	appPlan.Integrations = append(existingShared, planned...)
 	app.Integrations = prepared
 	return findings, nil
@@ -722,6 +727,8 @@ func isPlainNumber(value string) bool {
 	return true
 }
 
+// sameIntegrationPlans compares integration choices. Provider revisions are not
+// compared: Wodby 2 moves integrations to newer compatible revisions itself.
 func sameIntegrationPlans(left, right []IntegrationPlan) bool {
 	if len(left) != len(right) {
 		return false
@@ -732,7 +739,7 @@ func sameIntegrationPlans(left, right []IntegrationPlan) bool {
 	sort.SliceStable(right, func(i, j int) bool { return right[i].Key < right[j].Key })
 	for index := range left {
 		if left[index].Key != right[index].Key || left[index].ProviderName != right[index].ProviderName ||
-			left[index].ProviderID != right[index].ProviderID || left[index].ProviderRevID != right[index].ProviderRevID || left[index].Kind != right[index].Kind ||
+			left[index].ProviderID != right[index].ProviderID || left[index].Kind != right[index].Kind ||
 			left[index].Service != right[index].Service || left[index].Action != right[index].Action ||
 			!sameStringSet(left[index].Variables, right[index].Variables) {
 			return false

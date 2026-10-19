@@ -231,7 +231,15 @@ func LoadMigrationState(path string, expected MigrationStateIdentity) (*Migratio
 	if err != nil {
 		return nil, err
 	}
-	if state.Identity() != expected {
+	if actual := state.Identity(); actual != expected {
+		// The configuration fingerprint is keyed with the Wodby 1 token, so a
+		// different token looks exactly like changed source configuration.
+		// The plan hash covers the fingerprint, so it differs with it.
+		configChanged := actual.Source.ConfigDigest != expected.Source.ConfigDigest
+		actual.Source.ConfigDigest, actual.PlanHash = expected.Source.ConfigDigest, expected.PlanHash
+		if configChanged && actual == expected {
+			return nil, fmt.Errorf("%w: the Wodby 1 source configuration changed, or WODBY1_SOURCE_TOKEN is not the token used when the migration was applied; rerun with the original token if the source did not change", ErrMigrationStateIdentityMismatch)
+		}
 		return nil, ErrMigrationStateIdentityMismatch
 	}
 	return state, nil

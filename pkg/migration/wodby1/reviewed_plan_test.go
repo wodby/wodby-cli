@@ -345,3 +345,50 @@ func writeReviewedPlanFixture(t *testing.T, path string, plan Plan) {
 		t.Fatal(err)
 	}
 }
+
+// A plan reviewed while the cron capability was being checked must still
+// resume after the organization's subscription changed in between.
+func TestPinReviewedTargetsKeepsReviewedCronStates(t *testing.T) {
+	reviewed := reviewedPlanFixture(t)
+	reviewed.Apps[0].Instances[0].Services[0].CronSchedules = []CronSchedulePlan{{
+		Title: "Drupal cron", Schedule: "*/5 * * * *", Command: "drush cron", TargetState: "enabled",
+	}}
+	var err error
+	reviewed.PlanHash, err = reviewed.contentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := cloneMigrationPlan(reviewed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Apps[0].Instances[0].Services[0].CronSchedules[0].TargetState = "disabled by target subscription"
+
+	if err := PinReviewedTargets(&current, reviewed); err != nil {
+		t.Fatal(err)
+	}
+	if got := current.Apps[0].Instances[0].Services[0].CronSchedules[0].TargetState; got != "enabled" {
+		t.Fatalf("cron target state = %q, want the reviewed state", got)
+	}
+	if err := RestoreReviewedPlanForResume(&current, reviewed); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRestoreReviewedPlanForResumeNamesTheSourceTokenOnConfigDrift(t *testing.T) {
+	reviewed := reviewedPlanFixture(t)
+	current, err := cloneMigrationPlan(reviewed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Source.ConfigDigest = strings.Repeat("e", 64)
+	current.PlanHash, err = current.contentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = RestoreReviewedPlanForResume(&current, reviewed)
+	if err == nil || !strings.Contains(err.Error(), "WODBY1_SOURCE_TOKEN") {
+		t.Fatalf("RestoreReviewedPlanForResume() error = %v", err)
+	}
+}

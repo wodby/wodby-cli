@@ -74,9 +74,9 @@ var (
 	appPortColumns                   = []string{"id", "name", "number", "publicPort", "protocol", "private", "service", "instance", "createdAt", "updatedAt"}
 	certColumns                      = []string{"id", "host", "status", "issuer", "certType", "expiresAt", "route", "instance", "createdAt"}
 	buildListColumns                 = []string{"id", "number", "service", "services", "imageCount", "gitRefType", "gitRef", "startedAt", "duration", "status"}
-	buildColumns                     = []string{"id", "number", "status", "instance", "service", "services", "images", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "createdAt", "startedAt", "endedAt", "duration"}
+	buildColumns                     = []string{"id", "number", "status", "instance", "service", "services", "images", "imageVoidStatus", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "createdAt", "startedAt", "endedAt", "duration"}
 	deploymentListColumns            = []string{"id", "number", "services", "builds", "startedAt", "duration", "status", "postDeploymentStatus", "rollbackStatus"}
-	deploymentColumns                = []string{"id", "number", "status", "canCancel", "postDeploymentStatus", "rollbackStatus", "instance", "services", "images", "task", "postDeploymentTask", "skipRollback", "createdAt", "startedAt", "endedAt", "duration"}
+	deploymentColumns                = []string{"id", "number", "status", "rolloutStatus", "canCancel", "postDeploymentStatus", "rollbackStatus", "instance", "services", "images", "task", "postDeploymentTask", "skipRollback", "createdAt", "startedAt", "endedAt", "duration"}
 	backupColumns                    = []string{"id", "name", "status", "manual", "backupPresetId", "size", "instance", "service", "database", "databaseDb", "task", "createdAt"}
 	importListColumns                = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "startedAt", "duration"}
 	importColumns                    = []string{"id", "name", "source", "status", "task", "instance", "service", "database", "databaseDb", "backup", "createdAt", "updatedAt", "startedAt", "endedAt", "duration"}
@@ -152,6 +152,7 @@ func newOrgCommand() *cobra.Command {
 		newOrgUpdateCommand(out),
 	)
 	addOrgRESTCommands(cmd, out)
+	addOrgSettingsCommands(cmd, out)
 
 	return cmd
 }
@@ -472,6 +473,7 @@ func newDatabaseCommand() *cobra.Command {
 		newDatabaseOptionsCommand(out),
 	)
 	cmd.AddCommand(newDatabaseDbCommand(), newDatabaseUserCommand())
+	addSharingCommand(cmd, "database", "/databases/sharing/%s", false, out)
 	return cmd
 }
 
@@ -934,6 +936,7 @@ func newClusterCommand() *cobra.Command {
 		newClusterInfraAppUpgradeChangelogCommand(out),
 		newClusterDeleteCommand(out),
 	)
+	addSharingCommand(cmd, "cluster", "/clusters/sharing/%s", true, out)
 	return cmd
 }
 
@@ -1307,6 +1310,7 @@ func newClusterCreateCommand(out outputOptions) *cobra.Command {
 				if value, ok := changedBool(cmd, "single-node"); ok {
 					values["singleNode"] = value
 				}
+				addAvailableToAllProjects(cmd, values)
 				requestBody = values
 			}
 			var result interface{}
@@ -1336,6 +1340,7 @@ func newClusterCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().Int("max-node-count", 0, "Maximum node count")
 	cmd.Flags().Int("node-disk-size", 0, "Node disk size")
 	cmd.Flags().Bool("single-node", false, "Create a single-node cluster")
+	addAvailableToAllProjectsFlag(cmd)
 	return cmd
 }
 
@@ -1437,6 +1442,8 @@ func newIntegrationCommand() *cobra.Command {
 		newDeleteCommand("delete ID", "Delete integration", "/integrations/", integrationColumns, out),
 	)
 	addIntegrationRESTCommands(cmd, out)
+	addIntegrationUsageCommands(cmd, out)
+	addSharingCommand(cmd, "integration", "/integrations/sharing/%s", true, out)
 	return cmd
 }
 
@@ -1494,6 +1501,7 @@ func newIntegrationCreateCommand(out outputOptions) *cobra.Command {
 				if err := addOptionalNameValueInputs(values, "fieldsInput", fields, "--field"); err != nil {
 					return err
 				}
+				addAvailableToAllProjects(cmd, values)
 				requestBody = values
 			}
 			var result interface{}
@@ -1513,6 +1521,7 @@ func newIntegrationCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringArrayVar(&fields, "field", nil, "Provider field as NAME=VALUE; repeatable")
 	cmd.Flags().StringVar(&auth, "auth", "", "Integration auth mode")
 	cmd.Flags().StringVar(&scope, "scope", "", "Integration scope")
+	addAvailableToAllProjectsFlag(cmd)
 	return cmd
 }
 
@@ -1736,6 +1745,7 @@ func newProviderCommand() *cobra.Command {
 	cmd.AddCommand(listCmd, newProviderGetCommand(out))
 	addProviderCommands(cmd, out)
 	addProviderRESTCommands(cmd, out)
+	addSharingCommand(cmd, "provider", "/providers/sharing/%s", false, out)
 	return cmd
 }
 
@@ -1869,9 +1879,9 @@ func newStackCommand() *cobra.Command {
 		listCmd,
 		newStackGetCommand(out),
 		newStackGetByNameCommand(out),
-		newCatalogImportFromGitCommand("import", "Import stacks from Git", "/stacks/actions/import", operationColumns, out),
-		newManifestValidateCommand("stack", out),
-		newManifestCreateCommand("stack", out, stackColumns),
+		addAvailableToAllProjectsFlag(newCatalogImportFromGitCommand("import", "Import stacks from Git", "/stacks/actions/import", operationColumns, out)),
+		addAvailableToAllProjectsFlag(newManifestValidateCommand("stack", out)),
+		addAvailableToAllProjectsFlag(newManifestCreateCommand("stack", out, stackColumns)),
 		newStackSettingsCommand(out),
 		newStackRevisionCommand(out),
 		newStackPublishDraftCommand(out),
@@ -1884,6 +1894,8 @@ func newStackCommand() *cobra.Command {
 		newStackServiceCommand(out),
 	)
 	addStackRESTCommands(cmd, out)
+	addStackUpdateCommands(cmd, out)
+	addSharingCommand(cmd, "stack", "/stacks/sharing/%s", true, out)
 	return cmd
 }
 
@@ -2207,6 +2219,7 @@ func newStackDuplicateCommand(out outputOptions) *cobra.Command {
 				if err := addOptionalInt(values, "projectId", projectID, "--project"); err != nil {
 					return err
 				}
+				addAvailableToAllProjects(cmd, values)
 				requestBody = values
 			}
 			var result interface{}
@@ -2219,6 +2232,7 @@ func newStackDuplicateCommand(out outputOptions) *cobra.Command {
 	addBodyFlags(cmd, &body)
 	cmd.Flags().StringVar(&orgID, "org", "", "Target organization ID; inferred when current credentials expose one org")
 	cmd.Flags().StringVar(&projectID, "project", "", "Target project ID")
+	addAvailableToAllProjectsFlag(cmd)
 	return cmd
 }
 
@@ -2320,6 +2334,7 @@ func newCatalogImportFromGitCommand(use string, short string, path string, colum
 				if err := addOptionalInt(values, "projectId", projectID, "--project"); err != nil {
 					return err
 				}
+				addAvailableToAllProjects(cmd, values)
 				requestBody = values
 			}
 			client, err := newRESTClient()
@@ -3491,14 +3506,15 @@ func newServiceCommand() *cobra.Command {
 	cmd := newCatalogCommand("service", "services", "Manage services", "/services", catalogServiceColumns, false)
 	cmd.AddCommand(
 		newGetByNameCommand("get-by-name NAME", "Get service by name", "/services/by-name/%s", catalogServiceColumns, out, false, true),
-		newCatalogImportFromGitCommand("import", "Import services from Git", "/services/actions/import", operationColumns, out),
-		newManifestValidateCommand("service", out),
-		newManifestCreateCommand("service", out, catalogServiceColumns),
+		addAvailableToAllProjectsFlag(newCatalogImportFromGitCommand("import", "Import services from Git", "/services/actions/import", operationColumns, out)),
+		addAvailableToAllProjectsFlag(newManifestValidateCommand("service", out)),
+		addAvailableToAllProjectsFlag(newManifestCreateCommand("service", out, catalogServiceColumns)),
 		newServiceSettingsCommand(out),
 		newGetCommand("revision ID", "Get service revision", "/service-revisions/", serviceRevisionColumns, out),
 		newServiceOptionsCommand(out),
 	)
 	addServiceRESTCommands(cmd, out)
+	addSharingCommand(cmd, "service", "/services/sharing/%s", true, out)
 	return cmd
 }
 
@@ -3660,6 +3676,7 @@ func newAppCommand() *cobra.Command {
 		newDeleteCommand("delete ID", "Delete app", "/apps/", appColumns, out),
 	)
 	cmd.AddCommand(newAppEnvironmentCommand())
+	addSharingCommand(cmd, "app", "/apps/sharing/%s", false, out)
 	return cmd
 }
 
@@ -3849,6 +3866,8 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 	cmd.AddCommand(newAppCertCommand("cert", []string{"certs", "certificate", "certificates"}, "Manage app environment certificates", instanceFilterArg))
 	cmd.AddCommand(newInstanceBuildCommand(), newInstanceDeploymentCommand(), newInstanceBackupCommand(), newInstanceImportCommand(), newWorkspaceCommand(out))
 	addEnvironmentRESTCommands(cmd, out)
+	addEnvironmentMigrationCommands(cmd, out)
+	addEnvironmentRouteSettingsCommands(cmd, out)
 	return cmd
 }
 
@@ -4090,22 +4109,30 @@ func newAppInstanceSettingsUpdateCommand(out outputOptions) *cobra.Command {
 				return err
 			}
 			if !hasBody {
-				if !cmd.Flags().Changed("auto-stack-upgrade-enabled") {
-					return errors.New("--auto-stack-upgrade-enabled is required unless --data/--file is provided")
+				retention, _ := cmd.Flags().GetString("build-image-retention")
+				if !cmd.Flags().Changed("auto-stack-upgrade-enabled") && retention == "" {
+					return errors.New("--auto-stack-upgrade-enabled or --build-image-retention is required unless --data/--file is provided")
 				}
-				enabled, _ := cmd.Flags().GetBool("auto-stack-upgrade-enabled")
-				autoStackUpgrade := map[string]interface{}{"enabled": enabled}
-				if settings := changedStackUpgradeSettings(cmd, "upgrade-"); len(settings) != 0 {
-					autoStackUpgrade["upgradeSettings"] = settings
+				values := map[string]interface{}{}
+				if cmd.Flags().Changed("auto-stack-upgrade-enabled") {
+					enabled, _ := cmd.Flags().GetBool("auto-stack-upgrade-enabled")
+					autoStackUpgrade := map[string]interface{}{"enabled": enabled}
+					if settings := changedStackUpgradeSettings(cmd, "upgrade-"); len(settings) != 0 {
+						autoStackUpgrade["upgradeSettings"] = settings
+					}
+					timeWindow, changed, err := changedAutomationTimeWindow(cmd, "time-window-")
+					if err != nil {
+						return err
+					}
+					if changed {
+						autoStackUpgrade["timeWindow"] = timeWindow
+					}
+					values["autoStackUpgrade"] = autoStackUpgrade
 				}
-				timeWindow, changed, err := changedAutomationTimeWindow(cmd, "time-window-")
-				if err != nil {
-					return err
+				if retention != "" {
+					values["buildImageCleanup"] = map[string]interface{}{"retention": retention}
 				}
-				if changed {
-					autoStackUpgrade["timeWindow"] = timeWindow
-				}
-				requestBody = map[string]interface{}{"autoStackUpgrade": autoStackUpgrade}
+				requestBody = values
 			}
 			client, err := newRESTClient()
 			if err != nil {
@@ -4122,6 +4149,7 @@ func newAppInstanceSettingsUpdateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().Bool("auto-stack-upgrade-enabled", false, "Enable automatic stack upgrades")
 	addStackUpgradeFlags(cmd, "upgrade-", false)
 	addAutomationTimeWindowFlags(cmd, "time-window-")
+	cmd.Flags().String("build-image-retention", "", buildImageRetentionFlagUsage)
 	return cmd
 }
 
@@ -4655,6 +4683,7 @@ func newInstanceBuildCommand() *cobra.Command {
 	listCmd := newInstancePaginatedListCommand("list ENVIRONMENT_ID", "List builds", "/app-builds", buildListColumns, out)
 	defaultToList(cmd, listCmd)
 	cmd.AddCommand(listCmd, newGetCommand("get ID", "Get build", "/app-builds/", buildColumns, out), newBuildDeployCommand(out))
+	addBuildUpdateCommands(cmd, out)
 	return cmd
 }
 
@@ -5374,6 +5403,7 @@ func newAppRouteCommand(use string, aliases []string, short string, mode instanc
 
 	cmd.AddCommand(listCmd, getCmd, newAppRouteCreateCommand(out), newAppRouteUpdateCommand(out), newDeleteCommand("delete ID", "Delete app route", "/app-routes/", routeColumns, out))
 	addRouteRESTCommands(cmd, out)
+	addRouteUpdateCommands(cmd, out)
 	return cmd
 }
 
@@ -5727,6 +5757,7 @@ func newBuildCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(listCmd, getCmd, newBuildCreateCommand(out), newBuildDeployCommand(out))
+	addBuildUpdateCommands(cmd, out)
 	return cmd
 }
 

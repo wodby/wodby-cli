@@ -172,6 +172,9 @@ func (p Plan) ValidateReviewed() error {
 	if p.Target.CIIntegrationID < 0 {
 		return invalidPlanError("target CI integration ID must not be negative")
 	}
+	if err := validateTargetChoices(p.Target.BackupIntegrationID, p.Target.BackupBucket, p.Target.BackupWindow, p.Target.SMTPIntegrationID); err != nil {
+		return invalidPlanError(err.Error())
+	}
 	if p.Target.WodbyCI && p.Target.CIIntegrationID > 0 {
 		return invalidPlanError("target cannot use both Wodby CI and a CI integration")
 	}

@@ -244,9 +244,22 @@ type PreparedBackupDestination struct {
 	Auto           bool
 	Disabled       bool
 	TimeZone       string
+	// WindowStart, WindowEnd and WindowMinutes are the daily backup window;
+	// empty means 02:00-05:00.
+	WindowStart   string
+	WindowEnd     string
+	WindowMinutes int
 	// DisabledBackups names the target backup capabilities whose Wodby 1
 	// component has its automatic schedule turned off.
 	DisabledBackups map[string]bool
+}
+
+// window is the daily backup window as HH:MM-HH:MM.
+func (d PreparedBackupDestination) window() string {
+	if d.WindowStart == "" {
+		return "02:00-05:00"
+	}
+	return d.WindowStart + "-" + d.WindowEnd
 }
 
 // presetDisabled reports whether the preset for a backup capability is

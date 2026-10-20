@@ -26,20 +26,24 @@ type PreviewRequest struct {
 	TargetVersionMap map[string]string
 	TargetImportMap  map[string]string
 
-	TargetCIIntegrationID  int
-	TargetWodbyCI          bool
-	TargetLetsEncrypt      bool
-	GitIntegrationID       int
-	RepositoryName         string
-	CodeService            string
-	GitRef                 string
-	GitRefType             string
-	SkipCode               bool
-	SkipData               bool
-	AllowUnsupportedDrupal bool
-	AddMissingServices     bool
-	SourceBackups          []string
-	ExcludeInstances       []string
+	TargetCIIntegrationID     int
+	TargetWodbyCI             bool
+	TargetLetsEncrypt         bool
+	TargetBackupIntegrationID int
+	TargetBackupBucket        string
+	TargetBackupWindow        string
+	TargetSMTPIntegrationID   int
+	GitIntegrationID          int
+	RepositoryName            string
+	CodeService               string
+	GitRef                    string
+	GitRefType                string
+	SkipCode                  bool
+	SkipData                  bool
+	AllowUnsupportedDrupal    bool
+	AddMissingServices        bool
+	SourceBackups             []string
+	ExcludeInstances          []string
 
 	// WorkspaceInstances holds the UUIDs of direct-Git source instances to
 	// migrate to development workspaces.
@@ -145,6 +149,10 @@ func Preview(ctx context.Context, source *SourceClient, target *TargetClient, re
 		TargetCIIntegrationID:         req.TargetCIIntegrationID,
 		TargetWodbyCI:                 req.TargetWodbyCI,
 		TargetLetsEncrypt:             req.TargetLetsEncrypt,
+		TargetBackupIntegrationID:     req.TargetBackupIntegrationID,
+		TargetBackupBucket:            req.TargetBackupBucket,
+		TargetBackupWindow:            req.TargetBackupWindow,
+		TargetSMTPIntegrationID:       req.TargetSMTPIntegrationID,
 		Repository: RepositoryTargetPlan{
 			GitIntegrationID: req.GitIntegrationID,
 			RepositoryName:   strings.TrimSpace(req.RepositoryName),

@@ -393,6 +393,10 @@ func runWodby1Single(cmd *RunEnv, sourceKind string, sourceID string, opts *RunO
 		TargetCIIntegrationID:         opts.TargetCIIntegrationID,
 		TargetWodbyCI:                 opts.TargetWodbyCI,
 		TargetLetsEncrypt:             opts.TargetLetsEncrypt,
+		TargetBackupIntegrationID:     opts.TargetBackupIntegrationID,
+		TargetBackupBucket:            opts.TargetBackupBucket,
+		TargetBackupWindow:            opts.TargetBackupWindow,
+		TargetSMTPIntegrationID:       opts.TargetSMTPIntegrationID,
 		Repository: RepositoryTargetPlan{
 			GitIntegrationID: opts.TargetGitIntegrationID,
 			RepositoryName:   strings.TrimSpace(opts.TargetRepositoryName),
@@ -940,6 +944,10 @@ func runWodby1Server(cmd *RunEnv, sourceID string, opts *RunOptions) (runErr err
 		TargetCIIntegrationID:         opts.TargetCIIntegrationID,
 		TargetWodbyCI:                 opts.TargetWodbyCI,
 		TargetLetsEncrypt:             opts.TargetLetsEncrypt,
+		TargetBackupIntegrationID:     opts.TargetBackupIntegrationID,
+		TargetBackupBucket:            opts.TargetBackupBucket,
+		TargetBackupWindow:            opts.TargetBackupWindow,
+		TargetSMTPIntegrationID:       opts.TargetSMTPIntegrationID,
 		Repository: RepositoryTargetPlan{
 			GitIntegrationID: opts.TargetGitIntegrationID,
 			RepositoryName:   strings.TrimSpace(opts.TargetRepositoryName),
@@ -1310,6 +1318,14 @@ func validateOptions(opts *RunOptions) error {
 	}
 	if opts.TargetWodbyCI && opts.TargetCIIntegrationID > 0 {
 		return errors.New("--target-wodby-ci and --target-ci-integration-id cannot be used together")
+	}
+	if (opts.TargetBackupIntegrationID > 0) != (strings.TrimSpace(opts.TargetBackupBucket) != "") {
+		return errors.New("--target-backup-integration-id and --target-backup-bucket must be set together")
+	}
+	if strings.TrimSpace(opts.TargetBackupWindow) != "" {
+		if _, _, _, err := ParseBackupWindow(opts.TargetBackupWindow); err != nil {
+			return errors.Wrap(err, "invalid --target-backup-window")
+		}
 	}
 	if opts.TargetGitIntegrationID < 0 {
 		return errors.New("--target-git-integration-id cannot be negative")

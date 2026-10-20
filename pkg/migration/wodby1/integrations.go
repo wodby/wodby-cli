@@ -54,9 +54,21 @@ func (c *TargetClient) prepareAppIntegrations(
 		prepared = append(prepared, *ci)
 	}
 
-	smtp, relayInstances, smtpFindings, err := c.prepareSMTPIntegration(ctx, *app)
-	if err != nil {
-		return nil, err
+	if target.SMTPIntegrationID > 0 {
+		ownFindings, err := c.linkOwnSMTPIntegration(ctx, app, target)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, ownFindings...)
+	}
+	var smtp *PreparedIntegration
+	var relayInstances map[string]bool
+	var smtpFindings []ReviewItem
+	if target.SMTPIntegrationID <= 0 {
+		smtp, relayInstances, smtpFindings, err = c.prepareSMTPIntegration(ctx, *app)
+		if err != nil {
+			return nil, err
+		}
 	}
 	findings = append(findings, smtpFindings...)
 	if smtp != nil {
@@ -405,6 +417,58 @@ func removeInstanceRelayVariables(instance *PreparedInstance, targetService stri
 	}
 }
 
+// linkOwnSMTPIntegration relays the mail of every migrated instance that
+// sends through OpenSMTPD via the member's own SMTP integration, instead of a
+// relay copied from Wodby 1. It links the integration to their app
+// environments, not the shared stack, which other app environments use too.
+func (c *TargetClient) linkOwnSMTPIntegration(ctx context.Context, app *PreparedAppMigration, target PlanTarget) ([]ReviewItem, error) {
+	integration, err := c.GetIntegration(ctx, target.SMTPIntegrationID)
+	var apiErr *rest.APIError
+	switch {
+	case errors.As(err, &apiErr) && (apiErr.StatusCode == 404 || apiErr.StatusCode == 403):
+		return []ReviewItem{stackConfigBlocker(app.App.App.Name, "", "SMTP integration",
+			fmt.Sprintf("--target-smtp-integration-id %d is not an integration the target API key can use", target.SMTPIntegrationID))}, nil
+	case err != nil:
+		return nil, err
+	case integration.OrgID != target.OrgID:
+		return []ReviewItem{stackConfigBlocker(app.App.App.Name, "", "SMTP integration",
+			fmt.Sprintf("--target-smtp-integration-id %d belongs to another organization", target.SMTPIntegrationID))}, nil
+	}
+	names := []string{}
+	for index := range app.Instances {
+		instance := &app.Instances[index]
+		sends := false
+		for _, source := range instance.Source.Services {
+			mapping, ok := instance.Services[source.Name]
+			if ok && source.Enabled && mapping.Target.StackService.Name == smtpRelayTargetService {
+				sends = true
+			}
+		}
+		if !sends {
+			continue
+		}
+		instance.ServiceIntegrations = append(instance.ServiceIntegrations, PreparedAppServiceIntegration{
+			ServiceName: smtpRelayTargetService, Name: "smtp", IntegrationID: target.SMTPIntegrationID,
+		})
+		removeInstanceRelayVariables(instance, smtpRelayTargetService)
+		names = append(names, instance.Source.Name)
+	}
+	if len(names) == 0 {
+		return []ReviewItem{{
+			Severity: SeverityConfirmation, App: app.App.App.Name, Subject: "SMTP integration",
+			Message: fmt.Sprintf("no migrated instance sends mail through OpenSMTPD, so SMTP integration ID %d is not used", target.SMTPIntegrationID),
+		}}, nil
+	}
+	sort.Strings(names)
+	return []ReviewItem{{
+		Severity: SeverityMigration, App: app.App.App.Name, Subject: "SMTP integration",
+		Message: fmt.Sprintf("mail of %s will be relayed through SMTP integration ID %d instead of a relay copied from Wodby 1", strings.Join(names, ", "), target.SMTPIntegrationID),
+	}}, nil
+}
+
+// smtpRelayTargetService is the Wodby 2 service that relays mail.
+const smtpRelayTargetService = "opensmtpd"
+
 // prepareSMTPIntegration converts OpenSMTPD relays into one SMTP integration.
 // When only some instances of the app, migrated or read for context, use a
 // relay, it returns the migrated ones that do; the integration is then linked
@@ -631,6 +695,32 @@ func (c *TargetClient) prepareBackupIntegrations(ctx context.Context, app *Prepa
 		timeZone = "UTC"
 	}
 	autoBackups := target.OrgCapabilities != nil && target.OrgCapabilities.AutoBackups
+	window, windowStart, windowEnd, windowMinutes := "02:00-05:00", "", "", 0
+	if strings.TrimSpace(target.BackupWindow) != "" {
+		var err error
+		windowStart, windowEnd, windowMinutes, err = ParseBackupWindow(target.BackupWindow)
+		if err != nil {
+			return nil, nil, err
+		}
+		window = windowStart + "-" + windowEnd
+	}
+	ownStorage := target.BackupIntegrationID > 0
+	if ownStorage {
+		// Without this check a mistyped ID is first rejected when the presets
+		// are created, after the app already exists.
+		integration, err := c.GetIntegration(ctx, target.BackupIntegrationID)
+		var apiErr *rest.APIError
+		switch {
+		case errors.As(err, &apiErr) && (apiErr.StatusCode == 404 || apiErr.StatusCode == 403):
+			return nil, []ReviewItem{stackConfigBlocker(app.App.App.Name, "", "backup destination",
+				fmt.Sprintf("--target-backup-integration-id %d is not an integration the target API key can use", target.BackupIntegrationID))}, nil
+		case err != nil:
+			return nil, nil, err
+		case integration.OrgID != target.OrgID:
+			return nil, []ReviewItem{stackConfigBlocker(app.App.App.Name, "", "backup destination",
+				fmt.Sprintf("--target-backup-integration-id %d belongs to another organization", target.BackupIntegrationID))}, nil
+		}
+	}
 	for index := range app.Instances {
 		instance := &app.Instances[index]
 		config := instance.Source.BackupConfig
@@ -639,7 +729,30 @@ func (c *TargetClient) prepareBackupIntegrations(ctx context.Context, app *Prepa
 			config = &BackupConfig{}
 		}
 		providerName := strings.ToLower(strings.TrimSpace(config.Provider))
-		destination := &PreparedBackupDestination{Auto: config.Enabled, TimeZone: timeZone}
+		destination := &PreparedBackupDestination{
+			Auto: config.Enabled, TimeZone: timeZone,
+			WindowStart: windowStart, WindowEnd: windowEnd, WindowMinutes: windowMinutes,
+		}
+		if ownStorage {
+			// The member's own storage replaces Wodby Blob and a copy of the
+			// Wodby 1 mirror alike.
+			if !autoBackups {
+				findings = append(findings, stackConfigBlocker(app.App.App.Name, instance.Source.Name, "backup destination", "backups to your own storage integration need the automatic-backups feature; upgrade the target subscription or keep Wodby Blob storage"))
+				continue
+			}
+			destination.IntegrationID = target.BackupIntegrationID
+			destination.Bucket = strings.TrimSpace(target.BackupBucket)
+			if !configReported {
+				destination.Auto, destination.Disabled = true, true
+			}
+			findings = append(findings, ReviewItem{
+				Severity: SeverityMigration, App: app.App.App.Name, Instance: instance.Source.Name, Subject: "backup destination",
+				Message: fmt.Sprintf("backup presets will use storage integration ID %d, bucket %q, with the daily %s window", target.BackupIntegrationID, destination.Bucket, window),
+			})
+			findings = append(findings, applyBackupComponentSchedules(app.App.App.Name, instance.Source.Name, *config, destination)...)
+			instance.BackupDestination = destination
+			continue
+		}
 		switch providerName {
 		case "", "wodby", "wodby_cloud", "wodby-cloud":
 			usesDefaultBlob := providerName == ""
@@ -678,7 +791,7 @@ func (c *TargetClient) prepareBackupIntegrations(ctx context.Context, app *Prepa
 			} else {
 				message := "Wodby 1 automatic backups are not enabled, so manual backup presets will be created"
 				if config.Enabled {
-					message = "Wodby 1 automatic backups are enabled, so enabled automatic-backup presets will be created with the target organization's default 02:00-05:00 window"
+					message = "Wodby 1 automatic backups are enabled, so enabled automatic-backup presets will be created with the daily " + window + " window"
 				}
 				findings = append(findings, ReviewItem{
 					Severity: SeverityMigration, App: app.App.App.Name, Instance: instance.Source.Name, Subject: "automatic backups",
@@ -726,7 +839,7 @@ func (c *TargetClient) prepareBackupIntegrations(ctx context.Context, app *Prepa
 			findings = append(findings, applyBackupComponentSchedules(app.App.App.Name, instance.Source.Name, *config, destination)...)
 			findings = append(findings, ReviewItem{
 				Severity: SeverityMigration, App: app.App.App.Name, Instance: instance.Source.Name, Subject: "backup destination",
-				Message: "the AWS S3 credentials will be resolved server-side and reused when they match an existing integration; the backup preset will use the target organization's default 02:00-05:00 window",
+				Message: "the AWS S3 credentials will be resolved server-side and reused when they match an existing integration; the backup preset will use the daily " + window + " window",
 			})
 		default:
 			findings = append(findings, stackConfigBlocker(app.App.App.Name, instance.Source.Name, "backup destination", fmt.Sprintf("source backup provider %q is not supported automatically", config.Provider)))
@@ -788,7 +901,7 @@ func applyBackupComponentSchedules(appName, instanceName string, config BackupCo
 		if !daily {
 			findings = append(findings, ReviewItem{
 				Severity: SeverityServiceWarning, App: appName, Instance: instanceName, Subject: "automatic backups",
-				Message: fmt.Sprintf("Wodby 1 backs up %s on schedule %q; Wodby 2 runs automatic backups once a day in the 02:00-05:00 window, so review the target preset and create additional backups if you need them more often", label, crontab),
+				Message: fmt.Sprintf("Wodby 1 backs up %s on schedule %q; Wodby 2 runs automatic backups once a day in the %s window, so review the target preset and create additional backups if you need them more often", label, crontab, destination.window()),
 			})
 		}
 	}

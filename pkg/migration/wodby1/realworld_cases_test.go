@@ -400,3 +400,24 @@ func TestRealCaseProtectedTechnicalRouteUsesTheReplacementPort(t *testing.T) {
 		t.Fatalf("route = %#v", route)
 	}
 }
+
+// A selected mail service that is disabled sends no mail in Wodby 1; the
+// migration warns and creates no mail link instead of blocking.
+func TestRealCaseDisabledMailServiceSendsNoMail(t *testing.T) {
+	result := runRealCase(t, func(e *Export) {
+		for index := range e.Apps[0].Instances[0].Services {
+			if e.Apps[0].Instances[0].Services[index].Name == "opensmtpd" {
+				e.Apps[0].Instances[0].Services[index].Enabled = false
+			}
+		}
+	}, nil, nil)
+	if blockers := result.review(SeverityBlocking, ""); len(blockers) != 0 {
+		t.Fatalf("a disabled mail service must not block: %q", blockers)
+	}
+	if warnings := result.review(SeverityConfirmation, "mail service"); len(warnings) != 1 {
+		t.Fatalf("mail service warnings = %q", warnings)
+	}
+	if links := result.prepared.StackConfiguration.Services["php"].Links; len(links) != 0 {
+		t.Fatalf("no mail link expected: %#v", links)
+	}
+}

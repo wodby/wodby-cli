@@ -838,6 +838,10 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 	if restartStateWithMutations != nil {
 		preflightState = restartStateWithMutations
 	}
+	if planNeedsTargetStack(plan) {
+		preparation.CompleteStep("Skipped: a custom stack needs a target stack first.")
+		return showUnpreparedPlan(cmd, plan, opts.apply, opts.verify)
+	}
 	prepared, err := targetClient.PreflightTarget(cmd.Context(), export, &plan, wodby1.TargetPreflightOptions{
 		SkipCode:                    opts.skipCode,
 		SkipData:                    opts.skipData,
@@ -1422,6 +1426,10 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 		}
 	}
 	preparation.StartStep("Inspect target mappings and capabilities")
+	if planNeedsTargetStack(plan) {
+		preparation.CompleteStep("Skipped: a custom stack needs a target stack first.")
+		return showUnpreparedPlan(cmd, plan, opts.apply, opts.verify)
+	}
 	prepared, err := targetClient.PreflightTarget(cmd.Context(), export, &plan, wodby1.TargetPreflightOptions{
 		SkipCode:               opts.skipCode,
 		SkipData:               opts.skipData,
@@ -2952,6 +2960,30 @@ func printRestartConflict(
 		fmt.Fprintf(w, "  Plan file: %s\n", planPath)
 		fmt.Fprintf(w, "  Resume-state file: %s\n", statePath)
 	}
+}
+
+// planNeedsTargetStack reports a plan that already blocks because a custom
+// source stack has no target stack. The target inspection cannot run without
+// one, so the preview shows that blocker instead of failing.
+func planNeedsTargetStack(plan wodby1.Plan) bool {
+	for _, item := range plan.Review {
+		if item.Severity == wodby1.SeverityBlocking && item.Subject == "target stack" {
+			return true
+		}
+	}
+	return false
+}
+
+// showUnpreparedPlan prints a blocked plan whose target was not inspected.
+func showUnpreparedPlan(cmd *cobra.Command, plan wodby1.Plan, apply, verify bool) error {
+	if !apply && !verify {
+		return printPreview(cmd, plan)
+	}
+	action := "apply"
+	if verify {
+		action = "verify"
+	}
+	return rejectBlockedMigrationAction(cmd, plan, action)
 }
 
 func rejectBlockedMigrationAction(cmd *cobra.Command, plan wodby1.Plan, action string, prepared ...wodby1.PreparedMigration) error {

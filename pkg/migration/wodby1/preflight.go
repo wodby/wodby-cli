@@ -106,6 +106,7 @@ type PreparedInstance struct {
 	ExternalCIOnly       bool
 	ExternalCI           *PreparedExternalCI
 	ServiceLinks         []PreparedAppServiceLink
+	ServiceIntegrations  []PreparedAppServiceIntegration
 	// Workspace is set when the instance is created as a development
 	// workspace: its code is checked out from Git instead of built by CI.
 	Workspace *PreparedWorkspace
@@ -198,6 +199,15 @@ type PreparedAppServiceLink struct {
 	ServiceName       string
 	Name              string
 	LinkedServiceName string
+}
+
+// PreparedAppServiceIntegration links an integration to one app environment's
+// service, for an integration that only some instances of the app used.
+type PreparedAppServiceIntegration struct {
+	ServiceName    string
+	Name           string
+	IntegrationKey string
+	IntegrationID  int
 }
 
 type PreparedIntegration struct {
@@ -1885,6 +1895,15 @@ func (c *TargetClient) preflightWorkspace(
 // dashboard does, "wodby/workspace-" and eight hexadecimal characters. They
 // come from the source instance so the name stays the same on every run of the
 // migration and in its reviewed plan.
+func hasImportCandidate(candidates []PreparedImport, serviceName string) bool {
+	for _, candidate := range candidates {
+		if candidate.ServiceName == serviceName {
+			return true
+		}
+	}
+	return false
+}
+
 func workspaceBranchName(sourceInstanceUUID string) string {
 	return "wodby/workspace-" + shortDigest("workspace-branch", sourceInstanceUUID)[:8]
 }
@@ -1929,8 +1948,14 @@ func resolveImportDestination(
 	targetImport := plan.TargetImport
 	defaultFilesMapping := targetService == "" && targetImport == "" && expectedImport == "files"
 	if defaultFilesMapping {
+		// Files go to the stack's NFS storage service. Drupal stacks name it
+		// files-nfs and WordPress stacks wp-content-nfs, so files-nfs is taken
+		// when present and otherwise the only service with a files import.
 		targetService = "files-nfs"
 		targetImport = "files"
+		if len(candidates) == 1 && !hasImportCandidate(candidates, "files-nfs") {
+			targetService = candidates[0].ServiceName
+		}
 	}
 	if targetService != "" || targetImport != "" {
 		filtered := candidates[:0]

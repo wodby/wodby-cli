@@ -176,7 +176,7 @@ func TestPrepareSMTPIntegrationUsesSESKindForAWS(t *testing.T) {
 			Services: map[string]PreparedService{"opensmtpd": {Target: TargetStackServiceInspection{StackService: TargetStackService{Name: "opensmtpd"}}}},
 		}},
 	}
-	item, findings, err := client.prepareSMTPIntegration(context.Background(), app)
+	item, _, findings, err := client.prepareSMTPIntegration(context.Background(), app)
 	if err != nil {
 		t.Fatal(err)
 	}

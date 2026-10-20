@@ -522,7 +522,8 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 			switch {
 			case opts.SkipCode:
 				appPlan.Repository.Action = "skip"
-				plan.addReview(SeveritySkipped, appPlan.Name, "", "repository", "source repository code is intentionally excluded from this migration")
+				plan.addReview(SeveritySkipped, appPlan.Name, "", "repository", "source repository code is intentionally excluded from this migration; build and deploy the code services yourself before --verify."+
+					" Services that need them wait for them, and --apply pauses before a files import that needs them until they are deployed")
 			case repositoryTarget.GitIntegrationID <= 0:
 				appPlan.Repository.Action = "unlinked"
 				plan.addReview(SeverityMigration, appPlan.Name, "", "repository", "no target Git integration was selected; the repository will remain unlinked and application code will use Custom CI")

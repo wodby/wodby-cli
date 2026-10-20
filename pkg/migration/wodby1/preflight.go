@@ -575,6 +575,7 @@ func (c *TargetClient) PreflightTarget(
 		if err != nil {
 			return PreparedMigration{}, err
 		}
+		stackFindings = append(stackFindings, prepareAddedServiceLinks(&preparedApp, &stackConfiguration)...)
 		if len(preparedApp.ContextInstances) != 0 {
 			names := make([]string, 0, len(preparedApp.ContextInstances))
 			for _, item := range preparedApp.ContextInstances {

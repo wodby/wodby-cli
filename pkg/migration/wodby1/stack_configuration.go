@@ -890,3 +890,82 @@ func sourceConfigurationIsStackSetting(name string) bool {
 		return true
 	}
 }
+
+// prepareAddedServiceLinks fills the required links of services the migration
+// adds to the stack, such as phpMyAdmin's database link: Wodby 2 refuses to
+// publish a stack revision without them. A link goes to the only stack service
+// that matches its selectors and is enabled in every migrated instance;
+// otherwise the migration is blocked with what to map.
+func prepareAddedServiceLinks(app *PreparedAppMigration, configuration *PreparedStackConfiguration) []ReviewItem {
+	if app == nil || configuration == nil || len(app.StackAdditions) == 0 || len(app.Instances) == 0 {
+		return nil
+	}
+	candidates := map[string]*TargetServiceManifest{}
+	for _, inspection := range app.Instances[0].StackServices {
+		candidates[inspection.StackService.Name] = inspection.ServiceRevision.Manifest
+	}
+	for _, addition := range app.StackAdditions {
+		candidates[addition.Name] = addition.Inspection.ServiceRevision.Manifest
+	}
+	enabledEverywhere := func(name string) bool {
+		for _, instance := range app.Instances {
+			if !instance.EffectiveState[name] {
+				return false
+			}
+		}
+		return true
+	}
+	findings := []ReviewItem{}
+	for _, addition := range app.StackAdditions {
+		manifest := addition.Inspection.ServiceRevision.Manifest
+		if manifest == nil {
+			continue
+		}
+		service := configuration.Services[addition.Name]
+		for _, link := range manifest.Links {
+			if !link.Required || hasStackLink(service.Links, link.Name) {
+				continue
+			}
+			matches := []string{}
+			for name, candidate := range candidates {
+				if name == addition.Name || !enabledEverywhere(name) {
+					continue
+				}
+				for _, selector := range link.Selectors {
+					if selector.matches(candidate) {
+						matches = append(matches, name)
+						break
+					}
+				}
+			}
+			sort.Strings(matches)
+			if len(matches) != 1 {
+				findings = append(findings, stackConfigBlocker(app.App.App.Name, "", "stack service "+addition.Name+" link "+link.Name,
+					fmt.Sprintf("the added service needs its required link %q to one enabled stack service, but %d match (%s); enable one, or map the source service to another target with --target-service-map",
+						link.Name, len(matches), strings.Join(matches, ", "))))
+				continue
+			}
+			service.Links = append(service.Links, PreparedStackServiceLink{Name: link.Name, LinkedServiceName: matches[0]})
+			findings = append(findings, ReviewItem{
+				Severity: SeverityMigration, App: app.App.App.Name, Subject: "stack service " + addition.Name,
+				Message: fmt.Sprintf("the added service's required link %q will use stack service %q", link.Name, matches[0]),
+			})
+		}
+		if configuration.Services == nil {
+			configuration.Services = map[string]PreparedStackServiceConfiguration{}
+		}
+		if len(service.Links) != 0 {
+			configuration.Services[addition.Name] = service
+		}
+	}
+	return findings
+}
+
+func hasStackLink(links []PreparedStackServiceLink, name string) bool {
+	for _, link := range links {
+		if link.Name == name {
+			return true
+		}
+	}
+	return false
+}

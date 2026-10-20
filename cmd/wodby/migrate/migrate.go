@@ -1572,7 +1572,7 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 					SourceAppUUID: execution.sourceAppUUID,
 					Name:          execution.name,
 					StateFile:     execution.statePath,
-					Status:        pausedMigrationStatus,
+					Status:        pausedStatus(paused),
 					Error:         paused.Error(),
 				})
 				fmt.Fprintf(
@@ -3003,6 +3003,10 @@ type pausedActionOutput struct {
 	CIProvider       string `json:"ciProvider,omitempty"`
 	ExampleURL       string `json:"exampleUrl,omitempty"`
 	GitRef           string `json:"gitRef,omitempty"`
+	// WaitsFor is custom_ci_build, or manual_code_deploy for a --skip-code
+	// migration whose data import needs code the operator deploys.
+	WaitsFor        string `json:"waitsFor"`
+	ImportComponent string `json:"importComponent,omitempty"`
 }
 
 type migrationPausedOutput struct {
@@ -3035,7 +3039,7 @@ func printMigrationPaused(
 			Action:    "apply",
 			PlanFile:  planPath,
 			StateFile: statePath,
-			Status:    pausedMigrationStatus,
+			Status:    pausedStatus(paused),
 			Reason:    paused.Error(),
 			Actions:   make([]pausedActionOutput, 0, len(paused.Actions)),
 		}
@@ -3048,6 +3052,8 @@ func printMigrationPaused(
 				CIProvider:       action.ProviderLabel,
 				ExampleURL:       action.ExampleURL,
 				GitRef:           action.GitRef,
+				WaitsFor:         pausedActionWaitsFor(action),
+				ImportComponent:  action.ImportComponent,
 			})
 		}
 		encoder := json.NewEncoder(cmd.OutOrStdout())
@@ -3059,7 +3065,11 @@ func printMigrationPaused(
 	}
 
 	w := cmd.OutOrStdout()
-	fmt.Fprintln(w, cliColor(w, cliColorBold+cliColorOrange, "\nMigration paused: action required outside Wodby"))
+	title := "\nMigration paused: action required outside Wodby"
+	if paused.ManualCodeDeployOnly() {
+		title = "\nMigration paused: deploy your code to continue"
+	}
+	fmt.Fprintln(w, cliColor(w, cliColorBold+cliColorOrange, title))
 	fmt.Fprintln(w)
 	fmt.Fprint(w, paused.NextSteps())
 	fmt.Fprintf(w, "\nTemporary plan file: %s\n", planPath)
@@ -3068,7 +3078,26 @@ func printMigrationPaused(
 	return paused
 }
 
-const pausedMigrationStatus = "paused; awaiting external CI build"
+const (
+	pausedMigrationStatus  = "paused; awaiting external CI build"
+	pausedCodeDeployStatus = "paused; awaiting manual code deployment"
+)
+
+// pausedStatus keeps the Custom CI status for any pause that includes a CI
+// build, so scripts written for it keep working.
+func pausedStatus(paused *wodby1.MigrationPausedError) string {
+	if paused.ManualCodeDeployOnly() {
+		return pausedCodeDeployStatus
+	}
+	return pausedMigrationStatus
+}
+
+func pausedActionWaitsFor(action *wodby1.ExternalActionRequiredError) string {
+	if action.ManualCodeDeploy {
+		return "manual_code_deploy"
+	}
+	return "custom_ci_build"
+}
 
 func publicMigrationStatus(apply bool) string {
 	if apply {
@@ -3090,12 +3119,12 @@ func printServerMigrationResult(
 		encoder.SetIndent("", "  ")
 		return errors.WithStack(encoder.Encode(output))
 	}
-	// A paused app waits for a third-party CI build and carries the next step
-	// in its error text; it has not failed.
+	// A paused app waits for a third-party CI build or a manual code
+	// deployment and carries the next step in its error text; it has not failed.
 	failed, paused := 0, 0
 	for _, app := range apps {
 		switch {
-		case app.Status == pausedMigrationStatus:
+		case app.Status == pausedMigrationStatus || app.Status == pausedCodeDeployStatus:
 			paused++
 		case app.Error != "":
 			failed++

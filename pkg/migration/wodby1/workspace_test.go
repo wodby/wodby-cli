@@ -379,7 +379,7 @@ func TestWorkspaceDeploymentHasNoBuild(t *testing.T) {
 		BuildSource: &PreparedBuildSource{ServiceName: "php"},
 		Workspace:   &PreparedWorkspace{SourceServiceName: "php", CodeServiceNames: map[string]bool{"php": true}},
 	}
-	input, err := technicalDeploymentInput(prepared, []TargetAppService{{ID: 31, Name: "php"}, {ID: 32, Name: "sshd", Disabled: true}}, nil)
+	input, err := technicalDeploymentInput(prepared, []TargetAppService{{ID: 31, Name: "php"}, {ID: 32, Name: "sshd", Disabled: true}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

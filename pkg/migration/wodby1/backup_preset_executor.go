@@ -165,9 +165,19 @@ func (e *MigrationExecutor) ensureBackupPreset(
 		return e.recordInstanceMutationError(state, sourceID, operation, "backup preset creation", err)
 	}
 	if !backupPresetMatches(created, desired) {
-		_ = state.MarkInstanceOperationAmbiguousWithIDs(sourceID, operation, created.ID, 0)
+		// The create response may leave out what Wodby 2 stores on the preset's
+		// schedule; judge the stored preset instead.
+		if stored, getErr := e.target.GetBackupPreset(ctx, created.ID); getErr == nil {
+			created = stored
+		}
+	}
+	if !backupPresetMatches(created, desired) {
+		// The preset exists under a known ID, so it is recorded rather than left
+		// ambiguous: rollback removes it with the app it belongs to.
+		_ = state.MarkInstanceOperationSuccessWithIDs(sourceID, operation, created.ID, 0)
 		_ = SaveMigrationState(e.statePath, state)
-		return errors.Errorf("created backup preset for service %q does not match the migration input", service.Name)
+		return errors.Errorf("created backup preset ID %d for service %q does not match the migration input (%s)",
+			created.ID, service.Name, strings.Join(backupPresetDifferences(created, desired), ", "))
 	}
 	if err := state.MarkInstanceOperationSuccessWithIDs(sourceID, operation, created.ID, 0); err != nil {
 		return err
@@ -193,7 +203,8 @@ func migrationBackupPresetInput(serviceID int, backupName string, destination Pr
 		Disabled: destination.presetDisabled(backupName), Override: false, Auto: &auto,
 	}
 	if auto {
-		duration := 3
+		// Minutes, the length of the 02:00-05:00 window below.
+		duration := 180
 		input.Duration = &duration
 		input.TimeWindow = &TargetAutomationTimeWindowInput{
 			Enabled: true, Start: "02:00", End: "05:00", TimeZone: destination.TimeZone,
@@ -218,7 +229,61 @@ func backupPresetMatches(actual TargetBackupPreset, desired TargetCreateBackupPr
 		actual.TimeWindow.TimeZone != desired.TimeWindow.TimeZone || *actual.Duration != *desired.Duration {
 		return false
 	}
-	return sameStringSet(actual.TimeWindow.Days, desired.TimeWindow.Days)
+	return sameWeekdays(actual.TimeWindow.Days, desired.TimeWindow.Days)
+}
+
+// backupPresetDifferences names the fields in which a preset differs from the
+// migration input, so a mismatch can be diagnosed.
+func backupPresetDifferences(actual TargetBackupPreset, desired TargetCreateBackupPresetInput) []string {
+	diff := []string{}
+	add := func(field string, differs bool) {
+		if differs {
+			diff = append(diff, field)
+		}
+	}
+	intValue := func(value *int) int {
+		if value == nil {
+			return 0
+		}
+		return *value
+	}
+	stringValue := func(value *string) string {
+		if value == nil {
+			return ""
+		}
+		return *value
+	}
+	add("appServiceId", intValue(actual.AppServiceID) != intValue(desired.AppServiceID))
+	add("backupName", stringValue(actual.BackupName) != stringValue(desired.BackupName))
+	add("integrationId", actual.IntegrationID != desired.IntegrationID)
+	add("bucket", actual.Bucket != desired.Bucket)
+	add("disabled", actual.Disabled != desired.Disabled)
+	add("override", actual.Override != desired.Override)
+	add("auto", desired.Auto == nil || actual.Auto != *desired.Auto)
+	add("duration", intValue(actual.Duration) != intValue(desired.Duration))
+	switch {
+	case (actual.TimeWindow == nil) != (desired.TimeWindow == nil):
+		add("timeWindow", true)
+	case actual.TimeWindow != nil:
+		add("timeWindow.start", actual.TimeWindow.Start != desired.TimeWindow.Start)
+		add("timeWindow.end", actual.TimeWindow.End != desired.TimeWindow.End)
+		add("timeWindow.timeZone", actual.TimeWindow.TimeZone != desired.TimeWindow.TimeZone)
+		add("timeWindow.days", !sameWeekdays(actual.TimeWindow.Days, desired.TimeWindow.Days))
+	}
+	return diff
+}
+
+// sameWeekdays compares weekday sets ignoring case: Wodby 2 takes MONDAY in
+// requests, but its REST API has returned the stored days as monday.
+func sameWeekdays(left, right []string) bool {
+	normalize := func(days []string) []string {
+		result := make([]string, len(days))
+		for index, day := range days {
+			result[index] = strings.ToUpper(strings.TrimSpace(day))
+		}
+		return result
+	}
+	return sameStringSet(normalize(left), normalize(right))
 }
 
 func sameStringSet(left, right []string) bool {

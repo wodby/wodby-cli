@@ -81,7 +81,7 @@ func TestEnsureGeneratedTargetStackDuplicatesOnceAndResumes(t *testing.T) {
 
 	state, statePath := newExecutorTestState(t)
 	client := mustTargetExecutionClient(t, server.URL)
-	executor := &MigrationExecutor{target: client, statePath: statePath}
+	executor := &MigrationExecutor{target: client, state: FileStateStore(statePath)}
 	plan := Plan{
 		Source: PlanSource{Kind: "app", ID: "app-1"},
 		Target: PlanTarget{OrgID: 1, ProjectID: 2},
@@ -181,7 +181,7 @@ func TestEnsureTargetStackServicesAddsReviewedServiceToDraft(t *testing.T) {
 
 	state, statePath := newExecutorTestState(t)
 	client := mustTargetExecutionClient(t, server.URL)
-	executor := &MigrationExecutor{target: client, statePath: statePath}
+	executor := &MigrationExecutor{target: client, state: FileStateStore(statePath)}
 	base := TargetStackServiceInspection{
 		StackService:    TargetStackService{ID: 11, Name: "php", ServiceRevID: 101},
 		ServiceRevision: TargetServiceRevision{ID: 101, ServiceID: 201, Name: "php"},
@@ -238,7 +238,7 @@ func TestLoadStateUsesInstanceSourceIdentity(t *testing.T) {
 	}
 	plan.PlanHash = digest
 
-	executor := &MigrationExecutor{statePath: filepath.Join(t.TempDir(), "instance-state.json")}
+	executor := &MigrationExecutor{state: FileStateStore(filepath.Join(t.TempDir(), "instance-state.json"))}
 	state, initialized, err := executor.loadState(export, plan, prepared)
 	if err != nil {
 		t.Fatal(err)
@@ -265,7 +265,7 @@ func TestAmbiguousMutationIsNotRetriedByDefault(t *testing.T) {
 	}
 	before := state.Instances["instance-1"].Operations[operation]
 
-	executor := &MigrationExecutor{statePath: statePath}
+	executor := &MigrationExecutor{state: FileStateStore(statePath)}
 	run, err := executor.beginInstanceMutation(
 		state,
 		"instance-1",
@@ -302,7 +302,7 @@ func TestExplicitAmbiguousRetryRecordsNewIntent(t *testing.T) {
 	}
 
 	executor := &MigrationExecutor{
-		statePath:               statePath,
+		state:                   FileStateStore(statePath),
 		retryAmbiguousOperation: instanceAmbiguousRetryOperation("instance-1", operation),
 	}
 	run, err := executor.beginInstanceMutation(state, "instance-1", operation, false)
@@ -343,7 +343,7 @@ func TestAmbiguousRetryAcknowledgementCannotAuthorizeAnotherOperation(t *testing
 	}
 
 	executor := &MigrationExecutor{
-		statePath: statePath,
+		state: FileStateStore(statePath),
 		retryAmbiguousOperation: instanceAmbiguousRetryOperation(
 			sourceID,
 			acknowledgedOp,
@@ -412,7 +412,7 @@ func TestMutationErrorsDoNotExposeOrPersistSignedURL(t *testing.T) {
 			if err := SaveMigrationState(statePath, state); err != nil {
 				t.Fatal(err)
 			}
-			executor := &MigrationExecutor{statePath: statePath}
+			executor := &MigrationExecutor{state: FileStateStore(statePath)}
 			gotErr := executor.recordInstanceMutationError(
 				state,
 				"instance-1",
@@ -459,7 +459,7 @@ func TestAmbiguousAppCreateErrorPrintsCombinedOperationAcknowledgement(t *testin
 		t.Fatal(err)
 	}
 
-	executor := &MigrationExecutor{statePath: statePath}
+	executor := &MigrationExecutor{state: FileStateStore(statePath)}
 	err := executor.recordPairMutationError(
 		state,
 		"instance-1",
@@ -482,7 +482,7 @@ func TestClientRejectionIsDefinitiveFailure(t *testing.T) {
 	if err := SaveMigrationState(statePath, state); err != nil {
 		t.Fatal(err)
 	}
-	executor := &MigrationExecutor{statePath: statePath}
+	executor := &MigrationExecutor{state: FileStateStore(statePath)}
 	err := executor.recordInstanceMutationError(
 		state,
 		"instance-1",
@@ -516,7 +516,7 @@ func TestDefinitiveAppCreateRejectionIncludesSafeStructuredDetail(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	executor := &MigrationExecutor{statePath: statePath}
+	executor := &MigrationExecutor{state: FileStateStore(statePath)}
 	err := executor.recordPairMutationError(
 		state,
 		"instance-1",
@@ -568,7 +568,7 @@ func TestPotentiallyPostMutationHTTPResponsesRemainAmbiguous(t *testing.T) {
 			if err := SaveMigrationState(statePath, state); err != nil {
 				t.Fatal(err)
 			}
-			executor := &MigrationExecutor{statePath: statePath}
+			executor := &MigrationExecutor{state: FileStateStore(statePath)}
 			err := executor.recordInstanceMutationError(
 				state,
 				"instance-1",
@@ -618,7 +618,7 @@ func TestEnsureServiceEnvironmentOverridesCompiledDefaultsAndWritesProtectedValu
 
 	state, statePath := newExecutorTestState(t)
 	client := mustTargetExecutionClient(t, server.URL)
-	executor := &MigrationExecutor{target: client, statePath: statePath}
+	executor := &MigrationExecutor{target: client, state: FileStateStore(statePath)}
 	err := executor.ensureServiceEnvironment(
 		context.Background(),
 		state,
@@ -674,8 +674,8 @@ func TestEnsureServiceEnvironmentCreatesGlobalOverrideForInheritedAndScopedEntri
 
 	state, statePath := newExecutorTestState(t)
 	executor := &MigrationExecutor{
-		target:    mustTargetExecutionClient(t, server.URL),
-		statePath: statePath,
+		target: mustTargetExecutionClient(t, server.URL),
+		state:  FileStateStore(statePath),
 	}
 	err := executor.ensureServiceEnvironment(
 		context.Background(),
@@ -714,8 +714,8 @@ func TestPrepareInstanceDoesNotApplyPayloadFromDisabledSourceService(t *testing.
 
 	state, statePath := newExecutorTestState(t)
 	executor := &MigrationExecutor{
-		target:    mustTargetExecutionClient(t, server.URL),
-		statePath: statePath,
+		target: mustTargetExecutionClient(t, server.URL),
+		state:  FileStateStore(statePath),
 	}
 	source := Service{
 		Name:    "worker",
@@ -771,7 +771,7 @@ func TestEnsureServiceVersionIsResumable(t *testing.T) {
 	defer server.Close()
 
 	state, statePath := newExecutorTestState(t)
-	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), statePath: statePath}
+	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), state: FileStateStore(statePath)}
 	for attempt := 0; attempt < 2; attempt++ {
 		if err := executor.ensureServiceVersion(
 			context.Background(), state, "instance-1",
@@ -820,8 +820,8 @@ func TestEnsureServiceCronsDisablesDrupalPHPDefaults(t *testing.T) {
 
 	state, statePath := newExecutorTestState(t)
 	executor := &MigrationExecutor{
-		target:    mustTargetExecutionClient(t, server.URL),
-		statePath: statePath,
+		target: mustTargetExecutionClient(t, server.URL),
+		state:  FileStateStore(statePath),
 	}
 	inspection := TargetStackServiceInspection{
 		ServiceRevision: TargetServiceRevision{
@@ -877,7 +877,7 @@ func TestEnsureServiceCronsCreatesMigratedScheduleDisabledWithoutFeature(t *test
 	defer server.Close()
 
 	state, statePath := newExecutorTestState(t)
-	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), statePath: statePath}
+	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), state: FileStateStore(statePath)}
 	err := executor.ensureServiceCrons(
 		context.Background(),
 		state,
@@ -1172,7 +1172,7 @@ func TestEnsureBuildRejectsRecordedBuildForWrongGitRef(t *testing.T) {
 	expectedType := TargetGitRefBranch
 	executor := &MigrationExecutor{
 		target:           mustTargetExecutionClient(t, server.URL),
-		statePath:        statePath,
+		state:            FileStateStore(statePath),
 		pollInterval:     time.Millisecond,
 		operationTimeout: time.Second,
 	}
@@ -1873,7 +1873,7 @@ func TestEnsureTechnicalRouteAuthsCreatesScopedWodby2Auth(t *testing.T) {
 	state, statePath := newExecutorTestState(t)
 	executor := &MigrationExecutor{
 		target:           mustTargetExecutionClient(t, server.URL),
-		statePath:        statePath,
+		state:            FileStateStore(statePath),
 		operationTimeout: time.Second,
 		pollInterval:     time.Millisecond,
 	}
@@ -1920,7 +1920,7 @@ func TestEnsureAppServiceLinkAppliesInstanceOverride(t *testing.T) {
 	defer server.Close()
 
 	state, statePath := newExecutorTestState(t)
-	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), statePath: statePath}
+	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), state: FileStateStore(statePath)}
 	err := executor.ensureAppServiceLink(
 		context.Background(), state, "instance-1",
 		TargetAppService{ID: 10, Name: "php"}, "sendmail",
@@ -1954,7 +1954,7 @@ func TestEnsureStackServiceLinksAppliesSharedSelection(t *testing.T) {
 	defer server.Close()
 
 	state, statePath := newExecutorTestState(t)
-	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), statePath: statePath}
+	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), state: FileStateStore(statePath)}
 	err := executor.ensureStackServiceLinks(
 		context.Background(), state, TargetStackService{ID: 10, Name: "php"},
 		[]PreparedStackServiceLink{{Name: "sendmail", LinkedServiceName: "opensmtpd"}},
@@ -2162,7 +2162,7 @@ func TestPrepareInstanceKeepsMigratedCronEnabledAfterCutover(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), statePath: statePath}
+			executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), state: FileStateStore(statePath)}
 			inspection := TargetStackServiceInspection{StackService: TargetStackService{ID: 11, Name: "php", ServiceRevID: 101}}
 			sshd := TargetStackServiceInspection{StackService: TargetStackService{ID: 13, Name: "php-sshd", ServiceRevID: 101}}
 			err := executor.prepareInstance(context.Background(), state, PreparedInstance{

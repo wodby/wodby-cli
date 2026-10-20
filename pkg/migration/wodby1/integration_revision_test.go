@@ -47,7 +47,7 @@ func TestEnsureTargetIntegrationsAcceptsNewerProviderRevision(t *testing.T) {
 			if err := state.MarkAppOperationSuccessWithIDs(operation, 70, 0); err != nil {
 				t.Fatal(err)
 			}
-			executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), statePath: statePath}
+			executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), state: FileStateStore(statePath)}
 			plan := Plan{Target: PlanTarget{OrgID: 1, ProjectID: 2, ClusterID: 3}}
 			prepared := PreparedMigration{Integrations: []PreparedIntegration{{
 				Key: "git", ProviderName: "github", ProviderID: 5, ProviderRevID: 900, Kind: "git",

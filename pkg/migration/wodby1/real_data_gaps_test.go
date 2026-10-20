@@ -177,7 +177,7 @@ func TestEnsureAppServiceIntegrationCreatesOnceAndVerifies(t *testing.T) {
 	}))
 	defer server.Close()
 	state, statePath := newExecutorTestState(t)
-	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), statePath: statePath}
+	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), state: FileStateStore(statePath)}
 	service := TargetAppService{ID: 30, Name: "opensmtpd", AppInstanceID: 20}
 	link := PreparedAppServiceIntegration{ServiceName: "opensmtpd", Name: "smtp", IntegrationKey: "smtp", IntegrationID: 70}
 	for attempt := 0; attempt < 2; attempt++ {

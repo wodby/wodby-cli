@@ -133,7 +133,7 @@ func TestEnsureBackupPresetJudgesTheStoredPreset(t *testing.T) {
 			}))
 			defer server.Close()
 			state, statePath := newExecutorTestState(t)
-			executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), statePath: statePath}
+			executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), state: FileStateStore(statePath)}
 			err := executor.ensureBackupPreset(context.Background(), state, "instance-1",
 				TargetAppService{ID: serviceID, Name: "files-nfs"}, backupName,
 				PreparedBackupDestination{Auto: true, TimeZone: "UTC", IntegrationID: 1})

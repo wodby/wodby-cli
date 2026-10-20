@@ -32,7 +32,7 @@ func TestEnsureStackEnvVarsContinuesAfterAnAppliedItem(t *testing.T) {
 	defer server.Close()
 
 	state, statePath := newExecutorTestState(t)
-	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), statePath: statePath}
+	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), state: FileStateStore(statePath)}
 	err := executor.ensureStackEnvVars(context.Background(), state, 5, 12, []PreparedStackEnvVar{
 		{Name: "FIRST", Value: "one"}, {Name: "SECOND", Value: "two"},
 	})
@@ -225,7 +225,7 @@ func TestRollbackPlanWaitsForTeardownAndReportsWhatStays(t *testing.T) {
 // refused once DNS has moved.
 func TestStartPhaseAllowsRepairAfterFailedVerification(t *testing.T) {
 	state, statePath := newExecutorTestState(t)
-	executor := &MigrationExecutor{statePath: statePath}
+	executor := &MigrationExecutor{state: FileStateStore(statePath)}
 	if err := executor.startPhase(state, MigrationPhaseVerify); err != nil {
 		t.Fatal(err)
 	}

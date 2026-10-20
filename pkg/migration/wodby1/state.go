@@ -231,6 +231,14 @@ func LoadMigrationState(path string, expected MigrationStateIdentity) (*Migratio
 	if err != nil {
 		return nil, err
 	}
+	if err := checkMigrationStateIdentity(state, expected); err != nil {
+		return nil, err
+	}
+	return state, nil
+}
+
+// checkMigrationStateIdentity verifies that a loaded state belongs to expected.
+func checkMigrationStateIdentity(state *MigrationState, expected MigrationStateIdentity) error {
 	if actual := state.Identity(); actual != expected {
 		// The configuration fingerprint is keyed with the Wodby 1 token, so a
 		// different token looks exactly like changed source configuration.
@@ -238,11 +246,11 @@ func LoadMigrationState(path string, expected MigrationStateIdentity) (*Migratio
 		configChanged := actual.Source.ConfigDigest != expected.Source.ConfigDigest
 		actual.Source.ConfigDigest, actual.PlanHash = expected.Source.ConfigDigest, expected.PlanHash
 		if configChanged && actual == expected {
-			return nil, fmt.Errorf("%w: the Wodby 1 source configuration changed, or WODBY1_SOURCE_TOKEN is not the token used when the migration was applied; rerun with the original token if the source did not change", ErrMigrationStateIdentityMismatch)
+			return fmt.Errorf("%w: the Wodby 1 source configuration changed, or WODBY1_SOURCE_TOKEN is not the token used when the migration was applied; rerun with the original token if the source did not change", ErrMigrationStateIdentityMismatch)
 		}
-		return nil, ErrMigrationStateIdentityMismatch
+		return ErrMigrationStateIdentityMismatch
 	}
-	return state, nil
+	return nil
 }
 
 // InspectMigrationState securely reads and validates a state file without
@@ -333,18 +341,8 @@ func removeMigrationState(path string, expected MigrationStateIdentity, deletedT
 	if err != nil {
 		return err
 	}
-	if state.Identity() != expected {
-		return ErrMigrationStateIdentityMismatch
-	}
-	switch {
-	case deletedTargetAppID == rollbackCompleted:
-		// The caller deleted the recorded resources; nothing left to protect.
-	case deletedTargetAppID == 0:
-		if !state.CanRestartSafely() {
-			return ErrMigrationStateUnsafeRestart
-		}
-	case state.App.TargetID != deletedTargetAppID:
-		return ErrMigrationStateIdentityMismatch
+	if err := checkMigrationStateRemoval(state, expected, deletedTargetAppID); err != nil {
+		return err
 	}
 	if err := verifyMigrationStateTargetUnchanged(path, info); err != nil {
 		return err
@@ -363,6 +361,26 @@ func removeMigrationState(path string, expected MigrationStateIdentity, deletedT
 	}
 	if closeErr != nil {
 		return fmt.Errorf("close migration state directory: %w", closeErr)
+	}
+	return nil
+}
+
+// checkMigrationStateRemoval verifies that a stored state may be removed: it
+// belongs to expected, and the caller either rolled it back, proved that no
+// target mutation happened, or deleted the recorded target app.
+func checkMigrationStateRemoval(state *MigrationState, expected MigrationStateIdentity, deletedTargetAppID int) error {
+	if state.Identity() != expected {
+		return ErrMigrationStateIdentityMismatch
+	}
+	switch {
+	case deletedTargetAppID == rollbackCompleted:
+		// The caller deleted the recorded resources; nothing left to protect.
+	case deletedTargetAppID == 0:
+		if !state.CanRestartSafely() {
+			return ErrMigrationStateUnsafeRestart
+		}
+	case state.App.TargetID != deletedTargetAppID:
+		return ErrMigrationStateIdentityMismatch
 	}
 	return nil
 }
@@ -1095,26 +1113,39 @@ func loadMigrationStateFile(path string) (*MigrationState, fs.FileInfo, error) {
 		return nil, nil, invalidStateError("state file exceeds maximum size")
 	}
 
+	state, err := decodeMigrationState(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	return state, info, nil
+}
+
+// decodeMigrationState decodes and validates a stored state. Unknown fields and
+// trailing JSON are rejected.
+func decodeMigrationState(data []byte) (*MigrationState, error) {
+	if len(data) > maxMigrationStateBytes {
+		return nil, invalidStateError("state exceeds maximum size")
+	}
 	var state MigrationState
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&state); err != nil {
-		return nil, nil, fmt.Errorf("%w: decode state: %v", ErrMigrationStateInvalid, err)
+		return nil, fmt.Errorf("%w: decode state: %v", ErrMigrationStateInvalid, err)
 	}
 	var trailing interface{}
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return nil, nil, invalidStateError("state file contains trailing JSON")
+			return nil, invalidStateError("state file contains trailing JSON")
 		}
-		return nil, nil, fmt.Errorf("%w: decode trailing state data: %v", ErrMigrationStateInvalid, err)
+		return nil, fmt.Errorf("%w: decode trailing state data: %v", ErrMigrationStateInvalid, err)
 	}
 	if state.Revision == 0 {
-		return nil, nil, invalidStateError("persisted state revision must be positive")
+		return nil, invalidStateError("persisted state revision must be positive")
 	}
 	if err := state.Validate(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return &state, info, nil
+	return &state, nil
 }
 
 func verifyMigrationStateTargetUnchanged(path string, previous fs.FileInfo) error {

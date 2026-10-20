@@ -421,6 +421,7 @@ func runWodby1Single(cmd *RunEnv, sourceKind string, sourceID string, opts *RunO
 	}
 	if PlanNeedsTargetStack(plan) {
 		preparation.CompleteStep("Skipped: a custom stack needs a target stack first.")
+		cmd.onPlan(plan, nil)
 		return showUnpreparedPlan(cmd, plan, opts.Apply, opts.Verify)
 	}
 	prepared, err := targetClient.PreflightTarget(cmd.Context(), export, &plan, TargetPreflightOptions{
@@ -441,6 +442,7 @@ func runWodby1Single(cmd *RunEnv, sourceKind string, sourceID string, opts *RunO
 	}
 	preparation.CompleteStep("Target preflight completed.")
 
+	cmd.onPlan(plan, &prepared)
 	if !opts.Apply && !opts.Verify {
 		return printPreview(cmd, plan, prepared)
 	}
@@ -1006,6 +1008,7 @@ func runWodby1Server(cmd *RunEnv, sourceID string, opts *RunOptions) (runErr err
 	preparation.StartStep("Inspect target mappings and capabilities")
 	if PlanNeedsTargetStack(plan) {
 		preparation.CompleteStep("Skipped: a custom stack needs a target stack first.")
+		cmd.onPlan(plan, nil)
 		return showUnpreparedPlan(cmd, plan, opts.Apply, opts.Verify)
 	}
 	prepared, err := targetClient.PreflightTarget(cmd.Context(), export, &plan, TargetPreflightOptions{
@@ -1024,6 +1027,7 @@ func runWodby1Server(cmd *RunEnv, sourceID string, opts *RunOptions) (runErr err
 	}
 	preparation.CompleteStep("Target preflight completed.")
 
+	cmd.onPlan(plan, &prepared)
 	if !opts.Apply && !opts.Verify {
 		return printPreview(cmd, plan, prepared)
 	}

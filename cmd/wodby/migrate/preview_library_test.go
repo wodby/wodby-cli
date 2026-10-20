@@ -122,8 +122,29 @@ func TestLibraryApplyKeepsPlanAndStateInRecords(t *testing.T) {
 		t.Fatalf("a refused apply stored %v", keys)
 	}
 
+	// A preview through the runner reports the plan an apply builds, and its
+	// hash approves that apply.
+	var previewed wodby1.Plan
+	preview := libraryRunEnv(t, fixture, wodby1.NewMemoryMigrationRecords(), &output)
+	preview.OnPlan = func(plan wodby1.Plan, prepared *wodby1.PreparedMigration) {
+		if prepared == nil {
+			t.Error("the preview did not inspect the target")
+		}
+		previewed = plan
+	}
+	previewOptions := libraryApplyOptions(fixture)
+	previewOptions.Apply = false
+	if err := wodby1.RunSingle(preview, "app", "app-1", previewOptions); err != nil {
+		t.Fatal(err)
+	}
+	if previewed.PlanHash == "" {
+		t.Fatal("the preview reported no plan")
+	}
+
 	records := wodby1.NewMemoryMigrationRecords()
-	err = wodby1.RunSingle(libraryRunEnv(t, fixture, records, &output), "app", "app-1", libraryApplyOptions(fixture))
+	env = libraryRunEnv(t, fixture, records, &output)
+	env.ApprovedPlanHash = previewed.PlanHash
+	err = wodby1.RunSingle(env, "app", "app-1", libraryApplyOptions(fixture))
 	// The fixture leaves app creation unconfirmed, as in the command test.
 	if err == nil || !strings.Contains(err.Error(), "app creation is ambiguous") {
 		t.Fatalf("apply error = %v", err)
@@ -134,7 +155,7 @@ func TestLibraryApplyKeepsPlanAndStateInRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	state, err := artifacts.InspectState(artifacts.StateLocation())
-	if err != nil || state.PlanHash != plan.PlanHash {
+	if err != nil || state.PlanHash != plan.PlanHash || plan.PlanHash != previewed.PlanHash {
 		t.Fatalf("state = %+v, %v", state, err)
 	}
 	if entries, _ := os.ReadDir(filepath.Join(os.TempDir(), "wodby-migrations")); len(entries) != 0 {

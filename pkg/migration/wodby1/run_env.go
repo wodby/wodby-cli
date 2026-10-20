@@ -99,6 +99,10 @@ type RunEnv struct {
 	// elsewhere. A new or restarted apply then proceeds without a prompt only
 	// when the plan it builds has that hash.
 	ApprovedPlanHash string
+	// OnPlan receives the plan a run built, with the inspected target, or nil
+	// when a custom stack needs a target stack first. A preview reports it
+	// this way to a program; its hash is what an apply must be approved for.
+	OnPlan func(plan Plan, prepared *PreparedMigration)
 	// SilenceUsage and SilenceErrors are called once the run has explained a
 	// failure itself, so the caller does not add usage or repeat the error.
 	SilenceUsage  func()
@@ -154,6 +158,12 @@ func (e *RunEnv) InOrStdin() io.Reader {
 		return strings.NewReader("")
 	}
 	return e.In
+}
+
+func (e *RunEnv) onPlan(plan Plan, prepared *PreparedMigration) {
+	if e.OnPlan != nil {
+		e.OnPlan(plan, prepared)
+	}
 }
 
 func (e *RunEnv) silenceUsage() {

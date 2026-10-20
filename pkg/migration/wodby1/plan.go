@@ -39,13 +39,16 @@ type PlanOptions struct {
 	TargetVersionMap              map[string]string
 	TargetImportMap               map[string]string
 	TargetCIIntegrationID         int
-	Repository                    RepositoryTargetPlan
-	RepositoryByApp               map[string]RepositoryTargetPlan
-	SkipCode                      bool
-	SkipData                      bool
-	RequireData                   bool
-	AllowUnsupportedDrupal        bool
-	Selection                     *SourceSelection
+	// TargetWodbyCI builds instances that Wodby 1 deployed through third-party
+	// CI with Wodby CI, from their linked repository.
+	TargetWodbyCI          bool
+	Repository             RepositoryTargetPlan
+	RepositoryByApp        map[string]RepositoryTargetPlan
+	SkipCode               bool
+	SkipData               bool
+	RequireData            bool
+	AllowUnsupportedDrupal bool
+	Selection              *SourceSelection
 	// WorkspaceInstances holds the UUIDs of the direct-Git source instances
 	// to create as development workspaces instead of built environments.
 	WorkspaceInstances map[string]bool
@@ -85,22 +88,24 @@ type PlanSource struct {
 }
 
 type PlanTarget struct {
-	Org                     string                     `json:"org,omitempty"`
-	OrgID                   int                        `json:"orgId,omitempty"`
-	OrgName                 string                     `json:"orgName,omitempty"`
-	OrgRole                 string                     `json:"orgRole,omitempty"`
-	OrgDefaultTimeZone      string                     `json:"orgDefaultTimeZone,omitempty"`
-	Project                 string                     `json:"project,omitempty"`
-	ProjectID               int                        `json:"projectId,omitempty"`
-	ProjectName             string                     `json:"projectName,omitempty"`
-	Cluster                 string                     `json:"cluster,omitempty"`
-	ClusterID               int                        `json:"clusterId,omitempty"`
-	ClusterName             string                     `json:"clusterName,omitempty"`
-	ClusterStatus           string                     `json:"clusterStatus,omitempty"`
-	AppID                   int                        `json:"appId,omitempty"`
-	AppName                 string                     `json:"appName,omitempty"`
-	AppTitle                string                     `json:"appTitle,omitempty"`
-	CIIntegrationID         int                        `json:"ciIntegrationId"`
+	Org                string `json:"org,omitempty"`
+	OrgID              int    `json:"orgId,omitempty"`
+	OrgName            string `json:"orgName,omitempty"`
+	OrgRole            string `json:"orgRole,omitempty"`
+	OrgDefaultTimeZone string `json:"orgDefaultTimeZone,omitempty"`
+	Project            string `json:"project,omitempty"`
+	ProjectID          int    `json:"projectId,omitempty"`
+	ProjectName        string `json:"projectName,omitempty"`
+	Cluster            string `json:"cluster,omitempty"`
+	ClusterID          int    `json:"clusterId,omitempty"`
+	ClusterName        string `json:"clusterName,omitempty"`
+	ClusterStatus      string `json:"clusterStatus,omitempty"`
+	AppID              int    `json:"appId,omitempty"`
+	AppName            string `json:"appName,omitempty"`
+	AppTitle           string `json:"appTitle,omitempty"`
+	CIIntegrationID    int    `json:"ciIntegrationId"`
+	// WodbyCI moves instances built by third-party CI in Wodby 1 to Wodby CI.
+	WodbyCI                 bool                       `json:"wodbyCI,omitempty"`
 	OrgOwnerOrAdminVerified bool                       `json:"orgOwnerOrAdminVerified"`
 	DiscoveryVerified       bool                       `json:"discoveryVerified"`
 	Capabilities            *TargetClusterCapabilities `json:"capabilities,omitempty"`
@@ -323,6 +328,9 @@ type ReviewItem struct {
 }
 
 func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
+	if opts.TargetWodbyCI && opts.TargetCIIntegrationID > 0 {
+		return Plan{}, fmt.Errorf("choose either Wodby CI or a target CI integration, not both")
+	}
 	if err := export.Validate(); err != nil {
 		return Plan{}, err
 	}
@@ -372,6 +380,7 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 			Project:                 opts.TargetProject,
 			Cluster:                 opts.TargetCluster,
 			CIIntegrationID:         opts.TargetCIIntegrationID,
+			WodbyCI:                 opts.TargetWodbyCI,
 			OrgOwnerOrAdminVerified: opts.TargetOrgOwnerOrAdminVerified,
 		},
 		Selection: sourceSelectionForPlan(export, opts.Selection),

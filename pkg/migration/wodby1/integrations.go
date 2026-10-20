@@ -172,6 +172,20 @@ func (c *TargetClient) prepareCIIntegration(ctx context.Context, app *PreparedAp
 			continue
 		}
 		deploymentType := strings.ToLower(strings.TrimSpace(stringProperty(app.Instances[index].Source.Properties, "deployment_type")))
+		if deploymentType == "ci" && target.WodbyCI {
+			// The member chose Wodby CI over the third-party CI that built
+			// this instance in Wodby 1; it builds from the linked repository.
+			buildSource := app.Instances[index].BuildSource
+			if buildSource == nil || buildSource.Input.BuildSourceType != TargetBuildSourceConnect {
+				configurationFindings = append(configurationFindings, ReviewItem{
+					Severity: SeverityBlocking, App: app.App.App.Name, Instance: app.Instances[index].Source.Name, Subject: "Wodby CI",
+					Message: "Wodby CI builds from the app's repository: link it through a Wodby 2 Git integration with --target-git-integration-id (and --target-repository-name when the names differ), or keep third-party CI",
+				})
+				continue
+			}
+			app.Instances[index].UsesWodbyCI = true
+			continue
+		}
 		if deploymentType == "ci" || app.Instances[index].BuildSource == nil ||
 			strings.TrimSpace(app.Instances[index].BuildSource.Input.BuildSourceType) == "" {
 			usesCustomCI = true

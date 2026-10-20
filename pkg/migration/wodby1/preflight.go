@@ -767,7 +767,7 @@ func (c *TargetClient) preflightWodbyCIPipelines(
 	checked := map[refKey]bool{}
 	findings := []ReviewItem{}
 	for _, instance := range app.Instances {
-		if strings.EqualFold(strings.TrimSpace(stringProperty(instance.Source.Properties, "deployment_type")), "ci") ||
+		if instance.ExternalCIOnly ||
 			!instance.UsesWodbyCI || instance.BuildSource == nil || instance.BuildSource.Input.BuildSourceType != TargetBuildSourceConnect || instance.BuildSource.Input.GitRef == nil ||
 			instance.BuildSource.Input.GitRefType == nil {
 			continue

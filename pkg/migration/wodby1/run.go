@@ -391,6 +391,7 @@ func runWodby1Single(cmd *RunEnv, sourceKind string, sourceID string, opts *RunO
 		TargetVersionMap:              versionMap,
 		TargetImportMap:               importMap,
 		TargetCIIntegrationID:         opts.TargetCIIntegrationID,
+		TargetWodbyCI:                 opts.TargetWodbyCI,
 		Repository: RepositoryTargetPlan{
 			GitIntegrationID: opts.TargetGitIntegrationID,
 			RepositoryName:   strings.TrimSpace(opts.TargetRepositoryName),
@@ -936,6 +937,7 @@ func runWodby1Server(cmd *RunEnv, sourceID string, opts *RunOptions) (runErr err
 		TargetVersionMap:              versionMap,
 		TargetImportMap:               importMap,
 		TargetCIIntegrationID:         opts.TargetCIIntegrationID,
+		TargetWodbyCI:                 opts.TargetWodbyCI,
 		Repository: RepositoryTargetPlan{
 			GitIntegrationID: opts.TargetGitIntegrationID,
 			RepositoryName:   strings.TrimSpace(opts.TargetRepositoryName),
@@ -1303,6 +1305,9 @@ func validateOptions(opts *RunOptions) error {
 	}
 	if opts.TargetCIIntegrationID < 0 {
 		return errors.New("--target-ci-integration-id cannot be negative")
+	}
+	if opts.TargetWodbyCI && opts.TargetCIIntegrationID > 0 {
+		return errors.New("--target-wodby-ci and --target-ci-integration-id cannot be used together")
 	}
 	if opts.TargetGitIntegrationID < 0 {
 		return errors.New("--target-git-integration-id cannot be negative")

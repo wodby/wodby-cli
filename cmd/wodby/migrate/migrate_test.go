@@ -405,6 +405,43 @@ func TestWodby1InstanceCommandPlansOnlyRequestedInstance(t *testing.T) {
 	}
 }
 
+// A custom stack without a target stack cannot be inspected on the target;
+// the preview shows the plan's blocker instead of failing.
+func TestWodby1PreviewShowsCustomStackBlockerWithoutTargetInspection(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "owner", "ok", false)
+	defer fixture.Close()
+	fixture.setSourceKind("instance")
+	fixture.sourceStack = &wodby1.Stack{Name: "acme-custom", Version: "1", Custom: true}
+	setMigrationTargetConfig(t, fixture.target.URL+"/v1", "target-key", "")
+	args := fixture.instancePlanArgs("", "json")
+	for index := range args {
+		if args[index] == "--target-stack-id" {
+			args = append(args[:index], args[index+2:]...)
+			break
+		}
+	}
+
+	var output bytes.Buffer
+	cmd := newWodby1InstanceCommand()
+	cmd.SilenceUsage = true
+	cmd.SetOut(&output)
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var plan wodby1.Plan
+	if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range plan.Review {
+		found = found || item.Severity == wodby1.SeverityBlocking && item.Subject == "target stack"
+	}
+	if !found || plan.Summary.Blocking == 0 {
+		t.Fatalf("plan review = %#v", plan.Review)
+	}
+}
+
 func TestWodby1InstanceCommandCanTargetExistingAppAndInferStack(t *testing.T) {
 	fixture := newMigrationAPIFixture(t, "owner", "ok", false)
 	defer fixture.Close()
@@ -2210,6 +2247,7 @@ type migrationAPIFixture struct {
 	sourceKind               string
 	stackRevID               int
 	stackRevNumber           int
+	sourceStack              *wodby1.Stack
 	targetApp101Exists       bool
 	targetApp101InstanceName string
 }
@@ -2328,14 +2366,14 @@ func (f *migrationAPIFixture) handleSource(w http.ResponseWriter, r *http.Reques
 					App: wodby1.App{UUID: "app-1", Name: "demo", Title: title, Type: "app", Status: "ok", Docroot: &docroot, SiteName: &siteName},
 					Instances: []wodby1.Instance{{
 						UUID: "instance-1", Name: "prod", Title: "Production", Type: "prod", Status: "ok",
-						Stack: wodby1.Stack{Name: "drupal11", Version: "11"},
+						Stack: f.stack(),
 					}},
 				},
 				{
 					App: wodby1.App{UUID: "app-2", Name: "second", Title: "Second", Type: "app", Status: "ok", Docroot: &docroot, SiteName: &siteName},
 					Instances: []wodby1.Instance{{
 						UUID: "instance-2", Name: "prod", Title: "Production", Type: "prod", Status: "ok",
-						Stack: wodby1.Stack{Name: "drupal11", Version: "11"},
+						Stack: f.stack(),
 					}},
 				},
 			},
@@ -2355,7 +2393,7 @@ func (f *migrationAPIFixture) handleSource(w http.ResponseWriter, r *http.Reques
 				},
 				Instances: []wodby1.Instance{{
 					UUID: "instance-1", Name: "prod", Title: "Production", Type: "prod", Status: "ok",
-					Stack: wodby1.Stack{Name: "drupal11", Version: "11"},
+					Stack: f.stack(),
 				}},
 			}},
 		})
@@ -2377,10 +2415,17 @@ func (f *migrationAPIFixture) handleSource(w http.ResponseWriter, r *http.Reques
 				Title:  "Production",
 				Type:   "prod",
 				Status: "ok",
-				Stack:  wodby1.Stack{Name: "drupal11", Version: "11"},
+				Stack:  f.stack(),
 			}},
 		}},
 	})
+}
+
+func (f *migrationAPIFixture) stack() wodby1.Stack {
+	if f.sourceStack != nil {
+		return *f.sourceStack
+	}
+	return wodby1.Stack{Name: "drupal11", Version: "11"}
 }
 
 func (f *migrationAPIFixture) handleTarget(w http.ResponseWriter, r *http.Request) {

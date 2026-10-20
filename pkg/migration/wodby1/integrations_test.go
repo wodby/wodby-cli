@@ -518,3 +518,43 @@ func TestPrepareCIIntegrationRecordsBootstrapGuidancePerInstance(t *testing.T) {
 		t.Fatalf("guidance = %#v", guidance)
 	}
 }
+
+// A member can move an app that Wodby 1 built with third-party CI to Wodby CI:
+// an instance whose repository is linked builds with Wodby CI and needs no
+// Custom CI integration; one without a linked repository blocks the plan.
+func TestPrepareCIIntegrationMovesThirdPartyCIToWodbyCI(t *testing.T) {
+	client := customCIIntegrationTestClient(t)
+	app := externalCITestApp(t, "circleci", "circleci")
+	integrationID, repoID, ref, refType := 7, "repo-1", "main", "BRANCH"
+	app.Instances[0].BuildSource = &PreparedBuildSource{ServiceName: "php", Input: TargetBuildSourceInput{
+		BuildSourceType: TargetBuildSourceConnect, IntegrationID: &integrationID, RemoteGitRepoID: &repoID,
+		GitRef: &ref, GitRefType: &refType,
+	}}
+
+	integration, findings, err := client.prepareCIIntegration(context.Background(), app, PlanTarget{WodbyCI: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if integration != nil {
+		t.Fatalf("no instance uses Custom CI, but it prepared %#v", integration)
+	}
+	if !app.Instances[0].UsesWodbyCI || app.Instances[0].ExternalCIOnly {
+		t.Fatalf("linked instance = %#v, want Wodby CI", app.Instances[0])
+	}
+	blocking := 0
+	for _, finding := range findings {
+		if finding.Severity == SeverityBlocking && finding.Instance == "instance-b" && strings.Contains(finding.Message, "--target-git-integration-id") {
+			blocking++
+		}
+	}
+	if blocking != 1 {
+		t.Fatalf("findings = %#v, want one blocker for the instance without a linked repository", findings)
+	}
+}
+
+func TestBuildPlanRefusesWodbyCIWithACIIntegration(t *testing.T) {
+	_, err := BuildPlan(Export{}, PlanOptions{TargetWodbyCI: true, TargetCIIntegrationID: 5})
+	if err == nil || !strings.Contains(err.Error(), "either Wodby CI or a target CI integration") {
+		t.Fatal("Wodby CI and a CI integration must not be combined")
+	}
+}

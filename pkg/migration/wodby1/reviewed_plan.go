@@ -172,6 +172,9 @@ func (p Plan) ValidateReviewed() error {
 	if p.Target.CIIntegrationID < 0 {
 		return invalidPlanError("target CI integration ID must not be negative")
 	}
+	if p.Target.WodbyCI && p.Target.CIIntegrationID > 0 {
+		return invalidPlanError("target cannot use both Wodby CI and a CI integration")
+	}
 	if p.Target.AppID < 0 || (p.Target.AppID > 0 && (p.Source.Kind != "instance" || strings.TrimSpace(p.Target.AppName) == "")) ||
 		(p.Target.AppID == 0 && (p.Target.AppName != "" || p.Target.AppTitle != "")) {
 		return invalidPlanError("existing target app selection is invalid")

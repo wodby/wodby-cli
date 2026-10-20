@@ -294,6 +294,8 @@ func bindFlags(cmd *cobra.Command, opts *options) {
 	cmd.Flags().StringArrayVar(&opts.TargetVersionMap, "target-version-map", nil, "Source-service version override ([APP/][INSTANCE/]SOURCE_SERVICE=TARGET_VERSION)")
 	cmd.Flags().StringArrayVar(&opts.TargetImportMap, "target-import-map", nil, "Backup-to-import mapping ([APP/][INSTANCE/]COMPONENT=SERVICE:IMPORT)")
 
+	cmd.Flags().BoolVar(&opts.TargetLetsEncrypt, "target-letsencrypt", false, "Give routes that used a custom certificate in Wodby 1 a Let's Encrypt certificate, issued once DNS points to Wodby 2, instead of uploading the certificate again")
+	cmd.Flags().BoolVar(&opts.TargetWodbyCI, "target-wodby-ci", false, "Build instances that Wodby 1 deployed through third-party CI with Wodby CI, from the repository linked with --target-git-integration-id")
 	cmd.Flags().IntVar(&opts.TargetCIIntegrationID, "target-ci-integration-id", 0, "Wodby 2 CI integration ID override (otherwise Wodby CI with a linked repository, or automatic Custom CI fallback)")
 	cmd.Flags().IntVar(&opts.TargetGitIntegrationID, "target-git-integration-id", 0, "Optional Wodby 2 Git integration ID used to find and link the source repository")
 	cmd.Flags().StringVar(&opts.TargetRepositoryName, "target-repository-name", "", "Exact repository name in the selected Wodby 2 Git integration (defaults to the name derived from the Wodby 1 repository URL)")

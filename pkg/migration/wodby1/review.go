@@ -976,6 +976,8 @@ func reviewOverviewRows(plan Plan) [][]string {
 	targetCI := "Wodby CI (built-in)"
 	if plan.Target.CIIntegrationID != 0 {
 		targetCI = "Selected third-party CI integration"
+	} else if plan.Target.WodbyCI {
+		targetCI = "Wodby CI (built-in), also for source ci deployments"
 	} else {
 		for _, app := range plan.Apps {
 			for _, integration := range app.Integrations {

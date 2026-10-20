@@ -1974,3 +1974,32 @@ func TestMigratedInstanceIsNeverTreatedAsContextOnly(t *testing.T) {
 		t.Fatal("an instance being migrated must never be treated as context only")
 	}
 }
+
+// With --target-letsencrypt a route that used a custom certificate gets a
+// Let's Encrypt one instead of waiting for the certificate to be uploaded.
+func TestBuildRoutePlanReplacesCustomTLSWithLetsEncrypt(t *testing.T) {
+	port := 80
+	plan := Plan{}
+	route := buildRoutePlan(
+		&plan,
+		App{Name: "demo"},
+		Instance{Name: "prod"},
+		Domain{
+			UUID: "domain-1", Name: "example.com", Type: "user", Status: "ok",
+			Service: "nginx", PortNumber: &port, SSLCustom: true,
+		},
+		false,
+		PlanOptions{TargetScope: &TargetScopeDiscovery{}, TargetLetsEncrypt: true},
+		true,
+	)
+	if route.Action != "create_backend" || !route.SSL || route.SSLCustom {
+		t.Fatalf("route = %#v", route)
+	}
+	found := false
+	for _, item := range plan.Review {
+		found = found || (item.Subject == "route example.com TLS" && strings.Contains(item.Message, "Let's Encrypt"))
+	}
+	if !found {
+		t.Fatalf("review = %#v", plan.Review)
+	}
+}

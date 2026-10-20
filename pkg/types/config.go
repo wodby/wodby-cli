@@ -1,10 +1,15 @@
 package types
 
+import "net/http"
+
 type (
 	APIConfig struct {
 		Key         string
 		AccessToken string
 		Endpoint    string
+		// Transport sends the requests instead of the default HTTP transport,
+		// for example to serve them in the same process.
+		Transport http.RoundTripper
 	}
 	Config struct {
 		ID            string

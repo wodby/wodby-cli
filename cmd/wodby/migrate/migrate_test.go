@@ -278,15 +278,6 @@ func TestStateTargetInstanceRecoveryAllowsOnlyAmbiguousCreate(t *testing.T) {
 	}
 }
 
-func TestTargetAppStackIDsAreUniqueAndSorted(t *testing.T) {
-	got := targetAppStackIDs([]wodby1.TargetAppInstance{
-		{StackID: 9}, {StackID: 3}, {StackID: 9}, {StackID: 0},
-	})
-	if len(got) != 2 || got[0] != 3 || got[1] != 9 {
-		t.Fatalf("stack IDs = %#v", got)
-	}
-}
-
 func TestWodby1MigrationShowsUsageOnlyForCommandErrors(t *testing.T) {
 	t.Run("invalid arguments show usage", func(t *testing.T) {
 		var output bytes.Buffer

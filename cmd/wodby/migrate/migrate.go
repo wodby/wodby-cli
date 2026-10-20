@@ -666,58 +666,11 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 		if sourceKind != "instance" {
 			return errors.New("--target-app can be used only with migrate wodby1 instance")
 		}
-		resolvedApp, err := targetClient.ResolveTargetApp(cmd.Context(), scope.Org.ID, selector)
+		resolvedApp, resolvedStackID, err := targetClient.ResolveInstanceTargetApp(cmd.Context(), &scope, selector, targetStackID)
 		if err != nil {
 			return err
 		}
-		if resolvedApp.ClusterApp {
-			return errors.Errorf("target app %q (ID %d) is a cluster infrastructure app and cannot receive a migrated customer app environment", resolvedApp.Name, resolvedApp.ID)
-		}
-		status := strings.ToUpper(strings.TrimSpace(resolvedApp.Status))
-		if status != "OK" {
-			return errors.Errorf("target app %q (ID %d) has status %q and cannot receive a migrated app environment", resolvedApp.Name, resolvedApp.ID, resolvedApp.Status)
-		}
-		switch strings.ToLower(strings.TrimSpace(resolvedApp.OwnershipScope)) {
-		case wodby1.TargetOwnershipScopeOrg:
-			if scope.Project.ID > 0 {
-				return errors.Errorf("target app %q (ID %d) is organization-owned, but the selected cluster is owned by project %q (ID %d); select an organization-owned cluster", resolvedApp.Name, resolvedApp.ID, scope.Project.Name, scope.Project.ID)
-			}
-		case wodby1.TargetOwnershipScopeProject:
-			if resolvedApp.OwnerProjectID == nil || *resolvedApp.OwnerProjectID <= 0 {
-				return errors.Errorf("target app %q (ID %d) did not return a valid owner project", resolvedApp.Name, resolvedApp.ID)
-			}
-			if scope.Project.ID == 0 {
-				project, err := targetClient.GetProject(cmd.Context(), *resolvedApp.OwnerProjectID)
-				if err != nil {
-					return errors.Wrap(err, "resolve selected target app owner project")
-				}
-				if project.OrgID != scope.Org.ID {
-					return errors.Errorf("target app %q (ID %d) owner project belongs to organization ID %d, expected %d", resolvedApp.Name, resolvedApp.ID, project.OrgID, scope.Org.ID)
-				}
-				scope.Project = project
-			} else if scope.Project.ID != *resolvedApp.OwnerProjectID {
-				return errors.Errorf("target app %q (ID %d) belongs to project ID %d, but the selected cluster belongs to project ID %d; select a cluster owned by the app's project", resolvedApp.Name, resolvedApp.ID, *resolvedApp.OwnerProjectID, scope.Project.ID)
-			}
-		default:
-			return errors.Errorf("target app %q (ID %d) did not return an ownership scope; update the Wodby 2 backend before using --target-app", resolvedApp.Name, resolvedApp.ID)
-		}
-		instances, err := targetClient.ListAppInstances(cmd.Context(), scope.Org.ID, resolvedApp.ID)
-		if err != nil {
-			return err
-		}
-		if targetStackID == 0 {
-			stackIDs := targetAppStackIDs(instances)
-			switch len(stackIDs) {
-			case 0:
-				return errors.Errorf("target app %q (ID %d) has no app environments from which to infer a stack; provide --target-stack-id", resolvedApp.Name, resolvedApp.ID)
-			case 1:
-				targetStackID = stackIDs[0]
-			default:
-				return errors.Errorf("target app %q (ID %d) uses multiple stacks (%s); provide --target-stack-id with one of these stack IDs", resolvedApp.Name, resolvedApp.ID, joinIntValues(stackIDs))
-			}
-		} else if stackIDs := targetAppStackIDs(instances); len(stackIDs) != 0 && !containsInt(stackIDs, targetStackID) {
-			return errors.Errorf("--target-stack-id %d is not used by target app %q (ID %d); choose one of %s", targetStackID, resolvedApp.Name, resolvedApp.ID, joinIntValues(stackIDs))
-		}
+		targetStackID = resolvedStackID
 		targetApp = &resolvedApp
 		preparation.CompleteStep(fmt.Sprintf("Existing target app %s (ID %d) will receive the new app environment using stack ID %d.", resolvedApp.Name, resolvedApp.ID, targetStackID))
 	}
@@ -838,7 +791,7 @@ func runWodby1Single(cmd *cobra.Command, sourceKind string, sourceID string, opt
 	if restartStateWithMutations != nil {
 		preflightState = restartStateWithMutations
 	}
-	if planNeedsTargetStack(plan) {
+	if wodby1.PlanNeedsTargetStack(plan) {
 		preparation.CompleteStep("Skipped: a custom stack needs a target stack first.")
 		return showUnpreparedPlan(cmd, plan, opts.apply, opts.verify)
 	}
@@ -1426,7 +1379,7 @@ func runWodby1Server(cmd *cobra.Command, sourceID string, opts *options) (runErr
 		}
 	}
 	preparation.StartStep("Inspect target mappings and capabilities")
-	if planNeedsTargetStack(plan) {
+	if wodby1.PlanNeedsTargetStack(plan) {
 		preparation.CompleteStep("Skipped: a custom stack needs a target stack first.")
 		return showUnpreparedPlan(cmd, plan, opts.apply, opts.verify)
 	}
@@ -1738,38 +1691,6 @@ func validateOptions(opts *options) error {
 		return errors.New("--target-git-ref and --target-git-ref-type must be specified together")
 	}
 	return nil
-}
-
-func targetAppStackIDs(instances []wodby1.TargetAppInstance) []int {
-	seen := map[int]bool{}
-	for _, instance := range instances {
-		if instance.StackID > 0 {
-			seen[instance.StackID] = true
-		}
-	}
-	result := make([]int, 0, len(seen))
-	for id := range seen {
-		result = append(result, id)
-	}
-	sort.Ints(result)
-	return result
-}
-
-func containsInt(values []int, expected int) bool {
-	for _, value := range values {
-		if value == expected {
-			return true
-		}
-	}
-	return false
-}
-
-func joinIntValues(values []int) string {
-	parts := make([]string, 0, len(values))
-	for _, value := range values {
-		parts = append(parts, strconv.Itoa(value))
-	}
-	return strings.Join(parts, ", ")
 }
 
 func parseMapping(values []string, flag string) (map[string]string, error) {
@@ -2960,18 +2881,6 @@ func printRestartConflict(
 		fmt.Fprintf(w, "  Plan file: %s\n", planPath)
 		fmt.Fprintf(w, "  Resume-state file: %s\n", statePath)
 	}
-}
-
-// planNeedsTargetStack reports a plan that already blocks because a custom
-// source stack has no target stack. The target inspection cannot run without
-// one, so the preview shows that blocker instead of failing.
-func planNeedsTargetStack(plan wodby1.Plan) bool {
-	for _, item := range plan.Review {
-		if item.Severity == wodby1.SeverityBlocking && item.Subject == "target stack" {
-			return true
-		}
-	}
-	return false
 }
 
 // showUnpreparedPlan prints a blocked plan whose target was not inspected.

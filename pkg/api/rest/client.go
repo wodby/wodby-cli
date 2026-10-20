@@ -78,11 +78,15 @@ func NewClient(config types.APIConfig) (*Client, error) {
 		return nil, errors.Errorf("invalid api base url %q", config.Endpoint)
 	}
 
+	underlying := config.Transport
+	if underlying == nil {
+		underlying = http.DefaultTransport
+	}
 	return &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
 			Transport: &transport{
-				underlyingTransport: http.DefaultTransport,
+				underlyingTransport: underlying,
 				apiKey:              config.Key,
 				accessToken:         config.AccessToken,
 			},

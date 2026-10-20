@@ -219,6 +219,10 @@ func bindPreparedIntegrationIDs(prepared *PreparedMigration, resolved map[string
 	for serviceName, configuration := range prepared.StackConfiguration.Services {
 		for index := range configuration.Integrations {
 			link := &configuration.Integrations[index]
+			if link.IntegrationKey == "" && link.IntegrationID > 0 {
+				// An existing integration the member chose.
+				continue
+			}
 			id := resolved[link.IntegrationKey]
 			if id <= 0 {
 				return errors.Errorf("stack service %q integration %q was not resolved", serviceName, link.IntegrationKey)
@@ -230,6 +234,10 @@ func bindPreparedIntegrationIDs(prepared *PreparedMigration, resolved map[string
 	for index := range prepared.Instances {
 		for linkIndex := range prepared.Instances[index].ServiceIntegrations {
 			link := &prepared.Instances[index].ServiceIntegrations[linkIndex]
+			if link.IntegrationKey == "" && link.IntegrationID > 0 {
+				// An existing integration the member chose.
+				continue
+			}
 			id := resolved[link.IntegrationKey]
 			if id <= 0 {
 				return errors.Errorf("service %q integration %q was not resolved", link.ServiceName, link.IntegrationKey)

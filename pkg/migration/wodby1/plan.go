@@ -44,14 +44,25 @@ type PlanOptions struct {
 	TargetWodbyCI bool
 	// TargetLetsEncrypt gives routes that used a custom certificate in Wodby 1
 	// a Let's Encrypt certificate instead.
-	TargetLetsEncrypt      bool
-	Repository             RepositoryTargetPlan
-	RepositoryByApp        map[string]RepositoryTargetPlan
-	SkipCode               bool
-	SkipData               bool
-	RequireData            bool
-	AllowUnsupportedDrupal bool
-	Selection              *SourceSelection
+	TargetLetsEncrypt bool
+	// TargetBackupIntegrationID and TargetBackupBucket keep backups in the
+	// member's own storage integration instead of Wodby Blob or a copy of the
+	// Wodby 1 mirror.
+	TargetBackupIntegrationID int
+	TargetBackupBucket        string
+	// TargetBackupWindow is the daily backup window, HH:MM-HH:MM in the
+	// organization's time zone; empty keeps 02:00-05:00.
+	TargetBackupWindow string
+	// TargetSMTPIntegrationID relays the apps' mail through the member's own
+	// SMTP integration instead of credentials copied from Wodby 1.
+	TargetSMTPIntegrationID int
+	Repository              RepositoryTargetPlan
+	RepositoryByApp         map[string]RepositoryTargetPlan
+	SkipCode                bool
+	SkipData                bool
+	RequireData             bool
+	AllowUnsupportedDrupal  bool
+	Selection               *SourceSelection
 	// WorkspaceInstances holds the UUIDs of the direct-Git source instances
 	// to create as development workspaces instead of built environments.
 	WorkspaceInstances map[string]bool
@@ -112,6 +123,10 @@ type PlanTarget struct {
 	// LetsEncrypt replaces custom certificates of Wodby 1 routes with
 	// Let's Encrypt ones.
 	LetsEncrypt             bool                       `json:"letsEncrypt,omitempty"`
+	BackupIntegrationID     int                        `json:"backupIntegrationId,omitempty"`
+	BackupBucket            string                     `json:"backupBucket,omitempty"`
+	BackupWindow            string                     `json:"backupWindow,omitempty"`
+	SMTPIntegrationID       int                        `json:"smtpIntegrationId,omitempty"`
 	OrgOwnerOrAdminVerified bool                       `json:"orgOwnerOrAdminVerified"`
 	DiscoveryVerified       bool                       `json:"discoveryVerified"`
 	Capabilities            *TargetClusterCapabilities `json:"capabilities,omitempty"`
@@ -337,6 +352,9 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 	if opts.TargetWodbyCI && opts.TargetCIIntegrationID > 0 {
 		return Plan{}, fmt.Errorf("choose either Wodby CI or a target CI integration, not both")
 	}
+	if err := validateTargetChoices(opts.TargetBackupIntegrationID, opts.TargetBackupBucket, opts.TargetBackupWindow, opts.TargetSMTPIntegrationID); err != nil {
+		return Plan{}, err
+	}
 	if err := export.Validate(); err != nil {
 		return Plan{}, err
 	}
@@ -388,6 +406,10 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 			CIIntegrationID:         opts.TargetCIIntegrationID,
 			WodbyCI:                 opts.TargetWodbyCI,
 			LetsEncrypt:             opts.TargetLetsEncrypt,
+			BackupIntegrationID:     opts.TargetBackupIntegrationID,
+			BackupBucket:            strings.TrimSpace(opts.TargetBackupBucket),
+			BackupWindow:            strings.TrimSpace(opts.TargetBackupWindow),
+			SMTPIntegrationID:       opts.TargetSMTPIntegrationID,
 			OrgOwnerOrAdminVerified: opts.TargetOrgOwnerOrAdminVerified,
 		},
 		Selection: sourceSelectionForPlan(export, opts.Selection),
@@ -2319,4 +2341,49 @@ func issueInstanceUUID(path string) string {
 		}
 	}
 	return ""
+}
+
+// validateTargetChoices checks the backup and mail choices of a plan.
+func validateTargetChoices(backupIntegrationID int, backupBucket, backupWindow string, smtpIntegrationID int) error {
+	if backupIntegrationID < 0 || smtpIntegrationID < 0 {
+		return fmt.Errorf("target integration IDs must not be negative")
+	}
+	if (backupIntegrationID > 0) != (strings.TrimSpace(backupBucket) != "") {
+		return fmt.Errorf("a target backup integration and its bucket must be set together")
+	}
+	if strings.TrimSpace(backupWindow) != "" {
+		if _, _, _, err := ParseBackupWindow(backupWindow); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ParseBackupWindow reads a daily backup window, HH:MM-HH:MM, that may cross
+// midnight. Wodby 2 accepts windows of 30 to 180 minutes.
+func ParseBackupWindow(window string) (start, end string, minutes int, err error) {
+	parts := strings.Split(strings.TrimSpace(window), "-")
+	if len(parts) != 2 {
+		return "", "", 0, fmt.Errorf("backup window %q must be HH:MM-HH:MM", window)
+	}
+	parse := func(value string) (int, error) {
+		at, err := time.Parse("15:04", strings.TrimSpace(value))
+		if err != nil {
+			return 0, fmt.Errorf("backup window %q must be HH:MM-HH:MM", window)
+		}
+		return at.Hour()*60 + at.Minute(), nil
+	}
+	from, err := parse(parts[0])
+	if err != nil {
+		return "", "", 0, err
+	}
+	to, err := parse(parts[1])
+	if err != nil {
+		return "", "", 0, err
+	}
+	minutes = (to - from + 24*60) % (24 * 60)
+	if minutes < 30 || minutes > 180 {
+		return "", "", 0, fmt.Errorf("backup window %q must be 30 to 180 minutes long", window)
+	}
+	return fmt.Sprintf("%02d:%02d", from/60, from%60), fmt.Sprintf("%02d:%02d", to/60, to%60), minutes, nil
 }

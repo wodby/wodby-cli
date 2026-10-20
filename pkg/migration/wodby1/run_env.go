@@ -38,15 +38,19 @@ type RunOptions struct {
 	TargetVersionMap []string
 	TargetImportMap  []string
 
-	TargetCIIntegrationID  int
-	TargetWodbyCI          bool
-	TargetLetsEncrypt      bool
-	TargetGitIntegrationID int
-	TargetRepositoryName   string
-	TargetRepositoryMap    []string
-	TargetCodeService      string
-	TargetGitRef           string
-	TargetGitRefType       string
+	TargetCIIntegrationID     int
+	TargetWodbyCI             bool
+	TargetLetsEncrypt         bool
+	TargetBackupIntegrationID int
+	TargetBackupBucket        string
+	TargetBackupWindow        string
+	TargetSMTPIntegrationID   int
+	TargetGitIntegrationID    int
+	TargetRepositoryName      string
+	TargetRepositoryMap       []string
+	TargetCodeService         string
+	TargetGitRef              string
+	TargetGitRefType          string
 
 	SkipCode                bool
 	SkipData                bool

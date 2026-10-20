@@ -294,6 +294,10 @@ func bindFlags(cmd *cobra.Command, opts *options) {
 	cmd.Flags().StringArrayVar(&opts.TargetVersionMap, "target-version-map", nil, "Source-service version override ([APP/][INSTANCE/]SOURCE_SERVICE=TARGET_VERSION)")
 	cmd.Flags().StringArrayVar(&opts.TargetImportMap, "target-import-map", nil, "Backup-to-import mapping ([APP/][INSTANCE/]COMPONENT=SERVICE:IMPORT)")
 
+	cmd.Flags().IntVar(&opts.TargetBackupIntegrationID, "target-backup-integration-id", 0, "Keep backups in this Wodby 2 storage integration (S3, GCS, Azure, Wasabi, Backblaze) instead of Wodby Blob or a copy of the Wodby 1 mirror; with --target-backup-bucket")
+	cmd.Flags().StringVar(&opts.TargetBackupBucket, "target-backup-bucket", "", "Bucket of --target-backup-integration-id for backups")
+	cmd.Flags().StringVar(&opts.TargetBackupWindow, "target-backup-window", "", "Daily automatic backup window HH:MM-HH:MM in the organization's time zone, 30 to 180 minutes (default 02:00-05:00)")
+	cmd.Flags().IntVar(&opts.TargetSMTPIntegrationID, "target-smtp-integration-id", 0, "Relay mail through this Wodby 2 SMTP integration instead of credentials copied from Wodby 1, also for instances that sent mail without a relay")
 	cmd.Flags().BoolVar(&opts.TargetLetsEncrypt, "target-letsencrypt", false, "Give routes that used a custom certificate in Wodby 1 a Let's Encrypt certificate, issued once DNS points to Wodby 2, instead of uploading the certificate again")
 	cmd.Flags().BoolVar(&opts.TargetWodbyCI, "target-wodby-ci", false, "Build instances that Wodby 1 deployed through third-party CI with Wodby CI, from the repository linked with --target-git-integration-id")
 	cmd.Flags().IntVar(&opts.TargetCIIntegrationID, "target-ci-integration-id", 0, "Wodby 2 CI integration ID override (otherwise Wodby CI with a linked repository, or automatic Custom CI fallback)")

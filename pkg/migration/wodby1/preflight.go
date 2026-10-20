@@ -1222,6 +1222,7 @@ func (c *TargetClient) preflightInstance(
 		}
 		replicas, resources, capacityFindings := prepareServiceCapacity(app.Name, source.Name, sourceService, inspection)
 		findings = append(findings, capacityFindings...)
+		findings = append(findings, emptyEnvVarTargetDefaultFindings(app.Name, source, sourceService, inspection, stackManifest)...)
 		preparedServices[sourceService.Name] = PreparedService{
 			Source: sourceService, Target: inspection, TargetVersion: servicePlan.TargetVersion,
 			Replicas: replicas, Resources: resources,

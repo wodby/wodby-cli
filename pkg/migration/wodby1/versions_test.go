@@ -98,7 +98,7 @@ func TestResolveServiceVersionUsesStackRevisionDefaultWhenSourceVersionMissing(t
 }
 
 func TestCustomStackDefaultEnvironmentRequiresMigration(t *testing.T) {
-	if !sourceEnvVarRequiresMigration(nil, EnvVar{Name: "CUSTOM_DEFAULT", Enabled: true, Origin: "custom_stack"}) {
+	if !sourceEnvVarRequiresMigration(nil, EnvVar{Name: "CUSTOM_DEFAULT", Value: "on", Enabled: true, Origin: "custom_stack"}) {
 		t.Fatal("custom stack default must be migrated")
 	}
 	if sourceEnvVarRequiresMigration(nil, EnvVar{Name: "MANAGED_DEFAULT", Enabled: true, Origin: "default"}) {

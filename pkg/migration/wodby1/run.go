@@ -397,6 +397,7 @@ func runWodby1Single(cmd *RunEnv, sourceKind string, sourceID string, opts *RunO
 		TargetBackupBucket:            opts.TargetBackupBucket,
 		TargetBackupWindow:            opts.TargetBackupWindow,
 		TargetSMTPIntegrationID:       opts.TargetSMTPIntegrationID,
+		TargetCatchMail:               opts.TargetCatchMail,
 		Repository: RepositoryTargetPlan{
 			GitIntegrationID: opts.TargetGitIntegrationID,
 			RepositoryName:   strings.TrimSpace(opts.TargetRepositoryName),
@@ -948,6 +949,7 @@ func runWodby1Server(cmd *RunEnv, sourceID string, opts *RunOptions) (runErr err
 		TargetBackupBucket:            opts.TargetBackupBucket,
 		TargetBackupWindow:            opts.TargetBackupWindow,
 		TargetSMTPIntegrationID:       opts.TargetSMTPIntegrationID,
+		TargetCatchMail:               opts.TargetCatchMail,
 		Repository: RepositoryTargetPlan{
 			GitIntegrationID: opts.TargetGitIntegrationID,
 			RepositoryName:   strings.TrimSpace(opts.TargetRepositoryName),

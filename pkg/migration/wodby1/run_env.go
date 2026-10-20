@@ -45,6 +45,7 @@ type RunOptions struct {
 	TargetBackupBucket        string
 	TargetBackupWindow        string
 	TargetSMTPIntegrationID   int
+	TargetCatchMail           bool
 	TargetGitIntegrationID    int
 	TargetRepositoryName      string
 	TargetRepositoryMap       []string

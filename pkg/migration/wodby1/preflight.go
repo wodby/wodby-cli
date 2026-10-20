@@ -31,6 +31,8 @@ type TargetPreflightOptions struct {
 	StateBackedInstanceRecovery map[string]bool
 	AddMissingServices          bool
 	Progress                    func(TargetPreflightProgress)
+	// CatchMail is the plan's TargetCatchMail; PreflightTarget sets it.
+	CatchMail bool
 }
 
 // TargetPreflightProgress reports the current app and, when applicable,
@@ -86,15 +88,18 @@ func (p PreparedMigration) ForApp(sourceUUID string) (PreparedMigration, bool) {
 }
 
 type PreparedInstance struct {
-	Source               Instance
-	SkipCode             bool
-	Stack                TargetStack
-	StackServices        []TargetStackServiceInspection
-	Services             map[string]PreparedService
-	BuildSource          *PreparedBuildSource
-	Imports              map[string]PreparedImport
-	ImportByComponent    map[string]PreparedImport
-	EffectiveState       map[string]bool
+	Source            Instance
+	SkipCode          bool
+	Stack             TargetStack
+	StackServices     []TargetStackServiceInspection
+	Services          map[string]PreparedService
+	BuildSource       *PreparedBuildSource
+	Imports           map[string]PreparedImport
+	ImportByComponent map[string]PreparedImport
+	EffectiveState    map[string]bool
+	// CatchMailService is the stack's Mailpit service that receives this
+	// non-production app environment's mail instead of its Wodby 1 delivery.
+	CatchMailService     string
 	DisableCronSchedules bool
 	DisableCustomRoutes  bool
 	TargetEnvType        string
@@ -327,6 +332,9 @@ func (c *TargetClient) PreflightTarget(
 	plan *Plan,
 	opts TargetPreflightOptions,
 ) (PreparedMigration, error) {
+	if plan != nil {
+		opts.CatchMail = plan.Target.CatchMail
+	}
 	if c == nil {
 		return PreparedMigration{}, errors.New("target Wodby 2 client is required")
 	}
@@ -1243,9 +1251,15 @@ func (c *TargetClient) preflightInstance(
 		}
 	}
 
+	catchMailService := ""
+	if opts.CatchMail && plan.Workspace == nil && !strings.EqualFold(strings.TrimSpace(plan.TargetEnvType), "prod") {
+		catchMailService, findings = enableCatchMail(app, source, inspections, effective, findings)
+	}
+
 	findings = append(findings, reconcileRoutePorts(app, source, plan, preparedServices)...)
 
 	prepared := PreparedInstance{
+		CatchMailService:     catchMailService,
 		Source:               source,
 		SkipCode:             opts.SkipCode,
 		Stack:                stack,
@@ -2368,4 +2382,26 @@ func missingFilesBackupFindings(
 		}
 	}
 	return nil
+}
+
+// enableCatchMail enables the stack's Mailpit service for a non-production
+// app environment so its mail is caught there. A stack without Mailpit keeps
+// the environment's Wodby 1 mail delivery, and the preview says so.
+func enableCatchMail(app App, source Instance, inspections []TargetStackServiceInspection, effective map[string]bool, findings []ReviewItem) (string, []ReviewItem) {
+	for _, inspection := range inspections {
+		manifest := inspection.ServiceRevision.Manifest
+		if manifest == nil || manifest.Name != "mailpit" || isTargetServiceDerivative(inspection) {
+			continue
+		}
+		name := inspection.StackService.Name
+		effective[name] = true
+		return name, append(findings, ReviewItem{
+			Severity: SeverityMigration, App: app.Name, Instance: source.Name, Subject: "mail delivery",
+			Message: fmt.Sprintf("this non-production app environment delivers mail to Mailpit (%q), where it can be read, so testing never emails real recipients", name),
+		})
+	}
+	return "", append(findings, ReviewItem{
+		Severity: SeverityConfirmation, App: app.Name, Instance: source.Name, Subject: "mail delivery",
+		Message: "the target stack has no Mailpit service, so this app environment keeps the mail delivery of Wodby 1",
+	})
 }

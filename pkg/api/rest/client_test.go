@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wodby/wodby-cli/pkg/types"
 )
@@ -164,5 +166,70 @@ func TestClientDecodesProblemJSONErrorDetails(t *testing.T) {
 	}
 	if got := err.Error(); got != "api request failed: invalid request body: name: is required (400 Bad Request)" {
 		t.Fatalf("error = %q", got)
+	}
+}
+
+// Wodby 2 answers a lock conflict as busy after rolling the request back, so
+// the client sends it again instead of failing the command.
+func TestClientRepeatsBusyRequests(t *testing.T) {
+	saved := busyRetryDelays
+	busyRetryDelays = []time.Duration{time.Millisecond, time.Millisecond}
+	defer func() { busyRetryDelays = saved }()
+
+	for _, tc := range []struct {
+		name      string
+		busyTimes int
+		wantCalls int
+		wantErr   bool
+	}{
+		{name: "succeeds after busy answers", busyTimes: 2, wantCalls: 3},
+		{name: "gives up after the last wait", busyTimes: 5, wantCalls: 3, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				body, _ := io.ReadAll(r.Body)
+				if string(body) != `{"disabled":true}` {
+					t.Fatalf("request body = %q", body)
+				}
+				if calls <= tc.busyTimes {
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"message":"Application or organization configuration is busy; retry the operation"}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"id":1}`))
+			}))
+			defer server.Close()
+			client, err := NewClient(types.APIConfig{Endpoint: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out map[string]interface{}
+			err = client.Put(context.Background(), "/app-services/1", nil, map[string]bool{"disabled": true}, &out)
+			if (err != nil) != tc.wantErr || calls != tc.wantCalls {
+				t.Fatalf("err = %v, calls = %d", err, calls)
+			}
+			if tc.wantErr && !IsBusy(err) {
+				t.Fatalf("final error is not reported as busy: %v", err)
+			}
+		})
+	}
+}
+
+func TestClientDoesNotRepeatOtherErrors(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":"Invalid value"}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(types.APIConfig{Endpoint: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Post(context.Background(), "/apps", nil, map[string]string{}, nil); err == nil || calls != 1 {
+		t.Fatalf("err = %v, calls = %d", err, calls)
 	}
 }

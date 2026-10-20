@@ -1230,7 +1230,7 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 		case "sshd":
 			servicePlan.TargetName = "sshd"
 			servicePlan.Action = "substitute"
-			confirmation = "sshd will be mapped to the target PHP SSH derivative service"
+			confirmation = "sshd will be mapped to the target PHP SSH derivative service when the target stack has one; otherwise it is not migrated"
 		case "varnish":
 			servicePlan.TargetName = "vinyl"
 			servicePlan.Action = "substitute"

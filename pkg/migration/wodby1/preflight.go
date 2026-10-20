@@ -1065,6 +1065,21 @@ func (c *TargetClient) preflightInstance(
 			if !servicePlan.Enabled {
 				continue
 			}
+			// Stacks are dropping the PHP SSH derivative; the WordPress stack has
+			// none. Without one, the default sshd mapping has nothing to map to and
+			// console access moves to the dashboard terminal.
+			if sourceService.Name == "sshd" && servicePlan.Action == "substitute" && servicePlan.TargetName == "sshd" {
+				servicePlan.TargetName = ""
+				servicePlan.Action = "skip"
+				findings = append(findings, ReviewItem{
+					Severity: skippedServiceSeverity(sourceService),
+					App:      app.Name,
+					Instance: source.Name,
+					Subject:  "service sshd",
+					Message:  "the target stack has no SSH service, so sshd is not migrated; open a terminal to the PHP service from the Wodby 2 dashboard instead",
+				})
+				continue
+			}
 			if !opts.AddMissingServices && !servicePlan.AddToStack {
 				findings = append(findings, ReviewItem{
 					Severity: SeverityBlocking,

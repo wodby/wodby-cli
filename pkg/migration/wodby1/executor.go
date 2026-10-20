@@ -2157,6 +2157,15 @@ func (e *MigrationExecutor) prepareInstance(
 			return err
 		}
 	}
+	for _, link := range prepared.ServiceIntegrations {
+		service, ok := byName[link.ServiceName]
+		if !ok {
+			return errors.Errorf("target app service %q for integration %q is missing", link.ServiceName, link.Name)
+		}
+		if err := e.ensureAppServiceIntegration(ctx, state, prepared.Source.UUID, service, link); err != nil {
+			return err
+		}
+	}
 	// A workspace got its repository at creation and rejects a later change.
 	if prepared.Workspace == nil && prepared.BuildSource != nil && strings.TrimSpace(prepared.BuildSource.Input.BuildSourceType) != "" {
 		service, ok := byName[prepared.BuildSource.ServiceName]
@@ -2279,6 +2288,49 @@ func (e *MigrationExecutor) ensureAppServiceLink(
 	}
 	e.reportProgress("Service %q link %q now uses %q.", service.Name, name, linked.Name)
 	return nil
+}
+
+// ensureAppServiceIntegration links an integration to one app environment's
+// service, unless that link already exists.
+func (e *MigrationExecutor) ensureAppServiceIntegration(
+	ctx context.Context,
+	state *MigrationState,
+	sourceID string,
+	service TargetAppService,
+	link PreparedAppServiceIntegration,
+) error {
+	if link.IntegrationID <= 0 {
+		return errors.Errorf("service %q integration %q was not resolved", service.Name, link.Name)
+	}
+	current, err := e.target.ListAppServiceIntegrations(ctx, service.ID)
+	if err != nil {
+		return err
+	}
+	matches := []TargetAppServiceIntegration{}
+	for _, item := range current {
+		if item.Name == link.Name {
+			matches = append(matches, item)
+		}
+	}
+	if len(matches) > 1 {
+		return &TargetAmbiguousMatchError{Resource: "app service integration", Name: link.Name, Count: len(matches)}
+	}
+	if len(matches) == 1 && matches[0].IntegrationID != link.IntegrationID {
+		return errors.Errorf("service %q already links integration %q to another integration (ID %d)", service.Name, link.Name, matches[0].IntegrationID)
+	}
+	operation := operationKey("service_integration", strconv.Itoa(service.ID), link.Name)
+	run, err := e.beginInstanceMutation(state, sourceID, operation, len(matches) == 1)
+	if err != nil || !run {
+		return err
+	}
+	e.reportProgress("Linking integration ID %d to service %q as %q...", link.IntegrationID, service.Name, link.Name)
+	created, err := e.target.CreateAppServiceIntegration(ctx, service.ID, TargetCreateStackServiceIntegrationInput{
+		Name: link.Name, IntegrationID: link.IntegrationID,
+	})
+	if err != nil {
+		return e.recordInstanceMutationError(state, sourceID, operation, "app service integration creation", err)
+	}
+	return e.completeInstanceMutation(state, sourceID, operation, created.ID, 0)
 }
 
 func (e *MigrationExecutor) ensureServiceVersion(
@@ -5478,6 +5530,25 @@ func (e *MigrationExecutor) verifyInstance(
 		}
 		if matches != 1 {
 			return errors.Errorf("target service %q link %q does not uniquely use service %q", service.Name, link.Name, linked.Name)
+		}
+	}
+	for _, link := range prepared.ServiceIntegrations {
+		service, ok := byName[link.ServiceName]
+		if !ok {
+			return errors.Errorf("target app service %q for integration %q is missing during verification", link.ServiceName, link.Name)
+		}
+		items, err := e.target.ListAppServiceIntegrations(ctx, service.ID)
+		if err != nil {
+			return errors.Wrap(err, "verify target app service integrations")
+		}
+		matches := 0
+		for _, item := range items {
+			if item.Name == link.Name && item.IntegrationID == link.IntegrationID {
+				matches++
+			}
+		}
+		if matches != 1 {
+			return errors.Errorf("target service %q integration %q does not uniquely use integration ID %d", service.Name, link.Name, link.IntegrationID)
 		}
 	}
 	deploymentInput, err := technicalDeploymentInput(prepared, services, nil)

@@ -228,6 +228,14 @@ func bindPreparedIntegrationIDs(prepared *PreparedMigration, resolved map[string
 		prepared.StackConfiguration.Services[serviceName] = configuration
 	}
 	for index := range prepared.Instances {
+		for linkIndex := range prepared.Instances[index].ServiceIntegrations {
+			link := &prepared.Instances[index].ServiceIntegrations[linkIndex]
+			id := resolved[link.IntegrationKey]
+			if id <= 0 {
+				return errors.Errorf("service %q integration %q was not resolved", link.ServiceName, link.IntegrationKey)
+			}
+			link.IntegrationID = id
+		}
 		if strings.TrimSpace(prepared.Instances[index].CIIntegrationKey) != "" {
 			id := resolved[prepared.Instances[index].CIIntegrationKey]
 			if id <= 0 {

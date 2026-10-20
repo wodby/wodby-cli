@@ -74,6 +74,14 @@ type TargetStackServiceIntegration struct {
 	IntegrationID  int    `json:"integrationId"`
 }
 
+// TargetAppServiceIntegration links an integration to one app service.
+type TargetAppServiceIntegration struct {
+	ID            int    `json:"id"`
+	AppServiceID  int    `json:"appServiceId"`
+	Name          string `json:"name"`
+	IntegrationID int    `json:"integrationId"`
+}
+
 type TargetCreateStackServiceIntegrationInput struct {
 	Name          string `json:"name"`
 	IntegrationID int    `json:"integrationId"`
@@ -239,6 +247,36 @@ func (c *TargetClient) CreateStackServiceIntegration(ctx context.Context, stackS
 	}
 	if item.ID <= 0 || item.StackServiceID != stackServiceID || item.Name != input.Name || item.IntegrationID != input.IntegrationID {
 		return TargetStackServiceIntegration{}, errors.New("target Wodby 2 created an unexpected stack service integration")
+	}
+	return item, nil
+}
+
+func (c *TargetClient) ListAppServiceIntegrations(ctx context.Context, appServiceID int) ([]TargetAppServiceIntegration, error) {
+	if appServiceID <= 0 {
+		return nil, errors.New("target app service ID must be positive")
+	}
+	items := []TargetAppServiceIntegration{}
+	if err := c.client.Get(ctx, "/app-services/"+strconv.Itoa(appServiceID)+"/integrations", nil, &items); err != nil {
+		return nil, errors.Wrap(err, "list target app service integrations")
+	}
+	for _, item := range items {
+		if item.ID <= 0 || item.AppServiceID != appServiceID || strings.TrimSpace(item.Name) == "" || item.IntegrationID <= 0 {
+			return nil, errors.New("target Wodby 2 app service returned an invalid integration link")
+		}
+	}
+	return items, nil
+}
+
+func (c *TargetClient) CreateAppServiceIntegration(ctx context.Context, appServiceID int, input TargetCreateStackServiceIntegrationInput) (TargetAppServiceIntegration, error) {
+	if appServiceID <= 0 || strings.TrimSpace(input.Name) == "" || input.IntegrationID <= 0 {
+		return TargetAppServiceIntegration{}, errors.New("target app service integration requires a service, name, and integration")
+	}
+	var item TargetAppServiceIntegration
+	if err := c.client.Post(ctx, "/app-services/"+strconv.Itoa(appServiceID)+"/integrations", nil, input, &item); err != nil {
+		return TargetAppServiceIntegration{}, errors.Wrap(err, "create target app service integration")
+	}
+	if item.ID <= 0 || item.AppServiceID != appServiceID || item.Name != input.Name || item.IntegrationID != input.IntegrationID {
+		return TargetAppServiceIntegration{}, errors.New("target Wodby 2 created an unexpected app service integration")
 	}
 	return item, nil
 }

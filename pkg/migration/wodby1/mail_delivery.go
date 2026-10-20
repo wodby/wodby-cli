@@ -162,6 +162,8 @@ func sourceMailServiceProperty(instance Instance) (service string, set bool, val
 	return value, value != "", true
 }
 
+// A selected service that is disabled means Wodby 1 delivers no mail for the
+// instance, so none is selected and no Wodby 2 mail link is created either.
 func selectedSourceMailService(instance Instance) (string, bool, error) {
 	if service, set, valid := sourceMailServiceProperty(instance); !valid {
 		return "", false, fmt.Errorf("source mail_service must be a service name")
@@ -170,7 +172,7 @@ func selectedSourceMailService(instance Instance) (string, bool, error) {
 		switch service {
 		case "mailhog", "opensmtpd":
 			if !sourceServiceEnabled(instance.Services, service) {
-				return "", false, fmt.Errorf("selected Wodby 1 mail service %q is not enabled", service)
+				return "", false, nil
 			}
 			return service, true, nil
 		default:
@@ -187,7 +189,7 @@ func selectedSourceMailService(instance Instance) (string, bool, error) {
 			service = "mailhog"
 		}
 		if !sourceServiceEnabled(instance.Services, service) {
-			return "", false, fmt.Errorf("legacy php_mail_catcher=%t selects Wodby 1 service %q, but it is not enabled", enabled, service)
+			return "", false, nil
 		}
 		return service, true, nil
 	}

@@ -54,7 +54,7 @@ func (c *TargetClient) prepareAppIntegrations(
 		prepared = append(prepared, *ci)
 	}
 
-	smtp, smtpFindings, err := c.prepareSMTPIntegration(ctx, *app)
+	smtp, relayInstances, smtpFindings, err := c.prepareSMTPIntegration(ctx, *app)
 	if err != nil {
 		return nil, err
 	}
@@ -62,9 +62,22 @@ func (c *TargetClient) prepareAppIntegrations(
 	if smtp != nil {
 		prepared = append(prepared, *smtp)
 		configuration := app.StackConfiguration.Services[smtp.Service]
-		configuration.Integrations = append(configuration.Integrations, PreparedStackIntegrationLink{
-			Name: "smtp", IntegrationKey: smtp.Key,
-		})
+		if relayInstances == nil {
+			configuration.Integrations = append(configuration.Integrations, PreparedStackIntegrationLink{
+				Name: "smtp", IntegrationKey: smtp.Key,
+			})
+		}
+		// Only some instances used a relay: link it to their app environments
+		// alone, so the others keep delivering mail without one.
+		for index := range app.Instances {
+			instance := &app.Instances[index]
+			if relayInstances != nil && relayInstances[instance.Source.UUID] {
+				instance.ServiceIntegrations = append(instance.ServiceIntegrations, PreparedAppServiceIntegration{
+					ServiceName: smtp.Service, Name: "smtp", IntegrationKey: smtp.Key,
+				})
+			}
+			removeInstanceRelayVariables(instance, smtp.Service)
+		}
 		// The integration is the single source of truth for relay variables.
 		// Leaving copied RELAY_* variables on the stack would override it.
 		filtered := configuration.EnvVars[:0]
@@ -359,9 +372,44 @@ func wodbyCIExampleStack(app App, instance Instance) string {
 	return ""
 }
 
-func (c *TargetClient) prepareSMTPIntegration(ctx context.Context, app PreparedAppMigration) (*PreparedIntegration, []ReviewItem, error) {
+// removeInstanceRelayVariables drops relay variables from an instance's
+// service overrides: the SMTP integration supplies them, and a copied value
+// would override it.
+func removeInstanceRelayVariables(instance *PreparedInstance, targetService string) {
+	for sourceName, mapping := range instance.Services {
+		if mapping.Target.StackService.Name != targetService || len(mapping.InstanceEnvVars) == 0 {
+			continue
+		}
+		kept := []EnvVar{}
+		for _, variable := range mapping.InstanceEnvVars {
+			if !smtpRelayEnvironmentNames[strings.ToUpper(strings.TrimSpace(variable.Name))] {
+				kept = append(kept, variable)
+			}
+		}
+		mapping.InstanceEnvVars = kept
+		instance.Services[sourceName] = mapping
+	}
+}
+
+// prepareSMTPIntegration converts OpenSMTPD relays into one SMTP integration.
+// When only some instances of the app, migrated or read for context, use a
+// relay, it returns the migrated ones that do; the integration is then linked
+// to their app environments instead of the shared stack.
+func (c *TargetClient) prepareSMTPIntegration(ctx context.Context, app PreparedAppMigration) (*PreparedIntegration, map[string]bool, []ReviewItem, error) {
 	observations := []smtpRelayObservation{}
 	expected := []smtpRelayObservation{}
+	contextWithoutRelay := false
+	for _, instance := range app.ContextInstances {
+		for _, source := range instance.Source.Services {
+			mapping, ok := instance.Services[source.Name]
+			if !ok || !source.Enabled || mapping.Target.StackService.Name != "opensmtpd" {
+				continue
+			}
+			if !sourceRelayConfigured(source) {
+				contextWithoutRelay = true
+			}
+		}
+	}
 	for _, instance := range app.Instances {
 		for _, source := range instance.Source.Services {
 			mapping, ok := instance.Services[source.Name]
@@ -391,15 +439,22 @@ func (c *TargetClient) prepareSMTPIntegration(ctx context.Context, app PreparedA
 		}
 	}
 	if len(observations) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	findings := []ReviewItem{}
-	if len(observations) != len(expected) {
+	var relayInstances map[string]bool
+	if len(observations) != len(expected) || contextWithoutRelay {
+		relayInstances = map[string]bool{}
+		names := []string{}
+		for _, observation := range observations {
+			relayInstances[observation.instanceID] = true
+			names = append(names, observation.instanceName)
+		}
+		sort.Strings(names)
 		findings = append(findings, ReviewItem{
-			Severity: SeverityBlocking, App: app.App.App.Name, Subject: "SMTP relay integration",
-			Message: "some migrated instances use an OpenSMTPD relay while others do not; one shared Wodby 2 stack cannot attach the relay to only part of those instances",
+			Severity: SeverityMigration, App: app.App.App.Name, Subject: "SMTP relay integration",
+			Message: fmt.Sprintf("only some instances of the app use an OpenSMTPD relay; the SMTP integration will be linked to the app environments of %s only, and the others keep delivering mail without a relay", strings.Join(names, ", ")),
 		})
-		return nil, findings, nil
 	}
 	for _, observation := range observations {
 		for name := range observation.redacted {
@@ -407,19 +462,19 @@ func (c *TargetClient) prepareSMTPIntegration(ctx context.Context, app PreparedA
 		}
 	}
 	if containsBlockingReviewItems(findings) {
-		return nil, findings, nil
+		return nil, nil, findings, nil
 	}
 
 	providerName := commonSMTPProvider(observations)
 	provider, err := c.GetProviderByName(ctx, providerName)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	fieldNames := smtpProviderFields(providerName)
 	fields, fieldFindings := aggregateIntegrationFields(app.App.App.Name, "SMTP relay", observations, fieldNames)
 	findings = append(findings, fieldFindings...)
 	if containsBlockingReviewItems(findings) {
-		return nil, findings, nil
+		return nil, nil, findings, nil
 	}
 	var scope *string
 	if providerName == "aws" {
@@ -430,7 +485,7 @@ func (c *TargetClient) prepareSMTPIntegration(ctx context.Context, app PreparedA
 			}
 		}
 		if containsBlockingReviewItems(findings) {
-			return nil, findings, nil
+			return nil, nil, findings, nil
 		}
 		scope = &region
 	}
@@ -446,7 +501,18 @@ func (c *TargetClient) prepareSMTPIntegration(ctx context.Context, app PreparedA
 		Key: "smtp", ProviderName: provider.Name, ProviderID: provider.ID, ProviderRevID: provider.RevID,
 		Name: migrationResourceName("smtp", app.App.App.Name, app.App.App.UUID), Title: "SMTP for " + firstNonEmpty(app.App.App.Title, app.App.App.Name),
 		Kind: kind, Service: "opensmtpd", Scope: scope, Fields: fields,
-	}, findings, nil
+	}, relayInstances, findings, nil
+}
+
+// sourceRelayConfigured reports whether an OpenSMTPD service relays mail.
+func sourceRelayConfigured(source Service) bool {
+	for _, variable := range source.EnvVars {
+		if variable.Enabled && strings.EqualFold(strings.TrimSpace(variable.Name), "RELAY_HOST") &&
+			(strings.TrimSpace(variable.Value) != "" || variable.IsRedacted()) {
+			return true
+		}
+	}
+	return false
 }
 
 func commonSMTPProvider(observations []smtpRelayObservation) string {

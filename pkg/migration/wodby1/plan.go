@@ -1608,7 +1608,7 @@ func validateInstanceProperties(plan *Plan, app App, instance Instance, serviceT
 			plan.addReview(SeverityBlocking, app.Name, instance.Name, "instance property mail_service", "source property must be a service name")
 		} else {
 			if !sourceServiceEnabled(instance.Services, service) {
-				plan.addReview(SeverityBlocking, app.Name, instance.Name, "mail service", fmt.Sprintf("source mail service %q is not present as an enabled exported service", service))
+				plan.addReview(SeverityConfirmation, app.Name, instance.Name, "mail service", fmt.Sprintf("the selected Wodby 1 mail service %q is not enabled, so the instance sends no mail; no Wodby 2 mail delivery link will be set. Link the PHP service to a mail service after migration if the app should send mail", service))
 			} else if targetService := strings.TrimSpace(serviceTargets[strings.ToLower(service)]); targetService == "" {
 				plan.addReview(SeverityBlocking, app.Name, instance.Name, "mail service", fmt.Sprintf("source mail service %q does not resolve to a target Wodby 2 service", service))
 			} else {
@@ -1625,7 +1625,7 @@ func validateInstanceProperties(plan *Plan, app App, instance Instance, serviceT
 				service = "mailhog"
 			}
 			if !sourceServiceEnabled(instance.Services, service) {
-				plan.addReview(SeverityBlocking, app.Name, instance.Name, "mail service", fmt.Sprintf("legacy php_mail_catcher=%t selects source service %q, but that service is not enabled", enabled, service))
+				plan.addReview(SeverityConfirmation, app.Name, instance.Name, "mail service", fmt.Sprintf("legacy php_mail_catcher=%t selects Wodby 1 service %q, which is not enabled, so the instance sends no mail; no Wodby 2 mail delivery link will be set. Link the PHP service to a mail service after migration if the app should send mail", enabled, service))
 			} else if targetService := strings.TrimSpace(serviceTargets[service]); targetService == "" {
 				plan.addReview(SeverityBlocking, app.Name, instance.Name, "mail service", fmt.Sprintf("legacy php_mail_catcher=%t selects source service %q, which has no target Wodby 2 mapping", enabled, service))
 			} else {

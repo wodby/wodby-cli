@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -70,5 +73,71 @@ func TestLibraryPreviewMatchesTheCommand(t *testing.T) {
 	got, _ := json.Marshal(result.Plan)
 	if !bytes.Equal(want, got) {
 		t.Fatalf("library plan differs from the command plan\ncommand: %s\nlibrary: %s", want, got)
+	}
+}
+
+// libraryRunEnv runs a migration through the library with its plan and state in
+// records, the way the Wodby 2 backend runs one for the Wodby Agent.
+func libraryRunEnv(t *testing.T, fixture *migrationAPIFixture, records wodby1.MigrationRecords, output *bytes.Buffer) *wodby1.RunEnv {
+	t.Helper()
+	target, err := wodby1.NewTargetClient(types.APIConfig{Endpoint: fixture.target.URL + "/v1", Key: "target-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &wodby1.RunEnv{
+		Ctx: context.Background(), Out: output, Target: target,
+		Artifacts: func(string, string, string) (wodby1.MigrationArtifacts, error) {
+			return wodby1.NewRecordArtifacts(records), nil
+		},
+	}
+}
+
+func libraryApplyOptions(fixture *migrationAPIFixture) *wodby1.RunOptions {
+	opts := wodby1.DefaultRunOptions()
+	opts.SourceBaseURL, opts.SourceToken = fixture.source.URL, testSourceToken
+	opts.TargetProject, opts.TargetCluster, opts.TargetStackID = "22", "33", 7
+	opts.TargetEnvMap = []string{"prod=prod"}
+	opts.SkipCode, opts.SkipData = true, true
+	opts.Apply, opts.Yes = true, true
+	return opts
+}
+
+// The library apply keeps the reviewed plan and the resume state in the
+// caller's records instead of files, and refuses a plan other than the one
+// approved elsewhere before it changes anything.
+func TestLibraryApplyKeepsPlanAndStateInRecords(t *testing.T) {
+	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
+	defer fixture.Close()
+	t.Setenv("TMPDIR", t.TempDir())
+
+	refused := wodby1.NewMemoryMigrationRecords()
+	var output bytes.Buffer
+	env := libraryRunEnv(t, fixture, refused, &output)
+	env.ApprovedPlanHash = strings.Repeat("0", 64)
+	err := wodby1.RunSingle(env, "app", "app-1", libraryApplyOptions(fixture))
+	if err == nil || !strings.Contains(err.Error(), "changed after it was approved") {
+		t.Fatalf("apply with another approved plan: %v", err)
+	}
+	if keys, _ := refused.Keys(""); len(keys) != 0 {
+		t.Fatalf("a refused apply stored %v", keys)
+	}
+
+	records := wodby1.NewMemoryMigrationRecords()
+	err = wodby1.RunSingle(libraryRunEnv(t, fixture, records, &output), "app", "app-1", libraryApplyOptions(fixture))
+	// The fixture leaves app creation unconfirmed, as in the command test.
+	if err == nil || !strings.Contains(err.Error(), "app creation is ambiguous") {
+		t.Fatalf("apply error = %v", err)
+	}
+	artifacts := wodby1.NewRecordArtifacts(records)
+	plan, err := artifacts.LoadPlan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := artifacts.InspectState(artifacts.StateLocation())
+	if err != nil || state.PlanHash != plan.PlanHash {
+		t.Fatalf("state = %+v, %v", state, err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(os.TempDir(), "wodby-migrations")); len(entries) != 0 {
+		t.Fatalf("the library apply wrote files: %v", entries)
 	}
 }

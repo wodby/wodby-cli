@@ -27,6 +27,8 @@ const (
 // not be observed is recovered by exact read-back, never blindly repeated.
 // When set, it acknowledges exactly one resource-scoped operation ID.
 type MigrationExecutorOptions struct {
+	// State keeps the migration state; StatePath keeps it in that file instead.
+	State                   MigrationStateStore
 	StatePath               string
 	PollInterval            time.Duration
 	OperationTimeout        time.Duration
@@ -48,7 +50,7 @@ type MigrationPhaseResult struct {
 // checkpoints. The CLI exposes these checkpoints as one resumable apply.
 type MigrationExecutor struct {
 	target                  *TargetClient
-	statePath               string
+	state                   MigrationStateStore
 	pollInterval            time.Duration
 	operationTimeout        time.Duration
 	retryAmbiguousOperation string
@@ -62,8 +64,11 @@ func NewMigrationExecutor(client *TargetClient, opts MigrationExecutorOptions) (
 	if client == nil {
 		return nil, errors.New("target Wodby 2 client is required")
 	}
-	if strings.TrimSpace(opts.StatePath) == "" {
-		return nil, errors.New("migration state path is required")
+	if opts.State == nil {
+		if strings.TrimSpace(opts.StatePath) == "" {
+			return nil, errors.New("migration state path is required")
+		}
+		opts.State = FileStateStore(opts.StatePath)
 	}
 	if opts.PollInterval == 0 {
 		opts.PollInterval = defaultMigrationPollInterval
@@ -82,7 +87,7 @@ func NewMigrationExecutor(client *TargetClient, opts MigrationExecutorOptions) (
 	}
 	return &MigrationExecutor{
 		target:                  client,
-		statePath:               opts.StatePath,
+		state:                   opts.State,
 		pollInterval:            opts.PollInterval,
 		operationTimeout:        opts.OperationTimeout,
 		retryAmbiguousOperation: opts.RetryAmbiguousOperation,
@@ -169,7 +174,7 @@ func (e *MigrationExecutor) Apply(
 			if err := state.SetBackupDigest(digest); err != nil {
 				return MigrationPhaseResult{}, err
 			}
-			if err := SaveMigrationState(e.statePath, state); err != nil {
+			if err := e.state.Save(state); err != nil {
 				return MigrationPhaseResult{}, err
 			}
 			e.reportProgress("Selected source backup pinned to the migration state.")
@@ -365,7 +370,7 @@ func (e *MigrationExecutor) Prepare(
 	if err := state.SetStatus(status); err != nil {
 		return MigrationPhaseResult{}, err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return MigrationPhaseResult{}, err
 	}
 	if !failures.empty() {
@@ -437,7 +442,7 @@ func (e *MigrationExecutor) ensureGeneratedTargetStack(
 			if err := state.MarkAppOperationCreated(generatedStackOperation, generated.ID, generated.RevID); err != nil {
 				return PreparedMigration{}, err
 			}
-			if err := SaveMigrationState(e.statePath, state); err != nil {
+			if err := e.state.Save(state); err != nil {
 				return PreparedMigration{}, err
 			}
 			e.reportProgress("Recovered generated target stack %q (ID %d, revision ID %d).", generated.Name, generated.ID, generated.RevID)
@@ -457,7 +462,7 @@ func (e *MigrationExecutor) ensureGeneratedTargetStack(
 	if err := state.MarkAppOperationIntent(generatedStackOperation); err != nil {
 		return PreparedMigration{}, err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return PreparedMigration{}, err
 	}
 	var projectID *int
@@ -478,13 +483,13 @@ func (e *MigrationExecutor) ensureGeneratedTargetStack(
 	}
 	if err := validateGeneratedStack(generated, blueprint, plan.Target.OrgID); err != nil {
 		_ = state.MarkAppOperationAmbiguousWithIDs(generatedStackOperation, generated.ID, generated.RevID)
-		_ = SaveMigrationState(e.statePath, state)
+		_ = e.state.Save(state)
 		return PreparedMigration{}, err
 	}
 	if err := state.MarkAppOperationCreated(generatedStackOperation, generated.ID, generated.RevID); err != nil {
 		return PreparedMigration{}, err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return PreparedMigration{}, err
 	}
 	e.reportProgress("Generated target stack %q created (ID %d, revision ID %d); every app environment will use it.", generated.Name, generated.ID, generated.RevID)
@@ -773,7 +778,7 @@ func (e *MigrationExecutor) recordAppMutationError(
 		if err := state.MarkAppOperationFailure(operation, "api_rejected"); err != nil {
 			return err
 		}
-		if err := SaveMigrationState(e.statePath, state); err != nil {
+		if err := e.state.Save(state); err != nil {
 			return err
 		}
 		return targetRejectionError(label, apiErr)
@@ -781,7 +786,7 @@ func (e *MigrationExecutor) recordAppMutationError(
 	if err := state.MarkAppOperationAmbiguous(operation); err != nil {
 		return err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return err
 	}
 	return ambiguousRetryRequiredError(fmt.Sprintf("result of %s is ambiguous", label), retryOperation)
@@ -942,7 +947,7 @@ func (e *MigrationExecutor) SyncData(
 		if err := state.SetStatus(MigrationStatusFailed); err != nil {
 			return MigrationPhaseResult{}, err
 		}
-		if err := SaveMigrationState(e.statePath, state); err != nil {
+		if err := e.state.Save(state); err != nil {
 			return MigrationPhaseResult{}, err
 		}
 		return MigrationPhaseResult{Phase: MigrationPhaseSyncData, State: state}, failures
@@ -951,7 +956,7 @@ func (e *MigrationExecutor) SyncData(
 		if err := state.SetStatus(MigrationStatusAwaitingExternal); err != nil {
 			return MigrationPhaseResult{}, err
 		}
-		if err := SaveMigrationState(e.statePath, state); err != nil {
+		if err := e.state.Save(state); err != nil {
 			return MigrationPhaseResult{}, err
 		}
 		return MigrationPhaseResult{Phase: MigrationPhaseSyncData, State: state}, paused
@@ -1220,7 +1225,7 @@ func (e *MigrationExecutor) Verify(
 	if err := state.SetStatus(MigrationStatusComplete); err != nil {
 		return MigrationPhaseResult{}, err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return MigrationPhaseResult{}, err
 	}
 	e.reportProgress("Migration verification completed successfully.")
@@ -1306,7 +1311,7 @@ func (e *MigrationExecutor) loadState(
 			ExistingApp: plan.Target.AppID > 0,
 		},
 	}
-	return LoadOrInitializeMigrationState(e.statePath, identity, sourceIDs)
+	return e.state.LoadOrInitialize(identity, sourceIDs)
 }
 
 func (e *MigrationExecutor) startPhase(state *MigrationState, phase MigrationPhase) error {
@@ -1326,7 +1331,7 @@ func (e *MigrationExecutor) startPhase(state *MigrationState, phase MigrationPha
 		if err := state.SetStatus(MigrationStatusRunning); err != nil {
 			return err
 		}
-		return SaveMigrationState(e.statePath, state)
+		return e.state.Save(state)
 	}
 	if err := state.SetPhase(phase); err != nil {
 		return err
@@ -1334,7 +1339,7 @@ func (e *MigrationExecutor) startPhase(state *MigrationState, phase MigrationPha
 	if err := state.SetStatus(MigrationStatusRunning); err != nil {
 		return err
 	}
-	return SaveMigrationState(e.statePath, state)
+	return e.state.Save(state)
 }
 
 func (e *MigrationExecutor) finishRunningPhase(
@@ -1344,7 +1349,7 @@ func (e *MigrationExecutor) finishRunningPhase(
 	if err := state.SetStatus(MigrationStatusRunning); err != nil {
 		return MigrationPhaseResult{}, err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return MigrationPhaseResult{}, err
 	}
 	return MigrationPhaseResult{Phase: phase, State: state}, nil
@@ -1449,7 +1454,7 @@ func (e *MigrationExecutor) ensureAppAndInstances(
 			if err := state.SetAppTarget(app.ID, MigrationResourceReady); err != nil {
 				return TargetApp{}, nil, err
 			}
-			if err := SaveMigrationState(e.statePath, state); err != nil {
+			if err := e.state.Save(state); err != nil {
 				return TargetApp{}, nil, err
 			}
 		} else if state.App.TargetID != app.ID {
@@ -1548,7 +1553,7 @@ func (e *MigrationExecutor) ensureApp(
 			if err := state.SetInstanceTarget(initial.Source.UUID, first.ID, MigrationResourceCreating); err != nil {
 				return TargetApp{}, TargetAppInstance{}, err
 			}
-			if err := SaveMigrationState(e.statePath, state); err != nil {
+			if err := e.state.Save(state); err != nil {
 				return TargetApp{}, TargetAppInstance{}, err
 			}
 		}
@@ -1649,7 +1654,7 @@ func (e *MigrationExecutor) ensureApp(
 	if err := state.SetInstanceTarget(initial.Source.UUID, 0, MigrationResourceCreating); err != nil {
 		return TargetApp{}, TargetAppInstance{}, err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return TargetApp{}, TargetAppInstance{}, err
 	}
 
@@ -1669,7 +1674,7 @@ func (e *MigrationExecutor) ensureApp(
 	if err := state.SetAppTarget(created.ID, MigrationResourceCreating); err != nil {
 		return TargetApp{}, TargetAppInstance{}, err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return TargetApp{}, TargetAppInstance{}, err
 	}
 	e.reportProgress("Target app %q created (ID %d).", created.Name, created.ID)
@@ -1684,7 +1689,7 @@ func (e *MigrationExecutor) ensureApp(
 	)
 	if err != nil {
 		_ = state.MarkInstanceOperationAmbiguous(initial.Source.UUID, operation)
-		_ = SaveMigrationState(e.statePath, state)
+		_ = e.state.Save(state)
 		return TargetApp{}, TargetAppInstance{}, errors.New("target app was created but its initial app environment could not be identified; resume after inspecting the target")
 	}
 	if err := state.MarkInstanceOperationSuccessWithIDs(initial.Source.UUID, operation, first.ID, 0); err != nil {
@@ -1693,7 +1698,7 @@ func (e *MigrationExecutor) ensureApp(
 	if err := state.SetInstanceTarget(initial.Source.UUID, first.ID, MigrationResourceCreating); err != nil {
 		return TargetApp{}, TargetAppInstance{}, err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return TargetApp{}, TargetAppInstance{}, err
 	}
 	e.reportProgress("Initial target app environment %q created (ID %d).", first.Name, first.ID)
@@ -1753,7 +1758,7 @@ func (e *MigrationExecutor) ensureInstance(
 		if err := state.SetInstanceTarget(prepared.Source.UUID, foundInstance.ID, MigrationResourceCreating); err != nil {
 			return TargetAppInstance{}, err
 		}
-		if err := SaveMigrationState(e.statePath, state); err != nil {
+		if err := e.state.Save(state); err != nil {
 			return TargetAppInstance{}, err
 		}
 		e.reportProgress("Recovered target app environment %q (ID %d) from the saved create operation.", foundInstance.Name, foundInstance.ID)
@@ -1791,7 +1796,7 @@ func (e *MigrationExecutor) ensureInstance(
 	if err := state.SetInstanceTarget(prepared.Source.UUID, 0, MigrationResourceCreating); err != nil {
 		return TargetAppInstance{}, err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return TargetAppInstance{}, err
 	}
 	e.reportProgress("Creating target app environment %q in app %q (ID %d; automatic initial deployment deferred)...", input.InstanceName, app.Name, app.ID)
@@ -1811,7 +1816,7 @@ func (e *MigrationExecutor) ensureInstance(
 	if err := state.SetInstanceTarget(prepared.Source.UUID, created.ID, MigrationResourceCreating); err != nil {
 		return TargetAppInstance{}, err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return TargetAppInstance{}, err
 	}
 	e.reportProgress("Target app environment %q created (ID %d).", created.Name, created.ID)
@@ -2040,7 +2045,7 @@ func (e *MigrationExecutor) recordRecoveredApp(
 	if err := state.SetInstanceTarget(sourceInstanceID, instanceID, MigrationResourceCreating); err != nil {
 		return err
 	}
-	return SaveMigrationState(e.statePath, state)
+	return e.state.Save(state)
 }
 
 func promoteAppOperationForRecovery(state *MigrationState, operation string) error {
@@ -2875,7 +2880,7 @@ func (e *MigrationExecutor) cutOverMigratedCrons(
 	if err := e.recordObservedInstanceOperation(state, prepared.Source.UUID, operationKey("cron_cutover", prepared.Source.UUID), instance.ID, 0); err != nil {
 		return err
 	}
-	return SaveMigrationState(e.statePath, state)
+	return e.state.Save(state)
 }
 
 // cronServices returns the app environment's services that can run migrated
@@ -3096,7 +3101,7 @@ func (e *MigrationExecutor) beginInstanceMutation(
 				); err != nil {
 					return false, err
 				}
-				return false, SaveMigrationState(e.statePath, state)
+				return false, e.state.Save(state)
 			}
 			retryOperation := instanceAmbiguousRetryOperation(sourceID, operation)
 			if !e.ambiguousRetryAuthorized(retryOperation) {
@@ -3120,7 +3125,7 @@ func (e *MigrationExecutor) beginInstanceMutation(
 	if err := state.MarkInstanceOperationIntent(sourceID, operation); err != nil {
 		return false, err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -3149,14 +3154,14 @@ func (e *MigrationExecutor) recordObservedInstanceOperation(
 		if err := state.MarkInstanceOperationIntent(sourceID, operation); err != nil {
 			return err
 		}
-		if err := SaveMigrationState(e.statePath, state); err != nil {
+		if err := e.state.Save(state); err != nil {
 			return err
 		}
 	}
 	if err := state.MarkInstanceOperationSuccessWithIDs(sourceID, operation, targetID, taskID); err != nil {
 		return err
 	}
-	return SaveMigrationState(e.statePath, state)
+	return e.state.Save(state)
 }
 
 func (e *MigrationExecutor) completeInstanceMutation(
@@ -3169,7 +3174,7 @@ func (e *MigrationExecutor) completeInstanceMutation(
 	if err := state.MarkInstanceOperationSuccessWithIDs(sourceID, operation, targetID, taskID); err != nil {
 		return err
 	}
-	return SaveMigrationState(e.statePath, state)
+	return e.state.Save(state)
 }
 
 func (e *MigrationExecutor) acceptInstanceMutation(
@@ -3187,7 +3192,7 @@ func (e *MigrationExecutor) acceptInstanceMutation(
 	); err != nil {
 		return err
 	}
-	return SaveMigrationState(e.statePath, state)
+	return e.state.Save(state)
 }
 
 func (e *MigrationExecutor) acceptRecoveredInstanceMutation(
@@ -3243,7 +3248,7 @@ func (e *MigrationExecutor) recordAcceptedOperationWaitError(
 	if err := state.MarkInstanceOperationFailure(sourceID, operation, "target_terminal"); err != nil {
 		return err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return err
 	}
 	return waitErr
@@ -3304,7 +3309,7 @@ func (e *MigrationExecutor) recordInstanceMutationErrorWithResourceStatus(
 				MigrationResourceFailed,
 			)
 		}
-		if err := SaveMigrationState(e.statePath, state); err != nil {
+		if err := e.state.Save(state); err != nil {
 			return err
 		}
 		return targetRejectionError(label, apiErr)
@@ -3319,7 +3324,7 @@ func (e *MigrationExecutor) recordInstanceMutationErrorWithResourceStatus(
 			MigrationResourceAmbiguous,
 		)
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return err
 	}
 	return ambiguousRetryRequiredError(
@@ -3346,7 +3351,7 @@ func (e *MigrationExecutor) recordPairMutationError(
 		}
 		_ = state.SetAppTarget(0, MigrationResourceFailed)
 		_ = state.SetInstanceTarget(sourceID, 0, MigrationResourceFailed)
-		if err := SaveMigrationState(e.statePath, state); err != nil {
+		if err := e.state.Save(state); err != nil {
 			return err
 		}
 		return targetRejectionError(label, apiErr)
@@ -3359,7 +3364,7 @@ func (e *MigrationExecutor) recordPairMutationError(
 	}
 	_ = state.SetAppTarget(0, MigrationResourceAmbiguous)
 	_ = state.SetInstanceTarget(sourceID, 0, MigrationResourceAmbiguous)
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return err
 	}
 	return ambiguousRetryRequiredError(
@@ -3626,7 +3631,7 @@ func (e *MigrationExecutor) ensureExternalCIBuild(
 			if err := state.MarkInstanceOperationSuccessWithIDs(sourceID, operation, build.ID, 0); err != nil {
 				return nil, err
 			}
-			if err := SaveMigrationState(e.statePath, state); err != nil {
+			if err := e.state.Save(state); err != nil {
 				return nil, err
 			}
 			e.reportProgress("Adopted completed Custom CI build ID %d.", build.ID)
@@ -3935,7 +3940,7 @@ func (e *MigrationExecutor) ensureBuild(
 	}
 	if len(response.Items) != 1 {
 		_ = state.MarkInstanceOperationAmbiguous(sourceID, operation)
-		_ = SaveMigrationState(e.statePath, state)
+		_ = e.state.Save(state)
 		return nil, ambiguousRetryRequiredError(
 			"target build response was ambiguous",
 			instanceAmbiguousRetryOperation(sourceID, operation),
@@ -5048,7 +5053,7 @@ func (e *MigrationExecutor) ensureImportAttempt(
 	if err != nil {
 		if taskID == 0 {
 			_ = state.MarkInstanceOperationAmbiguous(item.SourceInstanceUUID, operation)
-			_ = SaveMigrationState(e.statePath, state)
+			_ = e.state.Save(state)
 			return ambiguousRetryRequiredError(
 				"target accepted the data import but its result could not be identified",
 				instanceAmbiguousRetryOperation(item.SourceInstanceUUID, operation),

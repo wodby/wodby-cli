@@ -143,7 +143,7 @@ func (e *MigrationExecutor) ensureBackupPreset(
 		if err := state.MarkInstanceOperationSuccessWithIDs(sourceID, operation, existing[0].ID, 0); err != nil {
 			return err
 		}
-		if err := SaveMigrationState(e.statePath, state); err != nil {
+		if err := e.state.Save(state); err != nil {
 			return err
 		}
 		e.reportProgress("  Adopted matching backup preset ID %d for service %q (%s).", existing[0].ID, service.Name, backupName)
@@ -156,7 +156,7 @@ func (e *MigrationExecutor) ensureBackupPreset(
 	if err := state.MarkInstanceOperationIntent(sourceID, operation); err != nil {
 		return err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return err
 	}
 	e.reportProgress("  Creating %s backup preset on service %q using integration ID %d...", backupName, service.Name, destination.IntegrationID)
@@ -175,14 +175,14 @@ func (e *MigrationExecutor) ensureBackupPreset(
 		// The preset exists under a known ID, so it is recorded rather than left
 		// ambiguous: rollback removes it with the app it belongs to.
 		_ = state.MarkInstanceOperationSuccessWithIDs(sourceID, operation, created.ID, 0)
-		_ = SaveMigrationState(e.statePath, state)
+		_ = e.state.Save(state)
 		return errors.Errorf("created backup preset ID %d for service %q does not match the migration input (%s)",
 			created.ID, service.Name, strings.Join(backupPresetDifferences(created, desired), ", "))
 	}
 	if err := state.MarkInstanceOperationSuccessWithIDs(sourceID, operation, created.ID, 0); err != nil {
 		return err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return err
 	}
 	stateLabel := "enabled"

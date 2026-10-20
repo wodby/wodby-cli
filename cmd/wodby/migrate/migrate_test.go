@@ -63,33 +63,6 @@ func TestWodby1InstanceCommandExamplesIdentifyCredentialsAndWorkflow(t *testing.
 	}
 }
 
-func TestWodby1RepositorySelectionUsesNamesInsteadOfProviderIDs(t *testing.T) {
-	cmd := newWodby1InstanceCommand()
-	if cmd.Flags().Lookup("target-git-integration-id") == nil {
-		t.Fatal("--target-git-integration-id flag is missing")
-	}
-	if cmd.Flags().Lookup("target-repository-name") == nil {
-		t.Fatal("--target-repository-name flag is missing")
-	}
-	if cmd.Flags().Lookup("target-remote-git-repo-id") != nil {
-		t.Fatal("provider repository ID must not be a customer-facing migration flag")
-	}
-
-	mappings, err := parseRepositoryMapping([]string{
-		"app-1=44",
-		"app-2=55:acme/example",
-		"app-3=66:acme/other:php",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mappings["app-1"].GitIntegrationID != 44 || mappings["app-1"].RepositoryName != "" ||
-		mappings["app-2"].RepositoryName != "acme/example" ||
-		mappings["app-3"].RepositoryName != "acme/other" || mappings["app-3"].Service != "php" {
-		t.Fatalf("repository mappings = %#v", mappings)
-	}
-}
-
 func TestWodby1MigrationDefaultsToBuiltInWodbyCI(t *testing.T) {
 	cmd := newWodby1InstanceCommand()
 	flag := cmd.Flags().Lookup("target-ci-integration-id")
@@ -119,102 +92,6 @@ func TestWodby1MigrationExposesPreviewApplyVerifyWorkflow(t *testing.T) {
 	}
 	if cmd.Flags().Lookup("force") != nil || cmd.Flags().Lookup("max-backup-age") != nil {
 		t.Fatal("maintenance-mode and backup-age bypass flags must not be exposed")
-	}
-}
-
-func TestConfirmApplyRequiresAnExplicitAnswer(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		input   string
-		wantErr bool
-	}{
-		{name: "yes", input: "yes\n"},
-		{name: "short yes", input: "Y\n"},
-		{name: "no", input: "no\n", wantErr: true},
-		{name: "empty", input: "\n", wantErr: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			cmd := newWodby1InstanceCommand()
-			var output bytes.Buffer
-			cmd.SetIn(strings.NewReader(test.input))
-			cmd.SetOut(&output)
-			err := confirmApply(cmd, false)
-			if (err != nil) != test.wantErr {
-				t.Fatalf("confirmApply() error = %v", err)
-			}
-			if !strings.Contains(output.String(), "Proceed with this migration? [y/N]") {
-				t.Fatalf("confirmation prompt missing: %q", output.String())
-			}
-		})
-	}
-}
-
-func TestConfirmApplySupportsNonInteractiveApproval(t *testing.T) {
-	cmd := newWodby1InstanceCommand()
-	var output bytes.Buffer
-	cmd.SetIn(strings.NewReader(""))
-	cmd.SetOut(&output)
-	if err := confirmApply(cmd, true); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(output.String(), "[y/N]") || !strings.Contains(output.String(), "approved with --yes") {
-		t.Fatalf("non-interactive approval output = %q", output.String())
-	}
-}
-
-func TestMigrationPreparationProgressShowsCountedAppsAndInstances(t *testing.T) {
-	cmd := newWodby1AppCommand()
-	var output bytes.Buffer
-	cmd.SetOut(&output)
-	progress := newMigrationPreparationProgress(cmd, "app")
-	for _, title := range []string{
-		"Discover Wodby 2 target scope",
-		"Export and select Wodby 1 source data",
-		"Resolve target environment types",
-		"Build migration plan",
-		"Inspect target mappings and capabilities",
-	} {
-		progress.StartStep(title)
-		if title == "Inspect target mappings and capabilities" {
-			progress.TargetPreflight(wodby1.TargetPreflightProgress{
-				Stage: "app", AppIndex: 2, AppTotal: 4, AppName: "example", InstanceTotal: 3,
-			})
-			progress.TargetPreflight(wodby1.TargetPreflightProgress{
-				Stage: "instance", AppIndex: 2, AppTotal: 4, AppName: "example",
-				InstanceIndex: 1, InstanceTotal: 3, InstanceName: "dev",
-			})
-			progress.TargetPreflight(wodby1.TargetPreflightProgress{
-				Stage: "app_complete", AppIndex: 2, AppTotal: 4, AppName: "example",
-			})
-		}
-		progress.CompleteStep(title + " completed.")
-	}
-
-	text := output.String()
-	for _, expected := range []string{
-		"App migration preparation",
-		"[1/5] Discover Wodby 2 target scope",
-		"[5/5] Inspect target mappings and capabilities",
-		"App 2/4: example (3 instance(s))",
-		"Instance 1/3: dev",
-		"App 2/4 inspected.",
-	} {
-		if !strings.Contains(text, expected) {
-			t.Fatalf("preparation progress missing %q:\n%s", expected, text)
-		}
-	}
-}
-
-func TestMigrationPreparationProgressKeepsSingleInstancePreviewCompact(t *testing.T) {
-	cmd := newWodby1InstanceCommand()
-	var output bytes.Buffer
-	cmd.SetOut(&output)
-	progress := newMigrationPreparationProgress(cmd, "instance")
-	progress.StartStep("Export source")
-	progress.CompleteStep("Export complete")
-	progress.TargetPreflight(wodby1.TargetPreflightProgress{Stage: "instance", InstanceIndex: 1, InstanceTotal: 1})
-	if output.Len() != 0 {
-		t.Fatalf("single-instance preparation progress should be compact, got %q", output.String())
 	}
 }
 
@@ -248,33 +125,6 @@ func TestWodby1MigrationExposesUnsupportedDrupalOverride(t *testing.T) {
 	flag := newWodby1AppCommand().Flags().Lookup("allow-unsupported-drupal")
 	if flag == nil || !strings.Contains(flag.Usage, "Drupal 10 or newer") {
 		t.Fatalf("--allow-unsupported-drupal flag = %#v", flag)
-	}
-}
-
-func TestStateTargetInstanceRecoveryAllowsOnlyAmbiguousCreate(t *testing.T) {
-	state := &wodby1.MigrationState{Instances: map[string]*wodby1.MigrationResourceState{
-		"recoverable": {
-			Status: wodby1.MigrationResourceCreating,
-			Operations: map[string]wodby1.MigrationOperationState{
-				"create": {Status: wodby1.MigrationOperationAmbiguous},
-			},
-		},
-		"known": {
-			TargetID: 201, Status: wodby1.MigrationResourceReady,
-			Operations: map[string]wodby1.MigrationOperationState{
-				"create": {Status: wodby1.MigrationOperationSucceeded},
-			},
-		},
-		"failed": {
-			Status: wodby1.MigrationResourceFailed,
-			Operations: map[string]wodby1.MigrationOperationState{
-				"create": {Status: wodby1.MigrationOperationFailed},
-			},
-		},
-	}}
-	got := stateTargetInstanceRecovery(state)
-	if len(got) != 1 || !got["recoverable"] {
-		t.Fatalf("recovery = %#v", got)
 	}
 }
 
@@ -1394,128 +1244,6 @@ func TestWodby1AppCommandRestartDeletesRecordedTargetForIncompatiblePlan(t *test
 	}
 }
 
-func TestSingleResumeNoticeExplainsPinnedBackup(t *testing.T) {
-	previousVerbose := viper.GetBool("verbose")
-	viper.Set("verbose", false)
-	t.Cleanup(func() { viper.Set("verbose", previousVerbose) })
-	var output bytes.Buffer
-	cmd := newWodby1AppCommand()
-	cmd.SetOut(&output)
-	state := &wodby1.MigrationState{
-		Status: wodby1.MigrationStatusRunning,
-		Phase:  wodby1.MigrationPhaseSyncData,
-	}
-
-	printSingleResumeNotice(cmd, "/tmp/plan.json", "/tmp/state.json", state)
-
-	text := output.String()
-	wanted := []string{
-		"Resume setup",
-		"Step 1/3: Load saved migration",
-		"Status: Running",
-		"Resume from: Data import",
-		"Step 2/3: Select run mode",
-		"Mode: continue the saved plan",
-		"Step 3/3: Apply command options",
-		"Source backups: use the snapshots pinned by the saved plan",
-		"Protected download URLs will be refreshed without changing snapshots",
-	}
-	previous := -1
-	for _, item := range wanted {
-		index := strings.Index(text, item)
-		if index < 0 {
-			t.Fatalf("resume notice missing %q:\n%s", item, text)
-		}
-		if index < previous {
-			t.Fatalf("resume notice order is wrong for %q:\n%s", item, text)
-		}
-		previous = index
-	}
-	if strings.Contains(text, "/tmp/plan.json") || strings.Contains(text, "/tmp/state.json") {
-		t.Fatalf("resume notice exposed artifact paths without --verbose:\n%s", text)
-	}
-}
-
-func TestSingleResumeNoticeShowsArtifactPathsOnlyWhenVerbose(t *testing.T) {
-	previousVerbose := viper.GetBool("verbose")
-	viper.Set("verbose", true)
-	t.Cleanup(func() { viper.Set("verbose", previousVerbose) })
-	var output bytes.Buffer
-	cmd := newWodby1AppCommand()
-	cmd.SetOut(&output)
-
-	printSingleResumeNotice(cmd, "/tmp/plan.json", "/tmp/state.json", nil)
-
-	text := output.String()
-	for _, expected := range []string{
-		"Plan file: /tmp/plan.json",
-		"State file: /tmp/state.json",
-		"Source backups: use the snapshots pinned by the saved plan",
-	} {
-		if !strings.Contains(text, expected) {
-			t.Fatalf("verbose resume notice missing %q:\n%s", expected, text)
-		}
-	}
-}
-
-func TestMigrationProgressReporterFormatsProcessSteps(t *testing.T) {
-	var output bytes.Buffer
-	cmd := newWodby1AppCommand()
-	cmd.SetOut(&output)
-	report := migrationProgressReporter(cmd)
-
-	report("Starting resumable migration apply.")
-	report("Preflight: validate and pin the selected source backup before target changes.")
-	report("Apply preflight passed; target changes may begin.")
-	report("Step: create or resume the target app and app environments.")
-	report("Target app created.")
-
-	text := output.String()
-	wanted := []string{
-		"Migration process",
-		"Step 1: validate and pin the selected source backup before target changes",
-		"  Apply preflight passed; target changes may begin.",
-		"Step 2: create or resume the target app and app environments",
-		"  Target app created.",
-	}
-	previous := -1
-	for _, item := range wanted {
-		index := strings.Index(text, item)
-		if index < 0 || index < previous {
-			t.Fatalf("progress output missing or misordered %q:\n%s", item, text)
-		}
-		previous = index
-	}
-}
-
-func TestMigrationProgressReporterUsesSemanticColorsWhenForced(t *testing.T) {
-	previousNoColor, hadNoColor := os.LookupEnv("NO_COLOR")
-	if err := os.Unsetenv("NO_COLOR"); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if hadNoColor {
-			_ = os.Setenv("NO_COLOR", previousNoColor)
-		} else {
-			_ = os.Unsetenv("NO_COLOR")
-		}
-	})
-	t.Setenv("CLICOLOR_FORCE", "1")
-	var output bytes.Buffer
-	cmd := newWodby1AppCommand()
-	cmd.SetOut(&output)
-	report := migrationProgressReporter(cmd)
-	report("Starting resumable migration apply.")
-	report("Step: create target resources.")
-	report("Target app created.")
-	report("Warning: selected backup excludes later writes.")
-	text := output.String()
-	if !strings.Contains(text, cliColorCyan) || !strings.Contains(text, cliColorGreen) ||
-		!strings.Contains(text, cliColorOrange) || !strings.Contains(text, cliColorReset) {
-		t.Fatalf("forced progress colors are incomplete: %q", text)
-	}
-}
-
 func TestWodby1AppCommandRestartRejectsStateWithTargetMutationRisk(t *testing.T) {
 	fixture := newMigrationAPIFixture(t, "admin", "ok", false)
 	defer fixture.Close()
@@ -2039,83 +1767,6 @@ func TestWodby1AppCommandRejectsInvalidLocalInputBeforeNetwork(t *testing.T) {
 	}
 }
 
-func TestPrintPreviewExplainsBlockingNextStep(t *testing.T) {
-	cmd := newWodby1InstanceCommand()
-	var output bytes.Buffer
-	cmd.SetOut(&output)
-	plan := wodby1.Plan{
-		Status:  "blocked",
-		Source:  wodby1.PlanSource{Kind: "instance"},
-		Summary: wodby1.PlanSummary{Blocking: 2},
-	}
-	if err := printPreview(cmd, plan); err != nil {
-		t.Fatal(err)
-	}
-	text := output.String()
-	for _, expected := range []string{
-		"Next step:",
-		"Preview result: blocked",
-		"Fix the 2 blocking item(s) above",
-		"rerun this preview",
-		"This preview made no changes",
-	} {
-		if !strings.Contains(text, expected) {
-			t.Fatalf("blocked plan output does not contain %q:\n%s", expected, text)
-		}
-	}
-	if strings.Contains(text, "--apply") {
-		t.Fatalf("blocked plan suggests applying:\n%s", text)
-	}
-}
-
-func TestPrintPreviewCountsEnabledSkippedServicesAsWarnings(t *testing.T) {
-	cmd := newWodby1InstanceCommand()
-	var output bytes.Buffer
-	cmd.SetOut(&output)
-	plan := wodby1.Plan{
-		Source:  wodby1.PlanSource{Kind: "instance"},
-		Summary: wodby1.PlanSummary{ServiceWarnings: 2},
-		Review: []wodby1.ReviewItem{
-			{Severity: wodby1.SeverityServiceWarning, Subject: "service rsyslog", Message: "enabled but not migrated"},
-			{Severity: wodby1.SeverityServiceWarning, Subject: "service xhprof", Message: "enabled but not migrated"},
-		},
-	}
-	if err := printPreview(cmd, plan); err != nil {
-		t.Fatal(err)
-	}
-	text := output.String()
-	for _, expected := range []string{
-		"Enabled services not migrated (2):",
-		"No blockers found.",
-		"Review the 2 warning(s) above.",
-		"Adding --apply acknowledges the warnings above",
-	} {
-		if !strings.Contains(text, expected) {
-			t.Fatalf("service warning preview does not contain %q:\n%s", expected, text)
-		}
-	}
-}
-
-func TestRejectBlockedMigrationActionReturnsOneActionableError(t *testing.T) {
-	cmd := newWodby1InstanceCommand()
-	var output bytes.Buffer
-	cmd.SetOut(&output)
-	plan := wodby1.Plan{
-		Status:  "blocked",
-		Source:  wodby1.PlanSource{Kind: "instance"},
-		Summary: wodby1.PlanSummary{Blocking: 1},
-	}
-	err := rejectBlockedMigrationAction(cmd, plan, "apply")
-	if err == nil || err.Error() != "cannot apply migration: resolve the 1 blocking review item(s) shown above" {
-		t.Fatalf("blocked apply error = %v", err)
-	}
-	text := output.String()
-	if strings.Contains(text, "Migration not started") ||
-		strings.Contains(text, "Applying the migration plan") {
-		t.Fatalf("blocked apply printed a duplicate status:\n%s", text)
-	}
-}
-
 func TestArtifactPathsDefaultToSystemTemporaryDirectoryWithoutCreatingIt(t *testing.T) {
 	tempDir := t.TempDir()
 	t.Setenv("TMPDIR", tempDir)
@@ -2205,18 +1856,6 @@ func TestArtifactPathsResumeLegacyTemporaryPlan(t *testing.T) {
 	}
 	if planPath != explicitPlan {
 		t.Fatalf("plan path = %q, want %q", planPath, explicitPlan)
-	}
-}
-
-func TestServerArtifactPathsRejectPlanAndChildStateCollision(t *testing.T) {
-	dir := t.TempDir()
-	statePath := filepath.Join(dir, "server-state.json")
-	planPath := serverAppStatePath(statePath, "app-1")
-	err := validateServerArtifactPaths(planPath, statePath, wodby1.Export{
-		Apps: []wodby1.AppExport{{App: wodby1.App{UUID: "app-1"}}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "per-app migration state path") {
-		t.Fatalf("collision error = %v", err)
 	}
 }
 
@@ -2800,101 +2439,6 @@ func removeMigrationFlag(args []string, flag string) []string {
 	return result
 }
 
-func pausedTestError() *wodby1.MigrationPausedError {
-	return &wodby1.MigrationPausedError{Actions: []*wodby1.ExternalActionRequiredError{{
-		Instance:         "prod",
-		TargetInstanceID: 4100,
-		ServiceName:      "php",
-		TargetServiceID:  4200,
-		ProviderLabel:    "GitHub Actions",
-		ExampleURL:       "https://github.com/wodby/wodby-ci/blob/2.0/drupal/github-actions/wodby.yml",
-	}}}
-}
-
-func TestPausedMigrationPrintsNextStepsInsteadOfAFailure(t *testing.T) {
-	cmd := newWodby1InstanceCommand()
-	var output bytes.Buffer
-	cmd.SetOut(&output)
-	paused := pausedTestError()
-
-	err := printMigrationPaused(cmd, paused, "/tmp/plan.json", "/tmp/state.json")
-	if got, ok := wodby1.AsMigrationPaused(err); !ok || got != paused {
-		t.Fatalf("paused runs must still return a non-zero paused error, got %v", err)
-	}
-	text := output.String()
-	for _, want := range []string{
-		"Migration paused",
-		"https://github.com/wodby/wodby-ci/blob/2.0/drupal/github-actions/wodby.yml",
-		"https://github.com/wodby/wodby-ci/tree/2.0",
-		"WODBY_APP_SERVICE_ID  4200",
-		"wodby ci deploy",
-		"/tmp/state.json",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("paused output missing %q:\n%s", want, text)
-		}
-	}
-	for _, unwanted := range []string{"failed during", "inspect the target", "migration apply stopped"} {
-		if strings.Contains(strings.ToLower(text), unwanted) {
-			t.Fatalf("a paused migration must not be framed as a failure (%q):\n%s", unwanted, text)
-		}
-	}
-	// The steps are already printed; cobra must not append usage or a duplicate.
-	if !cmd.SilenceUsage || !cmd.SilenceErrors {
-		t.Fatal("paused output must suppress cobra's usage and error echo")
-	}
-}
-
-func TestPausedMigrationJSONExposesTheAppServiceToBuild(t *testing.T) {
-	cmd := newWodby1InstanceCommand()
-	var output bytes.Buffer
-	cmd.SetOut(&output)
-	if err := cmd.Flags().Set("output", "json"); err != nil {
-		t.Skipf("json output flag unavailable: %v", err)
-	}
-
-	_ = printMigrationPaused(cmd, pausedTestError(), "/tmp/plan.json", "/tmp/state.json")
-
-	var decoded migrationPausedOutput
-	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
-		t.Fatalf("json output = %q: %v", output.String(), err)
-	}
-	if decoded.Status != pausedMigrationStatus || len(decoded.Actions) != 1 {
-		t.Fatalf("decoded = %#v", decoded)
-	}
-	if decoded.Actions[0].TargetServiceID != 4200 ||
-		decoded.Actions[0].CIProvider != "GitHub Actions" ||
-		decoded.Actions[0].WaitsFor != "custom_ci_build" {
-		t.Fatalf("action = %#v", decoded.Actions[0])
-	}
-}
-
-// A --skip-code pause waits for the operator's own code deployment, so its
-// status and actions say so instead of asking for a Custom CI build.
-func TestPausedMigrationJSONNamesAManualCodeDeployment(t *testing.T) {
-	cmd := newWodby1InstanceCommand()
-	var output bytes.Buffer
-	cmd.SetOut(&output)
-	if err := cmd.Flags().Set("output", "json"); err != nil {
-		t.Skipf("json output flag unavailable: %v", err)
-	}
-	paused := &wodby1.MigrationPausedError{Actions: []*wodby1.ExternalActionRequiredError{{
-		Instance: "prod", TargetInstanceID: 4100, ServiceName: "php", TargetServiceID: 4200,
-		ManualCodeDeploy: true, ImportComponent: "files",
-	}}}
-
-	_ = printMigrationPaused(cmd, paused, "/tmp/plan.json", "/tmp/state.json")
-
-	var decoded migrationPausedOutput
-	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
-		t.Fatalf("json output = %q: %v", output.String(), err)
-	}
-	if decoded.Status != pausedCodeDeployStatus || len(decoded.Actions) != 1 ||
-		decoded.Actions[0].WaitsFor != "manual_code_deploy" || decoded.Actions[0].ImportComponent != "files" {
-		t.Fatalf("decoded = %#v", decoded)
-	}
-}
-
 // A server migration that only paused must exit like a paused single-app run,
 // not like a failure, or automation cannot tell "wait and resume" from "page
 // someone".
@@ -2923,96 +2467,22 @@ func TestRollbackFlagIsExposedAndMutuallyExclusive(t *testing.T) {
 	}
 	for _, conflicting := range []string{"apply", "verify", "restart"} {
 		opts := defaultOptions()
-		opts.sourceBaseURL = "https://example.com"
-		opts.sourceToken = testSourceToken
-		opts.targetCluster = "cluster"
-		opts.output = "text"
-		opts.rollback = true
+		opts.SourceBaseURL = "https://example.com"
+		opts.SourceToken = testSourceToken
+		opts.TargetCluster = "cluster"
+		opts.Output = "text"
+		opts.Rollback = true
 		switch conflicting {
 		case "apply":
-			opts.apply = true
+			opts.Apply = true
 		case "verify":
-			opts.verify = true
+			opts.Verify = true
 		case "restart":
-			opts.apply, opts.restart = true, true
+			opts.Apply, opts.Restart = true, true
 		}
-		if err := validateOptions(opts); err == nil ||
+		if err := wodby1.ValidateRunOptions(opts); err == nil ||
 			!strings.Contains(err.Error(), "--rollback cannot be combined") {
 			t.Fatalf("--rollback with --%s returned %v", conflicting, err)
 		}
-	}
-}
-
-func TestRollbackConfirmationRequiresTheAppName(t *testing.T) {
-	cmd := newWodby1InstanceCommand()
-	var output bytes.Buffer
-	cmd.SetOut(&output)
-	cmd.SetIn(strings.NewReader("wrong-name\n"))
-	// A bare y/N is too easy to answer on the wrong terminal for something
-	// that deletes imported data.
-	if err := confirmRollback(cmd, false, "demo"); err == nil ||
-		!strings.Contains(err.Error(), "no Wodby 2 resource was deleted") {
-		t.Fatalf("mismatched confirmation returned %v", err)
-	}
-
-	cmd.SetIn(strings.NewReader("demo\n"))
-	if err := confirmRollback(cmd, false, "demo"); err != nil {
-		t.Fatalf("typed app name should confirm: %v", err)
-	}
-}
-
-func TestRollbackJSONOutputRequiresExplicitApproval(t *testing.T) {
-	cmd := newWodby1InstanceCommand()
-	var output bytes.Buffer
-	cmd.SetOut(&output)
-	if err := cmd.Flags().Set("output", "json"); err != nil {
-		t.Skipf("json output flag unavailable: %v", err)
-	}
-	if err := confirmRollback(cmd, false, "demo"); err == nil ||
-		!strings.Contains(err.Error(), "requires --yes") {
-		t.Fatalf("non-interactive rollback returned %v", err)
-	}
-}
-
-func TestRestartConfirmationApprovesCleanupAndFreshApplyOnce(t *testing.T) {
-	cmd := newWodby1InstanceCommand()
-	var output bytes.Buffer
-	cmd.SetOut(&output)
-	cmd.SetIn(strings.NewReader("demo\n"))
-
-	if err := confirmRestart(cmd, false, "demo", true); err != nil {
-		t.Fatalf("typed restart confirmation returned %v", err)
-	}
-	text := output.String()
-	if strings.Count(text, "Type \"demo\"") != 1 ||
-		!strings.Contains(text, "delete the resources listed above and apply this fresh migration") ||
-		!strings.Contains(text, "Restart and fresh migration approved") {
-		t.Fatalf("restart confirmation is unclear:\n%s", text)
-	}
-}
-
-func TestRestartConfirmationKeepsSavedMigrationOnMismatch(t *testing.T) {
-	cmd := newWodby1InstanceCommand()
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetIn(strings.NewReader("y\n"))
-
-	err := confirmRestart(cmd, false, "demo", true)
-	if err == nil || !strings.Contains(err.Error(), "saved plan and state were kept") ||
-		!strings.Contains(err.Error(), "no Wodby 2 resource was deleted") {
-		t.Fatalf("mismatched restart confirmation returned %v", err)
-	}
-}
-
-func TestRestartConfirmationWithoutCleanupUsesYesNo(t *testing.T) {
-	cmd := newWodby1InstanceCommand()
-	var output bytes.Buffer
-	cmd.SetOut(&output)
-	cmd.SetIn(strings.NewReader("yes\n"))
-
-	if err := confirmRestart(cmd, false, "demo", false); err != nil {
-		t.Fatalf("non-destructive restart confirmation returned %v", err)
-	}
-	if !strings.Contains(output.String(), "Replace the saved plan and state") {
-		t.Fatalf("non-destructive restart prompt is unclear:\n%s", output.String())
 	}
 }

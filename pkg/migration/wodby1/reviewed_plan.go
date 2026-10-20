@@ -73,6 +73,15 @@ func LoadReviewedPlan(path string) (Plan, error) {
 	if len(data) > maxMigrationPlanBytes {
 		return Plan{}, invalidPlanError("plan file exceeds maximum size")
 	}
+	return decodeReviewedPlan(data)
+}
+
+// decodeReviewedPlan decodes a stored reviewed plan and verifies its schema and
+// approval hash.
+func decodeReviewedPlan(data []byte) (Plan, error) {
+	if len(data) > maxMigrationPlanBytes {
+		return Plan{}, invalidPlanError("plan exceeds maximum size")
+	}
 	var header struct {
 		Schema string `json:"schema"`
 		Source struct {

@@ -270,7 +270,7 @@ func (e *MigrationExecutor) Rollback(
 	}
 	if plan.empty() {
 		e.reportProgress("Nothing recorded in migration state was created in Wodby 2; nothing to roll back.")
-		return RemoveMigrationStateAfterRollback(e.statePath, state.Identity())
+		return e.state.RemoveAfterRollback(state.Identity())
 	}
 
 	if plan.AppID > 0 {
@@ -314,7 +314,7 @@ func (e *MigrationExecutor) Rollback(
 	}
 
 	e.reportProgress("Rollback complete. Wodby 1 was not touched.")
-	return RemoveMigrationStateAfterRollback(e.statePath, state.Identity())
+	return e.state.RemoveAfterRollback(state.Identity())
 }
 
 func (e *MigrationExecutor) deleteAndWait(

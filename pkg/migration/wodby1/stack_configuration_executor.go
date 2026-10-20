@@ -70,7 +70,7 @@ func (e *MigrationExecutor) ensureTargetStackServices(
 			if markErr := state.MarkAppOperationAmbiguousWithIDs(operation, created.ID, 0); markErr != nil {
 				return PreparedMigration{}, markErr
 			}
-			if saveErr := SaveMigrationState(e.statePath, state); saveErr != nil {
+			if saveErr := e.state.Save(state); saveErr != nil {
 				return PreparedMigration{}, saveErr
 			}
 			return PreparedMigration{}, errors.Errorf("added stack service %q resolved to revision ID %d instead of reviewed revision ID %d; inspect the target before resuming", addition.Name, created.ServiceRevID, addition.ServiceRevisionID)
@@ -249,7 +249,7 @@ func (e *MigrationExecutor) ensureTargetStackConfiguration(
 		if err := state.MarkAppOperationSuccessWithIDs(stackPublishOperation, current.ID, current.RevID); err != nil {
 			return PreparedMigration{}, err
 		}
-		if err := SaveMigrationState(e.statePath, state); err != nil {
+		if err := e.state.Save(state); err != nil {
 			return PreparedMigration{}, err
 		}
 		e.reportProgress("Recovered published target stack revision ID %d from migration state.", current.RevID)
@@ -266,7 +266,7 @@ func (e *MigrationExecutor) ensureTargetStackConfiguration(
 	if err := state.MarkAppOperationIntent(stackPublishOperation); err != nil {
 		return PreparedMigration{}, err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return PreparedMigration{}, err
 	}
 	e.reportProgress("Publishing the configured target stack draft (revision ID %d)...", *current.DraftRevID)
@@ -277,7 +277,7 @@ func (e *MigrationExecutor) ensureTargetStackConfiguration(
 	if err := state.MarkAppOperationSuccessWithIDs(stackPublishOperation, published.ID, published.RevID); err != nil {
 		return PreparedMigration{}, err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return PreparedMigration{}, err
 	}
 	e.reportProgress("Target stack %q configuration published as revision ID %d.", published.Name, published.RevID)
@@ -655,7 +655,7 @@ func (e *MigrationExecutor) beginStackConfigurationMutation(state *MigrationStat
 		if err := state.MarkAppOperationSuccessWithIDs(operation, targetID, 0); err != nil {
 			return false, err
 		}
-		return false, SaveMigrationState(e.statePath, state)
+		return false, e.state.Save(state)
 	}
 	if exists && current.Status == MigrationOperationAmbiguous {
 		retryID := "app:" + state.Source.ID + ":" + operation
@@ -666,7 +666,7 @@ func (e *MigrationExecutor) beginStackConfigurationMutation(state *MigrationStat
 	if err := state.MarkAppOperationIntent(operation); err != nil {
 		return false, err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -676,7 +676,7 @@ func (e *MigrationExecutor) completeStackConfigurationMutation(state *MigrationS
 	if err := state.MarkAppOperationSuccessWithIDs(operation, targetID, 0); err != nil {
 		return err
 	}
-	return SaveMigrationState(e.statePath, state)
+	return e.state.Save(state)
 }
 
 func (e *MigrationExecutor) recordStackConfigurationMutationError(state *MigrationState, operation, label string, err error) error {

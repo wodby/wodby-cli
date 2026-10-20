@@ -75,7 +75,7 @@ func (e *MigrationExecutor) ensureTargetIntegrations(
 		if err := state.MarkAppOperationIntent(operation); err != nil {
 			return PreparedMigration{}, err
 		}
-		if err := SaveMigrationState(e.statePath, state); err != nil {
+		if err := e.state.Save(state); err != nil {
 			return PreparedMigration{}, err
 		}
 		var projectID *int
@@ -93,7 +93,7 @@ func (e *MigrationExecutor) ensureTargetIntegrations(
 		}
 		if result.Integration.OrgID != plan.Target.OrgID || result.Integration.ProviderRevID != item.ProviderRevID || !sameOptionalString(result.Integration.Scope, item.Scope) {
 			_ = state.MarkAppOperationAmbiguousWithIDs(operation, result.Integration.ID, 0)
-			_ = SaveMigrationState(e.statePath, state)
+			_ = e.state.Save(state)
 			return PreparedMigration{}, errors.Errorf("resolved target integration %q does not match the reviewed organization and scope", item.Key)
 		}
 		// Record whether this migration created the integration or reused one
@@ -106,7 +106,7 @@ func (e *MigrationExecutor) ensureTargetIntegrations(
 		} else if err := state.MarkAppOperationSuccessWithIDs(operation, result.Integration.ID, 0); err != nil {
 			return PreparedMigration{}, err
 		}
-		if err := SaveMigrationState(e.statePath, state); err != nil {
+		if err := e.state.Save(state); err != nil {
 			return PreparedMigration{}, err
 		}
 		item.TargetID = result.Integration.ID
@@ -166,7 +166,7 @@ func (e *MigrationExecutor) ensureVariableProvider(
 		if err := state.MarkAppOperationSuccessWithIDs(operation, provider.ID, provider.RevID); err != nil {
 			return TargetProvider{}, err
 		}
-		if err := SaveMigrationState(e.statePath, state); err != nil {
+		if err := e.state.Save(state); err != nil {
 			return TargetProvider{}, err
 		}
 		e.reportProgress("  Reusing custom variable provider %q (ID %d) created by this server migration.", provider.Name, provider.ID)
@@ -182,7 +182,7 @@ func (e *MigrationExecutor) ensureVariableProvider(
 	if err := state.MarkAppOperationIntent(operation); err != nil {
 		return TargetProvider{}, err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return TargetProvider{}, err
 	}
 	var projectID *int
@@ -199,13 +199,13 @@ func (e *MigrationExecutor) ensureVariableProvider(
 	}
 	if err := validate(provider); err != nil {
 		_ = state.MarkAppOperationAmbiguousWithIDs(operation, provider.ID, provider.RevID)
-		_ = SaveMigrationState(e.statePath, state)
+		_ = e.state.Save(state)
 		return TargetProvider{}, err
 	}
 	if err := state.MarkAppOperationSuccessWithIDs(operation, provider.ID, provider.RevID); err != nil {
 		return TargetProvider{}, err
 	}
-	if err := SaveMigrationState(e.statePath, state); err != nil {
+	if err := e.state.Save(state); err != nil {
 		return TargetProvider{}, err
 	}
 	e.reportProgress("  Custom variable provider created (ID %d).", provider.ID)

@@ -545,7 +545,7 @@ func TestChildMutationErrorsPreserveReadyInstanceResource(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			executor := &MigrationExecutor{statePath: statePath}
+			executor := &MigrationExecutor{state: FileStateStore(statePath)}
 			if err := executor.recordInstanceMutationError(
 				state,
 				"instance-1",
@@ -597,7 +597,7 @@ func TestInstanceCreationErrorsChangeZeroIDResourceStatus(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			executor := &MigrationExecutor{statePath: statePath}
+			executor := &MigrationExecutor{state: FileStateStore(statePath)}
 			if err := executor.recordInstanceCreationMutationError(
 				state,
 				"instance-1",

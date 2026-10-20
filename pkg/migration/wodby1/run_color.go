@@ -1,4 +1,4 @@
-package migrate
+package wodby1
 
 import (
 	"io"

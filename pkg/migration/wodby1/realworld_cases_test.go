@@ -421,3 +421,22 @@ func TestRealCaseDisabledMailServiceSendsNoMail(t *testing.T) {
 		t.Fatalf("no mail link expected: %#v", links)
 	}
 }
+
+// The WordPress stack has no SSH service any more; a Wodby 1 sshd is skipped
+// with a warning instead of blocking the migration.
+func TestRealCaseSSHDWithoutTargetSSHServiceIsSkipped(t *testing.T) {
+	result := runRealCase(t, func(e *Export) {
+		e.Apps[0].Instances[0].Services = append(e.Apps[0].Instances[0].Services, Service{Name: "sshd", Version: "8.4", Enabled: true})
+	}, nil, nil)
+	if blockers := result.review(SeverityBlocking, ""); len(blockers) != 0 {
+		t.Fatalf("sshd without a target SSH service must not block: %q", blockers)
+	}
+	if warnings := result.review(SeverityServiceWarning, "service sshd"); len(warnings) != 1 {
+		t.Fatalf("sshd warnings = %q", warnings)
+	}
+	for _, service := range result.plan.Apps[0].Instances[0].Services {
+		if service.SourceName == "sshd" && (service.Action != "skip" || service.TargetName != "") {
+			t.Fatalf("sshd plan = %+v", service)
+		}
+	}
+}

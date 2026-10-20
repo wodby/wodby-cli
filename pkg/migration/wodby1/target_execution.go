@@ -753,6 +753,8 @@ type TargetUpdateStackServiceCronScheduleInput struct {
 
 type TargetServiceManifest struct {
 	Name          string                               `json:"name"`
+	Type          string                               `json:"type,omitempty"`
+	Labels        []string                             `json:"labels,omitempty"`
 	Raw           string                               `json:"raw,omitempty"`
 	Scalable      bool                                 `json:"scalable,omitempty"`
 	Workloads     []TargetServiceWorkload              `json:"workloads,omitempty"`
@@ -792,8 +794,44 @@ type TargetServiceContainer struct {
 }
 
 type TargetServiceLinkCapability struct {
-	Name     string `json:"name"`
-	Required bool   `json:"required,omitempty"`
+	Name      string                      `json:"name"`
+	Required  bool                        `json:"required,omitempty"`
+	Selectors []TargetServiceLinkSelector `json:"selectors,omitempty"`
+}
+
+// TargetServiceLinkSelector names the services a link may point to: a service
+// type, optionally narrowed by a version option and labels.
+type TargetServiceLinkSelector struct {
+	Type   string   `json:"type"`
+	Option string   `json:"option,omitempty"`
+	Labels []string `json:"labels,omitempty"`
+}
+
+// matches reports whether a service manifest satisfies the selector, the way
+// Wodby 2 checks stack links.
+func (s TargetServiceLinkSelector) matches(manifest *TargetServiceManifest) bool {
+	if manifest == nil || s.Type != manifest.Type {
+		return false
+	}
+	if s.Option != "" {
+		found := false
+		for _, option := range manifest.Options {
+			found = found || option.Version == s.Option
+		}
+		if !found {
+			return false
+		}
+	}
+	for _, label := range s.Labels {
+		found := false
+		for _, have := range manifest.Labels {
+			found = found || have == label
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 type TargetServiceBackupCapability struct {

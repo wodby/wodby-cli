@@ -193,7 +193,8 @@ func migrationBackupPresetInput(serviceID int, backupName string, destination Pr
 		Disabled: destination.presetDisabled(backupName), Override: false, Auto: &auto,
 	}
 	if auto {
-		duration := 3
+		// Minutes, the length of the 02:00-05:00 window below.
+		duration := 180
 		input.Duration = &duration
 		input.TimeWindow = &TargetAutomationTimeWindowInput{
 			Enabled: true, Start: "02:00", End: "05:00", TimeZone: destination.TimeZone,

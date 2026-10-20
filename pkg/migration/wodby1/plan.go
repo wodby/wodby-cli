@@ -1311,6 +1311,10 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 			)
 			continue
 		}
+		if sourceEnvVarLeftUnset(instance.Properties, envVar) {
+			plan.addReview(SeveritySkipped, app.Name, instance.Name, "service "+service.Name+" env var "+envVar.Name, emptyEnvVarSkippedMessage(envVar.Name))
+			continue
+		}
 		if !sourceEnvVarRequiresMigration(instance.Properties, envVar) {
 			continue
 		}
@@ -1578,7 +1582,8 @@ func detectDrupalNginxPreset(instance Instance) (drupalNginxPresetDetection, boo
 
 func sourceEnvVarRequiresMigration(properties map[string]interface{}, envVar EnvVar) bool {
 	return sourceEnvVarWouldOtherwiseMigrate(properties, envVar) &&
-		!isWodby2ReservedEnvironmentName(envVar.Name)
+		!isWodby2ReservedEnvironmentName(envVar.Name) &&
+		!sourceEnvVarIsEmpty(envVar)
 }
 
 func sourceEnvVarWouldOtherwiseMigrate(properties map[string]interface{}, envVar EnvVar) bool {

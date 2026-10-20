@@ -965,8 +965,10 @@ func TestBuildPlanPreservesExplicitRedactionAndBasicAuthSemantics(t *testing.T) 
 	if instance.Routes[1].Host != "protected.example" || !instance.Routes[1].BasicAuth {
 		t.Fatalf("protected route basic auth = %#v", instance.Routes[1])
 	}
-	if len(plan.Review) != 3 || plan.Review[0].Subject != "env var REDACTED_VALUE" ||
-		!hasReviewMessage(plan.Review, SeverityMigration, "Wodby 2 route auths will be created") {
+	// A protected value that is explicitly not redacted but empty is left unset.
+	if len(plan.Review) != 4 || plan.Review[0].Subject != "env var REDACTED_VALUE" ||
+		!hasReviewMessage(plan.Review, SeverityMigration, "Wodby 2 route auths will be created") ||
+		!hasReviewMessage(plan.Review, SeveritySkipped, "EMPTY_VALUE is empty") {
 		t.Fatalf("review = %#v", plan.Review)
 	}
 }

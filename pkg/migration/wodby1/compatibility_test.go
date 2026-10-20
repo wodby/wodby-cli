@@ -105,7 +105,9 @@ func TestMigrationWaitsForPostDeploymentOutcome(t *testing.T) {
 	}
 }
 
-func TestPrepareStackConfigurationBlocksEmptyCustomValues(t *testing.T) {
+// An empty Wodby 1 value is left unset: Wodby 2 stores no empty values, and
+// the stack configuration neither blocks on it nor writes it.
+func TestPrepareStackConfigurationLeavesEmptyCustomValuesUnset(t *testing.T) {
 	for _, scoped := range []bool{false, true} {
 		dev := stackConfigurationTestInstance("dev", "DEV", "development", "shared")
 		prod := stackConfigurationTestInstance("prod", "PROD", "production", "shared")
@@ -113,17 +115,23 @@ func TestPrepareStackConfigurationBlocksEmptyCustomValues(t *testing.T) {
 		if !scoped {
 			prod.Source.Services[0].EnvVars = append(prod.Source.Services[0].EnvVars, EnvVar{Name: "CUSTOM_EMPTY", Enabled: true})
 		}
-		_, findings, err := prepareStackConfigurationTest(stackConfigurationTestApp(dev, prod))
+		configuration, findings, err := prepareStackConfigurationTest(stackConfigurationTestApp(dev, prod))
 		if err != nil {
 			t.Fatal(err)
 		}
-		found := false
 		for _, finding := range findings {
-			found = found || finding.Severity == SeverityBlocking && finding.Instance == "dev" &&
-				strings.Contains(finding.Subject, "php env var CUSTOM_EMPTY") && strings.Contains(finding.Message, "empty")
+			if strings.Contains(finding.Subject, "CUSTOM_EMPTY") {
+				t.Fatalf("scoped=%t finding=%+v", scoped, finding)
+			}
 		}
-		if !found {
-			t.Fatalf("scoped=%t findings=%+v", scoped, findings)
+		variables := append([]PreparedStackEnvVar(nil), configuration.EnvVars...)
+		for _, service := range configuration.Services {
+			variables = append(variables, service.EnvVars...)
+		}
+		for _, variable := range variables {
+			if variable.Name == "CUSTOM_EMPTY" {
+				t.Fatalf("scoped=%t empty value prepared: %+v", scoped, variable)
+			}
 		}
 	}
 }

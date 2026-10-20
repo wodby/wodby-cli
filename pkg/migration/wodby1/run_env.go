@@ -40,6 +40,7 @@ type RunOptions struct {
 
 	TargetCIIntegrationID  int
 	TargetWodbyCI          bool
+	TargetLetsEncrypt      bool
 	TargetGitIntegrationID int
 	TargetRepositoryName   string
 	TargetRepositoryMap    []string

@@ -41,7 +41,10 @@ type PlanOptions struct {
 	TargetCIIntegrationID         int
 	// TargetWodbyCI builds instances that Wodby 1 deployed through third-party
 	// CI with Wodby CI, from their linked repository.
-	TargetWodbyCI          bool
+	TargetWodbyCI bool
+	// TargetLetsEncrypt gives routes that used a custom certificate in Wodby 1
+	// a Let's Encrypt certificate instead.
+	TargetLetsEncrypt      bool
 	Repository             RepositoryTargetPlan
 	RepositoryByApp        map[string]RepositoryTargetPlan
 	SkipCode               bool
@@ -105,7 +108,10 @@ type PlanTarget struct {
 	AppTitle           string `json:"appTitle,omitempty"`
 	CIIntegrationID    int    `json:"ciIntegrationId"`
 	// WodbyCI moves instances built by third-party CI in Wodby 1 to Wodby CI.
-	WodbyCI                 bool                       `json:"wodbyCI,omitempty"`
+	WodbyCI bool `json:"wodbyCI,omitempty"`
+	// LetsEncrypt replaces custom certificates of Wodby 1 routes with
+	// Let's Encrypt ones.
+	LetsEncrypt             bool                       `json:"letsEncrypt,omitempty"`
 	OrgOwnerOrAdminVerified bool                       `json:"orgOwnerOrAdminVerified"`
 	DiscoveryVerified       bool                       `json:"discoveryVerified"`
 	Capabilities            *TargetClusterCapabilities `json:"capabilities,omitempty"`
@@ -381,6 +387,7 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 			Cluster:                 opts.TargetCluster,
 			CIIntegrationID:         opts.TargetCIIntegrationID,
 			WodbyCI:                 opts.TargetWodbyCI,
+			LetsEncrypt:             opts.TargetLetsEncrypt,
 			OrgOwnerOrAdminVerified: opts.TargetOrgOwnerOrAdminVerified,
 		},
 		Selection: sourceSelectionForPlan(export, opts.Selection),
@@ -1764,6 +1771,13 @@ func buildRoutePlan(plan *Plan, app App, instance Instance, domain Domain, basic
 		RedirectToWWW:   domain.RedirectToWWW,
 		RedirectNonWWW:  domain.RedirectNonWWW,
 		RedirectTarget:  domain.RedirectTarget,
+	}
+	if domain.SSLCustom && opts.TargetLetsEncrypt && enabled {
+		// The member chose Let's Encrypt over uploading the certificate again:
+		// the migration cannot carry private keys over.
+		routePlan.SSLCustom = false
+		plan.addReview(SeverityMigration, app.Name, instance.Name, "route "+domain.Name+" TLS",
+			"Wodby 1 used a custom certificate; Let's Encrypt will issue and renew one once DNS points to Wodby 2")
 	}
 
 	if !enabled {

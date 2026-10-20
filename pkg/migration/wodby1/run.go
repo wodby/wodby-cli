@@ -392,6 +392,7 @@ func runWodby1Single(cmd *RunEnv, sourceKind string, sourceID string, opts *RunO
 		TargetImportMap:               importMap,
 		TargetCIIntegrationID:         opts.TargetCIIntegrationID,
 		TargetWodbyCI:                 opts.TargetWodbyCI,
+		TargetLetsEncrypt:             opts.TargetLetsEncrypt,
 		Repository: RepositoryTargetPlan{
 			GitIntegrationID: opts.TargetGitIntegrationID,
 			RepositoryName:   strings.TrimSpace(opts.TargetRepositoryName),
@@ -938,6 +939,7 @@ func runWodby1Server(cmd *RunEnv, sourceID string, opts *RunOptions) (runErr err
 		TargetImportMap:               importMap,
 		TargetCIIntegrationID:         opts.TargetCIIntegrationID,
 		TargetWodbyCI:                 opts.TargetWodbyCI,
+		TargetLetsEncrypt:             opts.TargetLetsEncrypt,
 		Repository: RepositoryTargetPlan{
 			GitIntegrationID: opts.TargetGitIntegrationID,
 			RepositoryName:   strings.TrimSpace(opts.TargetRepositoryName),

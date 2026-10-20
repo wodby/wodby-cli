@@ -28,6 +28,7 @@ type PreviewRequest struct {
 
 	TargetCIIntegrationID  int
 	TargetWodbyCI          bool
+	TargetLetsEncrypt      bool
 	GitIntegrationID       int
 	RepositoryName         string
 	CodeService            string
@@ -143,6 +144,7 @@ func Preview(ctx context.Context, source *SourceClient, target *TargetClient, re
 		TargetImportMap:               req.TargetImportMap,
 		TargetCIIntegrationID:         req.TargetCIIntegrationID,
 		TargetWodbyCI:                 req.TargetWodbyCI,
+		TargetLetsEncrypt:             req.TargetLetsEncrypt,
 		Repository: RepositoryTargetPlan{
 			GitIntegrationID: req.GitIntegrationID,
 			RepositoryName:   strings.TrimSpace(req.RepositoryName),

@@ -1,6 +1,9 @@
 package wodby1
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -84,6 +87,59 @@ func TestPrepareAddedServiceLinksFillsRequiredDatabaseLink(t *testing.T) {
 			}
 			if containsBlockingReviewItems(findings) || len(links) != 1 || links[0].Name != "db" || links[0].LinkedServiceName != tc.want {
 				t.Fatalf("links = %#v, findings = %#v", links, findings)
+			}
+		})
+	}
+}
+
+// The create response can leave out what Wodby 2 stores on the preset's
+// schedule. The stored preset decides, and a real mismatch names its fields
+// without leaving an operation that blocks rollback.
+func TestEnsureBackupPresetJudgesTheStoredPreset(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		storedEnd string
+		wantErr   string
+	}{
+		{name: "stored preset matches", storedEnd: "05:00"},
+		{name: "stored preset differs", storedEnd: "06:00", wantErr: "timeWindow.end"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			serviceID, backupName, duration := 30, "files", 180
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/backup-presets":
+					writeTargetExecutionJSON(t, w, []TargetBackupPreset{})
+				case r.Method == http.MethodPost && r.URL.Path == "/v1/backup-presets":
+					writeTargetExecutionJSON(t, w, TargetBackupPreset{
+						ID: 50, AppServiceID: &serviceID, BackupName: &backupName, IntegrationID: 1, Auto: true,
+					})
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/backup-presets/50":
+					writeTargetExecutionJSON(t, w, TargetBackupPreset{
+						ID: 50, AppServiceID: &serviceID, BackupName: &backupName, IntegrationID: 1, Auto: true,
+						Duration: &duration, TimeWindow: &TargetAutomationTimeWindow{
+							Start: "02:00", End: tc.storedEnd, TimeZone: "UTC", Days: migrationBackupDays,
+						},
+					})
+				default:
+					t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+				}
+			}))
+			defer server.Close()
+			state, statePath := newExecutorTestState(t)
+			executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), statePath: statePath}
+			err := executor.ensureBackupPreset(context.Background(), state, "instance-1",
+				TargetAppService{ID: serviceID, Name: "files-nfs"}, backupName,
+				PreparedBackupDestination{Auto: true, TimeZone: "UTC", IntegrationID: 1})
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tc.wantErr)
+			}
+			if unresolved := unresolvedRollbackOperations(state); len(unresolved) != 0 {
+				t.Fatalf("rollback would be blocked by %v", unresolved)
 			}
 		})
 	}

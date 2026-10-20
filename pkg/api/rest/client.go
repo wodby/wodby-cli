@@ -118,7 +118,42 @@ func (c *Client) Delete(ctx context.Context, path string, query url.Values, out 
 	return c.Do(ctx, http.MethodDelete, path, query, nil, out)
 }
 
+// busyMessage is how Wodby 2 reports a database lock conflict. The API
+// raises it only after rolling the request back, before anything is saved,
+// so the same request can be sent again.
+const busyMessage = "configuration is busy; retry the operation"
+
+// busyRetryDelays are the waits before each repeat of a request that Wodby 2
+// answered as busy, about a minute in all.
+var busyRetryDelays = []time.Duration{
+	2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second, 30 * time.Second,
+}
+
+// IsBusy reports whether Wodby 2 rejected a request because the
+// configuration it changes was locked by another operation.
+func IsBusy(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(apiErr.Message+" "+apiErr.Body), busyMessage)
+}
+
 func (c *Client) Do(ctx context.Context, method string, path string, query url.Values, body interface{}, out interface{}) error {
+	for attempt := 0; ; attempt++ {
+		err := c.do(ctx, method, path, query, body, out)
+		if err == nil || !IsBusy(err) || attempt >= len(busyRetryDelays) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(busyRetryDelays[attempt]):
+		}
+	}
+}
+
+func (c *Client) do(ctx context.Context, method string, path string, query url.Values, body interface{}, out interface{}) error {
 	req, err := c.newRequest(ctx, method, path, query, body)
 	if err != nil {
 		return err

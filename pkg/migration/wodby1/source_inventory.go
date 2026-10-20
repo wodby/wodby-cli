@@ -84,14 +84,42 @@ type sourceListItem struct {
 	ServerID sourceText `json:"server_id"`
 }
 
+// SourceInventoryFilter narrows ListInventoryFiltered.
+type SourceInventoryFilter struct {
+	// Org selects Wodby 1 organizations by ID, name or title, ignoring case.
+	// Exact matches win; otherwise a name or title that contains it matches.
+	Org string
+	// OrgsOnly lists the organizations without their apps and servers, with a
+	// single request, for a token that sees many of them.
+	OrgsOnly bool
+}
+
 // ListInventory reads the organizations the token's user belongs to, with
 // their apps, instances and servers, through the Wodby 1 API.
 func (c *SourceClient) ListInventory(ctx context.Context) (SourceInventory, error) {
+	return c.ListInventoryFiltered(ctx, SourceInventoryFilter{})
+}
+
+// ListInventoryFiltered reads the organizations the filter selects, with their
+// apps, instances and servers unless OrgsOnly is set. Each organization takes
+// three more Wodby 1 requests, so a token that sees many should select one.
+func (c *SourceClient) ListInventoryFiltered(ctx context.Context, filter SourceInventoryFilter) (SourceInventory, error) {
 	orgs, err := c.listSource(ctx, "/api/v3/orgs", nil)
 	if err != nil {
 		return SourceInventory{}, errors.Wrap(err, "list Wodby 1 organizations")
 	}
+	orgs = selectSourceOrgs(orgs, filter.Org)
 	inventory := SourceInventory{Orgs: []SourceInventoryOrg{}}
+	if filter.OrgsOnly {
+		for _, org := range orgs {
+			inventory.Orgs = append(inventory.Orgs, SourceInventoryOrg{
+				ID: string(org.ID), Name: string(org.Name), Title: string(org.Title),
+				Apps: []SourceInventoryApp{}, Servers: []SourceInventoryServer{},
+			})
+		}
+		sort.Slice(inventory.Orgs, func(i, j int) bool { return inventory.Orgs[i].Name < inventory.Orgs[j].Name })
+		return inventory, nil
+	}
 	for _, org := range orgs {
 		query := url.Values{"org_id": []string{string(org.ID)}}
 		apps, err := c.listSource(ctx, "/api/v3/apps", query)
@@ -139,6 +167,29 @@ func (c *SourceClient) ListInventory(ctx context.Context) (SourceInventory, erro
 	}
 	sort.Slice(inventory.Orgs, func(i, j int) bool { return inventory.Orgs[i].Name < inventory.Orgs[j].Name })
 	return inventory, nil
+}
+
+// selectSourceOrgs keeps the organizations that match selector, preferring
+// exact matches of ID, name or title over names and titles that contain it.
+func selectSourceOrgs(orgs []sourceListItem, selector string) []sourceListItem {
+	selector = strings.ToLower(strings.TrimSpace(selector))
+	if selector == "" {
+		return orgs
+	}
+	exact, partial := []sourceListItem{}, []sourceListItem{}
+	for _, org := range orgs {
+		id, name, title := strings.ToLower(string(org.ID)), strings.ToLower(string(org.Name)), strings.ToLower(string(org.Title))
+		switch {
+		case id == selector || name == selector || title == selector:
+			exact = append(exact, org)
+		case strings.Contains(name, selector) || strings.Contains(title, selector):
+			partial = append(partial, org)
+		}
+	}
+	if len(exact) != 0 {
+		return exact
+	}
+	return partial
 }
 
 func (c *SourceClient) listSource(ctx context.Context, path string, query url.Values) ([]sourceListItem, error) {

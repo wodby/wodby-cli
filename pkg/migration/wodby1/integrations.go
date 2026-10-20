@@ -437,6 +437,9 @@ func (c *TargetClient) linkOwnSMTPIntegration(ctx context.Context, app *Prepared
 	names := []string{}
 	for index := range app.Instances {
 		instance := &app.Instances[index]
+		if instance.CatchMailService != "" {
+			continue
+		}
 		sends := false
 		for _, source := range instance.Source.Services {
 			mapping, ok := instance.Services[source.Name]
@@ -483,12 +486,18 @@ func (c *TargetClient) prepareSMTPIntegration(ctx context.Context, app PreparedA
 			if !ok || !source.Enabled || mapping.Target.StackService.Name != "opensmtpd" {
 				continue
 			}
-			if !sourceRelayConfigured(source) {
+			if !sourceRelayConfigured(source) || instance.CatchMailService != "" {
 				contextWithoutRelay = true
 			}
 		}
 	}
 	for _, instance := range app.Instances {
+		if instance.CatchMailService != "" {
+			// Mailpit catches its mail; the relay is linked to the other app
+			// environments alone, not the shared stack.
+			contextWithoutRelay = true
+			continue
+		}
 		for _, source := range instance.Source.Services {
 			mapping, ok := instance.Services[source.Name]
 			if !ok || !source.Enabled || mapping.Target.StackService.Name != "opensmtpd" {

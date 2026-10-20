@@ -33,6 +33,7 @@ type PreviewRequest struct {
 	TargetBackupBucket        string
 	TargetBackupWindow        string
 	TargetSMTPIntegrationID   int
+	TargetCatchMail           bool
 	GitIntegrationID          int
 	RepositoryName            string
 	CodeService               string
@@ -153,6 +154,7 @@ func Preview(ctx context.Context, source *SourceClient, target *TargetClient, re
 		TargetBackupBucket:            req.TargetBackupBucket,
 		TargetBackupWindow:            req.TargetBackupWindow,
 		TargetSMTPIntegrationID:       req.TargetSMTPIntegrationID,
+		TargetCatchMail:               req.TargetCatchMail,
 		Repository: RepositoryTargetPlan{
 			GitIntegrationID: req.GitIntegrationID,
 			RepositoryName:   strings.TrimSpace(req.RepositoryName),

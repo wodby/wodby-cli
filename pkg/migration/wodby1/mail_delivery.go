@@ -26,6 +26,17 @@ func prepareMailDeliveryLinks(app *PreparedAppMigration) []ReviewItem {
 	links := []preparedMailDeliveryLink{}
 	for instanceIndex := range app.Instances {
 		instance := &app.Instances[instanceIndex]
+		if instance.CatchMailService != "" {
+			// Mailpit catches this environment's mail instead of its Wodby 1
+			// delivery.
+			for _, serviceName := range targetSendmailLinkServices(*instance) {
+				links = append(links, preparedMailDeliveryLink{
+					instanceIndex: instanceIndex, instanceName: instance.Source.Name,
+					serviceName: serviceName, linkedServiceName: instance.CatchMailService,
+				})
+			}
+			continue
+		}
 		sourceMail, found, err := selectedSourceMailService(instance.Source)
 		if err != nil {
 			findings = append(findings, ReviewItem{
@@ -129,6 +140,14 @@ func prepareMailDeliveryLinks(app *PreparedAppMigration) []ReviewItem {
 // contextMailDeliveryTarget returns the Wodby 2 mail service a context
 // instance would link from serviceName, if it selects one.
 func contextMailDeliveryTarget(instance PreparedInstance, serviceName string) (string, bool) {
+	if instance.CatchMailService != "" {
+		for _, name := range targetSendmailLinkServices(instance) {
+			if name == serviceName {
+				return instance.CatchMailService, true
+			}
+		}
+		return "", false
+	}
 	sourceMail, found, err := selectedSourceMailService(instance.Source)
 	if err != nil || !found {
 		return "", false

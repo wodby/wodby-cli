@@ -56,13 +56,16 @@ type PlanOptions struct {
 	// TargetSMTPIntegrationID relays the apps' mail through the member's own
 	// SMTP integration instead of credentials copied from Wodby 1.
 	TargetSMTPIntegrationID int
-	Repository              RepositoryTargetPlan
-	RepositoryByApp         map[string]RepositoryTargetPlan
-	SkipCode                bool
-	SkipData                bool
-	RequireData             bool
-	AllowUnsupportedDrupal  bool
-	Selection               *SourceSelection
+	// TargetCatchMail delivers the mail of non-production app environments to
+	// Mailpit, so testing never emails real recipients.
+	TargetCatchMail        bool
+	Repository             RepositoryTargetPlan
+	RepositoryByApp        map[string]RepositoryTargetPlan
+	SkipCode               bool
+	SkipData               bool
+	RequireData            bool
+	AllowUnsupportedDrupal bool
+	Selection              *SourceSelection
 	// WorkspaceInstances holds the UUIDs of the direct-Git source instances
 	// to create as development workspaces instead of built environments.
 	WorkspaceInstances map[string]bool
@@ -127,6 +130,7 @@ type PlanTarget struct {
 	BackupBucket            string                     `json:"backupBucket,omitempty"`
 	BackupWindow            string                     `json:"backupWindow,omitempty"`
 	SMTPIntegrationID       int                        `json:"smtpIntegrationId,omitempty"`
+	CatchMail               bool                       `json:"catchMail,omitempty"`
 	OrgOwnerOrAdminVerified bool                       `json:"orgOwnerOrAdminVerified"`
 	DiscoveryVerified       bool                       `json:"discoveryVerified"`
 	Capabilities            *TargetClusterCapabilities `json:"capabilities,omitempty"`
@@ -410,6 +414,7 @@ func BuildPlan(export Export, opts PlanOptions) (Plan, error) {
 			BackupBucket:            strings.TrimSpace(opts.TargetBackupBucket),
 			BackupWindow:            strings.TrimSpace(opts.TargetBackupWindow),
 			SMTPIntegrationID:       opts.TargetSMTPIntegrationID,
+			CatchMail:               opts.TargetCatchMail,
 			OrgOwnerOrAdminVerified: opts.TargetOrgOwnerOrAdminVerified,
 		},
 		Selection: sourceSelectionForPlan(export, opts.Selection),

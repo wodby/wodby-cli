@@ -851,11 +851,14 @@ func (e *MigrationExecutor) SyncData(
 		return MigrationPhaseResult{}, err
 	}
 	instanceNames := map[string]string{}
+	preparedInstances := map[string]PreparedInstance{}
 	for _, item := range prepared.Instances {
 		instanceNames[item.Source.UUID] = item.Source.Name
+		preparedInstances[item.Source.UUID] = item
 	}
 	failed := map[string]bool{}
 	failures := &instanceStageFailures{}
+	paused := &MigrationPausedError{}
 	recordFailure := func(sourceID, component, stage string, err error) {
 		failed[sourceID] = true
 		name := firstNonEmpty(instanceNames[sourceID], sourceID)
@@ -900,6 +903,29 @@ func (e *MigrationExecutor) SyncData(
 			recordFailure(item.SourceInstanceUUID, item.Backup.Component, "target import mapping", errors.New("target import service no longer matches the approved enabled stack service"))
 			continue
 		}
+		if !importOperationSucceeded(instanceState, item.SourceInstanceUUID, item.Backup.Component) {
+			code, blocked, err := e.manualCodeImportBlocker(ctx, preparedInstances[item.SourceInstanceUUID], services, service)
+			if err != nil {
+				recordFailure(item.SourceInstanceUUID, item.Backup.Component, "target import mapping", err)
+				continue
+			}
+			if blocked {
+				// The instance's remaining imports wait with it, so a rerun
+				// imports them in the planned order.
+				failed[item.SourceInstanceUUID] = true
+				action := &ExternalActionRequiredError{
+					Instance:         firstNonEmpty(instanceNames[item.SourceInstanceUUID], item.SourceInstanceUUID),
+					TargetInstanceID: instanceState.TargetID,
+					ServiceName:      code.Name,
+					TargetServiceID:  code.ID,
+					ManualCodeDeploy: true,
+					ImportComponent:  item.Backup.Component,
+				}
+				paused.add(action)
+				e.reportProgress("Instance %q is paused: %v. Continuing with other instances.", action.Instance, action)
+				continue
+			}
+		}
 		if err := e.ensureImport(ctx, state, item, instanceState.TargetID, service.ID); err != nil {
 			recordFailure(item.SourceInstanceUUID, item.Backup.Component, "data import", err)
 			continue
@@ -920,6 +946,15 @@ func (e *MigrationExecutor) SyncData(
 			return MigrationPhaseResult{}, err
 		}
 		return MigrationPhaseResult{Phase: MigrationPhaseSyncData, State: state}, failures
+	}
+	if !paused.empty() {
+		if err := state.SetStatus(MigrationStatusAwaitingExternal); err != nil {
+			return MigrationPhaseResult{}, err
+		}
+		if err := SaveMigrationState(e.statePath, state); err != nil {
+			return MigrationPhaseResult{}, err
+		}
+		return MigrationPhaseResult{Phase: MigrationPhaseSyncData, State: state}, paused
 	}
 	e.reportProgress("All planned data imports completed.")
 	return e.finishRunningPhase(state, MigrationPhaseSyncData)
@@ -3474,9 +3509,16 @@ func (e *MigrationExecutor) ensureTechnicalDeployment(
 		}
 	}
 
-	input, err := technicalDeploymentInput(prepared, services, build)
+	waiting, _, err := e.servicesWaitingForManualCode(ctx, prepared, services)
 	if err != nil {
 		return err
+	}
+	input, err := technicalDeploymentInput(prepared, services, build, waiting)
+	if err != nil {
+		return err
+	}
+	if held := heldDependentServices(waiting); len(held) > 0 {
+		e.reportProgress("  Holding back %s until the code services they need are deployed (--skip-code).", strings.Join(held, ", "))
 	}
 	if len(input.Services) == 0 {
 		return nil
@@ -3491,10 +3533,14 @@ func (e *MigrationExecutor) ensureTechnicalDeployment(
 	)
 }
 
+// technicalDeploymentInput deploys every enabled service except the code
+// services a --skip-code migration leaves to the operator and the services in
+// waiting, which cannot start until those code services run.
 func technicalDeploymentInput(
 	prepared PreparedInstance,
 	services []TargetAppService,
 	build *TargetAppBuild,
+	waiting map[string]string,
 ) (TargetCreateAppDeploymentInput, error) {
 	input := TargetCreateAppDeploymentInput{Services: []TargetAppServiceDeploymentInput{}}
 	skippedCodeServices := skippedCodeServiceNames(prepared)
@@ -3511,6 +3557,9 @@ func technicalDeploymentInput(
 			continue
 		}
 		if _, skipped := skippedCodeServices[service.Name]; skipped {
+			continue
+		}
+		if _, held := waiting[service.Name]; held {
 			continue
 		}
 		item := TargetAppServiceDeploymentInput{
@@ -3603,6 +3652,133 @@ func (e *MigrationExecutor) ensureExternalCIBuild(
 		blocked.GitRef = strings.TrimSpace(*source.GitRef)
 	}
 	return nil, blocked
+}
+
+// servicesWaitingForManualCode maps each enabled service of a --skip-code
+// instance that cannot run yet to the skipped code service it waits for: a
+// code service that is not running, and every service linking to one of them
+// or derived from one, directly or through another waiting service. Vinyl, for
+// example, cannot start without the nginx it proxies to. It also returns the
+// links of each enabled service by ID. Both are empty when nothing waits.
+func (e *MigrationExecutor) servicesWaitingForManualCode(
+	ctx context.Context,
+	prepared PreparedInstance,
+	services []TargetAppService,
+) (map[string]string, map[int][]TargetAppServiceLink, error) {
+	waiting := map[string]string{}
+	links := map[int][]TargetAppServiceLink{}
+	skipped := skippedCodeServiceNames(prepared)
+	if len(skipped) == 0 {
+		return waiting, links, nil
+	}
+	enabled := []TargetAppService{}
+	byID := map[int]TargetAppService{}
+	for _, service := range services {
+		if service.Disabled {
+			continue
+		}
+		enabled = append(enabled, service)
+		byID[service.ID] = service
+		if _, ok := skipped[service.Name]; ok && !strings.EqualFold(strings.TrimSpace(service.Status), "OK") {
+			waiting[service.Name] = service.Name
+		}
+	}
+	if len(waiting) == 0 {
+		return waiting, links, nil
+	}
+	sort.Slice(enabled, func(i, j int) bool { return enabled[i].ID < enabled[j].ID })
+	for _, service := range enabled {
+		items, err := e.target.ListAppServiceLinks(ctx, service.ID)
+		if err != nil {
+			return nil, nil, errors.Wrapf(err, "read links of target service %q", service.Name)
+		}
+		links[service.ID] = items
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, service := range enabled {
+			if _, ok := waiting[service.Name]; ok {
+				continue
+			}
+			needs := []int{}
+			if service.ParentAppServiceID != nil {
+				needs = append(needs, *service.ParentAppServiceID)
+			}
+			for _, link := range links[service.ID] {
+				needs = append(needs, link.LinkedAppServiceID)
+			}
+			for _, id := range needs {
+				if code, ok := waiting[byID[id].Name]; ok && byID[id].ID != 0 {
+					waiting[service.Name] = code
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	return waiting, links, nil
+}
+
+// manualCodeImportBlocker reports the skipped code service a data import into
+// target must wait for in a --skip-code migration: target itself when it
+// waits, or, for a storage service, the code service that a waiting service
+// linking to it waits for. Wodby 2 imports into shared storage through the volume of the
+// service that mounts it, and that volume exists only once the service runs.
+func (e *MigrationExecutor) manualCodeImportBlocker(
+	ctx context.Context,
+	prepared PreparedInstance,
+	services []TargetAppService,
+	target TargetAppService,
+) (TargetAppService, bool, error) {
+	waiting, links, err := e.servicesWaitingForManualCode(ctx, prepared, services)
+	if err != nil {
+		return TargetAppService{}, false, err
+	}
+	code, ok := waiting[target.Name]
+	// Only a storage service is imported through another service's volume.
+	if !ok && strings.EqualFold(strings.TrimSpace(target.Type), "storage") {
+		ids := make([]int, 0, len(links))
+		for id := range links {
+			ids = append(ids, id)
+		}
+		sort.Ints(ids)
+	users:
+		for _, id := range ids {
+			for _, link := range links[id] {
+				if link.LinkedAppServiceID != target.ID {
+					continue
+				}
+				for _, service := range services {
+					if service.ID == id {
+						if code, ok = waiting[service.Name]; ok {
+							break users
+						}
+					}
+				}
+			}
+		}
+	}
+	if !ok {
+		return TargetAppService{}, false, nil
+	}
+	service, err := exactAppService(services, code)
+	if err != nil {
+		return TargetAppService{}, false, err
+	}
+	return service, true, nil
+}
+
+// heldDependentServices lists, sorted, the waiting services that are not
+// themselves code services.
+func heldDependentServices(waiting map[string]string) []string {
+	held := []string{}
+	for name, code := range waiting {
+		if name != code {
+			held = append(held, name)
+		}
+	}
+	sort.Strings(held)
+	return held
 }
 
 func skippedCodeServiceNames(prepared PreparedInstance) map[string]struct{} {
@@ -5551,7 +5727,9 @@ func (e *MigrationExecutor) verifyInstance(
 			return errors.Errorf("target service %q integration %q does not uniquely use integration ID %d", service.Name, link.Name, link.IntegrationID)
 		}
 	}
-	deploymentInput, err := technicalDeploymentInput(prepared, services, nil)
+	// Verification runs after the skipped code services are deployed, so no
+	// service is held back for them any more.
+	deploymentInput, err := technicalDeploymentInput(prepared, services, nil, nil)
 	if err != nil {
 		return err
 	}

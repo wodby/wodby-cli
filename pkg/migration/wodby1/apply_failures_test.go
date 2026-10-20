@@ -97,12 +97,18 @@ func TestPrepareAddedServiceLinksFillsRequiredDatabaseLink(t *testing.T) {
 // without leaving an operation that blocks rollback.
 func TestEnsureBackupPresetJudgesTheStoredPreset(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		storedEnd string
-		wantErr   string
+		name       string
+		storedEnd  string
+		storedDays []string
+		wantErr    string
 	}{
-		{name: "stored preset matches", storedEnd: "05:00"},
-		{name: "stored preset differs", storedEnd: "06:00", wantErr: "timeWindow.end"},
+		{name: "stored preset matches", storedEnd: "05:00", storedDays: migrationBackupDays},
+		// The REST API has returned stored weekdays in lower case.
+		{name: "stored weekdays in lower case", storedEnd: "05:00", storedDays: []string{
+			"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+		}},
+		{name: "stored weekdays differ", storedEnd: "05:00", storedDays: []string{"monday"}, wantErr: "timeWindow.days"},
+		{name: "stored preset differs", storedEnd: "06:00", storedDays: migrationBackupDays, wantErr: "timeWindow.end"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			serviceID, backupName, duration := 30, "files", 180
@@ -118,7 +124,7 @@ func TestEnsureBackupPresetJudgesTheStoredPreset(t *testing.T) {
 					writeTargetExecutionJSON(t, w, TargetBackupPreset{
 						ID: 50, AppServiceID: &serviceID, BackupName: &backupName, IntegrationID: 1, Auto: true,
 						Duration: &duration, TimeWindow: &TargetAutomationTimeWindow{
-							Start: "02:00", End: tc.storedEnd, TimeZone: "UTC", Days: migrationBackupDays,
+							Start: "02:00", End: tc.storedEnd, TimeZone: "UTC", Days: tc.storedDays,
 						},
 					})
 				default:

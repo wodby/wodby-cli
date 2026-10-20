@@ -229,7 +229,7 @@ func backupPresetMatches(actual TargetBackupPreset, desired TargetCreateBackupPr
 		actual.TimeWindow.TimeZone != desired.TimeWindow.TimeZone || *actual.Duration != *desired.Duration {
 		return false
 	}
-	return sameStringSet(actual.TimeWindow.Days, desired.TimeWindow.Days)
+	return sameWeekdays(actual.TimeWindow.Days, desired.TimeWindow.Days)
 }
 
 // backupPresetDifferences names the fields in which a preset differs from the
@@ -268,9 +268,22 @@ func backupPresetDifferences(actual TargetBackupPreset, desired TargetCreateBack
 		add("timeWindow.start", actual.TimeWindow.Start != desired.TimeWindow.Start)
 		add("timeWindow.end", actual.TimeWindow.End != desired.TimeWindow.End)
 		add("timeWindow.timeZone", actual.TimeWindow.TimeZone != desired.TimeWindow.TimeZone)
-		add("timeWindow.days", !sameStringSet(actual.TimeWindow.Days, desired.TimeWindow.Days))
+		add("timeWindow.days", !sameWeekdays(actual.TimeWindow.Days, desired.TimeWindow.Days))
 	}
 	return diff
+}
+
+// sameWeekdays compares weekday sets ignoring case: Wodby 2 takes MONDAY in
+// requests, but its REST API has returned the stored days as monday.
+func sameWeekdays(left, right []string) bool {
+	normalize := func(days []string) []string {
+		result := make([]string, len(days))
+		for index, day := range days {
+			result[index] = strings.ToUpper(strings.TrimSpace(day))
+		}
+		return result
+	}
+	return sameStringSet(normalize(left), normalize(right))
 }
 
 func sameStringSet(left, right []string) bool {

@@ -39,9 +39,20 @@ type ExternalActionRequiredError struct {
 	// GitRef is set only when the reviewed build source pins a ref, which
 	// narrows which pipeline run the migration can adopt.
 	GitRef string
+	// ManualCodeDeploy marks a --skip-code migration that waits for the
+	// operator to deploy code service ServiceName: the files import named by
+	// ImportComponent writes into storage that only that service creates.
+	ManualCodeDeploy bool
+	ImportComponent  string
 }
 
 func (e *ExternalActionRequiredError) Error() string {
+	if e.ManualCodeDeploy {
+		return fmt.Sprintf(
+			"instance %q is waiting for you to deploy code service %q (app service ID %d) before its %s import",
+			e.Instance, e.ServiceName, e.TargetServiceID, e.ImportComponent,
+		)
+	}
 	return fmt.Sprintf(
 		"instance %q is waiting for its first Custom CI build of service %q (app service ID %d)",
 		e.Instance, e.ServiceName, e.TargetServiceID,
@@ -50,6 +61,9 @@ func (e *ExternalActionRequiredError) Error() string {
 
 // Summary is the single-line headline shown before the numbered steps.
 func (e *ExternalActionRequiredError) Summary() string {
+	if e.ManualCodeDeploy {
+		return fmt.Sprintf("Instance %q needs its code deployed before its %s can be imported.", e.Instance, e.ImportComponent)
+	}
 	return fmt.Sprintf(
 		"Instance %q needs one build from your own CI pipeline before Wodby 2 can deploy it.",
 		e.Instance,
@@ -59,6 +73,9 @@ func (e *ExternalActionRequiredError) Summary() string {
 // NextSteps renders the operator-facing instructions. Callers print this
 // instead of a failure message, so it must be complete on its own.
 func (e *ExternalActionRequiredError) NextSteps() string {
+	if e.ManualCodeDeploy {
+		return e.manualCodeDeployNextSteps()
+	}
 	example := strings.TrimSpace(e.ExampleURL)
 	if example == "" {
 		example = wodbyCIRepositoryURL
@@ -114,9 +131,25 @@ func (e *ExternalActionRequiredError) NextSteps() string {
 	return b.String()
 }
 
+func (e *ExternalActionRequiredError) manualCodeDeployNextSteps() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n\n", e.Summary())
+	b.WriteString("This migration runs with --skip-code, so you build and deploy the code\n")
+	fmt.Fprintf(&b, "services yourself. The %s import writes into storage that service %q\n", e.ImportComponent, e.ServiceName)
+	b.WriteString("mounts, and Wodby 2 creates that storage when the service is deployed.\n")
+	b.WriteString("Everything else for this instance is already created and configured.\n\n")
+	b.WriteString("Next steps\n")
+	fmt.Fprintf(&b, "  1. Build and deploy service %q (app service ID %d) of target app\n", e.ServiceName, e.TargetServiceID)
+	fmt.Fprintf(&b, "     environment ID %d, from the dashboard or with your own CI pipeline.\n", e.TargetInstanceID)
+	b.WriteString("  2. Rerun the same --apply command. The migration continues with the\n")
+	b.WriteString("     data import.\n")
+	b.WriteString("\nNothing failed and nothing needs to be cleaned up; the migration is paused.\n")
+	return b.String()
+}
+
 // MigrationPausedError aggregates every instance waiting on an external action.
 // An app or server migration can pause on several instances in one run, and
-// each has its own app service ID for the pipeline to publish to.
+// each has its own app service ID to build or deploy.
 type MigrationPausedError struct {
 	Actions []*ExternalActionRequiredError
 }
@@ -129,7 +162,7 @@ func (p *MigrationPausedError) Error() string {
 		return p.Actions[0].Error()
 	}
 	return fmt.Sprintf(
-		"%d instances are waiting for their first Custom CI build; first: %v",
+		"%d instances are waiting for an action outside the migration; first: %v",
 		len(p.Actions), p.Actions[0],
 	)
 }
@@ -153,6 +186,20 @@ func (p *MigrationPausedError) NextSteps() string {
 		blocks = append(blocks, action.NextSteps())
 	}
 	return strings.Join(blocks, "\n")
+}
+
+// ManualCodeDeployOnly reports whether every paused instance waits for code
+// the operator deploys, rather than for a Custom CI build.
+func (p *MigrationPausedError) ManualCodeDeployOnly() bool {
+	if p.empty() {
+		return false
+	}
+	for _, action := range p.Actions {
+		if !action.ManualCodeDeploy {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *MigrationPausedError) empty() bool {

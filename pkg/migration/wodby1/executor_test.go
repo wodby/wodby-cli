@@ -982,6 +982,7 @@ func TestTechnicalDeploymentPreservesTargetPostDeploymentHooks(t *testing.T) {
 			{ID: 30, Name: "cache"},
 		},
 		&build,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1053,6 +1054,7 @@ func TestTechnicalDeploymentOmitsBuildCapableServicesWhenCodeIsSkipped(t *testin
 			{ID: 40, Name: "worker"},
 		},
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1076,6 +1078,7 @@ func TestTechnicalDeploymentAllowsAllServicesToBeManualWhenCodeIsSkipped(t *test
 			}},
 		},
 		[]TargetAppService{{ID: 20, Name: "php"}},
+		nil,
 		nil,
 	)
 	if err != nil {

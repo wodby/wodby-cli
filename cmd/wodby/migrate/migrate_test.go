@@ -2872,8 +2872,35 @@ func TestPausedMigrationJSONExposesTheAppServiceToBuild(t *testing.T) {
 		t.Fatalf("decoded = %#v", decoded)
 	}
 	if decoded.Actions[0].TargetServiceID != 4200 ||
-		decoded.Actions[0].CIProvider != "GitHub Actions" {
+		decoded.Actions[0].CIProvider != "GitHub Actions" ||
+		decoded.Actions[0].WaitsFor != "custom_ci_build" {
 		t.Fatalf("action = %#v", decoded.Actions[0])
+	}
+}
+
+// A --skip-code pause waits for the operator's own code deployment, so its
+// status and actions say so instead of asking for a Custom CI build.
+func TestPausedMigrationJSONNamesAManualCodeDeployment(t *testing.T) {
+	cmd := newWodby1InstanceCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	if err := cmd.Flags().Set("output", "json"); err != nil {
+		t.Skipf("json output flag unavailable: %v", err)
+	}
+	paused := &wodby1.MigrationPausedError{Actions: []*wodby1.ExternalActionRequiredError{{
+		Instance: "prod", TargetInstanceID: 4100, ServiceName: "php", TargetServiceID: 4200,
+		ManualCodeDeploy: true, ImportComponent: "files",
+	}}}
+
+	_ = printMigrationPaused(cmd, paused, "/tmp/plan.json", "/tmp/state.json")
+
+	var decoded migrationPausedOutput
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+		t.Fatalf("json output = %q: %v", output.String(), err)
+	}
+	if decoded.Status != pausedCodeDeployStatus || len(decoded.Actions) != 1 ||
+		decoded.Actions[0].WaitsFor != "manual_code_deploy" || decoded.Actions[0].ImportComponent != "files" {
+		t.Fatalf("decoded = %#v", decoded)
 	}
 }
 

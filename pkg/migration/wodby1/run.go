@@ -1872,7 +1872,7 @@ func runMigrationRollback(
 	if err != nil {
 		return err
 	}
-	if err := verifyRollbackTarget(cmd.Context(), targetClient, opts, state); err != nil {
+	if err := verifyRollbackTarget(cmd.Context(), w, targetClient, opts, state); err != nil {
 		return err
 	}
 	executor, err := NewMigrationExecutor(targetClient, MigrationExecutorOptions{
@@ -1900,11 +1900,21 @@ func runMigrationRollback(
 // ones the migration was applied to. Rollback deletes by ID and reads a missing
 // resource as already deleted, so on another organization or endpoint it would
 // delete nothing, report success and discard the only record of what exists.
-func verifyRollbackTarget(ctx context.Context, targetClient *TargetClient, opts *RunOptions, state *MigrationState) error {
+//
+// A cluster that no longer exists is accepted when the key's organization is
+// the migration's and the cluster selector is the migration's cluster ID:
+// deleting a Wodby 2 cluster deletes its app environments, and the apps whose
+// environments were all on it, so what is left to roll back is the generated
+// stack and the integrations, which belong to the organization.
+func verifyRollbackTarget(ctx context.Context, w io.Writer, targetClient *TargetClient, opts *RunOptions, state *MigrationState) error {
 	scope, err := targetClient.DiscoverTargetScope(ctx, TargetScopeSelectors{
 		Project: opts.TargetProject,
 		Cluster: opts.TargetCluster,
 	})
+	var blocker *TargetDiscoveryBlocker
+	if errors.As(err, &blocker) && blocker.Code == TargetBlockerNotFound && blocker.Resource == "cluster" {
+		return verifyRollbackWithoutCluster(ctx, w, targetClient, opts, state)
+	}
 	if err != nil {
 		return errors.Wrap(err, "verify the rollback target")
 	}
@@ -1914,6 +1924,34 @@ func verifyRollbackTarget(ctx context.Context, targetClient *TargetClient, opts 
 			scope.Org.ID, scope.Cluster.ID, state.Target.OrgID, state.Target.ClusterID,
 		)
 	}
+	return nil
+}
+
+// verifyRollbackWithoutCluster checks a rollback whose cluster was deleted:
+// the organization must be the migration's, and the selector must name the
+// migration's cluster by ID, because a deleted cluster's name cannot be
+// checked.
+func verifyRollbackWithoutCluster(ctx context.Context, w io.Writer, targetClient *TargetClient, opts *RunOptions, state *MigrationState) error {
+	org, err := targetClient.resolveTargetOrg(ctx, "")
+	if err != nil {
+		return errors.Wrap(err, "verify the rollback target")
+	}
+	if _, _, err = targetClient.RequireOrgOwnerOrAdmin(ctx, org.ID); err != nil {
+		return errors.Wrap(err, "verify the rollback target")
+	}
+	if org.ID != state.Target.OrgID {
+		return errors.Errorf(
+			"cannot roll back: the API key belongs to organization ID %d, but the migration was applied to organization ID %d; use the original API key and API URL. No Wodby 2 resource was deleted",
+			org.ID, state.Target.OrgID,
+		)
+	}
+	if strings.TrimSpace(opts.TargetCluster) != strconv.Itoa(state.Target.ClusterID) {
+		return errors.Errorf(
+			"cannot roll back: cluster %q was not found. If the migration's cluster was deleted, pass --target-cluster %d, its ID, to remove what the migration left in the organization. No Wodby 2 resource was deleted",
+			opts.TargetCluster, state.Target.ClusterID,
+		)
+	}
+	fmt.Fprintf(w, "Cluster ID %d no longer exists, and its app environments were deleted with it. Rolling back what the migration left in organization ID %d.\n", state.Target.ClusterID, org.ID)
 	return nil
 }
 
@@ -1975,7 +2013,7 @@ func runServerMigrationRollback(cmd *RunEnv, opts *RunOptions, artifacts Migrati
 		return err
 	}
 	for _, item := range rollbacks {
-		if err := verifyRollbackTarget(cmd.Context(), targetClient, opts, item.state); err != nil {
+		if err := verifyRollbackTarget(cmd.Context(), w, targetClient, opts, item.state); err != nil {
 			return err
 		}
 	}

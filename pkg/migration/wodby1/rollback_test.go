@@ -287,3 +287,58 @@ func TestRollbackRemovesStateWhenNothingWasCreated(t *testing.T) {
 		t.Fatal("empty rollback left its obsolete state behind")
 	}
 }
+
+// rollbackTargetServer is a Wodby 2 API where the key's organization 1 is
+// owned by the caller and the migration's cluster 3 no longer exists.
+func rollbackTargetServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	owner := 5
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/orgs":
+			writeTargetExecutionJSON(t, w, []TargetOrg{{ID: 1, Name: "acme", Title: "Acme"}})
+		case "/v1/user":
+			writeTargetExecutionJSON(t, w, map[string]any{"id": owner})
+		case "/v1/org-memberships":
+			writeTargetExecutionJSON(t, w, []TargetOrgMembership{{ID: 9, UserID: &owner, OrgID: 1, Role: "owner", Status: "ok"}})
+		case "/v1/clusters":
+			writeTargetExecutionJSON(t, w, []TargetCluster{})
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+}
+
+// A rollback whose cluster was deleted goes on in the migration's
+// organization when the cluster is named by its ID: the cluster took its app
+// environments with it, and the stack and integrations are left to remove.
+func TestRollbackTargetAcceptsADeletedClusterByID(t *testing.T) {
+	server := rollbackTargetServer(t)
+	defer server.Close()
+	client := mustTargetExecutionClient(t, server.URL)
+	state := rollbackTestState(t, false)
+
+	var out strings.Builder
+	if err := verifyRollbackTarget(context.Background(), &out, client, &RunOptions{TargetCluster: "3"}, state); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Cluster ID 3 no longer exists") {
+		t.Fatalf("output = %q", out.String())
+	}
+
+	// A name cannot be checked against a deleted cluster.
+	err := verifyRollbackTarget(context.Background(), &out, client, &RunOptions{TargetCluster: "main"}, state)
+	if err == nil || !strings.Contains(err.Error(), "pass --target-cluster 3") {
+		t.Fatalf("err = %v", err)
+	}
+	// Another cluster ID is not the migration's.
+	if err := verifyRollbackTarget(context.Background(), &out, client, &RunOptions{TargetCluster: "4"}, state); err == nil {
+		t.Fatal("another cluster ID must be refused")
+	}
+	// Another organization is refused before anything is deleted.
+	state.Target.OrgID = 2
+	err = verifyRollbackTarget(context.Background(), &out, client, &RunOptions{TargetCluster: "3"}, state)
+	if err == nil || !strings.Contains(err.Error(), "organization ID 2") {
+		t.Fatalf("err = %v", err)
+	}
+}

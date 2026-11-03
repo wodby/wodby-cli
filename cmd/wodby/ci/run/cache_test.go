@@ -196,6 +196,23 @@ func TestResolveCacheProfileNames(t *testing.T) {
 			want:        []string{"bundler"},
 		},
 		{
+			name:        "recognizes the Wodby .NET image",
+			autoAllowed: true,
+			image:       "wodby/dotnet:10.0-dev",
+			want:        []string{"nuget"},
+		},
+		{
+			name:        "recognizes the Microsoft .NET SDK image",
+			autoAllowed: true,
+			image:       "mcr.microsoft.com/dotnet/sdk:10.0-alpine",
+			want:        []string{"nuget"},
+		},
+		{
+			name:        "ignores the Microsoft ASP.NET Core runtime image",
+			autoAllowed: true,
+			image:       "mcr.microsoft.com/dotnet/aspnet:10.0-alpine",
+		},
+		{
 			name:        "explicit profiles override detection",
 			explicit:    []string{"uv,npm"},
 			autoAllowed: true,
@@ -303,11 +320,11 @@ func TestAddCacheProfiles(t *testing.T) {
 	hostHome := t.TempDir()
 	config := docker.RunConfig{}
 
-	active, err := addCacheProfiles(&config, []string{"npm", "composer", "bundler", "uv"}, map[string]struct{}{}, hostHome, "", false, "1001:1001")
+	active, err := addCacheProfiles(&config, []string{"npm", "composer", "bundler", "uv", "nuget"}, map[string]struct{}{}, hostHome, "", false, "1001:1001")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"npm", "composer", "bundler", "uv"}; !reflect.DeepEqual(active, want) {
+	if want := []string{"npm", "composer", "bundler", "uv", "nuget"}; !reflect.DeepEqual(active, want) {
 		t.Fatalf("active caches = %#v, want %#v", active, want)
 	}
 
@@ -316,6 +333,7 @@ func TestAddCacheProfiles(t *testing.T) {
 		"COMPOSER_CACHE_DIR=/tmp/wodby-cache/composer",
 		"BUNDLE_USER_CACHE=/tmp/wodby-cache/bundler",
 		"UV_CACHE_DIR=/tmp/wodby-cache/uv",
+		"NUGET_PACKAGES=/tmp/wodby-cache/nuget",
 	}
 	if !reflect.DeepEqual(config.Env, wantEnv) {
 		t.Fatalf("cache env = %#v, want %#v", config.Env, wantEnv)
@@ -326,6 +344,7 @@ func TestAddCacheProfiles(t *testing.T) {
 		filepath.Join(hostHome, ".composer", "cache") + ":/tmp/wodby-cache/composer",
 		filepath.Join(hostHome, ".bundle", "cache") + ":/tmp/wodby-cache/bundler",
 		filepath.Join(hostHome, ".cache", "uv") + ":/tmp/wodby-cache/uv",
+		filepath.Join(hostHome, ".nuget", "packages") + ":/tmp/wodby-cache/nuget",
 	}
 	if !reflect.DeepEqual(config.Volumes, wantVolumes) {
 		t.Fatalf("cache volumes = %#v, want %#v", config.Volumes, wantVolumes)
@@ -336,6 +355,7 @@ func TestAddCacheProfiles(t *testing.T) {
 		filepath.Join(hostHome, ".composer", "cache"),
 		filepath.Join(hostHome, ".bundle", "cache"),
 		filepath.Join(hostHome, ".cache", "uv"),
+		filepath.Join(hostHome, ".nuget", "packages"),
 	} {
 		if info, err := os.Stat(path); err != nil || !info.IsDir() {
 			t.Errorf("cache path %q was not created as a directory", path)

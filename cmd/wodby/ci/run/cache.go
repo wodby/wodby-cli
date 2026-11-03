@@ -43,6 +43,11 @@ var cacheProfiles = map[string]cacheProfile{
 		hostPath:      []string{".cache", "uv"},
 		containerPath: "/tmp/wodby-cache/uv",
 	},
+	"nuget": {
+		envName:       "NUGET_PACKAGES",
+		hostPath:      []string{".nuget", "packages"},
+		containerPath: "/tmp/wodby-cache/nuget",
+	},
 }
 
 // resolveHostCacheStorage keeps native runs on conventional user cache paths.
@@ -187,7 +192,7 @@ func validateCacheProfileNames(names []string) ([]string, error) {
 
 	for _, name := range names {
 		if _, ok := cacheProfiles[name]; !ok {
-			return nil, errors.Errorf("unknown cache profile %q (supported: npm, composer, bundler, uv)", name)
+			return nil, errors.Errorf("unknown cache profile %q (supported: npm, composer, bundler, uv, nuget)", name)
 		}
 	}
 
@@ -217,6 +222,9 @@ func knownImageCacheProfiles(image string) []string {
 		return []string{"bundler"}
 	case "docker.io/wodby/python":
 		return []string{"uv"}
+	// Only images with the .NET SDK restore packages; the runtime-only wodby/dotnet tags gain nothing from the cache.
+	case "docker.io/wodby/dotnet", "mcr.microsoft.com/dotnet/sdk":
+		return []string{"nuget"}
 	default:
 		return nil
 	}

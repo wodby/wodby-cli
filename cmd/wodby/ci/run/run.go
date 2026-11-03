@@ -198,7 +198,7 @@ func init() {
 	Cmd.Flags().StringVar(&opts.envFile, "env-file", "", "Env file")
 	Cmd.Flags().StringVarP(&opts.user, "user", "u", "", "User (defaults to the workspace uid:gid for bind-mounted contexts)")
 	Cmd.Flags().StringVarP(&opts.path, "path", "p", "", "Working dir (relative path)")
-	Cmd.Flags().StringSliceVar(&opts.cache, "cache", []string{}, "Cache profiles to enable instead of auto-detection (npm, composer, bundler, uv)")
+	Cmd.Flags().StringSliceVar(&opts.cache, "cache", []string{}, "Cache profiles to enable instead of auto-detection (npm, composer, bundler, uv, nuget)")
 	Cmd.Flags().BoolVar(&opts.noCache, "no-cache", false, "Disable automatic cache mounts")
 }
 

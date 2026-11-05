@@ -99,6 +99,7 @@ func Commands() []*cobra.Command {
 		newOrgCommand(),
 		newMemberCommand(),
 		newTeamCommand(),
+		newResourcePresetCommand(),
 		newProjectCommand(),
 		newAppEnvironmentCommand(),
 		newDatabaseCommand(),
@@ -3501,6 +3502,7 @@ func resourceJSONFlags() []jsonFlagSpec {
 	return []jsonFlagSpec{
 		stringJSONFlag("workload", "workload", "Workload name", false),
 		stringJSONFlag("container", "container", "Container name", false),
+		stringJSONFlag("preset", "preset", "Resource preset name (see resource-preset list); its values fill the CPU and memory values not given", false),
 		intJSONFlag("request-cpu", "requestCPU", "Requested CPU", false),
 		intJSONFlag("request-mem", "requestMem", "Requested memory", false),
 		intJSONFlag("limit-cpu", "limitCPU", "CPU limit", false),

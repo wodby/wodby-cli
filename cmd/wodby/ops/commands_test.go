@@ -4733,6 +4733,19 @@ func TestAppServiceChildOperationsUseRESTEndpoints(t *testing.T) {
 			wantOutput: []string{"success", "true"},
 		},
 		{
+			name:       "resources set preset",
+			args:       []string{"resources", "set", "21", "--preset", "medium", "--limit-mem", "1024"},
+			wantMethod: http.MethodPut,
+			wantPath:   "/v1/app-services/21/resources",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if len(body) != 2 || body["preset"] != "medium" || body["limitMem"] != float64(1024) {
+					t.Fatalf("body = %#v, want preset medium and limitMem 1024 only", body)
+				}
+			},
+			response:   map[string]interface{}{"success": true},
+			wantOutput: []string{"success", "true"},
+		},
+		{
 			name:       "database set",
 			args:       []string{"database", "set", "21", "--database-db", "33", "--database-user", "44"},
 			wantMethod: http.MethodPut,

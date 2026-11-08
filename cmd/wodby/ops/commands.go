@@ -101,7 +101,6 @@ func Commands() []*cobra.Command {
 		newMemberCommand(),
 		newTeamCommand(),
 		newResourcePresetCommand(),
-		newAgentChatCommand(),
 		newProjectCommand(),
 		newAppEnvironmentCommand(),
 		newDatabaseCommand(),

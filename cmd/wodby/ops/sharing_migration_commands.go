@@ -226,7 +226,7 @@ func addWorkspaceUpdateCommands(cmd *cobra.Command, out outputOptions) {
 // addEnvironmentMigrationCommands moves an app environment to another cluster and follows the move.
 func addEnvironmentMigrationCommands(cmd *cobra.Command, out outputOptions) {
 	var targetCluster string
-	var volumes []string
+	var volumes, existingBackups []string
 	wait := waitOptions{}
 	migrate := &cobra.Command{
 		Use:   "migrate ENVIRONMENT_ID",
@@ -253,11 +253,19 @@ func addEnvironmentMigrationCommands(cmd *cobra.Command, out outputOptions) {
 				}
 				body["volumes"] = items
 			}
+			if len(existingBackups) > 0 {
+				ids, err := parseIntValues(existingBackups, "--existing-backup")
+				if err != nil {
+					return err
+				}
+				body["existingBackupIds"] = ids
+			}
 			return postAndPrintMigration(cmd, out, wait, escapedPath("/app-environments/%s/actions/migrate", args[0]), body)
 		},
 	}
 	migrate.Flags().StringVar(&targetCluster, "target-cluster", "", "Cluster to move the environment to")
 	migrate.Flags().StringArrayVar(&volumes, "volume", nil, "Target storage class for a volume as VOLUME_ID=STORAGE_CLASS; repeat for each volume")
+	migrate.Flags().StringArrayVar(&existingBackups, "existing-backup", nil, "Completed backup of this environment to restore instead of a final backup; data written after it was taken does not move. Repeatable or comma-separated")
 	addWaitFlags(migrate, &wait)
 
 	migration := &cobra.Command{Use: "migration", Aliases: []string{"migrations"}, Short: "Follow app environment cluster migrations"}

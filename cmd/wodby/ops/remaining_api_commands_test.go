@@ -155,6 +155,11 @@ func TestOrgAdminCommands(t *testing.T) {
 			body: map[string]interface{}{"projectId": float64(3), "orgMembershipIds": []interface{}{float64(5)}, "teamIds": []interface{}{float64(2)}, "role": "write"}},
 		{name: "project member update", command: newProjectCommand, args: []string{"members", "update", "8", "--role", "admin"},
 			method: http.MethodPut, path: "/v1/project-memberships/8", body: map[string]interface{}{"role": "admin"}},
+		{name: "project member add custom role", command: newProjectCommand, args: []string{"member", "add", "3", "--team", "2", "--role", "custom", "--custom-role", "14"},
+			method: http.MethodPost, path: "/v1/project-memberships", response: []interface{}{},
+			body: map[string]interface{}{"projectId": float64(3), "teamIds": []interface{}{float64(2)}, "role": "custom", "customRoleId": float64(14)}},
+		{name: "project member update custom role", command: newProjectCommand, args: []string{"member", "update", "8", "--role", "custom", "--custom-role", "14"},
+			method: http.MethodPut, path: "/v1/project-memberships/8", body: map[string]interface{}{"role": "custom", "customRoleId": float64(14)}},
 		{name: "project member remove", command: newProjectCommand, args: []string{"member", "remove", "8", "--yes"},
 			method: http.MethodDelete, path: "/v1/project-memberships/8"},
 		{name: "team list", command: newTeamCommand, args: []string{"list", "--org", "1"},
@@ -277,10 +282,19 @@ func TestTeamUpdateKeepsCurrentValues(t *testing.T) {
 	var putBody map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/teams/2":
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 2, "name": "devs", "title": "Developers", "members": []interface{}{
-				map[string]interface{}{"id": 40, "orgMembershipId": 5, "role": "leader"},
-			}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/orgs":
+			_ = json.NewEncoder(w).Encode([]interface{}{map[string]interface{}{"id": 3, "name": "acme"}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/teams":
+			// The API has no single-team read, so the update reads the team from the organization's list.
+			if r.URL.Query().Get("orgId") != "3" {
+				t.Errorf("orgId = %q, want 3", r.URL.Query().Get("orgId"))
+			}
+			_ = json.NewEncoder(w).Encode([]interface{}{
+				map[string]interface{}{"id": 1, "name": "ops", "title": "Operations", "members": []interface{}{}},
+				map[string]interface{}{"id": 2, "name": "devs", "title": "Developers", "members": []interface{}{
+					map[string]interface{}{"id": 40, "orgMembershipId": 5, "role": "leader"},
+				}},
+			})
 		case r.Method == http.MethodPut && r.URL.Path == "/v1/teams/2":
 			_ = json.NewDecoder(r.Body).Decode(&putBody)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 2})

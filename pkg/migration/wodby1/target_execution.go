@@ -450,7 +450,7 @@ func (c *TargetClient) CreateStackEnvVar(ctx context.Context, stackID int, input
 		return TargetStackEnvVar{}, errors.New("target stack-wide environment variable name is required")
 	}
 	var item TargetStackEnvVar
-	if err := c.client.Post(ctx, "/stacks/"+strconv.Itoa(stackID)+"/env-vars", nil, input, &item); err != nil {
+	if err := c.client.Post(ctx, "/stacks/"+strconv.Itoa(stackID)+"/configuration/env-vars", nil, input, &item); err != nil {
 		return TargetStackEnvVar{}, errors.Wrap(err, "create target Wodby 2 stack-wide environment variable")
 	}
 	if err := validateTargetStackEnvVar(item); err != nil {

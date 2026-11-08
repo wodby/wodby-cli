@@ -101,6 +101,7 @@ func Commands() []*cobra.Command {
 		newMemberCommand(),
 		newTeamCommand(),
 		newResourcePresetCommand(),
+		newAgentChatCommand(),
 		newProjectCommand(),
 		newAppEnvironmentCommand(),
 		newDatabaseCommand(),
@@ -157,6 +158,7 @@ func newOrgCommand() *cobra.Command {
 	addOrgRESTCommands(cmd, out)
 	addOrgSettingsCommands(cmd, out)
 	addOrgRemainingCommands(cmd, out)
+	cmd.AddCommand(newOrgUsageCommand())
 
 	return cmd
 }
@@ -299,6 +301,7 @@ func newMemberCommand() *cobra.Command {
 	cmd.AddCommand(listCmd)
 	addMemberRESTCommands(cmd, out)
 	addMemberRemainingCommands(cmd, out)
+	cmd.AddCommand(newMemberTeamsCommand())
 	return cmd
 }
 
@@ -352,6 +355,7 @@ func newProjectCommand() *cobra.Command {
 		newDeleteCommand("delete ID", "Delete project", "/projects/", projectColumns, out),
 	)
 	addProjectRemainingCommands(cmd, out)
+	cmd.AddCommand(newProjectRoleCommand(), newProjectPermissionsCommand())
 	return cmd
 }
 
@@ -940,6 +944,8 @@ func newClusterCommand() *cobra.Command {
 		newClusterActionCommand("upgrade-infra-apps ID", "Upgrade cluster infrastructure apps", "/clusters/%s/actions/upgrade-infra-apps", out),
 		newGetCommand("kubernetes-version-upgrade-plan ID", "Get Kubernetes version upgrade plan", "/cluster-kubernetes-version-upgrade-plans/", kubernetesVersionUpgradePlanColumns, out),
 		newClusterInfraAppUpgradeChangelogCommand(out),
+		newClusterComponentCommand(out),
+		newClusterGPUNodePoolCommand(out),
 		newClusterDeleteCommand(out),
 	)
 	addSharingCommand(cmd, "cluster", "/clusters/sharing/%s", true, out)
@@ -3718,6 +3724,7 @@ func newAppCommand() *cobra.Command {
 		newDeleteCommand("delete ID", "Delete app", "/apps/", appColumns, out),
 	)
 	cmd.AddCommand(newAppEnvironmentCommand())
+	cmd.AddCommand(newAppSettingsCommand(out), newAppPreviewCommand(out))
 	addSharingCommand(cmd, "app", "/apps/sharing/%s", false, out)
 	return cmd
 }
@@ -4961,6 +4968,8 @@ func newAppServiceCommand(use string, aliases []string, short string, mode insta
 		newAppServiceSettingCommand(out),
 		newAppServiceConfigCommand(out),
 		newAppServiceLinkCommand(out),
+		newAppServiceCustomLinkCommand(out),
+		newAppServiceLinkCandidatesCommand(out),
 		newAppServiceContainerCommand(out),
 		newAppServiceVolumeCommand(out),
 		newAppServiceResourcesCommand(out),

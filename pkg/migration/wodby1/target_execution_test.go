@@ -199,7 +199,7 @@ func TestTargetClientManagesStackWideEnvironmentVariables(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/stack-revisions/71/env-vars":
 			writeTargetExecutionJSON(t, w, []TargetStackEnvVar{{ID: 91, Name: "EXISTING", Value: &value}})
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/stacks/7/env-vars":
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/stacks/7/configuration/env-vars":
 			var input TargetCreateStackEnvVarInput
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 				t.Fatal(err)

@@ -18,7 +18,7 @@ func TestEnsureStackEnvVarsContinuesAfterAnAppliedItem(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/stack-revisions/12/env-vars":
 			writeTargetExecutionJSON(t, w, []TargetStackEnvVar{{ID: 40, Name: "FIRST", Value: &first}})
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/stacks/5/env-vars":
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/stacks/5/configuration/env-vars":
 			var body TargetCreateStackEnvVarInput
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatal(err)

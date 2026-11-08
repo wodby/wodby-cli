@@ -18,6 +18,7 @@ var (
 	userColumns                      = []string{"id", "email", "name", "twofa", "defaultOrg", "defaultProjects", "createdAt", "updatedAt"}
 	orgColumns                       = []string{"id", "name", "title", "domain", "defaultTimeZone", "ciIntegrationId", "registryIntegrationId"}
 	memberColumns                    = []string{"id", "member", "email", "role", "status", "joinedAt"}
+	memberGetColumns                 = append(append([]string{}, memberColumns...), "teamMemberships", "projectMemberships")
 	projectColumns                   = []string{"id", "name", "title"}
 	envColumns                       = []string{"id", "name", "title", "type"}
 	databaseColumns                  = []string{"id", "name", "title", "status", "kind", "type", "version", "env", "integration", "service", "region", "zone"}
@@ -25,7 +26,7 @@ var (
 	databaseCharsetColumns           = []string{"name", "title", "default", "defaultCollation"}
 	databaseUserColumns              = []string{"id", "username", "hostname", "status", "database", "dbs", "createdAt"}
 	clusterColumns                   = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "version", "singleNode"}
-	clusterGetColumns                = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "kubernetesVersion", "infraVersion", "ips", "singleNode", "storageClasses", "storageClassesObservedAt"}
+	clusterGetColumns                = []string{"id", "name", "title", "status", "autoUpdates", "integration", "region", "zone", "kubernetesVersion", "kubernetesVersionEol", "kubernetesVersionEolDate", "infraVersion", "gpuNodePool", "ips", "singleNode", "storageClasses", "storageClassesObservedAt"}
 	infraAppColumns                  = []string{"id", "name", "title", "status", "stack"}
 	integrationColumns               = []string{"id", "name", "title", "scope", "status", "outdated", "provider", "createdAt"}
 	providerColumns                  = []string{"id", "name", "title", "status", "providerVersion"}
@@ -46,12 +47,12 @@ var (
 	stackServiceOptionColumns        = []string{"id", "version", "default", "disabled"}
 	stackServiceCronScheduleColumns  = []string{"id", "name", "title", "crontab", "command", "workload", "envType", "disabled", "updatedAt"}
 	catalogServiceColumns            = []string{"id", "name", "title", "type", "status", "autoUpdates", "public", "external", "revId", "latestRevNumber"}
-	serviceRevisionColumns           = []string{"id", "name", "title", "type", "external", "number", "version", "service", "createdAt"}
+	serviceRevisionColumns           = []string{"id", "name", "title", "type", "external", "number", "version", "service", "manifest.crossApp", "manifest.exports", "manifest.links", "manifest.linkGroups", "createdAt"}
 	appColumns                       = []string{"id", "name", "title", "status", "stack", "instances"}
-	appGetColumns                    = []string{"id", "name", "title", "status", "stack", "clusterApp", "instances", "createdAt", "updatedAt"}
+	appGetColumns                    = []string{"id", "name", "title", "status", "stack", "clusterApp", "instances", "creatableEnvironmentTypes", "previewsAvailable", "settings.previewEnvironments", "createdAt", "updatedAt"}
 	appStatusColumns                 = []string{"id", "title", "status", "instances", "serviceStatus", "routeStatus", "latestBuild", "latestDeployment", "needs"}
 	instanceColumns                  = []string{"id", "name", "title", "status", "outdated", "autoUpdates", "app", "stack", "env", "cluster", "domain", "routingMode", "routingPending", "configurationReady", "configurationIssues"}
-	instanceGetColumns               = append(append([]string{}, instanceColumns...), "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
+	instanceGetColumns               = append(append([]string{}, instanceColumns...), "mainDomainBasicAuth", "permissions", "preview", "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "createdAt", "updatedAt")
 	instanceCICDSettingsColumns      = []string{"appEnvironmentId", "ciIntegrationId", "registryIntegrationId", "registryRepository"}
 	instanceStatusColumns            = []string{"id", "title", "status", "cronHealth", "backupHealth", "serviceStatus", "routeStatus", "portStatus", "latestBuild", "latestDeployment", "needs"}
 	serviceColumns                   = []string{"id", "name", "title", "type", "status", "version", "replicas", "scalability", "disabled", "main", "needsRebuild", "needsRedeploy", "stackState", "configurationReady", "configurationIssues", "buildSourceBoilerplate"}
@@ -74,7 +75,7 @@ var (
 	appPortColumns                   = []string{"id", "name", "number", "publicPort", "protocol", "private", "service", "instance", "createdAt", "updatedAt"}
 	certColumns                      = []string{"id", "host", "status", "issuer", "certType", "expiresAt", "route", "instance", "createdAt"}
 	buildListColumns                 = []string{"id", "number", "service", "services", "imageCount", "gitRefType", "gitRef", "startedAt", "duration", "status"}
-	buildColumns                     = []string{"id", "number", "status", "instance", "service", "services", "images", "imageVoidStatus", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "createdAt", "startedAt", "endedAt", "duration"}
+	buildColumns                     = []string{"id", "number", "status", "instance", "service", "services", "images", "imageVoidStatus", "task", "gitRefType", "gitRef", "commitHash", "commitMessage", "vulnerabilityScan", "createdAt", "startedAt", "endedAt", "duration"}
 	deploymentListColumns            = []string{"id", "number", "services", "builds", "startedAt", "duration", "status", "postDeploymentStatus", "rollbackStatus"}
 	deploymentColumns                = []string{"id", "number", "status", "rolloutStatus", "canCancel", "postDeploymentStatus", "rollbackStatus", "instance", "services", "images", "task", "postDeploymentTask", "skipRollback", "createdAt", "startedAt", "endedAt", "duration"}
 	backupColumns                    = []string{"id", "name", "status", "manual", "backupPresetId", "size", "instance", "service", "database", "databaseDb", "task", "createdAt"}
@@ -1316,6 +1317,9 @@ func newClusterCreateCommand(out outputOptions) *cobra.Command {
 				if value, ok := changedBool(cmd, "single-node"); ok {
 					values["singleNode"] = value
 				}
+				if err := addClusterCreateGPUNodePool(cmd, values); err != nil {
+					return err
+				}
 				addAvailableToAllProjects(cmd, values)
 				requestBody = values
 			}
@@ -1346,8 +1350,37 @@ func newClusterCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().Int("max-node-count", 0, "Maximum node count")
 	cmd.Flags().Int("node-disk-size", 0, "Node disk size")
 	cmd.Flags().Bool("single-node", false, "Create a single-node cluster")
+	cmd.Flags().String("gpu-machine-type", "", "Create a GPU node pool with this GPU machine type; the provider must support GPU node pools")
+	cmd.Flags().Int("gpu-min-nodes", 0, "Minimum GPU node count; 0 lets the pool scale down to no nodes where the provider supports it")
+	cmd.Flags().Int("gpu-max-nodes", 0, "Maximum GPU node count")
+	cmd.Flags().Int("gpu-node-disk-size", 0, "GPU node disk size in GB; required when the provider's node disk size is configurable")
 	addAvailableToAllProjectsFlag(cmd)
 	return cmd
+}
+
+// addClusterCreateGPUNodePool adds the optional GPU node pool of a new cluster from the --gpu-* flags.
+func addClusterCreateGPUNodePool(cmd *cobra.Command, values map[string]interface{}) error {
+	machineType, _ := cmd.Flags().GetString("gpu-machine-type")
+	sizeFlags := []string{"gpu-min-nodes", "gpu-max-nodes", "gpu-node-disk-size"}
+	if machineType == "" {
+		for _, flag := range sizeFlags {
+			if cmd.Flags().Changed(flag) {
+				return errors.Errorf("--%s requires --gpu-machine-type", flag)
+			}
+		}
+		return nil
+	}
+	if !cmd.Flags().Changed("gpu-min-nodes") || !cmd.Flags().Changed("gpu-max-nodes") {
+		return errors.New("--gpu-machine-type requires --gpu-min-nodes and --gpu-max-nodes")
+	}
+	minNodes, _ := cmd.Flags().GetInt("gpu-min-nodes")
+	maxNodes, _ := cmd.Flags().GetInt("gpu-max-nodes")
+	pool := map[string]interface{}{"machineType": machineType, "minNodeCount": minNodes, "maxNodeCount": maxNodes}
+	if value, ok := changedInt(cmd, "gpu-node-disk-size"); ok {
+		pool["nodeDiskSize"] = value
+	}
+	values["gpuNodePool"] = pool
+	return nil
 }
 
 func newClusterUpdateCommand(out outputOptions) *cobra.Command {
@@ -1435,7 +1468,6 @@ func newIntegrationCommand() *cobra.Command {
 	cmd.AddCommand(
 		listCmd,
 		getCmd,
-		newGetByNameCommand("get-by-name NAME", "Get integration by name", "/integrations/by-name/%s", integrationColumns, out, true, false),
 		newIntegrationCreateCommand(out),
 		newIntegrationUpdateCommand(out),
 		newIntegrationConfigureCommand(out),
@@ -3693,6 +3725,7 @@ func newAppCommand() *cobra.Command {
 func newAppCreateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
 	wait := waitOptions{}
+	basicAuth := environmentBasicAuthOptions{}
 	var orgID, projectID, environmentName, environmentTitle, environmentType, clusterID, stack, stackRevID, name, title, domain, ciIntegrationID, registryIntegrationID string
 	var deferInitialDeployment bool
 	cmd := &cobra.Command{
@@ -3756,6 +3789,9 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 					return err
 				}
 				values["deferInitialDeployment"] = deferInitialDeployment
+				if err := addEnvironmentBasicAuthValues(cmd, values, basicAuth); err != nil {
+					return err
+				}
 				requestBody = values
 			}
 			var result interface{}
@@ -3792,6 +3828,7 @@ func newAppCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&ciIntegrationID, "ci-integration", "", "CI integration ID")
 	cmd.Flags().StringVar(&registryIntegrationID, "registry-integration", "", "Registry integration ID")
 	cmd.Flags().BoolVar(&deferInitialDeployment, "defer-initial-deployment", false, "Create the app without starting its initial deployment")
+	addEnvironmentBasicAuthFlags(cmd, &basicAuth)
 	return cmd
 }
 
@@ -3933,9 +3970,41 @@ func newAppAccessCleanupsCommand(out outputOptions) *cobra.Command {
 	return cmd
 }
 
+// environmentBasicAuthOptions are the flags that protect a new app environment with HTTP basic authentication.
+type environmentBasicAuthOptions struct {
+	enabled  bool
+	username string
+	password string
+}
+
+// addEnvironmentBasicAuthFlags registers the basic authentication flags of app and app environment creation.
+func addEnvironmentBasicAuthFlags(cmd *cobra.Command, opts *environmentBasicAuthOptions) {
+	cmd.Flags().BoolVar(&opts.enabled, "basic-auth", false, "Protect the environment with HTTP basic authentication; --basic-auth=false turns off the stack's default")
+	cmd.Flags().StringVar(&opts.username, "basic-auth-username", "", "Basic authentication username; defaults to wodby")
+	cmd.Flags().StringVar(&opts.password, "basic-auth-password", "", "Basic authentication password; omit to let Wodby generate one")
+}
+
+// addEnvironmentBasicAuthValues adds the basic authentication fields that were given as flags. Leaving --basic-auth
+// out follows the stack's default.
+func addEnvironmentBasicAuthValues(cmd *cobra.Command, values map[string]interface{}, opts environmentBasicAuthOptions) error {
+	if cmd.Flags().Changed("basic-auth") {
+		values["basicAuth"] = opts.enabled
+	}
+	if opts.username == "" && opts.password == "" {
+		return nil
+	}
+	if !opts.enabled {
+		return errors.New("--basic-auth-username and --basic-auth-password require --basic-auth")
+	}
+	addOptionalString(values, "basicAuthUsername", opts.username)
+	addOptionalString(values, "basicAuthPassword", opts.password)
+	return nil
+}
+
 func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
 	wait := waitOptions{}
+	basicAuth := environmentBasicAuthOptions{}
 	var orgID, app, environmentType, clusterID, stack, stackRevID, name, title, domain, ciIntegrationID, registryIntegrationID string
 	var deferInitialDeployment bool
 	cmd := &cobra.Command{
@@ -3983,6 +4052,9 @@ func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 				}
 				addOptionalString(values, "environmentTitle", title)
 				addOptionalString(values, "domain", domain)
+				if err := addEnvironmentBasicAuthValues(cmd, values, basicAuth); err != nil {
+					return err
+				}
 				if clusterID != "" {
 					resolvedClusterID, err := resolveClusterID(cmd.Context(), client, clusterID, orgID)
 					if err != nil {
@@ -4032,6 +4104,7 @@ func newAppInstanceCreateCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&ciIntegrationID, "ci-integration", "", "CI integration ID")
 	cmd.Flags().StringVar(&registryIntegrationID, "registry-integration", "", "Registry integration ID")
 	cmd.Flags().BoolVar(&deferInitialDeployment, "defer-initial-deployment", false, "Create the app environment without starting its initial deployment")
+	addEnvironmentBasicAuthFlags(cmd, &basicAuth)
 	return cmd
 }
 

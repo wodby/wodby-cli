@@ -23,7 +23,7 @@ var (
 	appPortSettingColumns    = []string{"id", "name", "value", "updatedAt"}
 	appEndpointColumns       = []string{"id", "name", "appServiceId", "primary", "routeIds", "portIds"}
 	appAnnotationColumns     = []string{"id", "name", "value", "type", "appServiceId", "appRouteId", "updatedAt"}
-	projectMembershipColumns = []string{"id", "projectId", "orgMembershipId", "teamId", "role", "updatedAt"}
+	projectMembershipColumns = []string{"id", "projectId", "orgMembershipId", "teamId", "role", "customRoleId", "updatedAt"}
 	teamColumns              = []string{"id", "name", "title", "members", "updatedAt"}
 	ssoProviderColumns       = []string{"id", "name", "kind", "enabled", "jitEnabled", "issuerUrl", "domains"}
 	ssoDomainColumns         = []string{"id", "domain", "verified", "verificationRecordType", "verificationRecordName", "verificationRecordValue"}
@@ -621,7 +621,7 @@ func addMemberRemainingCommands(cmd *cobra.Command, out outputOptions) {
 	invite.Flags().StringArrayVar(&projects, "project", nil, "Project ID to add the member to; repeatable")
 	cmd.AddCommand(
 		invite,
-		newServiceChildUpdateCommand("update ID", "Change a member's organization role", "/org-memberships/%s", memberColumns, out, []jsonFlagSpec{
+		newServiceChildUpdateCommand("update ID", "Change a member's organization role", "/org-memberships/%s", memberGetColumns, out, []jsonFlagSpec{
 			stringJSONFlag("role", "role", "member, admin or owner", true),
 		}),
 		newDeleteCommand("remove ID", "Remove a member or pending invitation", "/org-memberships/", memberColumns, out),
@@ -639,10 +639,13 @@ func addIntList(values map[string]interface{}, key string, raw []string, flag st
 	return nil
 }
 
+// projectRoleUsage lists the project roles a membership can have.
+const projectRoleUsage = "read, write, admin, developer, developer_non_production or custom (with --custom-role)"
+
 func addProjectRemainingCommands(cmd *cobra.Command, out outputOptions) {
 	member := &cobra.Command{Use: "member", Aliases: []string{"members"}, Short: "Manage project members and teams"}
 	var members, teams []string
-	var role string
+	var role, customRole string
 	add := &cobra.Command{
 		Use:   "add PROJECT_ID",
 		Short: "Give organization members or teams a role in a project",
@@ -653,6 +656,9 @@ func addProjectRemainingCommands(cmd *cobra.Command, out outputOptions) {
 			}
 			body := map[string]interface{}{"role": role}
 			if err := addOptionalInt(body, "projectId", args[0], "PROJECT_ID"); err != nil {
+				return err
+			}
+			if err := addOptionalInt(body, "customRoleId", customRole, "--custom-role"); err != nil {
 				return err
 			}
 			if err := addIntList(body, "orgMembershipIds", members, "--member"); err != nil {
@@ -679,14 +685,16 @@ func addProjectRemainingCommands(cmd *cobra.Command, out outputOptions) {
 	}
 	add.Flags().StringArrayVar(&members, "member", nil, "Organization member ID; repeatable")
 	add.Flags().StringArrayVar(&teams, "team", nil, "Team ID; repeatable")
-	add.Flags().StringVar(&role, "role", "", "read, write or admin")
+	add.Flags().StringVar(&role, "role", "", projectRoleUsage)
+	add.Flags().StringVar(&customRole, "custom-role", "", "Custom project role ID; required with --role custom")
 	list := newQueryListCommand("list PROJECT_ID", "List project members and teams", "/project-memberships", "projectId", projectMembershipColumns, out)
 	defaultToList(member, list)
 	member.AddCommand(
 		list,
 		add,
 		newServiceChildUpdateCommand("update ID", "Change a project role", "/project-memberships/%s", projectMembershipColumns, out, []jsonFlagSpec{
-			stringJSONFlag("role", "role", "read, write or admin", true),
+			stringJSONFlag("role", "role", projectRoleUsage, true),
+			intJSONFlag("custom-role", "customRoleId", "Custom project role ID; required with --role custom", false),
 		}),
 		newDeleteCommand("remove ID", "Remove a member or team from a project", "/project-memberships/", projectMembershipColumns, out),
 	)
@@ -758,7 +766,7 @@ func newTeamWriteCommand(use string, short string, method string, out outputOpti
 				}
 				values := map[string]interface{}{"name": name, "title": title, "members": items}
 				if method == http.MethodPut {
-					if err := fillTeamUpdateDefaults(cmd, client, args[0], values); err != nil {
+					if err := fillTeamUpdateDefaults(cmd, client, orgID, args[0], values); err != nil {
 						return err
 					}
 				} else {
@@ -792,9 +800,8 @@ func newTeamWriteCommand(use string, short string, method string, out outputOpti
 	}
 	addBodyFlags(cmd, &body)
 	memberUsage := "Member as ORG_MEMBERSHIP_ID=member or ORG_MEMBERSHIP_ID=leader; repeat for each member"
-	if method == http.MethodPost {
-		cmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
-	} else {
+	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID; inferred when current credentials expose one org")
+	if method == http.MethodPut {
 		memberUsage += "; replaces the member list, which is kept when left out"
 	}
 	cmd.Flags().StringVar(&name, "name", "", "Team machine name")
@@ -817,14 +824,28 @@ func teamMemberItems(members []string) ([]interface{}, error) {
 	return items, nil
 }
 
-// fillTeamUpdateDefaults copies the team's current name, title and members into values for flags left out.
-func fillTeamUpdateDefaults(cmd *cobra.Command, client *rest.Client, id string, values map[string]interface{}) error {
+// fillTeamUpdateDefaults copies the team's current name, title and members into values for flags left out. The team
+// is found in the organization's team list, because the API has no route that reads one team by ID.
+func fillTeamUpdateDefaults(cmd *cobra.Command, client *rest.Client, orgID string, id string, values map[string]interface{}) error {
 	if cmd.Flags().Changed("name") && cmd.Flags().Changed("title") && cmd.Flags().Changed("member") {
 		return nil
 	}
-	var current map[string]interface{}
-	if err := client.Get(cmd.Context(), escapedPath("/teams/%s", id), nil, &current); err != nil {
+	resolvedOrgID, err := inferOrgID(cmd.Context(), client, orgID)
+	if err != nil {
 		return err
+	}
+	var teams []map[string]interface{}
+	if err := client.Get(cmd.Context(), "/teams", url.Values{"orgId": []string{resolvedOrgID}}, &teams); err != nil {
+		return err
+	}
+	var current map[string]interface{}
+	for _, team := range teams {
+		if formatValue(team["id"]) == id {
+			current = team
+		}
+	}
+	if current == nil {
+		return errors.Errorf("team %s not found in organization %s", id, resolvedOrgID)
 	}
 	if !cmd.Flags().Changed("name") {
 		values["name"] = current["name"]

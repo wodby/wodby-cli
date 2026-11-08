@@ -13,22 +13,34 @@ var (
 	backupPresetColumns                       = []string{"id", "backupName", "backupCategory", "envTypes", "integration", "bucket", "storageClass", "auto", "disabled", "crontab", "nextRunAt", "createdAt", "updatedAt"}
 )
 
+// newStackUpdateServiceRevisionsCommand advances a stack's outdated services to their eligible revisions, or only the
+// chosen root stack services and their derivatives.
 func newStackUpdateServiceRevisionsCommand(out outputOptions) *cobra.Command {
 	var scope string
+	var stackServiceIDs []string
 	cmd := &cobra.Command{Use: "update-service-revisions ID", Short: "Update stack service revisions", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		query := url.Values{}
 		addQuery(query, "scope", scope)
+		var body interface{}
+		if len(stackServiceIDs) != 0 {
+			ids, err := parseIntValues(stackServiceIDs, "--stack-service")
+			if err != nil {
+				return err
+			}
+			body = map[string]interface{}{"stackServiceIds": ids}
+		}
 		client, err := newRESTClient()
 		if err != nil {
 			return err
 		}
 		var result interface{}
-		if err := client.Post(cmd.Context(), escapedPath("/stacks/%s/actions/update-service-revisions", args[0]), query, nil, &result); err != nil {
+		if err := client.Post(cmd.Context(), escapedPath("/stacks/%s/actions/update-service-revisions", args[0]), query, body, &result); err != nil {
 			return err
 		}
 		return printClientResult(cmd, client, out, result, operationColumns)
 	}}
 	cmd.Flags().StringVar(&scope, "scope", "", "Update scope: all or stateless_only")
+	cmd.Flags().StringArrayVar(&stackServiceIDs, "stack-service", nil, "Update only this root stack service and its derivatives; repeatable or comma-separated")
 	return cmd
 }
 

@@ -12,7 +12,7 @@ import (
 var (
 	orgSubscriptionColumns      = []string{"status", "plan.name", "plan.title"}
 	workspaceGitStatusColumns   = []string{"available", "reason", "branch", "upstream", "ahead", "behind", "commit", "commitSubject", "truncated", "checkedAt"}
-	appAuthColumns              = []string{"id", "login", "realm", "scope", "appServiceId", "appRouteId", "createdAt"}
+	appAuthColumns              = []string{"id", "login", "realm", "scope", "source", "exempt", "generated", "appServiceIds", "appRouteId", "createdAt"}
 	resolveIntegrationColumns   = []string{"created", "integration.id", "integration.title", "integration.status"}
 	gitRepoUsageColumns         = []string{"services", "stacks", "providers"}
 	stackEnvVarColumns          = []string{"id", "name", "value", "envType", "createdAt"}
@@ -25,7 +25,7 @@ func addOrgRESTCommands(cmd *cobra.Command, out outputOptions) {
 }
 
 func addMemberRESTCommands(cmd *cobra.Command, out outputOptions) {
-	cmd.AddCommand(newGetCommand("get ID", "Get organization member", "/org-memberships/", memberColumns, out))
+	cmd.AddCommand(newGetCommand("get ID", "Get organization member", "/org-memberships/", memberGetColumns, out))
 }
 
 func addWorkspaceRESTCommands(cmd *cobra.Command, out outputOptions) {
@@ -57,23 +57,23 @@ func addEnvironmentRESTCommands(cmd *cobra.Command, out outputOptions) {
 	auth.AddCommand(
 		list,
 		newAppAuthCreateCommand(out),
-		newServiceChildUpdateCommand("update ID", "Update HTTP basic authentication", "/app-auths/%s", appAuthColumns, out, []jsonFlagSpec{
-			stringJSONFlag("login", "login", "Login", true),
-			stringJSONFlag("realm", "realm", "Realm shown in the browser prompt", true),
-			stringJSONFlag("password", "password", "New password; omit to keep the current one", false),
-		}),
+		newAppAuthUpdateCommand(out),
 		newDeleteCommand("delete ID", "Delete HTTP basic authentication", "/app-auths/", appAuthColumns, out),
 	)
 	cmd.AddCommand(auth)
 }
 
+// newAppAuthCreateCommand protects an app environment, some of its services or a route with HTTP basic
+// authentication, or exempts services or a route from a wider entry.
 func newAppAuthCreateCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
-	var serviceID, routeID string
+	var serviceIDs []string
+	var routeID string
 	specs := []jsonFlagSpec{
-		stringJSONFlag("login", "login", "Login", true),
-		stringJSONFlag("password", "password", "Password", true),
-		stringJSONFlag("realm", "realm", "Realm shown in the browser prompt", true),
+		stringJSONFlag("login", "login", "Login; defaults to wodby", false),
+		stringJSONFlag("password", "password", "Password; omit to let Wodby generate one, which you reveal in the dashboard", false),
+		stringJSONFlag("realm", "realm", "Realm shown in the browser prompt", false),
+		boolJSONFlag("exempt", "exempt", "Switch basic auth off for the given services or route even when a wider entry covers them; requires --service or --route", false),
 	}
 	cmd := &cobra.Command{
 		Use:   "create ENVIRONMENT_ID",
@@ -89,11 +89,11 @@ func newAppAuthCreateCommand(out outputOptions) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if err := addOptionalInt(values, "appServiceId", serviceID, "--service"); err != nil {
+				if err := addAppAuthScope(values, serviceIDs, routeID); err != nil {
 					return err
 				}
-				if err := addOptionalInt(values, "appRouteId", routeID, "--route"); err != nil {
-					return err
+				if values["exempt"] == true && values["appServiceIds"] == nil && values["appRouteId"] == nil {
+					return errors.New("--exempt requires --service or --route")
 				}
 				requestBody = values
 			}
@@ -119,9 +119,79 @@ func newAppAuthCreateCommand(out outputOptions) *cobra.Command {
 	}
 	addBodyFlags(cmd, &body)
 	addJSONFlagSpecs(cmd, specs)
-	cmd.Flags().StringVar(&serviceID, "service", "", "Protect only this app service")
+	cmd.Flags().StringArrayVar(&serviceIDs, "service", nil, "Protect only this app service; repeatable or comma-separated")
 	cmd.Flags().StringVar(&routeID, "route", "", "Protect only this route")
 	return cmd
+}
+
+// newAppAuthUpdateCommand changes an HTTP basic authentication entry. Fields left out keep their current values.
+func newAppAuthUpdateCommand(out outputOptions) *cobra.Command {
+	body := bodyOptions{}
+	var serviceIDs []string
+	var routeID string
+	var wholeEnvironment bool
+	specs := []jsonFlagSpec{
+		stringJSONFlag("login", "login", "New login; omit to keep the current one", false),
+		stringJSONFlag("realm", "realm", "New realm; omit to keep the current one", false),
+		stringJSONFlag("password", "password", "New password; omit to keep the current one", false),
+		boolJSONFlag("generate-password", "generatePassword", "Replace the password with a newly generated one", false),
+	}
+	cmd := &cobra.Command{
+		Use:   "update ID",
+		Short: "Update HTTP basic authentication",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, hasBody, err := readBody(body)
+			if err != nil {
+				return err
+			}
+			if !hasBody {
+				values, err := bodyFromJSONFlagSpecs(cmd, specs, false)
+				if err != nil {
+					return err
+				}
+				if wholeEnvironment {
+					if len(serviceIDs) != 0 || routeID != "" {
+						return errors.New("--whole-environment cannot be combined with --service or --route")
+					}
+					values["appServiceIds"] = []int{}
+				} else if err := addAppAuthScope(values, serviceIDs, routeID); err != nil {
+					return err
+				}
+				if len(values) == 0 {
+					return errors.New("pass at least one update flag or provide --data/--file")
+				}
+				requestBody = values
+			}
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Put(cmd.Context(), escapedPath("/app-auths/%s", args[0]), nil, requestBody, &result); err != nil {
+				return err
+			}
+			return printClientResult(cmd, client, out, result, appAuthColumns)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	addJSONFlagSpecs(cmd, specs)
+	cmd.Flags().StringArrayVar(&serviceIDs, "service", nil, "Protect only these app services; repeatable or comma-separated")
+	cmd.Flags().StringVar(&routeID, "route", "", "Move the entry to this route")
+	cmd.Flags().BoolVar(&wholeEnvironment, "whole-environment", false, "Protect the whole app environment instead of chosen services or a route")
+	return cmd
+}
+
+// addAppAuthScope adds the app services or route a basic auth entry applies to.
+func addAppAuthScope(values map[string]interface{}, serviceIDs []string, routeID string) error {
+	if len(serviceIDs) != 0 {
+		ids, err := parseIntValues(serviceIDs, "--service")
+		if err != nil {
+			return err
+		}
+		values["appServiceIds"] = ids
+	}
+	return addOptionalInt(values, "appRouteId", routeID, "--route")
 }
 
 func addIntegrationRESTCommands(cmd *cobra.Command, out outputOptions) {

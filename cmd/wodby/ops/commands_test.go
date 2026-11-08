@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -2740,7 +2741,7 @@ func TestSchemaAddedCommandSurfaceIsExposed(t *testing.T) {
 		}
 	}
 	integrationCommand := newIntegrationCommand()
-	assertChildren(t, integrationCommand, "get-by-name", "configure", "test-permissions", "validate-app-access-hostname", "options")
+	assertChildren(t, integrationCommand, "configure", "test-permissions", "validate-app-access-hostname", "options")
 	for _, child := range integrationCommand.Commands() {
 		if strings.Contains(child.Name(), "share") {
 			t.Fatalf("OAuth organization sharing must remain outside the CLI: unexpected subcommand %q", child.Name())
@@ -6242,6 +6243,20 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 			response:   map[string]interface{}{"success": true, "taskId": 56},
 		},
 		{
+			name:       "stack update chosen service revisions",
+			cmd:        newStackCommand,
+			args:       []string{"update-service-revisions", "7", "--stack-service", "11,12", "--stack-service", "13"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/stacks/7/actions/update-service-revisions",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				ids, _ := body["stackServiceIds"].([]interface{})
+				if len(ids) != 3 || ids[0] != float64(11) || ids[2] != float64(13) {
+					t.Fatalf("stack service revisions body = %#v", body)
+				}
+			},
+			response: map[string]interface{}{"success": true, "taskId": 57},
+		},
+		{
 			name:       "cluster Kubernetes version upgrade plan",
 			cmd:        newClusterCommand,
 			args:       []string{"kubernetes-version-upgrade-plan", "4"},
@@ -6325,6 +6340,32 @@ func TestSchemaAddedCommandsUseRESTEndpoints(t *testing.T) {
 				}
 			},
 			response: map[string]interface{}{"id": 21, "environmentType": "prod"},
+		},
+		{
+			name:       "app environment create with basic auth",
+			cmd:        newAppEnvironmentCommand,
+			args:       []string{"create", "--org", "1", "--app", "11", "--name", "stage", "--type", "staging", "--stack-rev", "70", "--basic-auth", "--basic-auth-username", "review"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/app-environments",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["basicAuth"] != true || body["basicAuthUsername"] != "review" || body["basicAuthPassword"] != nil {
+					t.Fatalf("app environment basic auth body = %#v", body)
+				}
+			},
+			response: map[string]interface{}{"id": 22, "environmentType": "staging"},
+		},
+		{
+			name:       "app environment create without default basic auth",
+			cmd:        newAppEnvironmentCommand,
+			args:       []string{"create", "--org", "1", "--app", "11", "--name", "dev", "--type", "dev", "--stack-rev", "70", "--basic-auth=false"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/v1/app-environments",
+			assertBody: func(t *testing.T, body map[string]interface{}) {
+				if body["basicAuth"] != false {
+					t.Fatalf("app environment basic auth body = %#v", body)
+				}
+			},
+			response: map[string]interface{}{"id": 23, "environmentType": "dev"},
 		},
 		{
 			name:       "deployment cancel",
@@ -7247,6 +7288,45 @@ func TestDatabaseUserCreateAndGrantDBsUsePublicAPIShape(t *testing.T) {
 	}
 	if got := requests[1].body["databaseDbIds"]; fmt.Sprint(got) != "[44 45]" {
 		t.Fatalf("databaseDbIds = %#v, want [44 45]", got)
+	}
+}
+
+// TestClusterCreateSendsGPUNodePool checks that the --gpu-* flags become the new cluster's GPU node pool.
+func TestClusterCreateSendsGPUNodePool(t *testing.T) {
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/tasks" {
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/clusters" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 102, "name": "gpu"})
+	}))
+	defer server.Close()
+	configureTestAPI(t, server.URL+"/v1")
+
+	cmd := newClusterCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"create", "--integration", "7", "--name", "gpu", "--title", "GPU", "--org", "10",
+		"--gpu-machine-type", "g4dn.xlarge", "--gpu-min-nodes", "0", "--gpu-max-nodes", "2", "--gpu-node-disk-size", "100"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]interface{}{"machineType": "g4dn.xlarge", "minNodeCount": float64(0), "maxNodeCount": float64(2), "nodeDiskSize": float64(100)}
+	if !reflect.DeepEqual(body["gpuNodePool"], want) {
+		t.Fatalf("gpuNodePool = %#v, want %#v", body["gpuNodePool"], want)
+	}
+
+	cmd = newClusterCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"create", "--integration", "7", "--name", "gpu", "--title", "GPU", "--org", "10", "--gpu-max-nodes", "2"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--gpu-machine-type") {
+		t.Fatalf("Execute() error = %v, want a --gpu-machine-type error", err)
 	}
 }
 

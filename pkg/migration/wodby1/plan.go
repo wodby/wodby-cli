@@ -1352,9 +1352,16 @@ func buildServicePlan(plan *Plan, app App, instance Instance, service Service, o
 			} else if !opts.TargetScope.Org.Capabilities.CronSchedules {
 				targetState = "disabled by target subscription"
 			}
+			schedule, adjusted := targetCrontab(cron.Crontab)
+			if adjusted {
+				plan.addReview(SeverityMigration, app.Name, instance.Name, "cron "+firstNonEmpty(cron.Title, cron.Crontab), fmt.Sprintf(
+					"Wodby 2 runs cron schedules at most once every %d minutes; schedule %q will run as %q",
+					minimumCronIntervalMinutes, strings.TrimSpace(cron.Crontab), strings.TrimSpace(schedule),
+				))
+			}
 			servicePlan.CronSchedules = append(servicePlan.CronSchedules, CronSchedulePlan{
 				Title:       firstNonEmpty(strings.TrimSpace(cron.Title), "Migrated Wodby 1 cron"),
-				Schedule:    strings.TrimSpace(migratedCrontab(cron.Crontab)),
+				Schedule:    strings.TrimSpace(schedule),
 				Command:     migratedEnvironmentReferences(strings.TrimSpace(cron.Command)),
 				TargetState: targetState,
 			})

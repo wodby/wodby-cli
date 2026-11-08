@@ -1562,6 +1562,33 @@ func TestBuildPlanNamesResolvedTargetMailService(t *testing.T) {
 	}
 }
 
+func TestBuildPlanRunsFrequentCronEveryFiveMinutes(t *testing.T) {
+	export := Export{
+		Schema: ExportSchemaV1,
+		App:    &App{UUID: "app-1", Name: "demo"},
+		Instances: []Instance{{
+			UUID: "instance-1", Name: "dev", Type: "dev", Stack: Stack{Name: "drupal"},
+			Services: []Service{{
+				Name: "php", Enabled: true,
+				CronJobs: []CronJob{{Title: "Queue", Crontab: "*/2 4-20 * * *", Command: "drush queue-run", Enabled: true}},
+			}},
+		}},
+	}
+	scope := TargetScopeDiscovery{Org: TargetOrg{ID: 1, Capabilities: &TargetOrgCapabilities{CustomDomains: true, CronSchedules: true}}}
+	plan, err := BuildPlan(export, PlanOptions{SourceKind: "app", SourceID: "app-1", TargetScope: &scope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := `Wodby 2 runs cron schedules at most once every 5 minutes; schedule "*/2 4-20 * * *" will run as "*/5 4-20 * * *"`
+	if !hasReviewMessage(plan.Review, SeverityMigration, message) {
+		t.Fatalf("adjusted schedule detail %q missing: %#v", message, plan.Review)
+	}
+	schedules := plan.Apps[0].Instances[0].Services[0].CronSchedules
+	if len(schedules) != 1 || schedules[0].Schedule != "*/5 4-20 * * *" {
+		t.Fatalf("cron schedule details = %#v", schedules)
+	}
+}
+
 func TestBuildPlanDescribesCreatedCronScheduleState(t *testing.T) {
 	for _, test := range []struct {
 		name         string

@@ -654,8 +654,10 @@ func preparedStackCrons(appName, targetName string, items []stackConfigServiceIn
 				title = "Migrated Wodby 1 cron"
 			}
 			command := migratedEnvironmentReferences(cron.Command)
-			crontab := migratedCrontab(cron.Crontab)
-			name := "w1-" + shortDigest(targetName, title, crontab, command)
+			// The name keeps the schedule before the minimum interval
+			// adjustment, so schedules created earlier keep their names.
+			name := "w1-" + shortDigest(targetName, title, migratedCrontab(cron.Crontab), command)
+			crontab, _ := targetCrontab(cron.Crontab)
 			observations[name] = append(observations[name], stackCronObservation{
 				instanceID: item.instance.Source.UUID,
 				sourceName: item.source.Name,

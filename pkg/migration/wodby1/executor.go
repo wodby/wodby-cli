@@ -2769,9 +2769,11 @@ func (e *MigrationExecutor) ensureServiceCrons(
 		if strings.TrimSpace(cron.Crontab) == "" || strings.TrimSpace(cron.Command) == "" {
 			return errors.New("source application cron requires both schedule and command")
 		}
-		cron.Crontab = migratedCrontab(cron.Crontab)
+		// The name keeps the schedule before the minimum interval adjustment,
+		// so schedules created earlier keep their names.
 		command := migratedEnvironmentReferences(cron.Command)
-		name := "w1-" + shortDigest(sourceID, source.Name, strconv.Itoa(index), cron.Crontab, command)
+		name := "w1-" + shortDigest(sourceID, source.Name, strconv.Itoa(index), migratedCrontab(cron.Crontab), command)
+		cron.Crontab, _ = targetCrontab(cron.Crontab)
 		matches := byName[name]
 		if len(matches) > 1 {
 			return &TargetAmbiguousMatchError{Resource: "app service cron schedule", Name: name, Count: len(matches)}
@@ -5999,9 +6001,11 @@ func (e *MigrationExecutor) verifyServiceCrons(
 		if !cron.Enabled || cron.Classification == "source_only_infrastructure" {
 			continue
 		}
-		cron.Crontab = migratedCrontab(cron.Crontab)
+		// The name keeps the schedule before the minimum interval adjustment,
+		// so schedules created earlier keep their names.
 		command := migratedEnvironmentReferences(cron.Command)
-		name := "w1-" + shortDigest(sourceID, source.Name, strconv.Itoa(index), cron.Crontab, command)
+		name := "w1-" + shortDigest(sourceID, source.Name, strconv.Itoa(index), migratedCrontab(cron.Crontab), command)
+		cron.Crontab, _ = targetCrontab(cron.Crontab)
 		matches := byName[name]
 		if len(matches) != 1 || matches[0].Disabled != disableMigrated ||
 			matches[0].Crontab != cron.Crontab || matches[0].Command != command {

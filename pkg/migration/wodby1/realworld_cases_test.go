@@ -319,6 +319,28 @@ func TestRealCaseCronSundayAsSeven(t *testing.T) {
 	}
 }
 
+func TestRealCaseCronEveryMinuteRunsEveryFiveMinutes(t *testing.T) {
+	result := runRealCase(t, func(e *Export) {
+		e.Apps[0].Instances[0].Services[0].CronJobs = []CronJob{{Title: "Queue", Crontab: "* * * * *", Command: "drush queue-run", Enabled: true, Classification: "application"}}
+	}, nil, nil)
+	schedules := result.prepared.StackConfiguration.Services["php"].CronSchedules
+	found := false
+	for _, schedule := range schedules {
+		if schedule.Command == "drush queue-run" {
+			found = true
+			if schedule.Crontab != "*/5 * * * *" {
+				t.Fatalf("every-minute cron must run every 5 minutes: %#v", schedule)
+			}
+			if want := "w1-" + shortDigest("php", "Queue", "* * * * *", "drush queue-run"); schedule.Name != want {
+				t.Fatalf("schedule name = %q, want %q derived from the source schedule", schedule.Name, want)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("migrated cron missing: %#v", schedules)
+	}
+}
+
 func TestMigratedCrontab(t *testing.T) {
 	for input, want := range map[string]string{
 		"0 3 * * 7":     "0 3 * * 0",

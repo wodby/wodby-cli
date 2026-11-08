@@ -894,6 +894,50 @@ func TestEnsureServiceCronsCreatesMigratedScheduleDisabledWithoutFeature(t *test
 	}
 }
 
+func TestEnsureServiceCronsRunsFrequentScheduleEveryFiveMinutes(t *testing.T) {
+	wantName := "w1-" + shortDigest("instance-1", "php", "0", "* * * * *", "drush queue-run")
+	created := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-services/10/cron-schedules":
+			writeTargetExecutionJSON(t, w, []TargetAppServiceCronSchedule{})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/app-services/10/cron-schedules":
+			body := decodeTargetExecutionObject(t, r)
+			if body["crontab"] != "*/5 * * * *" || body["name"] != wantName {
+				t.Fatalf("cron create body = %#v, want crontab */5 and name %q", body, wantName)
+			}
+			created = true
+			writeTargetExecutionJSON(t, w, TargetAppServiceCronSchedule{
+				ID: 41, AppServiceID: 10, Name: wantName, Title: "Queue",
+				Crontab: "*/5 * * * *", Command: "drush queue-run", Disabled: true,
+			})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	state, statePath := newExecutorTestState(t)
+	executor := &MigrationExecutor{target: mustTargetExecutionClient(t, server.URL), state: FileStateStore(statePath)}
+	err := executor.ensureServiceCrons(
+		context.Background(),
+		state,
+		"instance-1",
+		TargetAppService{ID: 10, Name: "php"},
+		Service{Name: "php", CronJobs: []CronJob{{
+			Title: "Queue", Crontab: "* * * * *", Command: "drush queue-run", Enabled: true,
+		}}},
+		TargetStackServiceInspection{},
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("cron schedule was not created")
+	}
+}
+
 func TestDefaultPHPCronScheduleNamesOnlySelectsDrupalAndWordPress(t *testing.T) {
 	tests := []struct {
 		service string

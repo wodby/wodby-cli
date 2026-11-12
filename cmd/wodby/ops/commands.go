@@ -32,7 +32,7 @@ var (
 	providerColumns                  = []string{"id", "name", "title", "status", "providerVersion"}
 	providerRevisionColumns          = []string{"id", "name", "title", "number", "version", "provider", "permissionAudit", "createdAt"}
 	stackColumns                     = []string{"id", "name", "title", "status", "revision", "currentVersion", "outdated", "autoUpdates", "createdAt", "updatedAt"}
-	stackGetColumns                  = []string{"id", "name", "title", "status", "public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "outdated", "autoUpdates", "createdAt", "updatedAt", "services"}
+	stackGetColumns                  = []string{"id", "name", "title", "status", "public", "revId", "currentRevNumber", "currentVersion", "latestRevNumber", "outdated", "autoUpdates", "createdAt", "updatedAt", "services", "variantOfStackName", "variantTitle"}
 	stackRevisionColumns             = []string{"id", "name", "title", "number", "draft", "version", "stack", "linkIssues", "createdAt"}
 	stackServiceColumns              = []string{"id", "name", "title", "type", "serviceRev", "serviceRevPinned", "replicas", "required", "disabled", "main", "updatedAt"}
 	stackServiceEnvColumns           = []string{"id", "name", "value", "secret", "envType", "workload", "container", "createdAt"}
@@ -86,7 +86,7 @@ var (
 	appAccessColumns                 = []string{"id", "mode", "scope", "status", "integrationId", "effectiveUrl", "publicRoutesSuppressed", "lastError", "endpoints", "resources", "createdAt", "updatedAt"}
 	appAccessCleanupColumns          = []string{"id", "appAccessId", "appInstanceId", "integrationId", "provider", "status", "attempts", "lastError", "createdAt", "updatedAt"}
 	changelogColumns                 = []string{"name", "title", "kind", "previousVersion", "version", "previousRevNumber", "revNumber", "entries"}
-	appInstanceStackChangelogColumns = []string{"previousStackVersion", "stackVersion", "previousStackRevNumber", "stackRevNumber", "serviceChanges"}
+	appInstanceStackChangelogColumns = []string{"previousStackVersion", "stackVersion", "previousStackRevNumber", "stackRevNumber", "serviceChanges", "volumeDeletions"}
 	clusterInfraAppChangelogColumns  = []string{"appInstanceId", "appName", "appTitle", "previousStackVersion", "stackVersion", "serviceChanges"}
 	stackOriginChangelogColumns      = []string{"previousVersion", "version", "entries"}
 	taskJobColumns                   = []string{"id", "name", "status", "logStatus", "system", "startedAt", "duration", "steps"}
@@ -945,6 +945,9 @@ func newClusterCommand() *cobra.Command {
 		newClusterInfraAppUpgradeChangelogCommand(out),
 		newClusterComponentCommand(out),
 		newClusterGPUNodePoolCommand(out),
+		newClusterHostChecksCommand(out),
+		newClusterSecurityAdvisoriesCommand(out),
+		newK3SNodeCommand(out),
 		newClusterDeleteCommand(out),
 	)
 	addSharingCommand(cmd, "cluster", "/clusters/sharing/%s", true, out)
@@ -1935,6 +1938,7 @@ func newStackCommand() *cobra.Command {
 		newGetCommand("origin-sync-changelog ID", "Preview stack origin synchronization", "/stack-origin-sync-changelogs/", stackOriginChangelogColumns, out),
 		newStackDuplicateCommand(out),
 		newStackSyncOriginCommand(out),
+		newStackPreviewSyncOriginCommand(out),
 		newStackServiceCommand(out),
 	)
 	addStackRESTCommands(cmd, out)
@@ -2188,7 +2192,7 @@ func newStackPublishDraftCommand(out outputOptions) *cobra.Command {
 func newStackUpdateFromGitCommand(out outputOptions) *cobra.Command {
 	body := bodyOptions{}
 	wait := waitOptions{}
-	var gitRef, gitRefType string
+	var gitRef, gitRefType, serviceUpdates string
 	cmd := &cobra.Command{
 		Use:   "update-from-git ID",
 		Short: "Update stack from Git",
@@ -2205,10 +2209,14 @@ func newStackUpdateFromGitCommand(out outputOptions) *cobra.Command {
 				if err := requireFlag(gitRefType, "--git-ref-type"); err != nil {
 					return err
 				}
-				requestBody = map[string]interface{}{
+				values := map[string]interface{}{
 					"gitRef":     gitRef,
 					"gitRefType": gitRefType,
 				}
+				if serviceUpdates != "" {
+					values["serviceUpdates"] = serviceUpdates
+				}
+				requestBody = values
 			}
 			client, err := newRESTClient()
 			if err != nil {
@@ -2233,7 +2241,19 @@ func newStackUpdateFromGitCommand(out outputOptions) *cobra.Command {
 	addWaitFlags(cmd, &wait)
 	cmd.Flags().StringVar(&gitRef, "git-ref", "", "Git ref")
 	cmd.Flags().StringVar(&gitRefType, "git-ref-type", "", "Git ref type")
+	cmd.Flags().StringVar(&serviceUpdates, "service-updates", "", "What to do with existing stack services whose stack.yml reference has no version: latest (default), auto_update_settings or keep")
 	return cmd
+}
+
+// stackSyncOptionFlags maps stack sync flags to their request body fields.
+var stackSyncOptionFlags = map[string]string{
+	"delete-helm-values":    "deleteStackHelmValues",
+	"delete-env-vars":       "deleteStackEnvVars",
+	"delete-tokens":         "deleteStackTokens",
+	"delete-annotations":    "deleteStackAnnotations",
+	"delete-services":       "deleteStackServices",
+	"delete-service-config": "deleteStackServicesConfiguration",
+	"update-services":       "updateStackServices",
 }
 
 func newStackDuplicateCommand(out outputOptions) *cobra.Command {
@@ -2308,6 +2328,7 @@ func newStackSyncOriginCommand(out outputOptions) *cobra.Command {
 	}
 	addBodyFlags(cmd, &body)
 	addStackSyncFlags(cmd)
+	cmd.Flags().Bool("update-services", false, "Update existing stack services to the service version the origin uses when its changes need it; preview-sync-origin lists them")
 	return cmd
 }
 
@@ -2320,16 +2341,11 @@ func addStackSyncFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("delete-service-config", false, "Delete stack service configuration missing from origin")
 }
 
+// changedStackSyncOptions returns the stack sync options set by flags, or nil when none was set. Flags a command
+// doesn't register are never changed, so sync-only options stay out of the preview body.
 func changedStackSyncOptions(cmd *cobra.Command) interface{} {
 	values := map[string]interface{}{}
-	for flagName, bodyName := range map[string]string{
-		"delete-helm-values":    "deleteStackHelmValues",
-		"delete-env-vars":       "deleteStackEnvVars",
-		"delete-tokens":         "deleteStackTokens",
-		"delete-annotations":    "deleteStackAnnotations",
-		"delete-services":       "deleteStackServices",
-		"delete-service-config": "deleteStackServicesConfiguration",
-	} {
+	for flagName, bodyName := range stackSyncOptionFlags {
 		if value, ok := changedBool(cmd, flagName); ok {
 			values[bodyName] = value
 		}
@@ -3878,7 +3894,7 @@ func newAppInstanceCommand(use string, short string) *cobra.Command {
 	listCmd.Flags().StringVar(&clusterID, "cluster", "", "Cluster ID")
 	listCmd.Flags().BoolVar(&clusterApp, "cluster-app", false, "Filter cluster app environments")
 
-	getCmd := newGetCommand("get ID", "Get app environment", "/app-environments/", appEnvironmentColumns, out)
+	getCmd := newGetCommand("get ID", "Get app environment", "/app-environments/", appEnvironmentGetColumns, out)
 	statusCmd := &cobra.Command{
 		Use:   "status ID",
 		Short: "Show app environment status",
@@ -4131,7 +4147,7 @@ func newAppInstanceGetByNameCommand(out outputOptions) *cobra.Command {
 			if err := client.Get(cmd.Context(), escapedPath("/app-environments/by-name/%s/%s", args[0], args[1]), query, &result); err != nil {
 				return err
 			}
-			return printClientGetResult(cmd, client, out, result, appEnvironmentColumns)
+			return printClientGetResult(cmd, client, out, result, appEnvironmentGetColumns)
 		},
 	}
 	cmd.Flags().StringVar(&orgID, "org", "", "Organization ID")

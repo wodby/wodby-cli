@@ -656,6 +656,12 @@ func formatTableColumnValue(row map[string]interface{}, column string) string {
 			return pluralizeCount(count, "service", "services")
 		}
 	}
+	// A node can store dozens of persistent volumes; tables show how many, vertical and JSON output list them.
+	if column == "localVolumes" {
+		if volumes, ok := row[column].([]interface{}); ok {
+			return pluralizeCount(len(volumes), "volume", "volumes")
+		}
+	}
 	return formatColumnValue(row, column)
 }
 

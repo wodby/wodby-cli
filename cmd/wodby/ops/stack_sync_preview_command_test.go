@@ -73,6 +73,11 @@ func TestStackPreviewSyncOriginTableOutput(t *testing.T) {
 			want: []string{"Version: 1.0.0 -> 1.1.0", "Error: stack services need newer versions", "--update-services", "php", "option 3", "Changes:", "Add stack service redis"},
 		},
 		{
+			name:     "nothing to change",
+			response: `{"previousVersion":"0.4.0","version":"0.4.0","error":null,"serviceUpdates":[],"changes":[]}`,
+			want:     []string{"Version: 0.4.0 -> 0.4.0", "The sync would change nothing."},
+		},
+		{
 			name:     "already synced",
 			response: `null`,
 			want:     []string{"already follows the origin's latest revision"},

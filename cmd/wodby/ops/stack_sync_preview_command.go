@@ -56,18 +56,23 @@ func printStackOriginSyncPreview(cmd *cobra.Command, result interface{}) {
 		fmt.Fprintln(w, "The stack already follows the origin's latest revision.")
 		return
 	}
+	message := formatValue(preview["error"])
+	updates, changes := asRows(preview["serviceUpdates"]), asRows(preview["changes"])
 	fmt.Fprintf(w, "Version: %s -> %s\n", formatValue(preview["previousVersion"]), formatValue(preview["version"]))
-	if message := formatValue(preview["error"]); message != "" {
+	if message != "" {
 		fmt.Fprintf(w, "Error: %s\n", message)
 	}
-	if updates := asRows(preview["serviceUpdates"]); len(updates) > 0 {
+	if len(updates) > 0 {
 		fmt.Fprintln(w, "\nStack services the sync has to update (sync-origin --update-services):")
 		printTable(cmd, preview["serviceUpdates"], stackOriginSyncServiceUpdateColumns)
 	}
-	if changes := asRows(preview["changes"]); len(changes) > 0 {
+	if len(changes) > 0 {
 		fmt.Fprintln(w, "\nChanges:")
 		for _, change := range changes {
 			fmt.Fprintf(w, "  %s\n", formatValue(change["message"]))
 		}
+	}
+	if message == "" && len(updates) == 0 && len(changes) == 0 {
+		fmt.Fprintln(w, "The sync would change nothing.")
 	}
 }

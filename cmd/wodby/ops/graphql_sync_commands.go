@@ -7,10 +7,12 @@ import (
 )
 
 var (
-	appEnvironmentColumns                     = []string{"id", "name", "title", "environmentType", "status", "outdated", "app", "stack", "cluster", "domain", "routingMode", "routingPending", "configurationReady", "configurationIssues"}
+	appEnvironmentColumns = []string{"id", "name", "title", "environmentType", "status", "outdated", "app", "stack", "cluster", "domain", "routingMode", "routingPending", "configurationReady", "configurationIssues"}
+	// appEnvironmentGetColumns adds the hostname customer domains point at, which is too wide for lists.
+	appEnvironmentGetColumns                  = append(append([]string{}, appEnvironmentColumns...), "dnsTarget")
 	kubernetesVersionUpgradePlanColumns       = []string{"currentVersion", "providerVersion", "provider", "supported", "targets", "blockers", "warnings", "observedAt"}
 	integrationProviderRevisionUpgradeColumns = []string{"state", "reasons", "removedFields", "canDropRemovedFields", "currentRevision", "targetRevision"}
-	backupPresetColumns                       = []string{"id", "backupName", "backupCategory", "envTypes", "integration", "bucket", "storageClass", "auto", "disabled", "crontab", "nextRunAt", "createdAt", "updatedAt"}
+	backupPresetColumns                       = []string{"id", "backupName", "backupCategory", "envTypes", "integration", "bucket", "storageClass", "auto", "disabled", "crontab", "projectIds", "nextRunAt", "createdAt", "updatedAt"}
 )
 
 // newStackUpdateServiceRevisionsCommand advances a stack's outdated services to their eligible revisions, or only the
@@ -87,6 +89,7 @@ func newBackupPresetCommand() *cobra.Command {
 
 func newBackupPresetListCommand(out outputOptions) *cobra.Command {
 	var orgID, appEnvironmentID, appServiceID, databaseID, databaseDBID, backupName, applicableEnvironmentID, applicableCategory string
+	var applicableAppEnvironmentID, applicableDatabaseID string
 	cmd := &cobra.Command{Use: "list", Short: "List backup presets", RunE: func(cmd *cobra.Command, _ []string) error {
 		query := url.Values{}
 		addQuery(query, "orgId", orgID)
@@ -97,6 +100,8 @@ func newBackupPresetListCommand(out outputOptions) *cobra.Command {
 		addQuery(query, "backupName", backupName)
 		addQuery(query, "applicableEnvId", applicableEnvironmentID)
 		addQuery(query, "applicableBackupCategory", applicableCategory)
+		addQuery(query, "applicableAppInstanceId", applicableAppEnvironmentID)
+		addQuery(query, "applicableDatabaseId", applicableDatabaseID)
 		client, err := newRESTClient()
 		if err != nil {
 			return err
@@ -115,6 +120,8 @@ func newBackupPresetListCommand(out outputOptions) *cobra.Command {
 	cmd.Flags().StringVar(&backupName, "backup-name", "", "Backup definition name")
 	cmd.Flags().StringVar(&applicableEnvironmentID, "applicable-environment", "", "Environment ID used for applicability checks")
 	cmd.Flags().StringVar(&applicableCategory, "applicable-category", "", "Backup category used for applicability checks")
+	cmd.Flags().StringVar(&applicableAppEnvironmentID, "applicable-app-environment", "", "Return only presets that apply to this app environment, by its environment and the projects its app is in")
+	cmd.Flags().StringVar(&applicableDatabaseID, "applicable-database", "", "Return only presets that apply to this database, by its environment and the projects it is in")
 	return cmd
 }
 

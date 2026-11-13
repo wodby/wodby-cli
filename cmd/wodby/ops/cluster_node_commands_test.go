@@ -42,7 +42,7 @@ func TestClusterNodeAndAdvisoryCommands(t *testing.T) {
 				"name": "worker-1", "role": "agent", "ready": true, "schedulable": true, "version": "v1.36.6+k3s1",
 				"internalIp": "10.0.0.3", "localVolumes": []interface{}{"app/data"}, "createdAt": "2026-11-12T10:00:00Z",
 			}},
-			wantInOut: "worker-1",
+			wantInOut: "1 volume",
 		},
 		{
 			name:      "k3s join command",

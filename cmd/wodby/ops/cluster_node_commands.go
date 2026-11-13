@@ -107,7 +107,7 @@ func newK3SNodeRemoveCommand(out outputOptions) *cobra.Command {
 		Short: "Remove a worker node from a k3s cluster",
 		Long: "Remove a worker node from a k3s cluster: its pods move to other nodes, k3s stops on it and the node is " +
 			"deleted. The server can't be removed. A node that stores persistent volumes is refused unless --force is " +
-			"given, which loses their data; k3s-node list shows them. Afterwards run " +
+			"given, which loses their data; k3s-node list -o vertical lists them. Afterwards run " +
 			"sudo /usr/local/bin/wodby-k3s-uninstall on that server to remove k3s from it.",
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {

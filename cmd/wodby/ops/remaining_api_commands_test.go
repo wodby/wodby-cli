@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -182,17 +183,54 @@ func TestOrgAdminCommands(t *testing.T) {
 			method: http.MethodGet, path: "/v1/org-sso-providers", query: "orgId=1", response: []interface{}{map[string]interface{}{"id": 3, "name": "okta"}}, wantInOut: "okta"},
 		{name: "sso provider get", command: newOrgCommand, args: []string{"sso", "get", "3"},
 			method: http.MethodGet, path: "/v1/org-sso-providers/3"},
-		{name: "sso provider create", command: newOrgCommand, args: []string{"sso-provider", "create", "--data", `{"orgId":1,"name":"okta","issuerUrl":"https://example.okta.com","clientId":"abc","clientSecret":"s","enabled":true,"jitEnabled":false,"domains":["example.com"]}`},
-			method: http.MethodPost, path: "/v1/org-sso-providers",
-			body: map[string]interface{}{"orgId": float64(1), "name": "okta", "issuerUrl": "https://example.okta.com", "clientId": "abc", "clientSecret": "s", "enabled": true, "jitEnabled": false, "domains": []interface{}{"example.com"}}},
-		{name: "sso provider update", command: newOrgCommand, args: []string{"sso-provider", "update", "3", "--data", `{"orgId":1,"name":"okta","enabled":false,"jitEnabled":false,"domains":[]}`},
-			method: http.MethodPut, path: "/v1/org-sso-providers/3", body: map[string]interface{}{"orgId": float64(1), "name": "okta", "enabled": false, "jitEnabled": false, "domains": []interface{}{}}},
-		{name: "sso provider delete", command: newOrgCommand, args: []string{"sso-provider", "delete", "3", "--yes"},
-			method: http.MethodDelete, path: "/v1/org-sso-providers/3"},
-		{name: "sso domain verify", command: newOrgCommand, args: []string{"sso-provider", "verify-domain", "3", "example.com"},
-			method: http.MethodPost, path: "/v1/org-sso-providers/3/actions/verify-domain", body: map[string]interface{}{"domain": "example.com"},
-			response: map[string]interface{}{"id": 1, "domain": "example.com", "verified": true}, wantInOut: "example.com"},
 	})
+}
+
+// TestSSOProviderCommandsAreReadOnly guards the read-only contract of single sign-on providers: the API
+// has no routes that change them, so the command group must offer only list and get and must not send
+// a request for a command that used to change a provider.
+func TestSSOProviderCommandsAreReadOnly(t *testing.T) {
+	var sso *cobra.Command
+	for _, sub := range newOrgCommand().Commands() {
+		if sub.Name() == "sso-provider" {
+			sso = sub
+		}
+	}
+	if sso == nil {
+		t.Fatal("org sso-provider command not found")
+	}
+	var names []string
+	for _, sub := range sso.Commands() {
+		names = append(names, sub.Name())
+	}
+	sort.Strings(names)
+	if got, want := strings.Join(names, ","), "get,list"; got != want {
+		t.Fatalf("sso-provider subcommands = %q, want %q", got, want)
+	}
+
+	removed := [][]string{
+		{"sso-provider", "create", "--data", `{"name":"okta"}`},
+		{"sso-provider", "update", "3", "--data", `{"name":"okta"}`},
+		{"sso-provider", "delete", "3", "--yes"},
+		{"sso-provider", "verify-domain", "3", "example.com"},
+	}
+	for _, args := range removed {
+		t.Run(args[1], func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			}))
+			defer server.Close()
+			configureTestAPI(t, server.URL+"/v1")
+			var out bytes.Buffer
+			cmd := newOrgCommand()
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			cmd.SetArgs(args)
+			if err := cmd.Execute(); err == nil {
+				t.Fatalf("Execute(%v) succeeded, want an error", args)
+			}
+		})
+	}
 }
 
 func TestRemainingCommandInputErrors(t *testing.T) {

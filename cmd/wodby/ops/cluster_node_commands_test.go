@@ -81,7 +81,113 @@ func TestClusterNodeAndAdvisoryCommands(t *testing.T) {
 			body:     map[string]interface{}{"nodeName": "worker-2"},
 			response: map[string]interface{}{"success": true, "taskId": 83},
 		},
+		{
+			name:    "list nodes",
+			command: newClusterCommand,
+			args:    []string{"nodes", "4"},
+			method:  http.MethodGet,
+			path:    "/v1/cluster-nodes/4",
+			response: []interface{}{map[string]interface{}{
+				"name": "pool-1-abc", "ready": true, "schedulable": true, "version": "v1.35.2", "machineType": "m6i.xlarge",
+				"zone": "eu-central-1a", "gpuNodePool": false, "internalIp": "10.0.1.7",
+				"capacity":  map[string]interface{}{"cpu": 4, "memory": 16624558080, "disk": 85899345920, "gpus": 0},
+				"createdAt": "2026-11-12T10:00:00Z",
+			}},
+			wantInOut: "15.5 GiB",
+		},
+		{
+			name:    "list nodes vertically with the zone and the disk",
+			command: newClusterCommand,
+			args:    []string{"node", "4", "-o", "vertical"},
+			method:  http.MethodGet,
+			path:    "/v1/cluster-nodes/4",
+			response: []interface{}{map[string]interface{}{
+				"name": "pool-1-abc", "ready": true, "schedulable": true, "version": "v1.35.2", "zone": "eu-central-1a", "gpuNodePool": false,
+				"capacity": map[string]interface{}{"cpu": 4, "memory": 16624558080, "disk": 85899345920, "gpus": 0},
+			}},
+			wantInOut: "80 GiB",
+		},
+		{
+			name:    "k3s private addresses",
+			command: newClusterCommand,
+			args:    []string{"k3s-private-addresses", "4"},
+			method:  http.MethodGet,
+			path:    "/v1/cluster-k3s-private-addresses/4",
+			response: []interface{}{map[string]interface{}{
+				"address": "10.0.0.2", "networkInterface": "enp7s0", "mtu": 1450, "persistent": true, "persistentSource": "systemd-networkd",
+			}},
+			wantInOut: "systemd-networkd",
+		},
+		{
+			name:     "switch k3s server address",
+			command:  newClusterCommand,
+			args:     []string{"switch-k3s-server-address", "4", "--address", "10.0.0.2", "-o", "json"},
+			method:   http.MethodPost,
+			path:     "/v1/clusters/4/actions/switch-k3s-server-address",
+			body:     map[string]interface{}{"address": "10.0.0.2"},
+			response: map[string]interface{}{"success": true, "taskId": 84},
+		},
+		{
+			name:     "force switch k3s server address",
+			command:  newClusterCommand,
+			args:     []string{"switch-k3s-server-address", "4", "--address", "10.0.0.2", "--force", "-o", "json"},
+			method:   http.MethodPost,
+			path:     "/v1/clusters/4/actions/switch-k3s-server-address",
+			body:     map[string]interface{}{"address": "10.0.0.2", "force": true},
+			response: map[string]interface{}{"success": true, "taskId": 84},
+		},
+		{
+			name:     "switch k3s server address from raw body",
+			command:  newClusterCommand,
+			args:     []string{"switch-k3s-server-address", "4", "--data", `{"address":"10.0.0.3"}`, "-o", "json"},
+			method:   http.MethodPost,
+			path:     "/v1/clusters/4/actions/switch-k3s-server-address",
+			body:     map[string]interface{}{"address": "10.0.0.3"},
+			response: map[string]interface{}{"success": true, "taskId": 84},
+		},
+		{
+			name:     "update k3s max pods",
+			command:  newClusterCommand,
+			args:     []string{"update-k3s-max-pods", "4", "--max-pods", "150", "-o", "json"},
+			method:   http.MethodPost,
+			path:     "/v1/clusters/4/actions/update-k3s-max-pods",
+			body:     map[string]interface{}{"maxPods": float64(150)},
+			response: map[string]interface{}{"success": true, "taskId": 85},
+		},
 	})
+}
+
+func TestK3SOperationCommandsRequireTheirValue(t *testing.T) {
+	configureTestAPI(t, "http://127.0.0.1:1/v1")
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{args: []string{"switch-k3s-server-address", "4"}, want: "--address"},
+		{args: []string{"update-k3s-max-pods", "4"}, want: "--max-pods"},
+	} {
+		cmd := newClusterCommand()
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs(test.args)
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("Execute(%v) error = %v, want one naming %s", test.args, err, test.want)
+		}
+	}
+}
+
+func TestFormatByteSize(t *testing.T) {
+	for size, want := range map[float64]string{
+		512:         "512 B",
+		1536:        "1.5 KiB",
+		268435456:   "256 MiB",
+		16624558080: "15.5 GiB",
+		85899345920: "80 GiB",
+	} {
+		if got := formatByteSize(size); got != want {
+			t.Errorf("formatByteSize(%v) = %q, want %q", size, got, want)
+		}
+	}
 }
 
 func TestK3SNodeRemoveRefusesWithoutConfirmation(t *testing.T) {

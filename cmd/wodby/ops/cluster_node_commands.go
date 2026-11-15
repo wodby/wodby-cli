@@ -2,6 +2,7 @@ package ops
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
@@ -11,7 +12,148 @@ var (
 	clusterHostCheckColumns        = []string{"advisory", "node", "title", "state", "kernel", "checkedAt", "message"}
 	clusterSecurityAdvisoryColumns = []string{"advisory", "title", "state", "action", "message"}
 	k3sClusterNodeColumns          = []string{"name", "role", "ready", "schedulable", "version", "internalIp", "externalIp", "localVolumes", "createdAt"}
+	k3sPrivateAddressColumns       = []string{"address", "networkInterface", "mtu", "persistent", "persistentSource"}
+	// clusterNodeColumns leaves the zone, the external address and the disk to vertical and JSON output, so the
+	// table fits a terminal.
+	clusterNodeColumns         = []string{"name", "ready", "schedulable", "version", "machineType", "gpuNodePool", "internalIp", "cpu", "memory", "gpus", "createdAt"}
+	clusterNodeVerticalColumns = []string{"name", "ready", "schedulable", "version", "machineType", "zone", "gpuNodePool", "internalIp", "externalIp", "cpu", "memory", "disk", "gpus", "createdAt"}
 )
+
+// newClusterNodesCommand lists the nodes of a cluster of any kind with what each node's machine provides.
+func newClusterNodesCommand(out outputOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:     "nodes CLUSTER_ID",
+		Aliases: []string{"node"},
+		Short:   "List the nodes of a cluster, read live from the cluster",
+		Long: "List the nodes of a cluster, read live from the cluster: the general nodes first, then the GPU node " +
+			"pool. Each node shows the CPU cores, memory and GPUs its machine provides; -o vertical adds the zone, the " +
+			"external address and the root disk. Wodby Cloud and serverless clusters don't list nodes. For the role " +
+			"and the persistent volumes of a k3s cluster's nodes, use k3s-node list.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newRESTClient()
+			if err != nil {
+				return err
+			}
+			var result interface{}
+			if err := client.Get(cmd.Context(), escapedPath("/cluster-nodes/%s", args[0]), nil, &result); err != nil {
+				return err
+			}
+			switch outputFormat(cmd, out) {
+			case outputJSON:
+				return printJSON(cmd, result)
+			case outputVertical:
+				return printResult(cmd, out, clusterNodeDisplayRows(result), clusterNodeVerticalColumns)
+			default:
+				return printResult(cmd, out, clusterNodeDisplayRows(result), clusterNodeColumns)
+			}
+		},
+	}
+}
+
+// clusterNodeDisplayRows copies the nodes with each node's capacity as cpu, memory, disk and gpus columns, the
+// memory and the disk in binary units instead of bytes.
+func clusterNodeDisplayRows(value interface{}) []map[string]interface{} {
+	nodes := asRows(normalizeItems(value))
+	rows := make([]map[string]interface{}, 0, len(nodes))
+	for _, node := range nodes {
+		row := make(map[string]interface{}, len(node)+4)
+		for key, field := range node {
+			row[key] = field
+		}
+		row["cpu"] = valueAtPath(node, "capacity.cpu")
+		row["gpus"] = valueAtPath(node, "capacity.gpus")
+		for _, key := range []string{"memory", "disk"} {
+			if size, ok := numericPathValue(node, "capacity."+key); ok {
+				row[key] = formatByteSize(size)
+			}
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// formatByteSize shows a size in bytes in the largest binary unit that keeps it at 1 or more, with at most one
+// decimal.
+func formatByteSize(size float64) string {
+	units := []string{"B", "KiB", "MiB", "GiB", "TiB"}
+	unit := 0
+	for size >= 1024 && unit < len(units)-1 {
+		size /= 1024
+		unit++
+	}
+	return strconv.FormatFloat(float64(int64(size*10+0.5))/10, 'f', -1, 64) + " " + units[unit]
+}
+
+// newK3SPrivateAddressesCommand lists the private addresses a k3s server could use for cluster traffic instead of
+// its public one.
+func newK3SPrivateAddressesCommand(out outputOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "k3s-private-addresses CLUSTER_ID",
+		Short: "List the private addresses a k3s server could switch to",
+		Long: "List the private addresses the server of a k3s cluster could switch to for cluster traffic, read from " +
+			"the server itself. Only for a server that uses its public address for cluster traffic, which keeps worker " +
+			"nodes out. An address that isn't persistent is not known to come back after a reboot; switching to it " +
+			"needs --force. Needs permission to modify the cluster.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return getAndPrintList(cmd, out, escapedPath("/cluster-k3s-private-addresses/%s", args[0]), nil, k3sPrivateAddressColumns)
+		},
+	}
+}
+
+// newK3SSwitchServerAddressCommand starts a task that moves a k3s server's cluster traffic to a private address.
+func newK3SSwitchServerAddressCommand(out outputOptions) *cobra.Command {
+	cmd := newK3SOperationCommand("switch-k3s-server-address CLUSTER_ID", "Switch a k3s server to a private address for cluster traffic",
+		"/clusters/%s/actions/switch-k3s-server-address", out, []jsonFlagSpec{
+			stringJSONFlag("address", "address", "Private address listed by k3s-private-addresses", true),
+			boolJSONFlag("force", "force", "Switch to an address the server's network configuration isn't known to keep after a reboot", false),
+		})
+	cmd.Long = "Switch the server of a k3s cluster from its public address to a private one for cluster traffic, so " +
+		"worker nodes can join. The public address keeps serving public traffic. k3s restarts once: the Kubernetes " +
+		"API pauses for about a minute while apps keep running, and new deployments wait until the switch ends. " +
+		"Refused while application operations are active. If k3s doesn't come back on the private address, the " +
+		"server restores its previous settings. k3s doesn't start when its address is gone, so an address that " +
+		"isn't persistent needs --force."
+	return cmd
+}
+
+// newK3SUpdateMaxPodsCommand starts a task that sets how many pods each node of a k3s cluster runs at most.
+func newK3SUpdateMaxPodsCommand(out outputOptions) *cobra.Command {
+	cmd := newK3SOperationCommand("update-k3s-max-pods CLUSTER_ID", "Set how many pods each node of a k3s cluster runs at most",
+		"/clusters/%s/actions/update-k3s-max-pods", out, []jsonFlagSpec{
+			intJSONFlag("max-pods", "maxPods", "Pods each node runs at most, from 50 to 250", true),
+		})
+	cmd.Long = "Set how many pods each node of a k3s cluster runs at most. k3s restarts on every node whose setting " +
+		"changes, one node at a time: apps keep running, the Kubernetes API pauses for about a minute while the " +
+		"server restarts, and new deployments wait until it ends. Refused while application operations are active, " +
+		"below the pods a node already runs, on a node with no free pod slot, and before the cluster's " +
+		"infrastructure upgrade that sets it."
+	return cmd
+}
+
+// newK3SOperationCommand posts a k3s cluster change built from flags or a JSON body and prints the task it starts,
+// or the finished task with --wait.
+func newK3SOperationCommand(use string, short string, pathPattern string, out outputOptions, specs []jsonFlagSpec) *cobra.Command {
+	body := bodyOptions{}
+	wait := waitOptions{}
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			requestBody, err := readBodyOrJSONFlags(cmd, body, specs, false)
+			if err != nil {
+				return err
+			}
+			return postAndPrintOperation(cmd, out, wait, escapedPath(pathPattern, args[0]), requestBody)
+		},
+	}
+	addBodyFlags(cmd, &body)
+	addJSONFlagSpecs(cmd, specs)
+	addWaitFlags(cmd, &wait)
+	return cmd
+}
 
 // newClusterHostChecksCommand lists what a k3s server last reported about the protections Wodby keeps on it against
 // tracked kernel advisories.

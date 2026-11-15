@@ -26,7 +26,6 @@ var (
 	projectMembershipColumns = []string{"id", "projectId", "orgMembershipId", "teamId", "role", "customRoleId", "updatedAt"}
 	teamColumns              = []string{"id", "name", "title", "members", "updatedAt"}
 	ssoProviderColumns       = []string{"id", "name", "kind", "enabled", "jitEnabled", "issuerUrl", "domains"}
-	ssoDomainColumns         = []string{"id", "domain", "verified", "verificationRecordType", "verificationRecordName", "verificationRecordValue"}
 )
 
 // findChild returns the subcommand with the given name, or nil.
@@ -866,31 +865,21 @@ func fillTeamUpdateDefaults(cmd *cobra.Command, client *rest.Client, orgID strin
 }
 
 func addOrgRemainingCommands(cmd *cobra.Command, out outputOptions) {
-	sso := &cobra.Command{Use: "sso-provider", Aliases: []string{"sso-providers", "sso"}, Short: "Manage single sign-on providers"}
+	// The API only reads single sign-on providers: an organization owner adds, changes and removes
+	// them and verifies their email domains in the dashboard, so there are no write commands here.
+	sso := &cobra.Command{
+		Use:     "sso-provider",
+		Aliases: []string{"sso-providers", "sso"},
+		Short:   "View single sign-on providers",
+		Long: "View the single sign-on providers of an organization.\n\n" +
+			"Providers are read-only here. An organization owner adds, changes and removes providers and verifies " +
+			"their email domains in the dashboard.",
+	}
 	list := newOrgListCommand("list", "List SSO providers", "/org-sso-providers", ssoProviderColumns, out)
 	defaultToList(sso, list)
 	sso.AddCommand(
 		list,
 		newGetCommand("get ID", "Get SSO provider", "/org-sso-providers/", ssoProviderColumns, out),
-		newRawBodyPostCommand("create", "Create an SSO provider (JSON body: orgId, kind, name, issuerUrl, clientId, clientSecret, enabled, jitEnabled, domains)", "/org-sso-providers", ssoProviderColumns, out),
-		newRawBodyPutCommand("update ID", "Replace SSO provider settings; leave clientSecret out to keep it", "/org-sso-providers/%s", ssoProviderColumns, out),
-		newDeleteCommand("delete ID", "Delete SSO provider", "/org-sso-providers/", ssoProviderColumns, out),
-		&cobra.Command{
-			Use:   "verify-domain ID DOMAIN",
-			Short: "Check the DNS record that proves the organization owns an SSO domain",
-			Args:  cobra.ExactArgs(2),
-			RunE: func(cmd *cobra.Command, args []string) error {
-				client, err := newRESTClient()
-				if err != nil {
-					return err
-				}
-				var result interface{}
-				if err := client.Post(cmd.Context(), escapedPath("/org-sso-providers/%s/actions/verify-domain", args[0]), nil, map[string]interface{}{"domain": args[1]}, &result); err != nil {
-					return err
-				}
-				return printClientResult(cmd, client, out, result, ssoDomainColumns)
-			},
-		},
 	)
 	cmd.AddCommand(sso)
 }

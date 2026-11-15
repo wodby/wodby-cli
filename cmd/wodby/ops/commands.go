@@ -947,7 +947,13 @@ func newClusterCommand() *cobra.Command {
 		newClusterGPUNodePoolCommand(out),
 		newClusterHostChecksCommand(out),
 		newClusterSecurityAdvisoriesCommand(out),
+		newClusterVulnerabilitiesCommand(out),
+		newClusterKubernetesVulnerabilitiesCommand(out),
+		newClusterNodesCommand(out),
 		newK3SNodeCommand(out),
+		newK3SPrivateAddressesCommand(out),
+		newK3SSwitchServerAddressCommand(out),
+		newK3SUpdateMaxPodsCommand(out),
 		newClusterDeleteCommand(out),
 	)
 	addSharingCommand(cmd, "cluster", "/clusters/sharing/%s", true, out)
@@ -3739,7 +3745,7 @@ func newAppCommand() *cobra.Command {
 		newDeleteCommand("delete ID", "Delete app", "/apps/", appColumns, out),
 	)
 	cmd.AddCommand(newAppEnvironmentCommand())
-	cmd.AddCommand(newAppSettingsCommand(out), newAppPreviewCommand(out))
+	cmd.AddCommand(newAppSettingsCommand(out), newAppPreviewCommand(out), newAppVulnerabilityIgnoreCommand(out))
 	addSharingCommand(cmd, "app", "/apps/sharing/%s", false, out)
 	return cmd
 }

@@ -3555,11 +3555,24 @@ func technicalDeploymentInput(
 	input := TargetCreateAppDeploymentInput{Services: []TargetAppServiceDeploymentInput{}}
 	skippedCodeServices := skippedCodeServiceNames(prepared)
 	serviceBuildID := 0
+	// One build can produce images for other services too, such as an Nginx
+	// service that serves the PHP service's code; each of them deploys the image
+	// the build made for it.
+	artifactBuildIDs := map[int]int{}
 	if build != nil {
 		var err error
 		serviceBuildID, err = completedServiceBuildID(*build, build.AppServiceID)
 		if err != nil {
 			return TargetCreateAppDeploymentInput{}, err
+		}
+		for _, item := range build.AppServiceBuilds {
+			if item.AppServiceID == build.AppServiceID || !strings.EqualFold(item.Status, "COMPLETED") {
+				continue
+			}
+			if _, duplicate := artifactBuildIDs[item.AppServiceID]; duplicate {
+				return TargetCreateAppDeploymentInput{}, errors.Errorf("completed target build contains more than one service build for service ID %d", item.AppServiceID)
+			}
+			artifactBuildIDs[item.AppServiceID] = item.ID
 		}
 	}
 	for _, service := range services {
@@ -3580,6 +3593,8 @@ func technicalDeploymentInput(
 			(service.ParentAppServiceID != nil && *service.ParentAppServiceID == build.AppServiceID))
 		if usesBuild {
 			item.AppServiceBuildID = &serviceBuildID
+		} else if artifactBuildID, found := artifactBuildIDs[service.ID]; found {
+			item.AppServiceBuildID = &artifactBuildID
 		}
 		input.Services = append(input.Services, item)
 	}

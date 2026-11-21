@@ -963,6 +963,40 @@ func TestVerifyServiceCronsRequiresDrupalPHPDefaultDisabled(t *testing.T) {
 	}
 }
 
+// A WordPress build also produces the image of the Nginx service that serves
+// the PHP code; Wodby 2 refuses a deployment that leaves Nginx without it.
+func TestTechnicalDeploymentGivesEachServiceItsBuildImage(t *testing.T) {
+	build := TargetAppBuild{
+		ID: 30, AppServiceID: 20, Status: "COMPLETED",
+		AppServiceBuilds: []TargetAppServiceBuild{
+			{ID: 31, AppServiceID: 20, Status: "COMPLETED"},
+			{ID: 32, AppServiceID: 40, Status: "COMPLETED"},
+		},
+	}
+	input, err := technicalDeploymentInput(
+		PreparedInstance{},
+		[]TargetAppService{
+			{ID: 10, Name: "mariadb"},
+			{ID: 20, Name: "php"},
+			{ID: 40, Name: "nginx"},
+		},
+		&build,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	images := map[int]int{}
+	for _, service := range input.Services {
+		if service.AppServiceBuildID != nil {
+			images[service.AppServiceID] = *service.AppServiceBuildID
+		}
+	}
+	if len(images) != 2 || images[20] != 31 || images[40] != 32 {
+		t.Fatalf("service build images = %#v, want php 31 and nginx 32", images)
+	}
+}
+
 func TestTechnicalDeploymentPreservesTargetPostDeploymentHooks(t *testing.T) {
 	parentServiceID := 20
 	build := TargetAppBuild{

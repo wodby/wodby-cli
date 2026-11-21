@@ -1826,6 +1826,103 @@ func TestWaitAppInstanceOKWaitsForImportFinalization(t *testing.T) {
 	}
 }
 
+// redeployWaitServer serves one app environment status and one redeploy flag
+// per poll, as Wodby 2 reports them while an import's rollout is queued, runs
+// and finishes.
+func redeployWaitServer(t *testing.T, statuses []string, pending []bool, serviceStatus string) (*httptest.Server, *int) {
+	t.Helper()
+	polls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-environments/20":
+			writeTargetExecutionJSON(t, w, TargetAppInstance{
+				ID: 20, Name: "dev", Status: statuses[polls], AppID: 10,
+				ClusterID: 3, EnvironmentType: "prod", StackID: 5, StackRevID: 6,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/app-services" && r.URL.Query().Get("appInstanceId") == "20":
+			writeTargetExecutionJSON(t, w, []TargetAppService{
+				{ID: 30, Name: "mariadb", Status: serviceStatus, AppInstanceID: 20, ServiceRevID: 7, NeedsRedeploy: pending[polls]},
+				{ID: 31, Name: "php", Status: "OK", AppInstanceID: 20, ServiceRevID: 8, NeedsRedeploy: true},
+			})
+			polls++
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	return server, &polls
+}
+
+func TestWaitImportRedeployWaitsForQueuedRollout(t *testing.T) {
+	// The import has finished and the environment is still OK, but the
+	// rollout it requested has not started yet.
+	statuses := []string{"OK", "OK", "DEPLOYING", "OK"}
+	pending := []bool{true, true, true, false}
+	server, polls := redeployWaitServer(t, statuses, pending, "OK")
+	defer server.Close()
+
+	progress := []string{}
+	executor := &MigrationExecutor{
+		target:           mustTargetExecutionClient(t, server.URL),
+		pollInterval:     time.Millisecond,
+		operationTimeout: time.Second,
+		progress: func(message string) {
+			progress = append(progress, message)
+		},
+	}
+	if err := executor.waitImportRedeploy(context.Background(), 20, 30, `continue after the "database" data import`); err != nil {
+		t.Fatal(err)
+	}
+	if *polls != len(statuses) {
+		t.Fatalf("polls = %d, want %d", *polls, len(statuses))
+	}
+	output := strings.Join(progress, "\n")
+	for _, expected := range []string{
+		`"mariadb" is waiting for its redeploy after the data import`,
+		`"mariadb" is redeployed and app environment ID 20 is OK; continuing`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("progress output does not contain %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestWaitImportRedeployWaitsForOKAfterRollout(t *testing.T) {
+	// Another service's pending redeploy does not hold the import back.
+	statuses := []string{"DEPLOYING", "OK"}
+	pending := []bool{false, false}
+	server, polls := redeployWaitServer(t, statuses, pending, "OK")
+	defer server.Close()
+
+	executor := &MigrationExecutor{
+		target:           mustTargetExecutionClient(t, server.URL),
+		pollInterval:     time.Millisecond,
+		operationTimeout: time.Second,
+		progress:         func(string) {},
+	}
+	if err := executor.waitImportRedeploy(context.Background(), 20, 30, "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if *polls != len(statuses) {
+		t.Fatalf("polls = %d, want %d", *polls, len(statuses))
+	}
+}
+
+func TestWaitImportRedeployFailsWhenServiceErrors(t *testing.T) {
+	server, _ := redeployWaitServer(t, []string{"OK"}, []bool{true}, "ERRORED")
+	defer server.Close()
+
+	executor := &MigrationExecutor{
+		target:           mustTargetExecutionClient(t, server.URL),
+		pollInterval:     time.Millisecond,
+		operationTimeout: time.Second,
+		progress:         func(string) {},
+	}
+	err := executor.waitImportRedeploy(context.Background(), 20, 30, "continue")
+	if err == nil || !strings.Contains(err.Error(), `"mariadb" entered status "ERRORED" and cannot continue`) {
+		t.Fatalf("error = %v, want the errored service", err)
+	}
+}
+
 func TestPlanHasCustomRoutes(t *testing.T) {
 	technical := InstancePlan{Routes: []RoutePlan{{Action: "skip_technical"}}}
 	if planHasCustomRoutes(&technical) {

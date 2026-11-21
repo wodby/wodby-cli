@@ -45,6 +45,97 @@ func TestReadPostDeployment(t *testing.T) {
 	})
 }
 
+func writeWodbyFile(t *testing.T, dir string, name string, content string) {
+	t.Helper()
+	wodbyDir := filepath.Join(dir, ".wodby")
+	if err := os.MkdirAll(wodbyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wodbyDir, name), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+}
+
+func TestReadPreDeployment(t *testing.T) {
+	t.Run("missing file", func(t *testing.T) {
+		dir := t.TempDir()
+
+		content, err := readPreDeployment(dir)
+		if err != nil {
+			t.Fatalf("readPreDeployment() error = %v", err)
+		}
+		if content != "" {
+			t.Fatalf("readPreDeployment() content = %q, want empty string", content)
+		}
+	})
+
+	t.Run("existing file", func(t *testing.T) {
+		dir := t.TempDir()
+		want := "steps:\n  - make migrate\n"
+		writeWodbyFile(t, dir, "pre-deployment.yml", want)
+		writeWodbyFile(t, dir, "post-deployment.yml", "steps:\n  - echo post\n")
+
+		content, err := readPreDeployment(dir)
+		if err != nil {
+			t.Fatalf("readPreDeployment() error = %v", err)
+		}
+		if content != want {
+			t.Fatalf("readPreDeployment() content = %q, want %q", content, want)
+		}
+	})
+}
+
+func TestApplyDeploymentScripts(t *testing.T) {
+	t.Run("no files", func(t *testing.T) {
+		input := types.NewBuildFromCIInput{}
+		if err := applyDeploymentScripts(&input, t.TempDir()); err != nil {
+			t.Fatalf("applyDeploymentScripts() error = %v", err)
+		}
+		if input.PreDeployment != nil {
+			t.Fatalf("PreDeployment = %q, want nil", *input.PreDeployment)
+		}
+		if input.PostDeployment != nil {
+			t.Fatalf("PostDeployment = %q, want nil", *input.PostDeployment)
+		}
+	})
+
+	t.Run("both files", func(t *testing.T) {
+		dir := t.TempDir()
+		pre := "steps:\n  - make migrate\n"
+		post := "steps:\n  - make cache-clear\n"
+		writeWodbyFile(t, dir, "pre-deployment.yml", pre)
+		writeWodbyFile(t, dir, "post-deployment.yml", post)
+
+		input := types.NewBuildFromCIInput{}
+		if err := applyDeploymentScripts(&input, dir); err != nil {
+			t.Fatalf("applyDeploymentScripts() error = %v", err)
+		}
+		if input.PreDeployment == nil || *input.PreDeployment != pre {
+			t.Fatalf("PreDeployment = %v, want %q", input.PreDeployment, pre)
+		}
+		if input.PostDeployment == nil || *input.PostDeployment != post {
+			t.Fatalf("PostDeployment = %v, want %q", input.PostDeployment, post)
+		}
+	})
+
+	t.Run("pre-deployment only", func(t *testing.T) {
+		dir := t.TempDir()
+		pre := "steps:\n  - make migrate\n"
+		writeWodbyFile(t, dir, "pre-deployment.yml", pre)
+
+		input := types.NewBuildFromCIInput{}
+		if err := applyDeploymentScripts(&input, dir); err != nil {
+			t.Fatalf("applyDeploymentScripts() error = %v", err)
+		}
+		if input.PreDeployment == nil || *input.PreDeployment != pre {
+			t.Fatalf("PreDeployment = %v, want %q", input.PreDeployment, pre)
+		}
+		if input.PostDeployment != nil {
+			t.Fatalf("PostDeployment = %q, want nil", *input.PostDeployment)
+		}
+	})
+}
+
 func TestFindMainServiceBuildConfig(t *testing.T) {
 	t.Run("finds main service", func(t *testing.T) {
 		service, err := findMainServiceBuildConfig([]*types.AppServiceBuildConfig{

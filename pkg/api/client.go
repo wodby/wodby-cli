@@ -26,6 +26,7 @@ type newBuildFromCIRequest struct {
 	GitCommitAuthorEmail *string `json:"gitCommitAuthorEmail"`
 	GitCommitMessage     *string `json:"gitCommitMessage"`
 	Provider             string  `json:"provider"`
+	PreDeployment        *string `json:"preDeployment,omitempty"`
 	PostDeployment       *string `json:"postDeployment"`
 }
 
@@ -107,6 +108,7 @@ func (c *Client) NewCIBuild(ctx context.Context, input types.NewBuildFromCIInput
 		GitCommitAuthorEmail: input.GitCommitAuthorEmail,
 		GitCommitMessage:     input.GitCommitMessage,
 		Provider:             input.Provider,
+		PreDeployment:        input.PreDeployment,
 		PostDeployment:       input.PostDeployment,
 	}
 

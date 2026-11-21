@@ -69,6 +69,60 @@ func TestNewCIBuildUsesRESTEndpoint(t *testing.T) {
 	}
 }
 
+func TestNewCIBuildSendsDeploymentScripts(t *testing.T) {
+	tests := []struct {
+		name           string
+		preDeployment  *string
+		wantPreSent    bool
+		postDeployment *string
+	}{
+		{name: "pre-deployment set", preDeployment: stringPtr("steps:\n  - make migrate\n"), wantPreSent: true, postDeployment: stringPtr("steps:\n  - echo post\n")},
+		{name: "pre-deployment unset", preDeployment: nil, wantPreSent: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body map[string]interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("Decode() error = %v", err)
+				}
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 101})
+			}))
+			defer server.Close()
+
+			client, err := NewClient(types.APIConfig{Key: "secret", Endpoint: server.URL + "/v1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := client.NewCIBuild(context.Background(), types.NewBuildFromCIInput{
+				AppServiceID:   types.ToID(42),
+				PreDeployment:  tt.preDeployment,
+				PostDeployment: tt.postDeployment,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			got, sent := body["preDeployment"]
+			if sent != tt.wantPreSent {
+				t.Fatalf("preDeployment sent = %v, want %v (body %#v)", sent, tt.wantPreSent, body)
+			}
+			if tt.wantPreSent && got != *tt.preDeployment {
+				t.Fatalf("preDeployment = %#v, want %q", got, *tt.preDeployment)
+			}
+			if tt.postDeployment != nil && body["postDeployment"] != *tt.postDeployment {
+				t.Fatalf("postDeployment = %#v, want %q", body["postDeployment"], *tt.postDeployment)
+			}
+		})
+	}
+}
+
+func stringPtr(value string) *string {
+	return &value
+}
+
 func TestGetAppBuildConfigUsesRESTEndpoint(t *testing.T) {
 	var requestedPath string
 

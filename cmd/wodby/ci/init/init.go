@@ -110,12 +110,8 @@ var Cmd = &cobra.Command{
 			if err = applyCIBuildInputFlags(&input, opts); err != nil {
 				return err
 			}
-			postDeployment, err := readPostDeployment(opts.context)
-			if err != nil {
+			if err = applyDeploymentScripts(&input, opts.context); err != nil {
 				return errors.WithStack(err)
-			}
-			if postDeployment != "" {
-				input.PostDeployment = &postDeployment
 			}
 
 			appBuild, err = client.NewCIBuild(ctx, input)
@@ -330,16 +326,49 @@ func findMainServiceBuildConfig(services []*types.AppServiceBuildConfig) (*types
 	return nil, errors.New("main service not found")
 }
 
+// applyDeploymentScripts attaches the repository's pre- and post-deployment
+// scripts from the build context to the CI build input. A missing file leaves
+// the corresponding field unset.
+func applyDeploymentScripts(input *types.NewBuildFromCIInput, context string) error {
+	preDeployment, err := readPreDeployment(context)
+	if err != nil {
+		return err
+	}
+	if preDeployment != "" {
+		input.PreDeployment = &preDeployment
+	}
+
+	postDeployment, err := readPostDeployment(context)
+	if err != nil {
+		return err
+	}
+	if postDeployment != "" {
+		input.PostDeployment = &postDeployment
+	}
+
+	return nil
+}
+
+func readPreDeployment(context string) (string, error) {
+	return readDeploymentScripts(context, "pre-deployment.yml")
+}
+
 func readPostDeployment(context string) (string, error) {
-	postDeploymentFile := filepath.Join(context, ".wodby", "post-deployment.yml")
-	if _, err := os.Stat(postDeploymentFile); err != nil {
+	return readDeploymentScripts(context, "post-deployment.yml")
+}
+
+// readDeploymentScripts returns the content of a deployment scripts file from
+// the build context's .wodby directory, or an empty string when it is missing.
+func readDeploymentScripts(context string, name string) (string, error) {
+	file := filepath.Join(context, ".wodby", name)
+	if _, err := os.Stat(file); err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
 		}
 		return "", err
 	}
 
-	content, err := os.ReadFile(postDeploymentFile)
+	content, err := os.ReadFile(file)
 	if err != nil {
 		return "", err
 	}

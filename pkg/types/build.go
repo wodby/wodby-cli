@@ -55,6 +55,7 @@ type (
 		GitCommitAuthorEmail *string `json:"gitCommitAuthorEmail"`
 		GitCommitMessage     *string `json:"gitCommitMessage"`
 		Provider             string  `json:"provider"`
+		PreDeployment        *string `json:"preDeployment,omitempty"`
 		PostDeployment       *string `json:"postDeployment"`
 	}
 )

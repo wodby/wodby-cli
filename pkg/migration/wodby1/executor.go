@@ -931,15 +931,24 @@ func (e *MigrationExecutor) SyncData(
 				continue
 			}
 		}
+		// A redeploy request that predates a new import belongs to other work
+		// and may never clear during the migration, so only a request the
+		// import itself can have made is waited for. A resumed import may
+		// already have made it.
+		waitRedeploy := !service.NeedsRedeploy ||
+			importOperationSucceeded(instanceState, item.SourceInstanceUUID, item.Backup.Component)
 		if err := e.ensureImport(ctx, state, item, instanceState.TargetID, service.ID); err != nil {
 			recordFailure(item.SourceInstanceUUID, item.Backup.Component, "data import", err)
 			continue
 		}
-		if err := e.waitAppInstanceOK(
-			ctx,
-			instanceState.TargetID,
-			fmt.Sprintf("continue after the %q data import", item.Backup.Component),
-		); err != nil {
+		nextAction := fmt.Sprintf("continue after the %q data import", item.Backup.Component)
+		if waitRedeploy {
+			if err := e.waitImportRedeploy(ctx, instanceState.TargetID, service.ID, nextAction); err != nil {
+				recordFailure(item.SourceInstanceUUID, item.Backup.Component, "target redeploy after data import", errors.Wrap(err, "wait for target redeploy after data import"))
+			}
+			continue
+		}
+		if err := e.waitAppInstanceOK(ctx, instanceState.TargetID, nextAction); err != nil {
 			recordFailure(item.SourceInstanceUUID, item.Backup.Component, "target readiness after data import", errors.Wrap(err, "wait for target app environment after data import"))
 		}
 	}
@@ -5379,6 +5388,88 @@ func (e *MigrationExecutor) waitAppInstanceOK(
 	nextAction string,
 ) error {
 	return e.waitAppInstanceStatus(ctx, appInstanceID, nextAction, "OK", "OK")
+}
+
+// waitImportRedeploy waits until the redeploy that an import requested for
+// its app service has finished and the app environment is OK again. An import
+// that replaces the service's volume reports done before Wodby 2 starts the
+// rollout that mounts the imported data, so the environment can still be OK
+// while that rollout waits to run; the service keeps its redeploy request
+// until the rollout succeeds. Waiting only for the OK status would let the
+// next import start and be refused once the rollout begins.
+func (e *MigrationExecutor) waitImportRedeploy(
+	ctx context.Context,
+	appInstanceID, appServiceID int,
+	nextAction string,
+) error {
+	reported := ""
+	err := e.poll(ctx, "target redeploy after data import", func(ctx context.Context) (bool, error) {
+		instance, err := e.target.GetAppInstance(ctx, appInstanceID)
+		if err != nil {
+			return false, err
+		}
+		status := strings.ToUpper(strings.TrimSpace(instance.Status))
+		switch status {
+		case "ERRORED", "DISABLED", "NA", "DELETING", "PAUSED":
+			return false, errors.Errorf(
+				"target app environment ID %d entered status %q and cannot %s",
+				appInstanceID,
+				instance.Status,
+				nextAction,
+			)
+		}
+		services, err := e.target.ListAppServices(ctx, appInstanceID)
+		if err != nil {
+			return false, err
+		}
+		var service *TargetAppService
+		for i := range services {
+			if services[i].ID == appServiceID {
+				service = &services[i]
+				break
+			}
+		}
+		if service == nil {
+			return false, errors.Errorf("target app service ID %d is missing from app environment ID %d", appServiceID, appInstanceID)
+		}
+		if strings.EqualFold(strings.TrimSpace(service.Status), "ERRORED") {
+			return false, errors.Errorf(
+				"target app service %q entered status %q and cannot %s",
+				service.Name,
+				service.Status,
+				nextAction,
+			)
+		}
+		state := status
+		if service.NeedsRedeploy {
+			state = "redeploy pending"
+		}
+		if !service.NeedsRedeploy && status == "OK" {
+			if reported != "" {
+				e.reportProgress("Target app service %q is redeployed and app environment ID %d is OK; continuing.", service.Name, appInstanceID)
+			}
+			return true, nil
+		}
+		if state != reported {
+			if service.NeedsRedeploy {
+				e.reportProgress(
+					"Target app service %q is waiting for its redeploy after the data import; waiting to %s...",
+					service.Name,
+					nextAction,
+				)
+			} else {
+				e.reportProgress(
+					"Target app environment ID %d is %q; waiting until it is OK to %s...",
+					appInstanceID,
+					instance.Status,
+					nextAction,
+				)
+			}
+			reported = state
+		}
+		return false, nil
+	})
+	return err
 }
 
 // waitAppInstanceBuildable waits until the target accepts builds and

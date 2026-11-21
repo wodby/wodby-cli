@@ -3486,6 +3486,11 @@ func (e *MigrationExecutor) ensureTechnicalDeployment(
 	instance TargetAppInstance,
 	operationPrefix string,
 ) error {
+	// A newly created environment refuses builds and deployments until Wodby 2
+	// has finished creating it.
+	if err := e.waitAppInstanceBuildable(ctx, instance.ID, "build and deploy"); err != nil {
+		return err
+	}
 	services, err := e.target.ListAppServices(ctx, instance.ID)
 	if err != nil {
 		return errors.Wrap(err, "list target services before deployment")
@@ -5358,6 +5363,31 @@ func (e *MigrationExecutor) waitAppInstanceOK(
 	appInstanceID int,
 	nextAction string,
 ) error {
+	return e.waitAppInstanceStatus(ctx, appInstanceID, nextAction, "OK", "OK")
+}
+
+// waitAppInstanceBuildable waits until the target accepts builds and
+// deployments for the app environment: Wodby 2 refuses them while a new
+// environment is still being created, and an environment that never deployed
+// is ready once it is awaiting its first deployment.
+func (e *MigrationExecutor) waitAppInstanceBuildable(
+	ctx context.Context,
+	appInstanceID int,
+	nextAction string,
+) error {
+	return e.waitAppInstanceStatus(ctx, appInstanceID, nextAction, "ready", "OK", "AWAITING", "DEPLOYING")
+}
+
+// waitAppInstanceStatus waits until the app environment reaches one of the
+// ready statuses, reporting each status it waits through, and fails at once
+// on a status from which the next action can never run.
+func (e *MigrationExecutor) waitAppInstanceStatus(
+	ctx context.Context,
+	appInstanceID int,
+	nextAction string,
+	readyLabel string,
+	ready ...string,
+) error {
 	reportedStatus := ""
 	err := e.poll(ctx, "target app environment readiness", func(ctx context.Context) (bool, error) {
 		instance, err := e.target.GetAppInstance(ctx, appInstanceID)
@@ -5365,11 +5395,13 @@ func (e *MigrationExecutor) waitAppInstanceOK(
 			return false, err
 		}
 		status := strings.ToUpper(strings.TrimSpace(instance.Status))
-		if status == "OK" {
-			if reportedStatus != "" {
-				e.reportProgress("Target app environment ID %d is OK; continuing.", appInstanceID)
+		for _, readyStatus := range ready {
+			if status == readyStatus {
+				if reportedStatus != "" {
+					e.reportProgress("Target app environment ID %d is %s; continuing.", appInstanceID, readyLabel)
+				}
+				return true, nil
 			}
-			return true, nil
 		}
 		switch status {
 		case "ERRORED", "DISABLED", "NA", "DELETING", "PAUSED":
@@ -5382,9 +5414,10 @@ func (e *MigrationExecutor) waitAppInstanceOK(
 		}
 		if status != reportedStatus {
 			e.reportProgress(
-				"Target app environment ID %d is %q; waiting until it is OK to %s...",
+				"Target app environment ID %d is %q; waiting until it is %s to %s...",
 				appInstanceID,
 				instance.Status,
+				readyLabel,
 				nextAction,
 			)
 			reportedStatus = status

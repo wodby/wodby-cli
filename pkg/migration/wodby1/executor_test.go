@@ -1684,6 +1684,71 @@ func TestEnsureAppAndInstancesReusesExplicitTargetApp(t *testing.T) {
 	}
 }
 
+// A new environment refuses builds while Wodby 2 is still creating it; one
+// that never deployed is ready to build once it is awaiting its deployment.
+func TestWaitAppInstanceBuildableWaitsUntilCreated(t *testing.T) {
+	statuses := []string{"CREATING", "CREATING", "AWAITING"}
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/app-environments/20" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		status := statuses[requests]
+		requests++
+		writeTargetExecutionJSON(t, w, TargetAppInstance{
+			ID: 20, Name: "prod", Status: status, AppID: 10,
+			ClusterID: 3, EnvironmentType: "prod", StackID: 5, StackRevID: 6,
+		})
+	}))
+	defer server.Close()
+
+	progress := []string{}
+	executor := &MigrationExecutor{
+		target:           mustTargetExecutionClient(t, server.URL),
+		pollInterval:     time.Millisecond,
+		operationTimeout: time.Second,
+		progress: func(message string) {
+			progress = append(progress, message)
+		},
+	}
+	if err := executor.waitAppInstanceBuildable(context.Background(), 20, "build and deploy"); err != nil {
+		t.Fatal(err)
+	}
+	if requests != len(statuses) {
+		t.Fatalf("status requests = %d, want %d", requests, len(statuses))
+	}
+	output := strings.Join(progress, "\n")
+	for _, expected := range []string{
+		`is "CREATING"; waiting until it is ready to build and deploy`,
+		`is ready; continuing`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("progress output does not contain %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestWaitAppInstanceBuildableStopsOnAnErroredEnvironment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeTargetExecutionJSON(t, w, TargetAppInstance{
+			ID: 20, Name: "prod", Status: "ERRORED", AppID: 10,
+			ClusterID: 3, EnvironmentType: "prod", StackID: 5, StackRevID: 6,
+		})
+	}))
+	defer server.Close()
+
+	executor := &MigrationExecutor{
+		target:           mustTargetExecutionClient(t, server.URL),
+		pollInterval:     time.Millisecond,
+		operationTimeout: time.Second,
+		progress:         func(string) {},
+	}
+	err := executor.waitAppInstanceBuildable(context.Background(), 20, "build and deploy")
+	if err == nil || !strings.Contains(err.Error(), `entered status "ERRORED" and cannot build and deploy`) {
+		t.Fatalf("error = %v, want the errored status", err)
+	}
+}
+
 func TestWaitAppInstanceOKWaitsForImportFinalization(t *testing.T) {
 	statuses := []string{"IMPORTING", "DEPLOYING", "OK"}
 	requests := 0

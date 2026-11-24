@@ -114,3 +114,75 @@ func versionTestInspection(name string, options []TargetServiceOption) TargetSta
 		},
 	}
 }
+
+// The PHP SSH derivative's revision is the PHP service's, with PHP's version
+// options, but Wodby 2 runs it with its parent's version and stores none.
+func derivativeVersionTestInspection() TargetStackServiceInspection {
+	inspection := versionTestInspection("sshd", []TargetServiceOption{{Version: "8.3"}, {Version: "8.4", Default: true}})
+	inspection.StackService.Type = "ssh"
+	inspection.ServiceRevision.Type = "php"
+	return inspection
+}
+
+func TestResolveServiceVersionLeavesDerivativeWithoutVersion(t *testing.T) {
+	plan := ServicePlan{SourceName: "sshd", SourceVersion: "8.4", TargetName: "sshd"}
+	finding, found, err := resolveServiceVersion(
+		&plan,
+		derivativeVersionTestInspection(),
+		"",
+		time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC),
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found || finding.Severity != "" {
+		t.Fatalf("unexpected finding: %#v", finding)
+	}
+	if plan.TargetVersion != "" || plan.VersionAction != "" {
+		t.Fatalf("a derivative got a version of its own: %#v", plan)
+	}
+}
+
+func TestResolveServiceVersionRejectsExplicitDerivativeVersion(t *testing.T) {
+	plan := ServicePlan{SourceName: "sshd", TargetName: "sshd", TargetVersion: "8.4", VersionExplicit: true}
+	finding, found, err := resolveServiceVersion(
+		&plan,
+		derivativeVersionTestInspection(),
+		"",
+		time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC),
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || finding.Severity != SeverityBlocking {
+		t.Fatalf("expected blocking finding, got %#v", finding)
+	}
+	if plan.TargetVersion != "" {
+		t.Fatalf("a derivative kept the requested version: %#v", plan)
+	}
+}
+
+func TestVerifyServiceVersion(t *testing.T) {
+	parent := 1
+	for _, tc := range []struct {
+		name    string
+		service TargetAppService
+		want    string
+		fails   bool
+	}{
+		{name: "matching version", service: TargetAppService{Name: "php", Version: "8.4"}, want: "8.4"},
+		{name: "other version", service: TargetAppService{Name: "php", Version: "8.3"}, want: "8.4", fails: true},
+		{name: "no version planned", service: TargetAppService{Name: "php", Version: "8.3"}},
+		// A plan made before derivatives were left out of version selection.
+		{name: "derivative", service: TargetAppService{Name: "sshd", ParentAppServiceID: &parent}, want: "8.4"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := verifyServiceVersion(tc.service, PreparedService{TargetVersion: tc.want})
+			if (err != nil) != tc.fails {
+				t.Fatalf("verifyServiceVersion() error = %v, want failure %v", err, tc.fails)
+			}
+		})
+	}
+}

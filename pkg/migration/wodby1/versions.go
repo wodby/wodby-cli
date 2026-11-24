@@ -113,6 +113,22 @@ func resolveServiceVersion(
 	now time.Time,
 	pinned bool,
 ) (ReviewItem, bool, error) {
+	// A derivative, such as the PHP SSH service, runs its parent's version, and
+	// Wodby 2 keeps no version for it. Its service revision is its parent's, so
+	// it would otherwise show the parent's options and get a version that
+	// verification can never find on the target.
+	if isTargetServiceDerivative(inspection) {
+		servicePlan.TargetVersion = ""
+		servicePlan.VersionAction = ""
+		if servicePlan.VersionExplicit {
+			return ReviewItem{
+				Severity: SeverityBlocking,
+				Subject:  "service " + servicePlan.SourceName + " version",
+				Message:  fmt.Sprintf("target service %q runs the version of the service it derives from; remove its --target-version-map override", servicePlan.TargetName),
+			}, true, nil
+		}
+		return ReviewItem{}, false, nil
+	}
 	options, err := effectiveTargetVersionOptions(inspection, stackManifest)
 	if err != nil {
 		return ReviewItem{}, false, err

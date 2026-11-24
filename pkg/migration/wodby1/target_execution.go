@@ -2420,8 +2420,9 @@ func (c *TargetClient) ListAppRoutes(ctx context.Context, appInstanceID int) ([]
 	if err := c.client.Get(ctx, "/app-routes", query, &items); err != nil {
 		return nil, errors.Wrap(err, "list target Wodby 2 app routes")
 	}
-	for _, item := range items {
-		if err := validateTargetAppRoute(item, appInstanceID); err != nil {
+	for index := range items {
+		normalizeTargetAppRoute(&items[index])
+		if err := validateTargetAppRoute(items[index], appInstanceID); err != nil {
 			return nil, err
 		}
 	}
@@ -2436,6 +2437,7 @@ func (c *TargetClient) CreateAppRoute(ctx context.Context, input TargetCreateApp
 	if err := c.client.Post(ctx, "/app-routes", nil, input, &item); err != nil {
 		return TargetAppRoute{}, errors.Wrap(err, "create target Wodby 2 app route")
 	}
+	normalizeTargetAppRoute(&item)
 	if err := validateTargetAppRoute(item, 0); err != nil {
 		return TargetAppRoute{}, err
 	}
@@ -2468,6 +2470,7 @@ func (c *TargetClient) UpdateAppRoute(ctx context.Context, routeID int, input Ta
 	if item.ID != routeID {
 		return TargetAppRoute{}, targetUnexpectedID("app route", item.ID, routeID)
 	}
+	normalizeTargetAppRoute(&item)
 	if err := validateTargetAppRoute(item, 0); err != nil {
 		return TargetAppRoute{}, err
 	}
@@ -3382,6 +3385,17 @@ func validateTargetRouteEnums(pathType, action *string) error {
 		return errors.Errorf("unsupported target app route action %q", *action)
 	}
 	return nil
+}
+
+// normalizeTargetAppRoute upper-cases the route's enum values. The Wodby 2
+// REST API returns them in lower case, such as "serve" and "prefix", while
+// requests and the comparisons in this package use the upper-case GraphQL
+// values, such as TargetRouteActionServe. Without this, no migrated route ever
+// matched its plan, and verification refused every custom domain.
+func normalizeTargetAppRoute(item *TargetAppRoute) {
+	item.Action = strings.ToUpper(strings.TrimSpace(item.Action))
+	item.PathType = strings.ToUpper(strings.TrimSpace(item.PathType))
+	item.Status = strings.ToUpper(strings.TrimSpace(item.Status))
 }
 
 func validateTargetAppRoute(item TargetAppRoute, appInstanceID int) error {

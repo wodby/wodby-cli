@@ -1362,3 +1362,32 @@ func TestTargetClientIgnoresUnrelatedStacksThatAreNotReady(t *testing.T) {
 		t.Fatalf("generated stacks = %#v, err = %v", matches, err)
 	}
 }
+
+// The REST API returns route enums in lower case; the client hands them on in
+// the upper case that route matching compares with.
+func TestTargetClientNormalizesListedAppRouteEnums(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/app-routes" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":33,"host":"www.example.com","path":"/","pathType":"prefix","action":"serve","status":"ok",` +
+			`"appInstanceId":20,"appServiceId":30,"portId":34}]`))
+	}))
+	defer server.Close()
+
+	client := mustTargetExecutionClient(t, server.URL)
+	routes, err := client.ListAppRoutes(context.Background(), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].Action != TargetRouteActionServe || routes[0].PathType != TargetRoutePathPrefix || routes[0].Status != "OK" {
+		t.Fatalf("routes = %#v", routes)
+	}
+	port := 80
+	plan := RoutePlan{Host: "www.example.com", Service: "nginx", PortNumber: &port, Action: "create_backend"}
+	if matches := matchingRoutes(routes, 30, 34, plan, false); len(matches) != 1 {
+		t.Fatalf("a listed route does not match its plan: %#v", matches)
+	}
+}

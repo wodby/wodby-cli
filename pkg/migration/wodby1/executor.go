@@ -5936,13 +5936,8 @@ func (e *MigrationExecutor) verifyInstance(
 		if !ok {
 			return errors.New("mapped target service is missing during verification")
 		}
-		if mapping.TargetVersion != "" && service.Version != mapping.TargetVersion {
-			return errors.Errorf(
-				"target service %q version is %q, expected %q",
-				service.Name,
-				service.Version,
-				mapping.TargetVersion,
-			)
+		if err := verifyServiceVersion(service, mapping); err != nil {
+			return err
 		}
 		if mapping.Replicas != nil && service.Replicas != *mapping.Replicas && !prepared.Workspace.IsCodeService(service.Name) {
 			return errors.Errorf("target service %q uses %d replicas, expected %d", service.Name, service.Replicas, *mapping.Replicas)
@@ -6039,6 +6034,23 @@ func verifyWorkspace(prepared PreparedInstance, instance TargetAppInstance, serv
 		return errors.Errorf("target workspace setup is %q, expected ready", workspace.PreparationState)
 	}
 	return nil
+}
+
+// verifyServiceVersion checks that a migrated service runs the version the
+// plan chose. A derivative, such as the PHP SSH service, has no version of its
+// own: Wodby 2 runs it with its parent's version and reports an empty one, so
+// it is not compared. Plans made before derivatives were left out of version
+// selection may still carry one for it.
+func verifyServiceVersion(service TargetAppService, mapping PreparedService) error {
+	if mapping.TargetVersion == "" || service.ParentAppServiceID != nil || service.Version == mapping.TargetVersion {
+		return nil
+	}
+	return errors.Errorf(
+		"target service %q version is %q, expected %q",
+		service.Name,
+		service.Version,
+		mapping.TargetVersion,
+	)
 }
 
 func (e *MigrationExecutor) verifyServiceEnvironment(
